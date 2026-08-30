@@ -316,12 +316,12 @@ export type AuthEvent = typeof AuthEvent.Type
 // -----------------------------------------------------------------------------
 
 /**
- * The publish/subscribe hub the domain services emit through.
+ * The {@link AuthEvents} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class AuthEvents extends Context.Service<AuthEvents, {
+export interface AuthEventsService {
   /**
    * Publishes one event.
    *
@@ -349,7 +349,15 @@ export class AuthEvents extends Context.Service<AuthEvents, {
    * combinators or share the hub with adjacent features.
    */
   readonly pubsub: PubSub.PubSub<AuthEvent>
-}>()("effect-auth/AuthEvents") {}
+}
+
+/**
+ * The publish/subscribe hub the domain services emit through.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class AuthEvents extends Context.Service<AuthEvents, AuthEventsService>()("effect-auth/AuthEvents") {}
 
 /**
  * How many events the default hub buffers before it starts dropping.
@@ -372,7 +380,11 @@ export const defaultCapacity = 256
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*(options?: { readonly capacity?: number | undefined }) {
+export const make: (
+  options?: { readonly capacity?: number | undefined }
+) => Effect.Effect<AuthEventsService> = Effect.fnUntraced(function*(
+  options?: { readonly capacity?: number | undefined }
+) {
   const pubsub = yield* PubSub.dropping<AuthEvent>(options?.capacity ?? defaultCapacity)
   return AuthEvents.of({
     pubsub,
@@ -421,7 +433,7 @@ export const emit = (event: AuthEvent): Effect.Effect<void, never, AuthEvents> =
  * @since 1.0.0
  */
 export const publishSafely = (
-  events: AuthEvents["Service"],
+  events: AuthEventsService,
   event: AuthEvent
 ): Effect.Effect<void> =>
   Effect.catchCause(

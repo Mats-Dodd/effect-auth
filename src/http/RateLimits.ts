@@ -20,7 +20,7 @@
 import { Duration, Effect, Layer, Option } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { RateLimited } from "../domain/Errors.js"
 
@@ -107,7 +107,7 @@ export const sharedKey = "shared"
  * @since 1.0.0
  */
 export const clientAddress = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   request: HttpServerRequest.HttpServerRequest
 ): Option.Option<string> => {
   for (const header of config.rateLimit.ipHeaders) {
@@ -209,7 +209,7 @@ export const consume = (
  * @since 1.0.0
  */
 export const consumeWith = (options: {
-  readonly config: AuthConfigShape
+  readonly config: AuthConfigService
   readonly limiter: RateLimiter.RateLimiter
   readonly bucket: Bucket
   readonly request: HttpServerRequest.HttpServerRequest

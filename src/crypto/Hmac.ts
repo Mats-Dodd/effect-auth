@@ -10,12 +10,12 @@ import { Context, Effect, Layer, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 
 /**
- * Signs and verifies byte strings with the instance secret.
+ * The {@link Hmac} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class Hmac extends Context.Service<Hmac, {
+export interface HmacService {
   /**
    * Produces the 32-byte HMAC-SHA-256 tag of `data`.
    */
@@ -31,7 +31,16 @@ export class Hmac extends Context.Service<Hmac, {
    * differing byte and turns the tag into something an attacker can search for.
    */
   readonly verify: (data: Uint8Array, mac: Uint8Array) => Effect.Effect<boolean>
-}>()("effect-auth/Hmac") {}
+}
+
+/**
+ * Signs and verifies byte strings with the instance secret. See
+ * {@link HmacService}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Hmac extends Context.Service<Hmac, HmacService>()("effect-auth/Hmac") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -64,7 +73,7 @@ const toArrayBuffer = (data: Uint8Array): ArrayBuffer => {
 export const make = (
   crypto: Crypto,
   secret: Redacted.Redacted<string>
-): Effect.Effect<Hmac["Service"]> =>
+): Effect.Effect<HmacService> =>
   Effect.map(
     Effect.promise(() =>
       crypto.subtle.importKey(

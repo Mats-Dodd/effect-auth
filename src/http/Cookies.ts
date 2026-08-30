@@ -14,7 +14,7 @@ import { Layer } from "effect"
 import type { Cookies } from "effect/unstable/http"
 import { Headers } from "effect/unstable/http"
 import { HttpApiSecurity } from "effect/unstable/httpapi"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { cookieName as resolveCookieName, defaultCookieName } from "../config/AuthConfig.js"
 
 // -----------------------------------------------------------------------------
@@ -50,7 +50,7 @@ export const secureSessionCookieName: string = `__Secure-${defaultCookieName}`
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCookieName = (config: AuthConfigShape): string => resolveCookieName(config)
+export const sessionCookieName = (config: AuthConfigService): string => resolveCookieName(config)
 
 // -----------------------------------------------------------------------------
 // Attributes
@@ -63,7 +63,7 @@ export const sessionCookieName = (config: AuthConfigShape): string => resolveCoo
  *
  * `httpOnly` is not configurable: script-readable session tokens are the whole
  * point of the cookie transport being safer than `localStorage`. `secure`,
- * `sameSite`, `path` and `domain` come from {@link AuthConfigShape}, and
+ * `sameSite`, `path` and `domain` come from {@link AuthConfigService}, and
  * `maxAge` is the remaining lifetime of the session the cookie carries, so the
  * browser drops it at the same moment the server does.
  *
@@ -74,7 +74,7 @@ export const sessionCookieName = (config: AuthConfigShape): string => resolveCoo
  * @since 1.0.0
  */
 export const sessionCookieOptions = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   options: { readonly maxAge: Duration.Duration }
 ): NonNullable<Cookies.Cookie["options"]> => ({
   path: config.cookie.path,
@@ -97,7 +97,7 @@ export const sessionCookieOptions = (
  * @since 1.0.0
  */
 export const expiredSessionCookieOptions = (
-  config: AuthConfigShape
+  config: AuthConfigService
 ): NonNullable<Cookies.Cookie["options"]> => ({
   path: config.cookie.path,
   domain: config.cookie.domain,

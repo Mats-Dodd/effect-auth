@@ -37,7 +37,7 @@ import { DateTime, Duration, Effect, Layer, Redacted } from "effect"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
 import type { HttpApiSecurity } from "effect/unstable/httpapi"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
 import type { Session } from "../domain/Schema.js"
@@ -69,7 +69,7 @@ import { checkOrigin } from "./OriginCheck.js"
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCookieSecurity = (config: AuthConfigShape): HttpApiSecurity.ApiKey =>
+export const sessionCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
   config.cookie.secure ? secureSessionCookieSecurity : insecureSessionCookieSecurity
 
 /**
@@ -109,7 +109,7 @@ export const remainingLifetime = (session: Session): Effect.Effect<Duration.Dura
  * @since 1.0.0
  */
 export const setSessionCookie = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   session: Session,
   token: Redacted.Redacted<string>,
   options?: { readonly persistent?: boolean | undefined } | undefined
@@ -134,7 +134,7 @@ export const setSessionCookie = (
  * @since 1.0.0
  */
 export const clearSessionCookie = (
-  config: AuthConfigShape
+  config: AuthConfigService
 ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
   HttpApiBuilder.securitySetCookie(
     sessionCookieSecurity(config),

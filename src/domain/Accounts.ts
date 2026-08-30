@@ -140,12 +140,12 @@ export const canLinkImplicitly = (options: {
 // -----------------------------------------------------------------------------
 
 /**
- * The account-linking service.
+ * The {@link Accounts} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class Accounts extends Context.Service<Accounts, {
+export interface AccountsService {
   /**
    * Resolves a provider identity to a user, in three steps.
    *
@@ -203,7 +203,15 @@ export class Accounts extends Context.Service<Accounts, {
    * Every sign-in method a user holds, oldest first.
    */
   readonly listForUser: (userId: UserId) => Effect.Effect<ReadonlyArray<Account>, PersistenceError>
-}>()("effect-auth/Accounts") {}
+}
+
+/**
+ * The account-linking service.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Accounts extends Context.Service<Accounts, AccountsService>()("effect-auth/Accounts") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -215,7 +223,11 @@ export class Accounts extends Context.Service<Accounts, {
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*() {
+export const make: () => Effect.Effect<
+  AccountsService,
+  never,
+  AuthConfig | AuthEvents | UserStore | AccountStore | WithAuthTransaction
+> = Effect.fnUntraced(function*() {
   const config = yield* AuthConfig
   const users = yield* UserStore
   const accounts = yield* AccountStore

@@ -41,7 +41,7 @@
  */
 import { Context, DateTime, Duration, Effect, Layer, Redacted } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
 import type { OAuthIdentity } from "../domain/Accounts.js"
@@ -65,8 +65,9 @@ import {
   reservedAuthorizationParams,
   revealToken
 } from "./Provider.js"
-import type { StatePayload } from "./State.js"
+import type { IssueOptions, StatePayload } from "./State.js"
 import { codeChallengeMethod, consume as consumeState, issue as issueState } from "./State.js"
+import { asRecord } from "./internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Refusing redirects
@@ -139,7 +140,7 @@ const joinUrl = (baseUrl: string, path: string): string => `${baseUrl.replace(/\
  * @category combinators
  * @since 1.0.0
  */
-export const callbackUri = (config: AuthConfigShape, provider: OAuthProviderConfig): string =>
+export const callbackUri = (config: AuthConfigService, provider: OAuthProviderConfig): string =>
   provider.redirectUri ?? joinUrl(config.baseUrl, `${config.basePath}/callback/${encodeURIComponent(provider.id)}`)
 
 /**
@@ -207,11 +208,6 @@ export const authorizationUrl = (options: {
 // -----------------------------------------------------------------------------
 // Reading a provider's JSON
 // -----------------------------------------------------------------------------
-
-const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : null
 
 /**
  * Reads a string field out of a provider's JSON body.
@@ -454,12 +450,12 @@ export const withErrorCode = (url: string, code: string): string => {
 // -----------------------------------------------------------------------------
 
 /**
- * The OAuth runner.
+ * The {@link OAuthFlow} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class OAuthFlow extends Context.Service<OAuthFlow, {
+export interface OAuthFlowService {
   /**
    * Mints state and PKCE and answers with the provider's authorization URL.
    *
@@ -491,7 +487,15 @@ export class OAuthFlow extends Context.Service<OAuthFlow, {
   readonly complete: (
     options: CallbackOptions
   ) => Effect.Effect<CallbackOutcome, PersistenceError>
-}>()("effect-auth/OAuthFlow") {}
+}
+
+/**
+ * The OAuth runner.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class OAuthFlow extends Context.Service<OAuthFlow, OAuthFlowService>()("effect-auth/OAuthFlow") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -503,7 +507,18 @@ export class OAuthFlow extends Context.Service<OAuthFlow, {
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*() {
+export const make: () => Effect.Effect<
+  OAuthFlowService,
+  never,
+  | AuthConfig
+  | OAuthProviders
+  | Token
+  | VerificationStore
+  | Accounts
+  | Sessions
+  | AuthEvents
+  | HttpClient.HttpClient
+> = Effect.fnUntraced(function*() {
   const config = yield* AuthConfig
   const registry = yield* OAuthProviders
   const accounts = yield* Accounts
@@ -514,7 +529,7 @@ export const make = Effect.fnUntraced(function*() {
   // `State` reads its services from the context. Capturing them once, when the
   // layer is built, keeps them out of every method's requirements.
   const stateServices = yield* Effect.context<AuthConfig | Token | VerificationStore>()
-  const issue = (options: Parameters<typeof issueState>[0]) =>
+  const issue = (options: IssueOptions) =>
     Effect.provideContext(issueState(options), stateServices)
   const consume = (providerId: string, state: Redacted.Redacted<string>) =>
     Effect.provideContext(consumeState(providerId, state), stateServices)

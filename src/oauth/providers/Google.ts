@@ -17,9 +17,10 @@
  * @since 1.0.0
  */
 import type { Config, Redacted } from "effect"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
-import { fetchJson, layer as registryLayer, makeRegistry, OAuthProviders, providerError } from "../Provider.js"
+import { fetchJson, providerError } from "../Provider.js"
+import { asRecord } from "../internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -139,11 +140,10 @@ export interface Options {
 // Constructors
 // -----------------------------------------------------------------------------
 
-const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : null
-
+// Google's `readString` accepts only strings: every claim it reads is a string
+// in Google's schema, and coercing here would be a semantic change. GitHub's
+// local reader differs — its user id is a JSON number — so only `asRecord` is
+// shared.
 const readString = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
   if (!Object.hasOwn(record, key)) return null
   const value = record[key]
@@ -158,6 +158,18 @@ const readVerified = (record: Readonly<Record<string, unknown>>): boolean => {
 
 /**
  * Builds the Google provider configuration.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Redacted } from "effect"
+ * import { Google } from "effect-auth"
+ *
+ * const google = Google.make({
+ *   clientId: "0123.apps.googleusercontent.com",
+ *   clientSecret: Redacted.make(process.env.GOOGLE_CLIENT_SECRET!)
+ * })
+ * ```
  *
  * @category constructors
  * @since 1.0.0
@@ -179,7 +191,7 @@ export const make = (options: Options): OAuthProviderConfig => {
     // pre-filters the account chooser and can be stripped from the URL; the
     // claim is part of what Google signed, and is checked after verification.
     if (options.hostedDomain !== undefined) {
-      const hd = readString(claims.raw as Readonly<Record<string, unknown>>, "hd")
+      const hd = readString(claims.raw, "hd")
       if (hd !== options.hostedDomain) {
         return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
       }
@@ -228,32 +240,12 @@ export const make = (options: Options): OAuthProviderConfig => {
 }
 
 /**
- * Registers Google.
+ * What Google needs, per field, as `Config` values.
  *
- * **Example**
- *
- * ```ts
- * import { Redacted } from "effect"
- * import { Google } from "effect-auth"
- *
- * const provider = Google.layer({
- *   clientId: "0123.apps.googleusercontent.com",
- *   clientSecret: Redacted.make(process.env.GOOGLE_CLIENT_SECRET!)
- * })
- * ```
- *
- * @category layers
+ * @category models
  * @since 1.0.0
  */
-export const layer = (options: Options): Layer.Layer<OAuthProviders> => registryLayer([make(options)])
-
-/**
- * Registers Google, reading its credentials from `Config`.
- *
- * @category layers
- * @since 1.0.0
- */
-export const layerConfig = (options: {
+export interface ConfigOptions {
   readonly clientId: Config.Config<string>
   readonly clientSecret: Config.Config<Redacted.Redacted<string>>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
@@ -261,19 +253,33 @@ export const layerConfig = (options: {
   readonly accessType?: Config.Config<"online" | "offline"> | undefined
   readonly prompt?: Config.Config<string> | undefined
   readonly hostedDomain?: Config.Config<string> | undefined
-}): Layer.Layer<OAuthProviders, Config.ConfigError> =>
-  Layer.effect(
-    OAuthProviders,
-    Effect.gen(function*() {
-      const provider = make({
-        clientId: yield* options.clientId,
-        clientSecret: yield* options.clientSecret,
-        scopes: options.scopes === undefined ? undefined : yield* options.scopes,
-        redirectUri: options.redirectUri === undefined ? undefined : yield* options.redirectUri,
-        accessType: options.accessType === undefined ? undefined : yield* options.accessType,
-        prompt: options.prompt === undefined ? undefined : yield* options.prompt,
-        hostedDomain: options.hostedDomain === undefined ? undefined : yield* options.hostedDomain
-      })
-      return makeRegistry([provider])
+}
+
+/**
+ * Builds the Google provider configuration, reading its credentials from
+ * `Config`.
+ *
+ * **Gotchas**
+ *
+ * The secret must come from `Config.redacted`, so that it is a
+ * `Redacted<string>` from the moment it leaves the environment and never
+ * appears in a log line or a `ConfigError`.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeConfig: (
+  options: ConfigOptions
+) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> = Effect.fnUntraced(
+  function*(options: ConfigOptions) {
+    return make({
+      clientId: yield* options.clientId,
+      clientSecret: yield* options.clientSecret,
+      scopes: options.scopes === undefined ? undefined : yield* options.scopes,
+      redirectUri: options.redirectUri === undefined ? undefined : yield* options.redirectUri,
+      accessType: options.accessType === undefined ? undefined : yield* options.accessType,
+      prompt: options.prompt === undefined ? undefined : yield* options.prompt,
+      hostedDomain: options.hostedDomain === undefined ? undefined : yield* options.hostedDomain
     })
-  )
+  }
+)

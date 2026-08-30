@@ -195,12 +195,13 @@ export interface EmailPathConfig {
 // -----------------------------------------------------------------------------
 
 /**
- * The fully resolved configuration: every default applied, nothing optional.
+ * The {@link AuthConfig} service definition: the fully resolved configuration,
+ * every default applied, nothing optional.
  *
  * @category models
  * @since 1.0.0
  */
-export interface AuthConfigShape {
+export interface AuthConfigService {
   /**
    * The public origin of the application, for example
    * `"https://app.example.com"`. Used to build e-mail links, to decide whether
@@ -236,12 +237,12 @@ export interface AuthConfigShape {
 }
 
 /**
- * The configuration service.
+ * The configuration service. See {@link AuthConfigService}.
  *
  * @category services
  * @since 1.0.0
  */
-export class AuthConfig extends Context.Service<AuthConfig, AuthConfigShape>()("effect-auth/AuthConfig") {}
+export class AuthConfig extends Context.Service<AuthConfig, AuthConfigService>()("effect-auth/AuthConfig") {}
 
 // -----------------------------------------------------------------------------
 // Options
@@ -372,7 +373,7 @@ export const isSecureUrl = (url: string): boolean => url.startsWith("https:")
  * @category combinators
  * @since 1.0.0
  */
-export const cookieName = (config: AuthConfigShape): string =>
+export const cookieName = (config: AuthConfigService): string =>
   config.cookie.secure ? `__Secure-${defaultCookieName}` : defaultCookieName
 
 // -----------------------------------------------------------------------------
@@ -398,7 +399,7 @@ export const cookieName = (config: AuthConfigShape): string =>
  * @category constructors
  * @since 1.0.0
  */
-export const make = (options: AuthConfigOptions): AuthConfigShape => {
+export const make = (options: AuthConfigOptions): AuthConfigService => {
   const secure = options.cookie?.secure ?? isSecureUrl(options.baseUrl)
   return {
     baseUrl: options.baseUrl,

@@ -593,7 +593,7 @@ const make = Effect.fnUntraced(function*() {
         (error): E | PersistenceError =>
           SqlError.isSqlError(error)
             ? new PersistenceError({ operation: "WithAuthTransaction.run", cause: error })
-            : error as E
+            : error
       )
   })
 

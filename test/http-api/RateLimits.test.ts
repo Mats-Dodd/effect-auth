@@ -30,7 +30,7 @@ const configLayer = (rateLimit?: {
     rateLimit
   })
 
-const config = (ipHeaders: ReadonlyArray<string>): AuthConfig.AuthConfigShape =>
+const config = (ipHeaders: ReadonlyArray<string>): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl,
     secret: Redacted.make("test-secret"),

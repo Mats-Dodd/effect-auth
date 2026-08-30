@@ -28,7 +28,7 @@
  */
 import { Context, DateTime, Effect, Encoding, Layer, Option, Redacted, Result } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthEmails, resetPasswordUrl, verifyEmailUrl } from "../config/AuthEmails.js"
 import { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { Token } from "../crypto/Token.js"
@@ -196,7 +196,7 @@ export const decodeSubjectToken = (token: Redacted.Redacted<string>): Option.Opt
  */
 export const checkPolicy = (
   password: Redacted.Redacted<string>,
-  config: AuthConfigShape
+  config: AuthConfigService
 ): Effect.Effect<void, PasswordPolicyViolation> => {
   const { maxPasswordLength, minPasswordLength } = config.emailPassword
   const length = Redacted.value(password).length
@@ -310,12 +310,12 @@ export interface ChangePasswordOptions {
 // -----------------------------------------------------------------------------
 
 /**
- * E-mail and password authentication.
+ * The {@link Passwords} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class Passwords extends Context.Service<Passwords, {
+export interface PasswordsService {
   /**
    * Registers a user and their `local:credential` account in one transaction,
    * then — outside it — emits `UserCreated`, sends the verification mail if the
@@ -416,7 +416,15 @@ export class Passwords extends Context.Service<Passwords, {
   readonly verifyEmail: (
     token: Redacted.Redacted<string>
   ) => Effect.Effect<User, InvalidToken | PersistenceError>
-}>()("effect-auth/Passwords") {}
+}
+
+/**
+ * E-mail and password authentication.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Passwords extends Context.Service<Passwords, PasswordsService>()("effect-auth/Passwords") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -435,7 +443,21 @@ export class Passwords extends Context.Service<Passwords, {
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*() {
+export const make: () => Effect.Effect<
+  PasswordsService,
+  never,
+  | AuthConfig
+  | AuthEmails
+  | AuthEvents
+  | PasswordHasher
+  | Token
+  | Sessions
+  | UserStore
+  | SessionStore
+  | AccountStore
+  | VerificationStore
+  | WithAuthTransaction
+> = Effect.fnUntraced(function*() {
   const config = yield* AuthConfig
   const hasher = yield* PasswordHasher
   const tokens = yield* Token

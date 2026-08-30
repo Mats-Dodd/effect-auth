@@ -74,10 +74,10 @@ export interface SentEmail extends AuthEmail {
  * })
  * ```
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class TestEmails extends Context.Service<TestEmails, {
+export interface TestEmailsService {
   /**
    * Every e-mail delivered so far, oldest first.
    */
@@ -100,7 +100,17 @@ export class TestEmails extends Context.Service<TestEmails, {
    * Empties the outbox.
    */
   readonly clear: Effect.Effect<void>
-}>()("effect-auth/testing/TestEmails") {}
+}
+
+/**
+ * The captured outbox. See {@link TestEmailsService}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class TestEmails extends Context.Service<TestEmails, TestEmailsService>()(
+  "effect-auth/testing/TestEmails"
+) {}
 
 /**
  * The capturing mailer, providing both {@link TestEmails} and the `AuthEmails`
@@ -280,10 +290,10 @@ export const layerDatabase: Layer.Layer<
  *
  * **Gotchas**
  *
- * No OAuth provider is configured, so `OAuthFlow` is absent and no `HttpClient`
- * is needed. To exercise the OAuth flow, compose `Auth.layer` yourself with
- * `providers: [...]` over {@link layerDatabase} and {@link layerEmails} plus a
- * stubbed `HttpClient`.
+ * This is `Auth.layer`, so `OAuthFlow` is absent and no `HttpClient` is needed.
+ * To exercise the OAuth flow, call `Auth.layerWithOAuth({ ...AuthTest.testConfig(),
+ * providers: [...] })` yourself over {@link layerDatabase} and
+ * {@link layerEmails} plus a stubbed `HttpClient`.
  *
  * Booting PGlite and running the migrations costs a few hundred milliseconds,
  * which exceeds vitest's five-second default on a cold start when several
@@ -296,7 +306,7 @@ export const layerDatabase: Layer.Layer<
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  Services<readonly []> | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   authLayer({

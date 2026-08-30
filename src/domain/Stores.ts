@@ -120,12 +120,12 @@ export interface UserPatch {
 }
 
 /**
- * Storage for {@link User} rows.
+ * The {@link UserStore} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class UserStore extends Context.Service<UserStore, {
+export interface UserStoreService {
   /**
    * Inserts a user and returns the stored row.
    *
@@ -156,7 +156,15 @@ export class UserStore extends Context.Service<UserStore, {
    * removed.
    */
   readonly delete: (id: UserId) => Effect.Effect<boolean, PersistenceError>
-}>()("effect-auth/UserStore") {}
+}
+
+/**
+ * Storage for {@link User} rows.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class UserStore extends Context.Service<UserStore, UserStoreService>()("effect-auth/UserStore") {}
 
 // -----------------------------------------------------------------------------
 // SessionStore
@@ -174,12 +182,12 @@ export interface SessionWithUser {
 }
 
 /**
- * Storage for {@link Session} rows.
+ * The {@link SessionStore} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class SessionStore extends Context.Service<SessionStore, {
+export interface SessionStoreService {
   /**
    * Inserts a session and returns the stored row.
    */
@@ -239,7 +247,15 @@ export class SessionStore extends Context.Service<SessionStore, {
    * removed.
    */
   readonly deleteExpired: Effect.Effect<number, PersistenceError>
-}>()("effect-auth/SessionStore") {}
+}
+
+/**
+ * Storage for {@link Session} rows.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class SessionStore extends Context.Service<SessionStore, SessionStoreService>()("effect-auth/SessionStore") {}
 
 // -----------------------------------------------------------------------------
 // AccountStore
@@ -262,12 +278,12 @@ export interface AccountTokens {
 }
 
 /**
- * Storage for {@link Account} rows — the sign-in methods of a user.
+ * The {@link AccountStore} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class AccountStore extends Context.Service<AccountStore, {
+export interface AccountStoreService {
   /**
    * Inserts an account and returns the stored row.
    *
@@ -350,20 +366,27 @@ export class AccountStore extends Context.Service<AccountStore, {
    * Counts a user's sign-in methods. Used to refuse unlinking the last one.
    */
   readonly countByUserId: (userId: UserId) => Effect.Effect<number, PersistenceError>
-}>()("effect-auth/AccountStore") {}
+}
+
+/**
+ * Storage for {@link Account} rows — the sign-in methods of a user.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class AccountStore extends Context.Service<AccountStore, AccountStoreService>()("effect-auth/AccountStore") {}
 
 // -----------------------------------------------------------------------------
 // VerificationStore
 // -----------------------------------------------------------------------------
 
 /**
- * Storage for {@link Verification} rows — e-mail verification tokens, password
- * reset tokens, and pending OAuth state.
+ * The {@link VerificationStore} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class VerificationStore extends Context.Service<VerificationStore, {
+export interface VerificationStoreService {
   /**
    * Inserts a verification row and returns it.
    */
@@ -411,11 +434,35 @@ export class VerificationStore extends Context.Service<VerificationStore, {
    * removed.
    */
   readonly deleteExpired: Effect.Effect<number, PersistenceError>
-}>()("effect-auth/VerificationStore") {}
+}
+
+/**
+ * Storage for {@link Verification} rows — e-mail verification tokens, password
+ * reset tokens, and pending OAuth state.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class VerificationStore
+  extends Context.Service<VerificationStore, VerificationStoreService>()("effect-auth/VerificationStore")
+{}
 
 // -----------------------------------------------------------------------------
 // Transactions
 // -----------------------------------------------------------------------------
+
+/**
+ * The {@link WithAuthTransaction} service definition.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface WithAuthTransactionService {
+  /**
+   * Runs `effect` in a transaction, rolling back on failure or interruption.
+   */
+  readonly run: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | PersistenceError, R>
+}
 
 /**
  * Runs a domain effect inside one storage transaction.
@@ -435,12 +482,9 @@ export class VerificationStore extends Context.Service<VerificationStore, {
  * @category services
  * @since 1.0.0
  */
-export class WithAuthTransaction extends Context.Service<WithAuthTransaction, {
-  /**
-   * Runs `effect` in a transaction, rolling back on failure or interruption.
-   */
-  readonly run: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | PersistenceError, R>
-}>()("effect-auth/WithAuthTransaction") {}
+export class WithAuthTransaction
+  extends Context.Service<WithAuthTransaction, WithAuthTransactionService>()("effect-auth/WithAuthTransaction")
+{}
 
 /**
  * Every service the storage seam is made of. `SqlStores.layer` provides exactly

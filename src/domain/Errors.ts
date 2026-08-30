@@ -198,8 +198,8 @@ export class SessionNotFresh
 // -----------------------------------------------------------------------------
 
 /**
- * A verification token — e-mail verification, password reset — was unknown, was
- * already used, or did not belong to the stated identifier.
+ * A verification token — e-mail verification, password reset — was not
+ * recognised, was already used, or did not belong to the stated identifier.
  *
  * **Details**
  *

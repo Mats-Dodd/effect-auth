@@ -6,8 +6,15 @@
  * three domain services, the event hub, the `Authenticated` middleware
  * implementation and the rate limiter, and hands back a single `Layer` whose
  * only remaining requirements are the two seams an application must own — a
- * `SqlClient` and an `AuthEmails` — plus an `HttpClient` when OAuth providers
- * are configured.
+ * `SqlClient` and an `AuthEmails`.
+ *
+ * **Details**
+ *
+ * OAuth is a second entry point rather than an option: {@link layerWithOAuth}
+ * takes a non-empty list of provider *values* and adds exactly two things to
+ * the result — `OAuthFlow` to what it provides, and an `HttpClient` to what it
+ * needs. Nothing in this module inspects a list length or reshapes a type, so
+ * what a call site reads is what the compiler checked.
  *
  * @since 1.0.0
  */
@@ -16,27 +23,27 @@ import { Duration, Effect, Layer, Schedule, Stream } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import type { RateLimiter } from "effect/unstable/persistence"
 import type { SqlClient } from "effect/unstable/sql"
-import { Hmac, layer as hmacLayer } from "../crypto/Hmac.js"
 import type { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { layerScrypt } from "../crypto/PasswordHasher.js"
-import { layer as tokenLayer, Token } from "../crypto/Token.js"
+import { layer as tokenLayer } from "../crypto/Token.js"
 import { Accounts, layer as accountsLayer } from "../domain/Accounts.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents, layer as eventsLayer } from "../domain/Events.js"
 import { layer as passwordsLayer, Passwords } from "../domain/Passwords.js"
 import { layer as sessionsLayer, Sessions } from "../domain/Sessions.js"
-import type { AuthStores, PersistenceError } from "../domain/Stores.js"
+import type { AccountStore, PersistenceError, UserStore } from "../domain/Stores.js"
 import { SessionStore, VerificationStore } from "../domain/Stores.js"
 import * as AuthCookies from "../http/Cookies.js"
 import type { Authenticated } from "../http/Middleware.js"
 import { layer as middlewareLayer } from "../http/MiddlewareLive.js"
 import * as RateLimits from "../http/RateLimits.js"
 import { layer as flowLayer, OAuthFlow } from "../oauth/Flow.js"
-import { layerEmpty, layerMerge, OAuthProviders } from "../oauth/Provider.js"
+import type { OAuthProviderConfig } from "../oauth/Provider.js"
+import { OAuthProviders } from "../oauth/Provider.js"
 import * as SqlStores from "../sql/SqlStores.js"
 import type {
   AuthConfigOptions,
-  AuthConfigShape,
+  AuthConfigService,
   CookieConfig,
   EmailPasswordConfig,
   EmailPathConfig,
@@ -53,34 +60,40 @@ import type { AuthEmails } from "./AuthEmails.js"
 // -----------------------------------------------------------------------------
 
 /**
- * The shape of the `providers` list: each entry is a layer providing a
- * one-provider {@link OAuthProviders} registry, as every provider module's
- * `layer` / `layerConfig` returns.
+ * The OAuth providers a deployment serves, as the inert values
+ * `Github.make` / `Google.make` return.
+ *
+ * **Details**
+ *
+ * Non-empty by construction: a deployment with no provider calls
+ * {@link layer}, not {@link layerWithOAuth}, and gets a stack that needs no
+ * `HttpClient`. Two entries with the same `id` are a configuration mistake and
+ * the last one wins — see `OAuthProviders`.
  *
  * @category models
  * @since 1.0.0
  */
-export type ProviderLayers = ReadonlyArray<Layer.Layer<OAuthProviders, any, any>>
+export type ProviderList = readonly [OAuthProviderConfig, ...Array<OAuthProviderConfig>]
 
 /**
- * The knobs {@link layer} accepts on top of {@link AuthConfigOptions}.
+ * {@link ProviderList}, with each provider still to be read out of the
+ * environment — the effects `Github.makeConfig` / `Google.makeConfig` return.
  *
  * @category models
  * @since 1.0.0
  */
-export interface Extras<Providers extends ProviderLayers> {
-  /**
-   * The OAuth providers to serve, as their own layers.
-   *
-   * **Details**
-   *
-   * They are merged with `layerMerge`, not `Layer.mergeAll`: every
-   * provider layer carries the same service key, so merging them by hand would
-   * make the last one win. Configuring at least one provider is what adds
-   * `HttpClient` to this layer's requirements.
-   */
-  readonly providers?: Providers | undefined
+export type ProviderConfigList = readonly [
+  Effect.Effect<OAuthProviderConfig, Config.ConfigError>,
+  ...Array<Effect.Effect<OAuthProviderConfig, Config.ConfigError>>
+]
 
+/**
+ * The knobs every entry point in this module accepts on top of the settings.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface Extras {
   /**
    * The password hashing layer. Defaults to `PasswordHasher.layerScrypt()` with
    * the parameters from the specification.
@@ -111,7 +124,33 @@ export interface Extras<Providers extends ProviderLayers> {
  * @category models
  * @since 1.0.0
  */
-export interface Options<Providers extends ProviderLayers> extends AuthConfigOptions, Extras<Providers> {}
+export interface Options extends AuthConfigOptions, Extras {}
+
+/**
+ * Everything {@link layerWithOAuth} accepts: {@link Options} plus the providers
+ * to serve.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface OAuthOptions extends Options {
+  /**
+   * The providers this deployment serves, as values.
+   *
+   * **Example**
+   *
+   * ```ts
+   * import { Redacted } from "effect"
+   * import { Github, Google } from "effect-auth"
+   *
+   * const providers = [
+   *   Github.make({ clientId: "…", clientSecret: Redacted.make("…") }),
+   *   Google.make({ clientId: "…", clientSecret: Redacted.make("…") })
+   * ] as const
+   * ```
+   */
+  readonly providers: ProviderList
+}
 
 /**
  * Everything {@link layerConfig} accepts: the scalar settings as `Config`
@@ -120,7 +159,7 @@ export interface Options<Providers extends ProviderLayers> extends AuthConfigOpt
  * @category models
  * @since 1.0.0
  */
-export interface ConfigOptions<Providers extends ProviderLayers> extends Extras<Providers> {
+export interface ConfigOptions extends Extras {
   readonly baseUrl: Config.Config<string>
   readonly secret: Config.Config<Redacted.Redacted<string>>
   readonly basePath?: Config.Config<string> | undefined
@@ -134,6 +173,35 @@ export interface ConfigOptions<Providers extends ProviderLayers> extends Extras<
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
 }
 
+/**
+ * Everything {@link layerConfigWithOAuth} accepts: {@link ConfigOptions} plus
+ * the providers, themselves read from the environment.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface OAuthConfigOptions extends ConfigOptions {
+  /**
+   * The providers this deployment serves, each as an effect that reads its
+   * credentials.
+   *
+   * **Example**
+   *
+   * ```ts
+   * import { Config } from "effect"
+   * import { Github } from "effect-auth"
+   *
+   * const providers = [
+   *   Github.makeConfig({
+   *     clientId: Config.string("GITHUB_CLIENT_ID"),
+   *     clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
+   *   })
+   * ] as const
+   * ```
+   */
+  readonly providers: ProviderConfigList
+}
+
 // -----------------------------------------------------------------------------
 // Layer shape
 // -----------------------------------------------------------------------------
@@ -143,116 +211,151 @@ export interface ConfigOptions<Providers extends ProviderLayers> extends Extras<
  *
  * **Details**
  *
- * `OAuthFlow` is present only when at least one provider is configured — the
- * handlers read it with `Effect.serviceOption`, so its absence turns the three
- * OAuth endpoints into `UnknownProvider` answers rather than a layer that
- * refuses to build.
+ * Exactly the services an application — or `AuthHandlers.layer` — has a reason
+ * to reach: the resolved configuration, the event hub, the four stores, the
+ * three domain services, the middleware implementation and the rate limiter.
+ *
+ * `Token`, `PasswordHasher` and `OAuthProviders` are deliberately absent. They
+ * are implementation detail of this stack, provided *into* it and not out of
+ * it, so replacing one is a change to the options here rather than a layer a
+ * consumer can shadow. `Hmac` is not built at all — nothing in v1 reads it;
+ * its module stays public for the v2 cookie cache.
  *
  * @category models
  * @since 1.0.0
  */
-export type Services<Providers extends ProviderLayers> =
+export type Services =
   | AuthConfig
   | AuthEvents
-  | AuthStores
-  | Token
-  | Hmac
-  | PasswordHasher
+  | UserStore
+  | SessionStore
+  | AccountStore
+  | VerificationStore
   | Sessions
   | Accounts
   | Passwords
   | Authenticated
   | RateLimiter.RateLimiter
-  | OAuthProviders
-  | (Providers extends readonly [] ? never : OAuthFlow)
 
 /**
- * Everything {@link layer} still needs from the application: the database
- * client, the mailer, whatever the provider layers require, and — only when a
- * provider is configured — an `HttpClient`.
+ * Every service {@link layerWithOAuth} provides: {@link Services} plus the
+ * OAuth flow the three social endpoints run on.
  *
  * @category models
  * @since 1.0.0
  */
-export type Requirements<Providers extends ProviderLayers> =
-  | SqlClient.SqlClient
-  | AuthEmails
-  | Layer.Services<Providers[number]>
-  | (Providers extends readonly [] ? never : HttpClient.HttpClient)
+export type OAuthServices = Services | OAuthFlow
+
+/**
+ * Everything {@link layer} still needs from the application: the database
+ * client and the mailer.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type Requirements = SqlClient.SqlClient | AuthEmails
+
+/**
+ * Everything {@link layerWithOAuth} still needs: {@link Requirements} plus a
+ * transport, because talking to a provider is the one thing this library does
+ * over the network.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type OAuthRequirements = Requirements | HttpClient.HttpClient
 
 // -----------------------------------------------------------------------------
 // Composition
 // -----------------------------------------------------------------------------
 
-const compose = <Providers extends ProviderLayers>(
-  config: AuthConfigShape,
-  options: Extras<Providers>
-): Layer.Layer<Services<Providers>, Layer.Error<Providers[number]>, Requirements<Providers>> => {
-  const providers: ProviderLayers = options.providers ?? []
-
-  // Everything that needs nothing but a `SqlClient` and the resolved config.
-  const infrastructure = Layer.mergeAll(
-    Layer.succeed(AuthConfig)(config),
-    SqlStores.layer,
-    tokenLayer,
-    options.passwordHasher ?? layerScrypt(),
-    eventsLayer(
-      options.eventCapacity === undefined ? undefined : { capacity: options.eventCapacity }
-    ),
-    RateLimits.layer,
-    // Checklist item 11: the cookie and authorization headers must never reach
-    // a log line in the clear.
-    AuthCookies.layerRedactedHeaders(options.redactedHeaders ?? [])
-  )
-
-  // `Hmac` keys itself from `AuthConfig.secret`, so it is built on top.
-  const withHmac = hmacLayer.pipe(Layer.provideMerge(infrastructure))
-
-  // `Passwords` needs `Sessions`, so the domain is two tiers.
-  const domain = passwordsLayer.pipe(
+const compose = (
+  config: AuthConfigService,
+  options: Extras
+): Layer.Layer<Services, never, Requirements> =>
+  middlewareLayer.pipe(
+    Layer.provideMerge(passwordsLayer),
+    Layer.provideMerge(Layer.mergeAll(sessionsLayer, accountsLayer)),
     Layer.provideMerge(
-      Layer.mergeAll(sessionsLayer, accountsLayer).pipe(Layer.provideMerge(withHmac))
-    )
+      Layer.mergeAll(
+        Layer.succeed(AuthConfig)(config),
+        SqlStores.layer,
+        eventsLayer(
+          options.eventCapacity === undefined ? undefined : { capacity: options.eventCapacity }
+        ),
+        RateLimits.layer
+      )
+    ),
+    Layer.provide(Layer.mergeAll(tokenLayer, options.passwordHasher ?? layerScrypt())),
+    // Checklist item 11: the cookie and authorization headers must never reach
+    // a log line in the clear. `provideMerge`, not `provide`: this is a
+    // `Context.Reference`, so the names have to survive into the context the
+    // application runs on — `Headers` reads them from the *current* context
+    // when a header set is logged, not from the one this stack was built with.
+    // The layer's `ROut` is `never`, so merging it widens nothing.
+    Layer.provideMerge(AuthCookies.layerRedactedHeaders(options.redactedHeaders ?? []))
   )
 
-  const registry = providers.length === 0
-    ? layerEmpty
-    : layerMerge(providers as ReadonlyArray<Layer.Layer<OAuthProviders, any, any>>)
-
-  // The one branch in this file. With no provider configured the flow is not
-  // built at all, which is precisely what keeps `HttpClient` out of the
-  // requirements — see `Requirements`.
-  const withOAuth: Layer.Layer<any, any, any> = providers.length === 0
-    ? registry
-    : flowLayer.pipe(Layer.provideMerge(registry))
-
-  const stack = middlewareLayer.pipe(
-    Layer.provideMerge(withOAuth.pipe(Layer.provideMerge(domain)))
+const composeWithOAuth = (
+  config: AuthConfigService,
+  options: Extras,
+  providers: ReadonlyArray<OAuthProviderConfig>
+): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
+  middlewareLayer.pipe(
+    Layer.provideMerge(Layer.mergeAll(passwordsLayer, flowLayer)),
+    Layer.provideMerge(Layer.mergeAll(sessionsLayer, accountsLayer)),
+    // The registry is inert data behind a service key, and only the flow reads
+    // it: `provide`, so it never becomes part of this layer's surface.
+    Layer.provide(OAuthProviders.layer(providers)),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Layer.succeed(AuthConfig)(config),
+        SqlStores.layer,
+        eventsLayer(
+          options.eventCapacity === undefined ? undefined : { capacity: options.eventCapacity }
+        ),
+        RateLimits.layer
+      )
+    ),
+    Layer.provide(Layer.mergeAll(tokenLayer, options.passwordHasher ?? layerScrypt())),
+    // See `compose`: the redacted names are a `Context.Reference` and must be
+    // merged, not provided, or the application never sees them.
+    Layer.provideMerge(AuthCookies.layerRedactedHeaders(options.redactedHeaders ?? []))
   )
 
-  // The branch above is invisible to the type checker; `Services` and
-  // `Requirements` describe both of its arms, and the empty-provider arm is the
-  // one that drops `OAuthFlow` and `HttpClient`.
-  return stack as Layer.Layer<
-    Services<Providers>,
-    Layer.Error<Providers[number]>,
-    Requirements<Providers>
-  >
-}
+const resolveConfig: (
+  options: ConfigOptions
+) => Effect.Effect<AuthConfigService, Config.ConfigError> = Effect.fnUntraced(
+  function*(options: ConfigOptions) {
+    return makeAuthConfig({
+      baseUrl: yield* options.baseUrl,
+      secret: yield* options.secret,
+      basePath: options.basePath === undefined ? undefined : yield* options.basePath,
+      trustedOrigins: options.trustedOrigins === undefined ? undefined : yield* options.trustedOrigins,
+      trustedProviders: options.trustedProviders === undefined ? undefined : yield* options.trustedProviders,
+      session: options.session,
+      emailPassword: options.emailPassword,
+      cookie: options.cookie,
+      tokens: options.tokens,
+      rateLimit: options.rateLimit,
+      emailPaths: options.emailPaths
+    })
+  }
+)
 
 // -----------------------------------------------------------------------------
 // Layers
 // -----------------------------------------------------------------------------
 
 /**
- * The batteries-included layer.
+ * The batteries-included layer, without OAuth.
  *
  * **Example**
  *
  * ```ts
  * import { Layer, Redacted } from "effect"
  * import type { SqlClient } from "effect/unstable/sql"
- * import { Auth, AuthEmails, Github } from "effect-auth"
+ * import { Auth, AuthEmails } from "effect-auth"
  *
  * // The two seams an application owns. Declaring them as the services they
  * // actually provide is what makes the `Layer.provide`s below discharge
@@ -263,8 +366,7 @@ const compose = <Providers extends ProviderLayers>(
  * const AuthLive = Auth.layer({
  *   baseUrl: "http://localhost:3000",
  *   secret: Redacted.make("a-32-byte-or-longer-random-string"),
- *   emailPassword: { enabled: true },
- *   providers: [Github.layer({ clientId: "…", clientSecret: Redacted.make("…") })]
+ *   emailPassword: { enabled: true }
  * }).pipe(Layer.provide(PgLive), Layer.provide(MyMailer))
  * ```
  *
@@ -279,10 +381,51 @@ const compose = <Providers extends ProviderLayers>(
  * @category layers
  * @since 1.0.0
  */
-export const layer = <const Providers extends ProviderLayers = readonly []>(
-  options: Options<Providers>
-): Layer.Layer<Services<Providers>, Layer.Error<Providers[number]>, Requirements<Providers>> =>
-  compose<Providers>(makeAuthConfig(options), options)
+export const layer = (options: Options): Layer.Layer<Services, never, Requirements> =>
+  compose(makeAuthConfig(options), options)
+
+/**
+ * {@link layer}, serving the OAuth providers it is given.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Layer, Redacted } from "effect"
+ * import { FetchHttpClient } from "effect/unstable/http"
+ * import type { SqlClient } from "effect/unstable/sql"
+ * import { Auth, AuthEmails, Github, Google } from "effect-auth"
+ *
+ * declare const PgLive: Layer.Layer<SqlClient.SqlClient>
+ * declare const MyMailer: Layer.Layer<AuthEmails.AuthEmails>
+ *
+ * const AuthLive = Auth.layerWithOAuth({
+ *   baseUrl: "https://app.example.com",
+ *   secret: Redacted.make("a-32-byte-or-longer-random-string"),
+ *   emailPassword: { enabled: true },
+ *   providers: [
+ *     Github.make({ clientId: "…", clientSecret: Redacted.make("…") }),
+ *     Google.make({ clientId: "…", clientSecret: Redacted.make("…") })
+ *   ]
+ * }).pipe(
+ *   Layer.provide(PgLive),
+ *   Layer.provide(MyMailer),
+ *   Layer.provide(FetchHttpClient.layer)
+ * )
+ * ```
+ *
+ * **Gotchas**
+ *
+ * The `HttpClient` this needs must not follow redirects — the flow refuses them
+ * twice over, but only one of the two locks applies to a client that followed a
+ * redirect internally before answering. `FetchHttpClient.layer` is fine.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerWithOAuth = (
+  options: OAuthOptions
+): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
+  composeWithOAuth(makeAuthConfig(options), options, options.providers)
 
 /**
  * {@link layer}, with the scalar settings read from `Config`.
@@ -309,30 +452,51 @@ export const layer = <const Providers extends ProviderLayers = readonly []>(
  * @category layers
  * @since 1.0.0
  */
-export const layerConfig = <const Providers extends ProviderLayers = readonly []>(
-  options: ConfigOptions<Providers>
-): Layer.Layer<
-  Services<Providers>,
-  Config.ConfigError | Layer.Error<Providers[number]>,
-  Requirements<Providers>
-> =>
+export const layerConfig = (
+  options: ConfigOptions
+): Layer.Layer<Services, Config.ConfigError, Requirements> =>
+  Layer.unwrap(Effect.map(resolveConfig(options), (config) => compose(config, options)))
+
+/**
+ * {@link layerWithOAuth}, with the settings *and* the provider credentials read
+ * from `Config`.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Config } from "effect"
+ * import { Auth, Github } from "effect-auth"
+ *
+ * const AuthLive = Auth.layerConfigWithOAuth({
+ *   baseUrl: Config.string("BASE_URL"),
+ *   secret: Config.redacted("AUTH_SECRET"),
+ *   emailPassword: { enabled: true },
+ *   providers: [
+ *     Github.makeConfig({
+ *       clientId: Config.string("GITHUB_CLIENT_ID"),
+ *       clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
+ *     })
+ *   ]
+ * })
+ * ```
+ *
+ * **Details**
+ *
+ * Every provider is read before the stack is built, so a missing
+ * `GITHUB_CLIENT_SECRET` is one `ConfigError` at start-up rather than a
+ * provider that answers `UnknownProvider` in production.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerConfigWithOAuth = (
+  options: OAuthConfigOptions
+): Layer.Layer<OAuthServices, Config.ConfigError, OAuthRequirements> =>
   Layer.unwrap(
-    Effect.gen(function*() {
-      const config = makeAuthConfig({
-        baseUrl: yield* options.baseUrl,
-        secret: yield* options.secret,
-        basePath: options.basePath === undefined ? undefined : yield* options.basePath,
-        trustedOrigins: options.trustedOrigins === undefined ? undefined : yield* options.trustedOrigins,
-        trustedProviders: options.trustedProviders === undefined ? undefined : yield* options.trustedProviders,
-        session: options.session,
-        emailPassword: options.emailPassword,
-        cookie: options.cookie,
-        tokens: options.tokens,
-        rateLimit: options.rateLimit,
-        emailPaths: options.emailPaths
-      })
-      return compose<Providers>(config, options)
-    })
+    Effect.map(
+      Effect.all([resolveConfig(options), Effect.all(options.providers)]),
+      ([config, providers]) => composeWithOAuth(config, options, providers)
+    )
   )
 
 /**

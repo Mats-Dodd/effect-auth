@@ -19,7 +19,7 @@
  */
 import { Effect, Option } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
 
 // -----------------------------------------------------------------------------
@@ -76,7 +76,7 @@ export const originOf = (url: string): Option.Option<string> => {
  * @category combinators
  * @since 1.0.0
  */
-export const trustedOrigins = (config: AuthConfigShape): ReadonlySet<string> => {
+export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> => {
   const origins = new Set<string>()
   const base = originOf(config.baseUrl)
   if (Option.isSome(base)) origins.add(base.value)
@@ -93,7 +93,7 @@ export const trustedOrigins = (config: AuthConfigShape): ReadonlySet<string> => 
  * @category guards
  * @since 1.0.0
  */
-export const isTrustedOrigin = (config: AuthConfigShape, origin: string): boolean => {
+export const isTrustedOrigin = (config: AuthConfigService, origin: string): boolean => {
   const parsed = originOf(origin)
   return Option.isSome(parsed) && trustedOrigins(config).has(parsed.value)
 }
@@ -150,7 +150,7 @@ export const isPathRelative = (candidate: string): boolean => {
  * @since 1.0.0
  */
 export const resolveUrl = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   candidate: string | null | undefined
 ): string => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return config.baseUrl
@@ -182,7 +182,7 @@ export const resolveUrl = (
  * @since 1.0.0
  */
 export const validateUrl = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   candidate: string | null | undefined
 ): Option.Option<string> => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return Option.none()
@@ -259,7 +259,7 @@ export const claimedOrigin = (
  * @since 1.0.0
  */
 export const checkOrigin = (
-  config: AuthConfigShape
+  config: AuthConfigService
 ): Effect.Effect<void, Unauthorized, HttpServerRequest.HttpServerRequest> =>
   Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
     if (safeMethods.has(request.method)) return Effect.void

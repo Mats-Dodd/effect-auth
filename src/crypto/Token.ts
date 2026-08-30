@@ -34,12 +34,12 @@ export const tokenBytes = 32
 export const tokenLength = 43
 
 /**
- * Mints and hashes opaque tokens.
+ * The {@link Token} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class Token extends Context.Service<Token, {
+export interface TokenService {
   /**
    * Mints a fresh token: 32 random bytes, base64url encoded, `Redacted` so it
    * cannot be logged on its way to its single recipient.
@@ -57,7 +57,15 @@ export class Token extends Context.Service<Token, {
    * and nothing to precompute.
    */
   readonly hashToken: (token: Redacted.Redacted<string>) => Effect.Effect<string>
-}>()("effect-auth/Token") {}
+}
+
+/**
+ * Mints and hashes opaque tokens. See {@link TokenService}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Token extends Context.Service<Token, TokenService>()("effect-auth/Token") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -87,7 +95,7 @@ const toArrayBuffer = (data: Uint8Array): ArrayBuffer => {
  * @category constructors
  * @since 1.0.0
  */
-export const make = (crypto: Crypto): Token["Service"] =>
+export const make = (crypto: Crypto): TokenService =>
   Token.of({
     generateToken: Effect.sync(() =>
       Redacted.make(Encoding.encodeBase64Url(crypto.getRandomValues(new Uint8Array(tokenBytes))))

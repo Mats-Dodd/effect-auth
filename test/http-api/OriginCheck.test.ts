@@ -16,7 +16,7 @@ import {
 
 const baseUrl = "https://app.example.com"
 
-const config = (trusted: ReadonlyArray<string> = []): AuthConfig.AuthConfigShape =>
+const config = (trusted: ReadonlyArray<string> = []): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl,
     secret: Redacted.make("test-secret"),

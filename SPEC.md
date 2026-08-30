@@ -352,7 +352,8 @@ interface OAuthProviderConfig {
 
 Providers register via `OAuthProviders` service (a keyed record, `Object.create(null)`), each with
 `Github.layer({...})` / `Github.layerConfig({...})` following the AnthropicClient per-field
-Config idiom.
+Config idiom. *(Superseded — see Amendment 4: providers are values,
+`Github.make` / `Github.makeConfig`, registered with `OAuthProviders.layer`.)*
 
 ## Config (src/config)
 
@@ -375,6 +376,10 @@ const AuthLive = Auth.layer({
   providers: [Github.layer({ clientId, clientSecret })],
 }).pipe(Layer.provide(PgLive), Layer.provide(MyMailer))
 ```
+
+*(Superseded — see Amendments 5 and 6. The `providers` option is gone; the OAuth deployment is
+`Auth.layerWithOAuth({ ..., providers: [Github.make({ clientId, clientSecret })] })`, and the set
+of services the layer exposes is narrower than the list above.)*
 
 ## Client (src/client)
 
@@ -458,3 +463,79 @@ raised in review and is recorded here rather than left as a silent difference fr
    retrying the flow resolves as an ordinary sign-in through branch 1 of the linking algorithm.
    Threading a session factory through the linking algorithm to close the window would couple
    `Accounts` to `Sessions` for a case that is already recoverable.
+
+### Tightening refactor (post-v1 API shape)
+
+The four entries below are not deviations from the contract but amendments *to* it: they change
+the shape of the public API, and supersede the corresponding paragraphs in the OAuth and Config
+sections above. Behavior, endpoints, wire format, service keys and security properties are
+unchanged — this was a shape-and-style pass, driven by REFACTOR.md, in which no test assertion
+was weakened.
+
+4. **Providers are values, not layers.** `Github.layer` / `Github.layerConfig` (and Google's
+   equivalents) are gone, together with `Provider.layerEmpty` and `Provider.layerMerge`. An
+   `OAuthProviderConfig` is inert data, so the constructors return it directly:
+   `Github.make(options): OAuthProviderConfig` and
+   `Github.makeConfig(options): Effect<OAuthProviderConfig, ConfigError>` (per-field `Config`
+   values, the same fields as before). Registration is one call —
+   `OAuthProviders.layer(providers): Layer<OAuthProviders>`, a static on the service class, equal
+   to `Layer.succeed(OAuthProviders)(makeRegistry(providers))`. Registry semantics are untouched:
+   null-prototype record, later ids override earlier, `ids` in registration order. This removes
+   the `Layer.build` loop and the cast that stood at Provider.ts:358; the passage above reading
+   "each with `Github.layer({...})` / `Github.layerConfig({...})`" should be read as
+   `Github.make({...})` / `Github.makeConfig({...})`.
+
+5. **Two entry points instead of one shape-shifting layer.** The single `Auth.layer(options)`
+   whose type changed with the emptiness of a `providers` array is replaced by a pair, each with a
+   fully explicit, non-generic signature:
+
+   ```ts
+   Auth.layer(options): Layer<Auth.Services, never, Auth.Requirements>
+   Auth.layerWithOAuth(options): Layer<Auth.OAuthServices, never, Auth.OAuthRequirements>
+   ```
+
+   `Auth.layer` has no `providers` option, provides no `OAuthFlow` and requires no `HttpClient`.
+   `Auth.layerWithOAuth` takes `providers: Auth.ProviderList` — a *non-empty* tuple of
+   `OAuthProviderConfig` values — and adds `OAuthFlow` to what it provides and `HttpClient` to
+   what it requires. `Auth.layerConfig` / `Auth.layerConfigWithOAuth` mirror the split, the latter
+   taking a non-empty tuple of `Effect<OAuthProviderConfig, ConfigError>` (`ProviderConfigList`)
+   composed inside the `Layer.unwrap`. Gone with them: `Auth.ProviderLayers`, the `Providers`
+   generic on `Options` / `Extras` / `Services` / `Requirements`, both conditional types, the
+   `providers.length` runtime branches and the final `as Layer.Layer<...>` cast. The acceptance
+   snippet above is now `Auth.layerWithOAuth({ ..., providers: [Github.make({ clientId,
+   clientSecret })] })`. Optionality is expressed by which function you call, not by a field that
+   mutates a type.
+
+6. **`Services` is narrowed to what a consumer composes against.** `Auth.layer*` exposes
+   `AuthConfig`, `AuthEvents`, the four stores (`UserStore`, `SessionStore`, `AccountStore`,
+   `VerificationStore`), `Sessions`, `Accounts`, `Passwords`, `Authenticated` and
+   `RateLimiter.RateLimiter`; `layerWithOAuth` adds `OAuthFlow`. `Token`, `Hmac`,
+   `PasswordHasher`, `OAuthProviders` and `WithAuthTransaction` are now provided *into* the stack
+   and not out of it — they are implementation detail, replaced through the options rather than by
+   shadowing a layer. `AuthHandlers.layer(api)` provided with either entry point still discharges
+   completely, which is asserted at the type level in `test/config/Auth.types.ts`.
+
+7. **Interface-split convention for every service.** Each `Context.Service` is now a bare key over
+   a named, exported, JSDoc'd interface called `<ClassName>Service`, and every `make` states that
+   interface as its return type: `SessionsService`, `AccountsService`, `PasswordsService`,
+   `AuthEventsService`, `UserStoreService`, `SessionStoreService`, `AccountStoreService`,
+   `VerificationStoreService`, `WithAuthTransactionService`, `PasswordHasherService`,
+   `HmacService`, `TokenService`, `AuthConfigService`, `AuthEmailsService`,
+   `OAuthProvidersService`, `OAuthFlowService`, and `TestEmailsService` in the test harness.
+   `AuthConfigShape` was the one pre-existing name for such a shape and is now spelled
+   `AuthConfigService` throughout. Two services are deliberately outside the convention and say so
+   in their own JSDoc: `CurrentUser` and `CurrentSession` are keyed over the already-exported
+   `User` and `Session` models, so there is no anonymous shape to extract and an alias would only
+   add a second public name for one type. (`Authenticated` is an `HttpApiMiddleware.Service`, not a
+   `Context.Service`; its type argument is a `provides`/`requires` descriptor, not a service
+   shape.) Class names and service key strings are byte-identical to v1.
+
+One consequence worth recording, because it removes something the API previously advertised:
+`AuthHandlers.layer` and `AuthClient.make` now pin `groups.auth` to `typeof AuthApiGroup` rather
+than to `HttpApiGroup.Constraint`, which is what reduces each of them to a single documented
+boundary cast. `HttpApi.prefix` rewrites endpoint paths in the type, so a composed API that was
+re-prefixed no longer satisfies that constraint and is rejected at compile time instead of being
+mis-served. The `/auth` prefix is therefore fixed; serving the endpoints elsewhere is a deployment
+concern (mount the server under a path, or put a rewriting proxy in front of it), and
+`AuthConfig.basePath` remains how the library is told where they are publicly reachable, so
+callback URIs and e-mail links agree with it.

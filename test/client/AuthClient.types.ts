@@ -17,7 +17,7 @@ import type { Atom } from "effect/unstable/reactivity"
 import { AtomHttpApi } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
 import type * as E from "../../src/domain/Errors.js"
-import { AuthApi } from "../../src/http/AuthApi.js"
+import { AuthApi, type AuthApiGroup } from "../../src/http/AuthApi.js"
 
 const S = AtomHttpApi.Service()("x", {
   api: AuthApi,
@@ -90,3 +90,66 @@ const built = <T extends AuthClient.AuthClient>(_: T): void => {}
 built(AuthClient.make({ api: ComposedApi, baseUrl: "http://localhost:3000" }))
 // And the default — no API at all — still infers.
 built(AuthClient.make())
+// As does the standalone auth API.
+built(AuthClient.make({ api: AuthApi }))
+
+// ---------------------------------------------------------------------------
+// Rejected: "generic" is not "anything". `Options.api` pins `groups.auth` to
+// `effect-auth`'s own group, so the loose shapes the old
+// `HttpApiGroup.Constraint` bound admitted no longer reach the one boundary
+// cast in `src/client/AuthClient.ts`. Each `@ts-expect-error` is the test:
+// undo the tightening and these lines stop erroring, which fails `tsc`.
+// ---------------------------------------------------------------------------
+
+/** Somebody else's group, sharing only the name. */
+const Impostor = HttpApiGroup.make("auth").add(
+  HttpApiEndpoint.get("ping", "/ping", { success: Schema.String })
+)
+const ImpostorApi = HttpApi.make("app").add(Impostor)
+
+AuthClient.make({
+  // @ts-expect-error — `groups.auth` is not `typeof AuthApiGroup`; every atom
+  // this client publishes would call an endpoint this API does not declare.
+  api: ImpostorApi
+})
+
+/** No auth group at all. */
+const TodosApi = HttpApi.make("app").add(Todos)
+
+AuthClient.make({
+  // @ts-expect-error — there is no `auth` group to build atoms from.
+  api: TodosApi
+})
+
+// ---------------------------------------------------------------------------
+// The argument each published mutation accepts, checked against the endpoint it
+// is meant to call rather than against the interface that declares it. The
+// wrappers in `AuthClient.make` used to take the underlying atom as
+// `AtomResultFn<any, …>`, which let any atom be paired with any declaration —
+// `verifyEmail` reading a `payload` from an endpoint that has only a `query`
+// would have compiled, and failed on the wire. These pin the pairing.
+// ---------------------------------------------------------------------------
+
+type WriteArg<T> = T extends Atom.Writable<infer _R, infer W> ? Exclude<W, Atom.Reset | Atom.Interrupt> : never
+type AuthEndpoint = HttpApiEndpoint.Identifier<HttpApiGroup.Endpoints<typeof AuthApiGroup>>
+type MutationArg<Endpoint extends AuthEndpoint> = WriteArg<ReturnType<typeof S.mutation<"auth", Endpoint>>>
+
+eq<Exact<WriteArg<AuthClient.AuthClient["signUp"]>, MutationArg<"signUpEmail">["payload"]>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["signIn"]>, MutationArg<"signInEmail">["payload"]>>(true)
+eq<
+  Exact<
+    WriteArg<AuthClient.AuthClient["changePassword"]>,
+    MutationArg<"changePassword">["payload"]
+  >
+>(true)
+eq<
+  Exact<
+    WriteArg<AuthClient.AuthClient["unlinkAccount"]>,
+    MutationArg<"unlinkAccount">["payload"]
+  >
+>(true)
+// The one query-parameter endpoint: its argument is the query, not a payload.
+eq<Exact<WriteArg<AuthClient.AuthClient["verifyEmail"]>, MutationArg<"verifyEmail">["query"]>>(true)
+// And the endpoints that take nothing accept nothing.
+eq<Exact<WriteArg<AuthClient.AuthClient["signOut"]>, void>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["revokeSessions"]>, void>>(true)

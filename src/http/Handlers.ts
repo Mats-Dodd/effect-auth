@@ -32,7 +32,7 @@ import { HttpServerResponse } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
 import { OAuthProviderError } from "../domain/Errors.js"
@@ -65,7 +65,7 @@ import { clientAddress, consumeWith, credentials, email as emailBucket } from ".
  * @since 1.0.0
  */
 export const clientMeta = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   request: HttpServerRequest.HttpServerRequest
 ): { readonly ipAddress: string | null; readonly userAgent: string | null } => ({
   ipAddress: Option.getOrNull(clientAddress(config, request)),
@@ -152,19 +152,38 @@ export type HandlerServices =
  * The routes are read off the group *it* carries, so an API whose prefix was
  * changed after this call would serve the old paths.
  *
+ * Its `auth` group must be {@link AuthApiGroup} itself. Any group set is
+ * accepted around it — that is what the generic is for — but a group merely
+ * *named* `auth`, or `AuthApiGroup` re-prefixed with `HttpApi.prefix` (which
+ * rewrites the endpoint paths in the type), is rejected here rather than
+ * mis-served at runtime.
+ *
  * @category layers
  * @since 1.0.0
  */
 export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
   api:
     & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: HttpApiGroup.Constraint } }
+    & { readonly groups: { readonly auth: typeof AuthApiGroup } }
 ): Layer.Layer<
   HttpApiGroup.Service<ApiId, "auth">,
   never,
   HandlerServices
 > =>
   HttpApiBuilder.group(
+    // The only cast in this module, and the boundary the whole signature exists
+    // to make safe. `HttpApi` is invariant in its group union, so a consumer's
+    // composed API — `HttpApi.make("app").addHttpApi(AuthApi).add(TodosGroup)` —
+    // is not assignable to `HttpApi<ApiId, typeof AuthApiGroup>`, even though it
+    // demonstrably contains that exact group: the parameter's intersection
+    // requires `groups.auth` to *be* `typeof AuthApiGroup`, checked by the
+    // compiler at every call site. `HttpApiBuilder.group` reads nothing but
+    // `api.groups["auth"]` (see its implementation), so narrowing the union it
+    // sees to the one group named here cannot change what runs, and the routes
+    // still come off the consumer's own group value.
+    // (It goes via `unknown` because a one-step conversion is refused:
+    // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
+    // compiler's comparability check.)
     api as unknown as HttpApi.HttpApi<ApiId, typeof AuthApiGroup>,
     "auth",
     (handlers) =>

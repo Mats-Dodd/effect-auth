@@ -496,10 +496,15 @@ export class AuthApiGroup extends HttpApiGroup.make("auth")
  *
  * **Gotchas**
  *
- * The `/auth` prefix is baked into the group. A deployment that wants a
- * different `basePath` must apply `.prefix(...)` to the composed `HttpApi` and
- * set `AuthConfig.basePath` to match, so that the links in outgoing e-mails
- * point at the same place the endpoints are served from.
+ * The `/auth` prefix is baked into the group, and it cannot be changed with
+ * `HttpApi.prefix`: that rewrites the endpoint paths *in the type*, so the
+ * result no longer satisfies the `groups.auth` constraint that
+ * `AuthHandlers.layer` and `AuthClient.make` use to prove they are building
+ * against this group. Serving the endpoints somewhere else is a deployment
+ * concern — mount the whole server under a path, or put a path-rewriting proxy
+ * in front of it — and `AuthConfig.basePath` is how you tell the library where
+ * that is, so the callback URI and the links in outgoing e-mails point at the
+ * same place the endpoints are reachable from.
  *
  * @category models
  * @since 1.0.0

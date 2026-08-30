@@ -4,12 +4,12 @@ Authentication for Effect applications: sessions, e-mail/password and OAuth, bui
 [Effect](https://effect.website) v4 primitives — `Context.Service`, `Layer`, `Schema`, `HttpApi`.
 
 ```ts
-const AuthLive = Auth.layer({
+const AuthLive = Auth.layerWithOAuth({
   baseUrl: "https://app.example.com",
   secret: Redacted.make(process.env.AUTH_SECRET!),
   emailPassword: { enabled: true },
-  providers: [Github.layer({ clientId, clientSecret })]
-}).pipe(Layer.provide(PgLive), Layer.provide(MyMailer))
+  providers: [Github.make({ clientId, clientSecret: Redacted.make(clientSecret) })]
+}).pipe(Layer.provide(PgLive), Layer.provide(MyMailer), Layer.provide(FetchHttpClient.layer))
 ```
 
 That is the whole installation. Eighteen endpoints, an OpenAPI document, a typed client and a
@@ -90,9 +90,40 @@ const ServerLive = HttpApiBuilder.layer(MyApi).pipe(
 ```
 
 `Auth.layer`'s remaining requirements are exactly the two seams you own — a `SqlClient` and an
-`AuthEmails` — plus an `HttpClient` when, and only when, you configure an OAuth provider.
+`AuthEmails`.
 
-`Auth.layerConfig` is the same layer with the scalar settings read from `Config`:
+### OAuth is the other entry point
+
+There is no `providers` option. A deployment that serves social sign-in calls `Auth.layerWithOAuth`
+with a non-empty list of provider **values**, and gets back the same layer plus `OAuthFlow`, minus
+nothing — the only new requirement is an `HttpClient`:
+
+```ts
+import { FetchHttpClient } from "effect/unstable/http"
+import { Auth, Github, Google } from "effect-auth"
+
+const AuthLive = Auth.layerWithOAuth({
+  baseUrl: "https://app.example.com",
+  secret: Redacted.make(process.env.AUTH_SECRET!),
+  emailPassword: { enabled: true, requireEmailVerification: true },
+  providers: [
+    Github.make({ clientId, clientSecret: Redacted.make(githubSecret) }),
+    Google.make({ clientId: googleId, clientSecret: Redacted.make(googleSecret) })
+  ]
+}).pipe(
+  Layer.provide(Migrations.layer.pipe(Layer.provideMerge(PgLive))),
+  Layer.provide(MyMailer),
+  Layer.provide(FetchHttpClient.layer)
+)
+```
+
+Which of the two you call is the whole decision: `Auth.layer` cannot provide an `OAuthFlow` and
+cannot ask you for a transport, and `Auth.layerWithOAuth` cannot be called with an empty list.
+
+### Reading the settings from `Config`
+
+`Auth.layerConfig` and `Auth.layerConfigWithOAuth` are the same two layers with the scalar settings —
+and, for the OAuth one, the provider credentials — read from `Config`:
 
 ```ts
 const AuthLive = Auth.layerConfig({
@@ -100,7 +131,22 @@ const AuthLive = Auth.layerConfig({
   secret: Config.redacted("AUTH_SECRET"),
   emailPassword: { enabled: true }
 })
+
+const AuthWithGithubLive = Auth.layerConfigWithOAuth({
+  baseUrl: Config.string("BASE_URL"),
+  secret: Config.redacted("AUTH_SECRET"),
+  emailPassword: { enabled: true },
+  providers: [
+    Github.makeConfig({
+      clientId: Config.string("GITHUB_CLIENT_ID"),
+      clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
+    })
+  ]
+})
 ```
+
+A missing credential is one `ConfigError` when the layer is built, not a provider that answers
+`UnknownProvider` in production.
 
 ### The mailer
 
@@ -206,12 +252,22 @@ or the browser will drop the session cookie.
 
 ## OAuth
 
+A provider is inert data — an authorization endpoint, a token endpoint, a client id and secret, the
+scopes, and two small functions that turn what the provider hands back into an identity. It is never
+a layer:
+
 ```ts
-providers: [
-  Github.layer({ clientId, clientSecret: Redacted.make(secret) }),
-  Google.layer({ clientId, clientSecret: Redacted.make(secret) })
-]
+Auth.layerWithOAuth({
+  // …
+  providers: [
+    Github.make({ clientId, clientSecret: Redacted.make(secret) }),
+    Google.make({ clientId, clientSecret: Redacted.make(secret) })
+  ]
+})
 ```
+
+`Github.makeConfig` / `Google.makeConfig` are the same constructors reading each field from `Config`,
+for `Auth.layerConfigWithOAuth`.
 
 `POST /sign-in/social` answers `{ url, redirect: true }`; navigate the browser there. The provider
 returns to `GET /auth/callback/:providerId`, which consumes the state, exchanges the code, verifies
@@ -220,7 +276,7 @@ answers a `302` to the validated `callbackURL`. A failure is a `302` to the vali
 a safe code from a closed set — a provider's own error message routinely contains the authorization
 code, so it is never echoed.
 
-`Google.layer({ hostedDomain: "corp.example" })` restricts sign-in to one Workspace domain, and it
+`Google.make({ hostedDomain: "corp.example", … })` restricts sign-in to one Workspace domain, and it
 is enforced twice: the `hd` authorization parameter narrows Google's account chooser, and the `hd`
 claim of the *verified* `id_token` is checked on the way back — the parameter alone is advisory,
 since a caller holding the authorization URL can simply drop it.

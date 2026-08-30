@@ -6,7 +6,7 @@
  * turn what the provider hands back into an identity. Everything else — state,
  * PKCE, the code exchange, `id_token` verification, account linking, the
  * session — is the generic runner in `Flow.ts`, which is why adding a provider
- * is a `layer` call and not a plugin.
+ * is a value in an array and not a plugin.
  *
  * **Details**
  *
@@ -242,12 +242,13 @@ export const providerIssuer = (provider: OAuthProviderConfig): string => provide
 // -----------------------------------------------------------------------------
 
 /**
- * The providers this instance serves, addressed by id.
+ * The {@link OAuthProviders} service definition: the providers this instance
+ * serves, addressed by id.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class OAuthProviders extends Context.Service<OAuthProviders, {
+export interface OAuthProvidersService {
   /**
    * Resolves a provider id that came from a request path or body.
    *
@@ -260,7 +261,34 @@ export class OAuthProviders extends Context.Service<OAuthProviders, {
   readonly find: (id: string) => Option.Option<OAuthProviderConfig>
   /** Every registered id, in registration order. */
   readonly ids: ReadonlyArray<string>
-}>()("effect-auth/OAuthProviders") {}
+}
+
+/**
+ * The providers this instance serves, addressed by id.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvidersService>()(
+  "effect-auth/OAuthProviders"
+) {
+  /**
+   * Provides the registry over a fixed list of providers.
+   *
+   * **When to use**
+   *
+   * This is the only way an `OAuthProviders` is built. A provider is inert data
+   * — `Github.make({...})`, `Google.make({...})` — so a deployment collects the
+   * ones it serves into one array and hands them over here; an empty array is a
+   * legitimate registry whose every lookup answers `UnknownProvider`.
+   *
+   * @category layers
+   * @since 1.0.0
+   */
+  static readonly layer = (
+    providers: ReadonlyArray<OAuthProviderConfig>
+  ): Layer.Layer<OAuthProviders> => Layer.succeed(OAuthProviders)(makeRegistry(providers))
+}
 
 /**
  * Builds a registry over a list of providers.
@@ -279,7 +307,7 @@ export class OAuthProviders extends Context.Service<OAuthProviders, {
  */
 export const makeRegistry = (
   providers: Iterable<OAuthProviderConfig>
-): OAuthProviders["Service"] => {
+): OAuthProvidersService => {
   const byId = Object.create(null) as Record<string, OAuthProviderConfig>
   const ids: Array<string> = []
   for (const provider of providers) {
@@ -298,64 +326,6 @@ export const makeRegistry = (
     ids
   })
 }
-
-/**
- * Provides {@link OAuthProviders} over a fixed list of providers.
- *
- * @category layers
- * @since 1.0.0
- */
-export const layer = (
-  providers: Iterable<OAuthProviderConfig>
-): Layer.Layer<OAuthProviders> => Layer.sync(OAuthProviders, () => makeRegistry(providers))
-
-/**
- * A registry with no providers — the shape `Auth.layer` uses when a consumer
- * configures none, so that the OAuth endpoints answer `UnknownProvider`
- * instead of failing to build.
- *
- * @category layers
- * @since 1.0.0
- */
-export const layerEmpty: Layer.Layer<OAuthProviders> = layer([])
-
-/**
- * Merges several single-provider layers into one registry.
- *
- * **When to use**
- *
- * This is what turns `providers: [Github.layer({...}), Google.layer({...})]`
- * into the one `OAuthProviders` the flow reads. Each provider module's `layer`
- * provides a registry holding just itself; merging them by hand would make the
- * last one win, because they all carry the same service key.
- *
- * **Details**
- *
- * Each layer is built in the merged layer's own scope, so a provider whose
- * construction acquires a resource still releases it with everything else.
- * Later entries override earlier ones on an id collision.
- *
- * @category layers
- * @since 1.0.0
- */
-export const layerMerge = <const Layers extends ReadonlyArray<Layer.Layer<OAuthProviders, any, any>>>(
-  layers: Layers
-): Layer.Layer<OAuthProviders, Layer.Error<Layers[number]>, Layer.Services<Layers[number]>> =>
-  Layer.effect(
-    OAuthProviders,
-    Effect.gen(function*() {
-      const providers: Array<OAuthProviderConfig> = []
-      for (const layer of layers) {
-        const context = yield* Layer.build(layer)
-        const registry = Context.get(context, OAuthProviders)
-        for (const id of registry.ids) {
-          const found = registry.find(id)
-          if (Option.isSome(found)) providers.push(found.value)
-        }
-      }
-      return makeRegistry(providers)
-    })
-  ) as Layer.Layer<OAuthProviders, Layer.Error<Layers[number]>, Layer.Services<Layers[number]>>
 
 /**
  * Builds an {@link OAuthProviderError} without reaching into `domain/Errors.js`
@@ -394,8 +364,8 @@ export interface JsonResponse {
    *
    * **Gotchas**
    *
-   * Every key in here is chosen by the provider. Read it with `Object.hasOwn`
-   * and never enumerate it — see {@link readString}.
+   * Every key in here is chosen by the provider. Read it with an
+   * `Object.hasOwn`-guarded reader and never enumerate it.
    */
   readonly body: unknown
 }

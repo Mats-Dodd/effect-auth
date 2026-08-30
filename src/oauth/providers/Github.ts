@@ -17,9 +17,10 @@
  * @since 1.0.0
  */
 import type { Config, Redacted } from "effect"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
-import { fetchJson, layer as registryLayer, makeRegistry, OAuthProviders, providerError } from "../Provider.js"
+import { fetchJson, providerError } from "../Provider.js"
+import { asRecord } from "../internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -125,11 +126,6 @@ export const selectEmail = (
 // Reading GitHub's JSON
 // -----------------------------------------------------------------------------
 
-const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Readonly<Record<string, unknown>>
-    : null
-
 const readString = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
   if (!Object.hasOwn(record, key)) return null
   const value = record[key]
@@ -210,6 +206,18 @@ export interface Options {
 /**
  * Builds the GitHub provider configuration.
  *
+ * **Example**
+ *
+ * ```ts
+ * import { Redacted } from "effect"
+ * import { Github } from "effect-auth"
+ *
+ * const github = Github.make({
+ *   clientId: "Iv1.0123456789abcdef",
+ *   clientSecret: Redacted.make(process.env.GITHUB_CLIENT_SECRET!)
+ * })
+ * ```
+ *
  * @category constructors
  * @since 1.0.0
  */
@@ -263,38 +271,12 @@ export const make = (options: Options): OAuthProviderConfig => {
 }
 
 /**
- * Registers GitHub.
+ * What GitHub needs, per field, as `Config` values.
  *
- * **Example**
- *
- * ```ts
- * import { Redacted } from "effect"
- * import { Github } from "effect-auth"
- *
- * const provider = Github.layer({
- *   clientId: "Iv1.0123456789abcdef",
- *   clientSecret: Redacted.make(process.env.GITHUB_CLIENT_SECRET!)
- * })
- * ```
- *
- * @category layers
+ * @category models
  * @since 1.0.0
  */
-export const layer = (options: Options): Layer.Layer<OAuthProviders> => registryLayer([make(options)])
-
-/**
- * Registers GitHub, reading its credentials from `Config`.
- *
- * **Gotchas**
- *
- * The secret must come from `Config.redacted`, so that it is a
- * `Redacted<string>` from the moment it leaves the environment and never
- * appears in a log line or a `ConfigError`.
- *
- * @category layers
- * @since 1.0.0
- */
-export const layerConfig = (options: {
+export interface ConfigOptions {
   readonly clientId: Config.Config<string>
   readonly clientSecret: Config.Config<Redacted.Redacted<string>>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
@@ -302,19 +284,33 @@ export const layerConfig = (options: {
   readonly authorizationParams?: Readonly<Record<string, string>> | undefined
   readonly webUrl?: Config.Config<string> | undefined
   readonly apiUrl?: Config.Config<string> | undefined
-}): Layer.Layer<OAuthProviders, Config.ConfigError> =>
-  Layer.effect(
-    OAuthProviders,
-    Effect.gen(function*() {
-      const provider = make({
-        clientId: yield* options.clientId,
-        clientSecret: yield* options.clientSecret,
-        scopes: options.scopes === undefined ? undefined : yield* options.scopes,
-        redirectUri: options.redirectUri === undefined ? undefined : yield* options.redirectUri,
-        authorizationParams: options.authorizationParams,
-        webUrl: options.webUrl === undefined ? undefined : yield* options.webUrl,
-        apiUrl: options.apiUrl === undefined ? undefined : yield* options.apiUrl
-      })
-      return makeRegistry([provider])
+}
+
+/**
+ * Builds the GitHub provider configuration, reading its credentials from
+ * `Config`.
+ *
+ * **Gotchas**
+ *
+ * The secret must come from `Config.redacted`, so that it is a
+ * `Redacted<string>` from the moment it leaves the environment and never
+ * appears in a log line or a `ConfigError`.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeConfig: (
+  options: ConfigOptions
+) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> = Effect.fnUntraced(
+  function*(options: ConfigOptions) {
+    return make({
+      clientId: yield* options.clientId,
+      clientSecret: yield* options.clientSecret,
+      scopes: options.scopes === undefined ? undefined : yield* options.scopes,
+      redirectUri: options.redirectUri === undefined ? undefined : yield* options.redirectUri,
+      authorizationParams: options.authorizationParams,
+      webUrl: options.webUrl === undefined ? undefined : yield* options.webUrl,
+      apiUrl: options.apiUrl === undefined ? undefined : yield* options.apiUrl
     })
-  )
+  }
+)

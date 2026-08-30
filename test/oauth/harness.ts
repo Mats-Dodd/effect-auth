@@ -12,7 +12,7 @@ import { layer as sessionsLayer } from "../../src/domain/Sessions.js"
 import { layer as tokenLayer } from "../../src/crypto/Token.js"
 import * as Flow from "../../src/oauth/Flow.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../../src/oauth/Provider.js"
-import { fetchJson, layer as providersLayer, providerError } from "../../src/oauth/Provider.js"
+import { fetchJson, OAuthProviders, providerError } from "../../src/oauth/Provider.js"
 import * as Migrations from "../../src/sql/Migrations.js"
 import * as SqlStores from "../../src/sql/SqlStores.js"
 
@@ -286,7 +286,7 @@ export const flowLayer = (options: {
     authConfigLayer(config),
     tokenLayer,
     authEventsLayer(),
-    providersLayer(options.providers),
+    OAuthProviders.layer(options.providers),
     httpLayer(options.fetch)
   )
   const domain = Layer.mergeAll(sessionsLayer, accountsLayer).pipe(

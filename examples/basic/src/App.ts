@@ -10,7 +10,7 @@ import { Layer, Redacted } from "effect"
 import { FileSystem, Path } from "effect"
 import { Etag, FetchHttpClient, HttpPlatform } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { Auth, AuthHandlers, Migrations } from "effect-auth"
+import { Auth, AuthHandlers, Github, Migrations } from "effect-auth"
 import { AppApi } from "./Api.js"
 import * as Mailer from "./Mailer.js"
 import * as Todos from "./Todos.js"
@@ -39,21 +39,56 @@ export const DatabaseLive = Migrations.layer.pipe(
 /**
  * `effect-auth`, configured.
  *
- * Its remaining requirements are exactly the two seams an application owns —
- * the database and the mailer — plus an `HttpClient`, which is only needed
- * because an OAuth provider could be configured here. Uncomment the
- * `providers` line and the GitHub endpoints start working; nothing else in
- * this file changes.
+ * Its remaining requirements are exactly the two seams an application owns: the
+ * database and the mailer. No OAuth provider is configured here, so this is
+ * `Auth.layer` — the entry point that neither provides an `OAuthFlow` nor asks
+ * for an `HttpClient`.
+ *
+ * **When to use**
+ *
+ * To serve GitHub sign-in, swap this whole binding for the {@link AuthWithGithubLive}
+ * below. That is the entire change: providers are values, and which entry point
+ * you call is what decides whether the flow exists.
  */
 export const AuthLive = Auth.layer({
   baseUrl,
   secret: Redacted.make(process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production"),
   emailPassword: { enabled: true, requireEmailVerification: false },
-  // providers: [Github.layer({ clientId, clientSecret })],
   trustedOrigins: [baseUrl]
 }).pipe(
   Layer.provide(DatabaseLive),
   Layer.provide(Mailer.layer)
+)
+
+/**
+ * The same deployment with GitHub sign-in switched on.
+ *
+ * **Details**
+ *
+ * The difference from {@link AuthLive} is the entry point and the `providers`
+ * array — a provider is a value, so nothing about it is a layer. In exchange
+ * this layer provides `OAuthFlow` (which is what makes the three social
+ * endpoints answer) and requires an `HttpClient`, provided here.
+ *
+ * **Gotchas**
+ *
+ * The transport must not follow redirects. `FetchHttpClient.layer` does not.
+ */
+export const AuthWithGithubLive = Auth.layerWithOAuth({
+  baseUrl,
+  secret: Redacted.make(process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production"),
+  emailPassword: { enabled: true, requireEmailVerification: false },
+  trustedOrigins: [baseUrl],
+  providers: [
+    Github.make({
+      clientId: process.env["GITHUB_CLIENT_ID"] ?? "example-github-client-id",
+      clientSecret: Redacted.make(process.env["GITHUB_CLIENT_SECRET"] ?? "example-github-client-secret")
+    })
+  ]
+}).pipe(
+  Layer.provide(DatabaseLive),
+  Layer.provide(Mailer.layer),
+  Layer.provide(FetchHttpClient.layer)
 )
 
 /**
@@ -65,12 +100,13 @@ const PlatformLive = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.lay
 
 /**
  * Both groups of handlers, over the configured library.
+ *
+ * `AuthLive` discharges `AuthHandlers.layer`'s requirements completely — swap
+ * in {@link AuthWithGithubLive} and it still does, because the OAuth flow is a
+ * service the handlers look up optionally rather than one they require.
  */
 export const HandlersLive = Layer.mergeAll(AuthHandlers.layer(AppApi), Todos.layer).pipe(
-  Layer.provide(AuthLive),
-  // Only OAuth needs it, and only when a provider is configured — but wiring it
-  // in now means uncommenting the `providers` line above is the whole change.
-  Layer.provide(FetchHttpClient.layer)
+  Layer.provide(AuthLive)
 )
 
 /**

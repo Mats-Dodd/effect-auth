@@ -24,7 +24,7 @@
  * @since 1.0.0
  */
 import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
-import type { AuthConfigShape } from "../config/AuthConfig.js"
+import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
 import { NotFound, SessionExpired, SessionNotFresh, Unauthorized } from "./Errors.js"
@@ -123,7 +123,7 @@ export interface VerifiedSession {
  * @category combinators
  * @since 1.0.0
  */
-export const grantedLifetime = (session: Session, config: AuthConfigShape): Duration.Duration => {
+export const grantedLifetime = (session: Session, config: AuthConfigService): Duration.Duration => {
   const millis = DateTime.toEpochMillis(session.expiresAt) - DateTime.toEpochMillis(session.updatedAt)
   return millis > 0 ? Duration.millis(millis) : config.session.expiresIn
 }
@@ -135,7 +135,7 @@ export const grantedLifetime = (session: Session, config: AuthConfigShape): Dura
  * @category combinators
  * @since 1.0.0
  */
-export const refreshDueAt = (session: Session, config: AuthConfigShape): DateTime.Utc =>
+export const refreshDueAt = (session: Session, config: AuthConfigService): DateTime.Utc =>
   DateTime.addDuration(
     DateTime.subtractDuration(session.expiresAt, grantedLifetime(session, config)),
     config.session.updateAge
@@ -147,7 +147,7 @@ export const refreshDueAt = (session: Session, config: AuthConfigShape): DateTim
  * @category guards
  * @since 1.0.0
  */
-export const isRefreshDue = (session: Session, config: AuthConfigShape, now: DateTime.Utc): boolean =>
+export const isRefreshDue = (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
   DateTime.isLessThanOrEqualTo(refreshDueAt(session, config), now)
 
 /**
@@ -165,7 +165,7 @@ export const isExpired = (session: Session, now: DateTime.Utc): boolean =>
  * @category guards
  * @since 1.0.0
  */
-export const isFreshAt = (session: Session, config: AuthConfigShape, now: DateTime.Utc): boolean =>
+export const isFreshAt = (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
   DateTime.isGreaterThan(DateTime.addDuration(session.createdAt, config.session.freshAge), now)
 
 // -----------------------------------------------------------------------------
@@ -173,12 +173,12 @@ export const isFreshAt = (session: Session, config: AuthConfigShape, now: DateTi
 // -----------------------------------------------------------------------------
 
 /**
- * The session lifecycle service.
+ * The {@link Sessions} service definition.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class Sessions extends Context.Service<Sessions, {
+export interface SessionsService {
   /**
    * Mints a session for a user and returns it together with its raw token.
    *
@@ -258,7 +258,15 @@ export class Sessions extends Context.Service<Sessions, {
    * the guard behind change-password and account unlinking.
    */
   readonly requireFresh: (session: Session) => Effect.Effect<void, SessionNotFresh>
-}>()("effect-auth/Sessions") {}
+}
+
+/**
+ * The session lifecycle service.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/Sessions") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -271,7 +279,11 @@ export class Sessions extends Context.Service<Sessions, {
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*() {
+export const make: () => Effect.Effect<
+  SessionsService,
+  never,
+  AuthConfig | Token | SessionStore | AuthEvents
+> = Effect.fnUntraced(function*() {
   const config = yield* AuthConfig
   const tokens = yield* Token
   const store = yield* SessionStore

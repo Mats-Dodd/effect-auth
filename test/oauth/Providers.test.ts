@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { DateTime, Effect, Redacted } from "effect"
+import { Config, ConfigProvider, DateTime, Effect, Redacted } from "effect"
 import type { IdTokenClaims } from "../../src/oauth/IdToken.js"
 import { providerIssuer } from "../../src/oauth/Provider.js"
 import * as Github from "../../src/oauth/providers/Github.js"
@@ -121,6 +121,37 @@ describe("oauth/providers/Github", () => {
       assert.strictEqual(enterprise.authorizationUrl, "https://github.acme.internal/login/oauth/authorize")
       assert.deepStrictEqual([...enterprise.scopes], ["read:user", "user:email", "repo"])
     })
+  })
+
+  describe("makeConfig", () => {
+    it.effect("builds the same value from the environment", () =>
+      Effect.gen(function*() {
+        const provider = yield* Github.makeConfig({
+          clientId: Config.string("GITHUB_CLIENT_ID"),
+          clientSecret: Config.redacted("GITHUB_CLIENT_SECRET"),
+          webUrl: Config.string("GITHUB_WEB_URL")
+        })
+        assert.strictEqual(provider.id, "github")
+        assert.strictEqual(provider.clientId, "Iv1.from-the-environment")
+        // The secret is `Redacted` from the moment it leaves the environment.
+        assert.strictEqual(Redacted.value(provider.clientSecret), "github-secret-from-the-environment")
+        assert.strictEqual(provider.authorizationUrl, "https://github.acme.internal/login/oauth/authorize")
+      }).pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+          GITHUB_CLIENT_ID: "Iv1.from-the-environment",
+          GITHUB_CLIENT_SECRET: "github-secret-from-the-environment",
+          GITHUB_WEB_URL: "https://github.acme.internal"
+        })))
+      ))
+
+    it.effect("fails rather than defaulting when a credential is absent", () =>
+      Effect.gen(function*() {
+        const result = yield* Effect.result(Github.makeConfig({
+          clientId: Config.string("GITHUB_CLIENT_ID"),
+          clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
+        }))
+        assert.strictEqual(result._tag, "Failure")
+      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({})))))
   })
 
   describe("userInfo", () => {
@@ -326,6 +357,26 @@ describe("oauth/providers/Google", () => {
       assert.strictEqual(server.requests.length, 0)
     }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
   })
+
+  it.effect("builds the same value from the environment", () =>
+    Effect.gen(function*() {
+      const provider = yield* Google.makeConfig({
+        clientId: Config.string("GOOGLE_CLIENT_ID"),
+        clientSecret: Config.redacted("GOOGLE_CLIENT_SECRET"),
+        hostedDomain: Config.string("GOOGLE_HOSTED_DOMAIN")
+      })
+      assert.strictEqual(provider.id, "google")
+      assert.strictEqual(provider.clientId, "0123.from-the-environment")
+      assert.strictEqual(Redacted.value(provider.clientSecret), "google-secret-from-the-environment")
+      assert.strictEqual(provider.issuer, "https://accounts.google.com")
+      assert.strictEqual(provider.authorizationParams?.hd, "acme.test")
+    }).pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+        GOOGLE_CLIENT_ID: "0123.from-the-environment",
+        GOOGLE_CLIENT_SECRET: "google-secret-from-the-environment",
+        GOOGLE_HOSTED_DOMAIN: "acme.test"
+      })))
+    ))
 
   it.effect("fails closed when the flow handed it no verified claims", () => {
     const server = mockServer()

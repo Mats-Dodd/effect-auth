@@ -24,7 +24,6 @@
 import { DateTime, Effect, Redacted } from "effect"
 import type { JWTPayload, JWTVerifyGetKey } from "jose"
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose"
-import type { OAuthProviderError } from "../domain/Errors.js"
 import { OAuthProviderError as ProviderError } from "../domain/Errors.js"
 
 // -----------------------------------------------------------------------------
@@ -260,11 +259,3 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   }
   return claims
 })
-
-/**
- * The type {@link verify} answers with.
- *
- * @category models
- * @since 1.0.0
- */
-export type Verified = Effect.Effect<IdTokenClaims, OAuthProviderError>

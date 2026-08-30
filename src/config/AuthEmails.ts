@@ -25,7 +25,7 @@ import type { Effect } from "effect"
 import { Context, Redacted } from "effect"
 import type { EmailDeliveryError } from "../domain/Errors.js"
 import type { User } from "../domain/Schema.js"
-import type { AuthConfigShape } from "./AuthConfig.js"
+import type { AuthConfigService } from "./AuthConfig.js"
 
 /**
  * What an outgoing authentication e-mail carries.
@@ -57,7 +57,8 @@ export interface AuthEmail {
 }
 
 /**
- * The service an application implements to deliver authentication e-mails.
+ * The {@link AuthEmails} service definition — what an application implements to
+ * deliver authentication e-mails.
  *
  * **Details**
  *
@@ -65,10 +66,10 @@ export interface AuthEmail {
  * them still answer `200` — whether an address exists must not be observable —
  * so a failure is a signal for your logs, not for the caller.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class AuthEmails extends Context.Service<AuthEmails, {
+export interface AuthEmailsService {
   /**
    * Sends the "confirm your address" message.
    */
@@ -78,7 +79,16 @@ export class AuthEmails extends Context.Service<AuthEmails, {
    * Sends the "reset your password" message.
    */
   readonly sendPasswordReset: (email: AuthEmail) => Effect.Effect<void, EmailDeliveryError>
-}>()("effect-auth/AuthEmails") {}
+}
+
+/**
+ * The service an application implements to deliver authentication e-mails. See
+ * {@link AuthEmailsService}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class AuthEmails extends Context.Service<AuthEmails, AuthEmailsService>()("effect-auth/AuthEmails") {}
 
 /**
  * Builds a link to `path` under the configured `baseUrl` carrying `token` in
@@ -88,7 +98,7 @@ export class AuthEmails extends Context.Service<AuthEmails, {
  * @since 1.0.0
  */
 export const tokenUrl = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   path: string,
   token: Redacted.Redacted<string>
 ): Redacted.Redacted<string> => {
@@ -104,7 +114,7 @@ export const tokenUrl = (
  * @since 1.0.0
  */
 export const verifyEmailUrl = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   token: Redacted.Redacted<string>
 ): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.verifyEmail, token)
 
@@ -115,6 +125,6 @@ export const verifyEmailUrl = (
  * @since 1.0.0
  */
 export const resetPasswordUrl = (
-  config: AuthConfigShape,
+  config: AuthConfigService,
   token: Redacted.Redacted<string>
 ): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.resetPassword, token)

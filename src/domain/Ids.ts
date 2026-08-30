@@ -24,7 +24,7 @@
  * @since 1.0.0
  */
 import { Effect } from "effect"
-import type { AccountId, SessionId, UserId, VerificationId } from "./Schema.js"
+import type { AccountId, SessionId, UserId } from "./Schema.js"
 
 /**
  * The largest timestamp a UUIDv7 can carry: 48 bits of milliseconds, which runs
@@ -141,11 +141,3 @@ export const sessionId: Effect.Effect<SessionId> = Effect.map(uuidV7, (id) => id
  * @since 1.0.0
  */
 export const accountId: Effect.Effect<AccountId> = Effect.map(uuidV7, (id) => id as AccountId)
-
-/**
- * A fresh {@link VerificationId}.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const verificationId: Effect.Effect<VerificationId> = Effect.map(uuidV7, (id) => id as VerificationId)

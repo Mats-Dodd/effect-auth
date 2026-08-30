@@ -3,9 +3,6 @@ import { Effect, Option, Redacted } from "effect"
 import {
   fetchJson,
   isOidc,
-  layer as providersLayer,
-  layerEmpty,
-  layerMerge,
   makeRegistry,
   OAuthProviders,
   providerIssuer,
@@ -66,22 +63,22 @@ describe("oauth/Provider", () => {
         assert.deepStrictEqual([...registry.ids], [])
         const result = yield* Effect.result(registry.get("github"))
         assert.strictEqual(result._tag, "Failure")
-      }).pipe(Effect.provide(layerEmpty)))
+      }).pipe(Effect.provide(OAuthProviders.layer([]))))
 
-    it.effect("merges one-provider layers into a single registry", () =>
+    it.effect("gathers several provider values into a single registry", () =>
       Effect.gen(function*() {
         const registry = yield* OAuthProviders
         assert.deepStrictEqual([...registry.ids], ["github", "google"])
-      }).pipe(Effect.provide(layerMerge([Github.layer({
-        clientId: "id",
-        clientSecret: Redacted.make("secret")
-      }), Google.layer({ clientId: "id", clientSecret: Redacted.make("secret") })]))))
+      }).pipe(Effect.provide(OAuthProviders.layer([
+        Github.make({ clientId: "id", clientSecret: Redacted.make("secret") }),
+        Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
+      ]))))
 
-    it.effect("keeps a single-provider layer usable on its own", () =>
+    it.effect("keeps a single-provider registry usable on its own", () =>
       Effect.gen(function*() {
         const registry = yield* OAuthProviders
         assert.deepStrictEqual([...registry.ids], ["mock"])
-      }).pipe(Effect.provide(providersLayer([mockProvider()]))))
+      }).pipe(Effect.provide(OAuthProviders.layer([mockProvider()]))))
   })
 
   describe("issuers", () => {

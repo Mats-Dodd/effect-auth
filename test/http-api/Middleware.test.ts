@@ -7,7 +7,7 @@ import { SessionNotFresh } from "../../src/domain/Errors.js"
 import { Session, SessionId, UserId } from "../../src/domain/Schema.js"
 import { Authenticated, CurrentSession, CurrentUser, requireFresh } from "../../src/http/Middleware.js"
 
-const configWith = (freshAge: Duration.Duration): AuthConfig.AuthConfigShape =>
+const configWith = (freshAge: Duration.Duration): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl: "https://app.example.com",
     secret: Redacted.make("test-secret"),

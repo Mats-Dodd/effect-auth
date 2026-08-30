@@ -35,6 +35,10 @@ import {
  * all available — enough for the freshness guard and for "revoke every session
  * but this one".
  *
+ * The interface-split convention is already satisfied without a
+ * `CurrentSessionService` alias: the shape is the exported `Session` model, so
+ * the class here is nothing but the key.
+ *
  * @category services
  * @since 1.0.0
  */
@@ -50,6 +54,9 @@ export class CurrentSession extends Context.Service<CurrentSession, Session>()(
  * Provided by {@link Authenticated} alongside {@link CurrentSession}; the two
  * are read in one query. A future authorization middleware can `require` these
  * two keys as its principal without `effect-auth` growing a policy concept.
+ *
+ * As with {@link CurrentSession}, the shape is the exported `User` model rather
+ * than an inline one, so there is nothing to extract.
  *
  * @category services
  * @since 1.0.0

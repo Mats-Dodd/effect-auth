@@ -39,7 +39,7 @@
  *
  * @since 1.0.0
  */
-import type { Layer as LayerType, Record, Redacted } from "effect"
+import type { Record, Redacted } from "effect"
 import { Effect, Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http"
@@ -240,9 +240,8 @@ export interface Options<
   readonly baseUrl?: string | URL | undefined
   /**
    * The API to generate the client from. Defaults to {@link AuthApi}. Supply
-   * the application's own composed API when it re-prefixed the auth group, or
-   * simply to keep one API value in the codebase — the paths this client calls
-   * must be the ones the server serves.
+   * the application's own composed API to keep one API value in the codebase —
+   * the paths this client calls must be the ones the server serves.
    *
    * **Gotchas**
    *
@@ -250,20 +249,24 @@ export interface Options<
    * .addHttpApi(AuthApi).add(TodosGroup)` — is not assignable to a parameter
    * fixed at `AuthApi`'s groups. Which is why this option is generic, exactly
    * as `AuthHandlers.layer` is on the server: the group set is inferred from
-   * what is passed, and only the `auth` group is required to be present. The
-   * atoms below stay typed by `effect-auth`'s own group either way.
+   * what is passed, and only `groups.auth` is constrained. It is constrained to
+   * `effect-auth`'s own group, though, not merely to *a* group under that name,
+   * so an API that re-declares `auth` — or one whose auth group carries a
+   * different prefix, since `HttpApi.prefix` rewrites the endpoint paths in the
+   * type — is rejected here rather than at the first mismatched request. The
+   * atoms below stay typed by that group either way.
    */
   readonly api?:
     | (
       & HttpApi.HttpApi<ApiId, Groups>
-      & { readonly groups: { readonly auth: HttpApiGroup.Constraint } }
+      & { readonly groups: { readonly auth: typeof AuthApiGroup } }
     )
     | undefined
   /**
    * The transport. Defaults to `fetch` with the {@link Options.credentials}
    * setting applied. Replace it in tests, or to add retries and tracing.
    */
-  readonly httpClient?: LayerType.Layer<HttpClient.HttpClient> | undefined
+  readonly httpClient?: Layer.Layer<HttpClient.HttpClient> | undefined
   /**
    * The `fetch` credentials mode, defaulting to `"include"` so that the session
    * cookie is sent on cross-origin requests too. Ignored when
@@ -460,9 +463,21 @@ export const make = <
   })
 
   const service = AtomHttpApi.Service()(serviceId, {
-    // The generic parameter above admits any API that carries an `auth` group;
-    // the atoms this module publishes describe that one group, and reaching a
-    // consumer's other groups is what `client.service` is for.
+    // The only cast in this module, and the boundary the `Options.api` signature
+    // exists to make safe. `HttpApi` is invariant in its group union, so a
+    // consumer's composed API is not assignable to `HttpApi<string, typeof
+    // AuthApiGroup>` even though `Options.api` has already forced the compiler
+    // to prove that its `groups.auth` *is* `typeof AuthApiGroup`. Narrowing the
+    // union to that one group only removes groups this module never names: every
+    // `service.query`/`service.mutation` call below asks for `"auth"`, and
+    // `AtomHttpApi` derives its paths from `api.groups[group]`, so the requests
+    // issued are the ones the consumer's own auth group declares, prefix
+    // included. A consumer reaching its *other* groups builds its own client;
+    // that is what `AuthClient.service` documents.
+    //
+    // (It goes via `unknown` because a one-step conversion is refused:
+    // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
+    // compiler's comparability check.)
     api: (options?.api ?? AuthApi) as unknown as HttpApi.HttpApi<string, typeof AuthApiGroup>,
     httpClient: Layer.merge(httpClient, forClient),
     baseUrl: options?.baseUrl,
@@ -580,7 +595,7 @@ export const navigate = (url: string): Effect.Effect<void> =>
 // internal
 // -----------------------------------------------------------------------------
 
-const layerFetch = (credentials: RequestCredentials): LayerType.Layer<HttpClient.HttpClient> =>
+const layerFetch = (credentials: RequestCredentials): Layer.Layer<HttpClient.HttpClient> =>
   Layer.provide(
     FetchHttpClient.layer,
     Layer.succeed(FetchHttpClient.RequestInit, { credentials })
@@ -589,21 +604,41 @@ const layerFetch = (credentials: RequestCredentials): LayerType.Layer<HttpClient
 const isControl = (u: unknown): u is Atom.Reset | Atom.Interrupt => u === Atom.Reset || u === Atom.Interrupt
 
 /**
+ * The part of a mutation atom's argument every wrapper below writes.
+ *
+ * `AtomHttpApi.mutation` computes its argument as
+ * `Simplify<ClientRequest<…> & { reactivityKeys?: … }>`, which names nothing
+ * that can be written down here. It does not have to be: an `AtomResultFn` is
+ * contravariant in its argument, so a wrapper that declares only the fields it
+ * writes accepts exactly those atoms whose request those fields satisfy — an
+ * endpoint with a required `params` or `query` is rejected at the call site
+ * rather than at runtime, which is what the `any` this replaced gave away.
+ */
+interface Keyed {
+  readonly reactivityKeys?: ReactivityKeys | undefined
+}
+
+/** A mutation whose request carries a payload and nothing else required. */
+interface PayloadRequest<P> extends Keyed {
+  readonly payload: P
+}
+
+/** A mutation whose request carries query parameters and nothing else required. */
+interface QueryRequest<Q> extends Keyed {
+  readonly query: Q
+}
+
+/**
  * Rewrites a mutation atom's argument.
  *
  * `AtomHttpApi.mutation` takes the whole client request plus the reactivity
  * keys; a caller should pass the payload and nothing else, with the keys of the
  * endpoint baked in. The wrapper reads the underlying atom — so it holds the
  * same `AsyncResult` — and translates writes.
- *
- * The underlying atom is typed `any` on purpose: `AtomHttpApi` computes the
- * argument as `Simplify<ClientRequest<…> & { reactivityKeys?: … }>`, which does
- * not spell out to anything nameable here. The three wrappers below are the
- * only callers, and each one's public signature is exact.
  */
-const rewrite = <Arg, A, E>(
-  self: Atom.AtomResultFn<any, A, E>,
-  encode: (arg: Arg) => unknown
+const rewrite = <Req, Arg, A, E>(
+  self: Atom.AtomResultFn<Req, A, E>,
+  encode: (arg: Arg) => Req
 ): Atom.AtomResultFn<Arg, A, E> =>
   Atom.writable<AsyncResult.AsyncResult<A, E>, Arg | Atom.Reset | Atom.Interrupt>(
     (get) => get(self),
@@ -614,17 +649,19 @@ const rewrite = <Arg, A, E>(
 
 const withPayload = <P>() =>
 <A, E>(
-  self: Atom.AtomResultFn<any, A, E>,
+  self: Atom.AtomResultFn<PayloadRequest<P>, A, E>,
   reactivityKeys: ReactivityKeys | undefined
-): Atom.AtomResultFn<P, A, E> => rewrite<P, A, E>(self, (payload) => ({ payload, reactivityKeys }))
+): Atom.AtomResultFn<P, A, E> =>
+  rewrite<PayloadRequest<P>, P, A, E>(self, (payload) => ({ payload, reactivityKeys }))
 
 const withQuery = <Q>() =>
 <A, E>(
-  self: Atom.AtomResultFn<any, A, E>,
+  self: Atom.AtomResultFn<QueryRequest<Q>, A, E>,
   reactivityKeys: ReactivityKeys | undefined
-): Atom.AtomResultFn<Q, A, E> => rewrite<Q, A, E>(self, (query) => ({ query, reactivityKeys }))
+): Atom.AtomResultFn<Q, A, E> =>
+  rewrite<QueryRequest<Q>, Q, A, E>(self, (query) => ({ query, reactivityKeys }))
 
 const withoutPayload = <A, E>(
-  self: Atom.AtomResultFn<any, A, E>,
+  self: Atom.AtomResultFn<Keyed, A, E>,
   reactivityKeys: ReactivityKeys | undefined
-): Atom.AtomResultFn<void, A, E> => rewrite<void, A, E>(self, () => ({ reactivityKeys }))
+): Atom.AtomResultFn<void, A, E> => rewrite<Keyed, void, A, E>(self, () => ({ reactivityKeys }))

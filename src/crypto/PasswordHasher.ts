@@ -21,7 +21,7 @@ import { Context, Effect, Encoding, Layer, Redacted, Result } from "effect"
 import { PasswordHashError } from "../domain/Errors.js"
 
 /**
- * Hashes and verifies passwords.
+ * The {@link PasswordHasher} service definition.
  *
  * **Details**
  *
@@ -29,10 +29,10 @@ import { PasswordHashError } from "../domain/Errors.js"
  * printed by a log line, a `toString`, or an error report. Implementations
  * unwrap it immediately before handing the bytes to the KDF.
  *
- * @category services
+ * @category models
  * @since 1.0.0
  */
-export class PasswordHasher extends Context.Service<PasswordHasher, {
+export interface PasswordHasherService {
   /**
    * Derives a hash for a new password, with a fresh random salt.
    */
@@ -54,7 +54,17 @@ export class PasswordHasher extends Context.Service<PasswordHasher, {
     password: Redacted.Redacted<string>,
     hash: string
   ) => Effect.Effect<boolean, PasswordHashError>
-}>()("effect-auth/PasswordHasher") {}
+}
+
+/**
+ * Hashes and verifies passwords. See {@link PasswordHasherService}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class PasswordHasher
+  extends Context.Service<PasswordHasher, PasswordHasherService>()("effect-auth/PasswordHasher")
+{}
 
 // -----------------------------------------------------------------------------
 // Parameters
@@ -460,7 +470,7 @@ export const verifyHash = (
  * @category constructors
  * @since 1.0.0
  */
-export const makeScrypt = (crypto: Crypto, options?: ScryptOptions): PasswordHasher["Service"] => {
+export const makeScrypt = (crypto: Crypto, options?: ScryptOptions): PasswordHasherService => {
   const params: ScryptParams = {
     N: options?.N ?? defaultScryptOptions.N,
     r: options?.r ?? defaultScryptOptions.r,
@@ -485,7 +495,7 @@ export const makeScrypt = (crypto: Crypto, options?: ScryptOptions): PasswordHas
  * @category constructors
  * @since 1.0.0
  */
-export const makePbkdf2 = (crypto: Crypto, options?: Pbkdf2Options): PasswordHasher["Service"] => {
+export const makePbkdf2 = (crypto: Crypto, options?: Pbkdf2Options): PasswordHasherService => {
   const params: Pbkdf2Params = {
     iterations: options?.iterations ?? defaultPbkdf2Options.iterations,
     dkLen: options?.dkLen ?? defaultPbkdf2Options.dkLen
