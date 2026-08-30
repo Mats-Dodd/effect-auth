@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest"
+import { assert, describe, it, layer } from "@effect/vitest"
 import { Duration, Effect, Layer, Option, Redacted } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
@@ -66,14 +66,28 @@ const brokenLimiter = Layer.succeed(RateLimiter.RateLimiter)({
   adaptiveFeedback: () => Effect.die("unused")
 })
 
-const consuming = (
-  bucket: typeof credentials,
-  options?: Parameters<typeof request>[0],
-  layers?: Layer.Layer<AuthConfig.AuthConfig | RateLimiter.RateLimiter>
-) =>
+/**
+ * A deployment with real counters.
+ *
+ * `Layer.fresh` matters: a nested `it.layer` forks its parent's memo map and
+ * memoises by object identity, so without it a variant sub-block would be
+ * handed the counters the enclosing block had already spent.
+ */
+const counting = (rateLimit?: Parameters<typeof configLayer>[0]) =>
+  Layer.mergeAll(configLayer(rateLimit), Layer.fresh(rateLimiterLayer))
+
+/** A deployment whose counters always fault. */
+const faulting = (rateLimit?: Parameters<typeof configLayer>[0]) =>
+  Layer.mergeAll(configLayer(rateLimit), brokenLimiter)
+
+/**
+ * One consumption of `bucket` by the caller `options` describes, as a Result —
+ * the block's layer supplies the configuration and the counters, so repeated
+ * calls inside a test spend the *same* counter.
+ */
+const attempt = (bucket: typeof credentials, options?: Parameters<typeof request>[0]) =>
   Effect.result(consume(bucket)).pipe(
-    Effect.provideService(HttpServerRequest.HttpServerRequest, request(options)),
-    Effect.provide(layers ?? Layer.mergeAll(configLayer(), rateLimiterLayer))
+    Effect.provideService(HttpServerRequest.HttpServerRequest, request(options))
   )
 
 describe("http/RateLimits", () => {
@@ -138,103 +152,107 @@ describe("http/RateLimits", () => {
       assert.strictEqual(retryAfterSeconds(Duration.seconds(10)), 10)
     })
   })
+})
 
-  describe("consume", () => {
-    it.effect("allows the configured number of attempts and then refuses", () =>
-      Effect.gen(function*() {
-        const headers = { "x-forwarded-for": "203.0.113.7" }
-        const layers = Layer.mergeAll(configLayer(), rateLimiterLayer)
-        const shared = yield* Layer.build(layers)
+// The counters are shared by every test in the block, so each of these claims a
+// client address of its own — which is also what makes them concurrency-safe.
+layer(counting())("http/RateLimits/consume", (it) => {
+  it.effect("allows the configured number of attempts and then refuses", () =>
+    Effect.gen(function*() {
+      const headers = { "x-forwarded-for": "203.0.113.7" }
 
-        const attempt = () =>
-          Effect.result(consume(credentials)).pipe(
-            Effect.provideService(HttpServerRequest.HttpServerRequest, request({ headers })),
-            Effect.provideContext(shared)
+      for (let i = 0; i < credentials.limit; i++) {
+        const allowed = yield* attempt(credentials, { headers })
+        assert.strictEqual(allowed._tag, "Success", `attempt ${i + 1}`)
+      }
+
+      const refused = yield* attempt(credentials, { headers })
+      assert.strictEqual(refused._tag, "Failure")
+      if (refused._tag === "Failure") {
+        assert.instanceOf(refused.failure, RateLimited)
+        assert.isAtLeast(refused.failure.retryAfterSeconds, 1)
+      }
+    }))
+
+  it.effect("counts each path separately, so signing up does not spend sign-in's attempts", () =>
+    Effect.gen(function*() {
+      const headers = { "x-forwarded-for": "203.0.113.8" }
+
+      for (let i = 0; i < credentials.limit; i++) {
+        const allowed = yield* attempt(credentials, { path: "/auth/sign-in/email", headers })
+        assert.strictEqual(allowed._tag, "Success")
+      }
+      const refused = yield* attempt(credentials, { path: "/auth/sign-in/email", headers })
+      assert.strictEqual(refused._tag, "Failure")
+
+      const other = yield* attempt(credentials, { path: "/auth/sign-up/email", headers })
+      assert.strictEqual(other._tag, "Success")
+    }))
+
+  it.effect("runs the effect only when a token was available", () =>
+    Effect.gen(function*() {
+      const headers = { "x-forwarded-for": "203.0.113.10" }
+      let ran = 0
+
+      const spend = () =>
+        Effect.result(limit(email, Effect.sync(() => ++ran))).pipe(
+          Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            request({ path: "/auth/request-password-reset", headers })
           )
+        )
 
-        for (let i = 0; i < credentials.limit; i++) {
-          const allowed = yield* attempt()
-          assert.strictEqual(allowed._tag, "Success", `attempt ${i + 1}`)
-        }
+      for (let i = 0; i < email.limit; i++) {
+        yield* spend()
+      }
+      assert.strictEqual(ran, email.limit)
 
-        const refused = yield* attempt()
-        assert.strictEqual(refused._tag, "Failure")
-        if (refused._tag === "Failure") {
-          assert.instanceOf(refused.failure, RateLimited)
-          assert.isAtLeast(refused.failure.retryAfterSeconds, 1)
-        }
-      }))
+      const refused = yield* spend()
+      assert.strictEqual(refused._tag, "Failure")
+      assert.strictEqual(ran, email.limit)
+    }))
 
-    it.effect("counts each path separately, so signing up does not spend sign-in's attempts", () =>
-      Effect.gen(function*() {
-        const headers = { "x-forwarded-for": "203.0.113.8" }
-        const shared = yield* Layer.build(Layer.mergeAll(configLayer(), rateLimiterLayer))
-
-        const attempt = (path: string) =>
-          Effect.result(consume(credentials)).pipe(
-            Effect.provideService(HttpServerRequest.HttpServerRequest, request({ path, headers })),
-            Effect.provideContext(shared)
-          )
-
-        for (let i = 0; i < credentials.limit; i++) {
-          const allowed = yield* attempt("/auth/sign-in/email")
-          assert.strictEqual(allowed._tag, "Success")
-        }
-        const refused = yield* attempt("/auth/sign-in/email")
-        assert.strictEqual(refused._tag, "Failure")
-
-        const other = yield* attempt("/auth/sign-up/email")
-        assert.strictEqual(other._tag, "Success")
-      }))
-
+  it.layer(counting({ ipHeaders: [] }))("with no trusted headers", (it) => {
     it.effect("fails closed: two unidentifiable callers share one counter", () =>
       Effect.gen(function*() {
-        const shared = yield* Layer.build(Layer.mergeAll(configLayer({ ipHeaders: [] }), rateLimiterLayer))
-
-        const attempt = (forwardedFor: string) =>
-          Effect.result(consume(credentials)).pipe(
-            Effect.provideService(
-              HttpServerRequest.HttpServerRequest,
-              request({ headers: { "x-forwarded-for": forwardedFor } })
-            ),
-            Effect.provideContext(shared)
-          )
-
         // Different claimed addresses, but nothing is configured to trust them,
         // so they are one caller as far as the counter is concerned.
         for (let i = 0; i < credentials.limit; i++) {
-          const allowed = yield* attempt(`203.0.113.${i}`)
+          const allowed = yield* attempt(credentials, { headers: { "x-forwarded-for": `203.0.113.${i}` } })
           assert.strictEqual(allowed._tag, "Success")
         }
-        const refused = yield* attempt("203.0.113.99")
+        const refused = yield* attempt(credentials, { headers: { "x-forwarded-for": "203.0.113.99" } })
         assert.strictEqual(refused._tag, "Failure")
       }))
+  })
 
-    it.effect("does nothing at all when the limits are switched off", () =>
+  it.layer(faulting({ enabled: false }))("with the limits switched off", (it) => {
+    it.effect("does nothing at all", () =>
       Effect.gen(function*() {
-        const layers = Layer.mergeAll(configLayer({ enabled: false }), brokenLimiter)
         for (let i = 0; i < credentials.limit + 2; i++) {
-          const result = yield* consuming(credentials, undefined, layers)
+          const result = yield* attempt(credentials)
           assert.strictEqual(result._tag, "Success")
         }
       }))
+  })
 
-    it.effect("lets the request through when the store itself fails", () =>
+  it.layer(faulting())("with a broken store", (it) => {
+    it.effect("lets the request through", () =>
       Effect.gen(function*() {
-        const layers = Layer.mergeAll(configLayer(), brokenLimiter)
-        const result = yield* consuming(credentials, undefined, layers)
+        const result = yield* attempt(credentials)
         // A broken counter is a server fault, not the caller's: it is logged
         // and the request proceeds rather than taking sign-in down.
         assert.strictEqual(result._tag, "Success")
       }))
+  })
 
-    it.effect("refuses instead when the deployment asked to fail closed", () =>
+  it.layer(faulting({ failClosed: true }))("with a broken store, failing closed", (it) => {
+    it.effect("refuses instead", () =>
       Effect.gen(function*() {
         // The other trade: with a shared, remote store, "the counter is
         // unavailable" is something an attacker can arrange, and failing open
         // there removes every limit at once.
-        const layers = Layer.mergeAll(configLayer({ failClosed: true }), brokenLimiter)
-        const result = yield* consuming(credentials, undefined, layers)
+        const result = yield* attempt(credentials)
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.instanceOf(result.failure, RateLimited)
@@ -242,33 +260,6 @@ describe("http/RateLimits", () => {
           result.failure.retryAfterSeconds,
           retryAfterSeconds(credentials.window)
         )
-      }))
-  })
-
-  describe("limit", () => {
-    it.effect("runs the effect only when a token was available", () =>
-      Effect.gen(function*() {
-        const headers = { "x-forwarded-for": "203.0.113.10" }
-        const shared = yield* Layer.build(Layer.mergeAll(configLayer(), rateLimiterLayer))
-        let ran = 0
-
-        const attempt = () =>
-          Effect.result(limit(email, Effect.sync(() => ++ran))).pipe(
-            Effect.provideService(
-              HttpServerRequest.HttpServerRequest,
-              request({ path: "/auth/request-password-reset", headers })
-            ),
-            Effect.provideContext(shared)
-          )
-
-        for (let i = 0; i < email.limit; i++) {
-          yield* attempt()
-        }
-        assert.strictEqual(ran, email.limit)
-
-        const refused = yield* attempt()
-        assert.strictEqual(refused._tag, "Failure")
-        assert.strictEqual(ran, email.limit)
       }))
   })
 })
