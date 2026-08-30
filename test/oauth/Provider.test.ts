@@ -11,7 +11,7 @@ import {
 } from "../../src/oauth/Provider.js"
 import * as Github from "../../src/oauth/providers/Github.js"
 import * as Google from "../../src/oauth/providers/Google.js"
-import { json, mockProvider, mockServer, redirect, safeHttpLayer } from "./harness.js"
+import { MockProvider } from "../../src/testing/index.js"
 
 const github = Github.make({ clientId: "id", clientSecret: Redacted.make("secret") })
 const google = Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
@@ -78,7 +78,7 @@ describe("oauth/Provider", () => {
       Effect.gen(function*() {
         const registry = yield* OAuthProviders
         assert.deepStrictEqual([...registry.ids], ["mock"])
-      }).pipe(Effect.provide(OAuthProviders.layer([mockProvider()]))))
+      }).pipe(Effect.provide(OAuthProviders.layer([MockProvider.mockProvider()]))))
   })
 
   describe("issuers", () => {
@@ -125,38 +125,38 @@ describe("oauth/Provider", () => {
       }))
 
     it.effect("reports a refusal as a status rather than an error", () => {
-      const server = mockServer()
-      server.on("https://provider.test/userinfo", () => json({ message: "no" }, 403))
+      const server = MockProvider.mockServer()
+      server.on(MockProvider.userInfoUrl, () => MockProvider.json({ message: "no" }, 403))
       return Effect.gen(function*() {
-        const result = yield* call("https://provider.test/userinfo")
+        const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
         assert.strictEqual(result.success.status, 403)
         assert.isNull(result.success.body)
-      }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+      }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
     })
 
     it.effect("reads a body that is not JSON as no body at all", () => {
-      const server = mockServer()
-      server.on("https://provider.test/userinfo", () => new Response("<html>nope</html>", { status: 200 }))
+      const server = MockProvider.mockServer()
+      server.on(MockProvider.userInfoUrl, () => new Response("<html>nope</html>", { status: 200 }))
       return Effect.gen(function*() {
-        const result = yield* call("https://provider.test/userinfo")
+        const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
         assert.isNull(result.success.body)
-      }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+      }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
     })
 
     it.effect("refuses a redirect, and reports it as ProviderUnavailable", () => {
-      const server = mockServer()
-      server.on("https://provider.test/userinfo", () => redirect("http://169.254.169.254/"))
+      const server = MockProvider.mockServer()
+      server.on(MockProvider.userInfoUrl, () => MockProvider.redirect("http://169.254.169.254/"))
       return Effect.gen(function*() {
-        const result = yield* call("https://provider.test/userinfo")
+        const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "ProviderUnavailable")
         assert.strictEqual(server.requests.length, 1)
-      }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+      }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
     })
   })
 })

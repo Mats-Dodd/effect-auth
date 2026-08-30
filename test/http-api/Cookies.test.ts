@@ -4,10 +4,15 @@ import { Headers } from "effect/unstable/http"
 import * as AuthConfig from "../../src/config/AuthConfig.js"
 import * as AuthCookies from "../../src/http/Cookies.js"
 
-const secureConfig = AuthConfig.make({
-  baseUrl: "https://app.example.com",
-  secret: Redacted.make("test-secret")
-})
+/** A deployment over TLS, optionally with the cookie section configured. */
+const secure = (cookie?: AuthConfig.AuthConfigOptions["cookie"]): AuthConfig.AuthConfigService =>
+  AuthConfig.make({
+    baseUrl: "https://app.example.com",
+    secret: Redacted.make("test-secret"),
+    cookie
+  })
+
+const secureConfig = secure()
 
 const devConfig = AuthConfig.make({
   baseUrl: "http://localhost:3000",
@@ -55,11 +60,7 @@ describe("http/Cookies", () => {
     })
 
     it("carries a configured path and domain through", () => {
-      const config = AuthConfig.make({
-        baseUrl: "https://app.example.com",
-        secret: Redacted.make("test-secret"),
-        cookie: { path: "/app", domain: ".example.com", sameSite: "strict" }
-      })
+      const config = secure({ path: "/app", domain: ".example.com", sameSite: "strict" })
       const options = AuthCookies.sessionCookieOptions(config, { maxAge: Duration.days(7) })
 
       assert.strictEqual(options.path, "/app")
@@ -68,11 +69,7 @@ describe("http/Cookies", () => {
     })
 
     it("repeats path and domain when expiring, so the browser replaces the cookie", () => {
-      const config = AuthConfig.make({
-        baseUrl: "https://app.example.com",
-        secret: Redacted.make("test-secret"),
-        cookie: { path: "/app", domain: ".example.com" }
-      })
+      const config = secure({ path: "/app", domain: ".example.com" })
       const set = AuthCookies.sessionCookieOptions(config, { maxAge: Duration.days(7) })
       const expired = AuthCookies.expiredSessionCookieOptions(config)
 

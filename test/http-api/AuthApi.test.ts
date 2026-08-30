@@ -4,6 +4,7 @@ import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { AuthApi, AuthApiGroup, SignInEmailPayload } from "../../src/http/AuthApi.js"
 import { Authenticated } from "../../src/http/Middleware.js"
+import { testPasswordText } from "../fixtures.js"
 
 /**
  * The contract from SPEC.md, transcribed. `authenticated` records which
@@ -304,12 +305,12 @@ describe("http/AuthApi", () => {
       Effect.gen(function*() {
         const payload = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(SignInEmailPayload))({
           email: "ada@example.com",
-          password: "correct horse battery staple"
+          password: testPasswordText
         })
 
-        assert.strictEqual(Redacted.value(payload.password), "correct horse battery staple")
+        assert.strictEqual(Redacted.value(payload.password), testPasswordText)
         assert.strictEqual(String(payload.password), "<redacted>")
-        assert.isFalse(JSON.stringify(payload).includes("correct horse"))
+        assert.isFalse(JSON.stringify(payload).includes(testPasswordText))
       }))
   })
 })

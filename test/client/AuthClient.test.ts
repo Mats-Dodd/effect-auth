@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { Effect, Redacted, Result } from "effect"
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
+import { testName, testPassword } from "../fixtures.js"
 import * as Stub from "./stub.js"
 
 /**
@@ -11,6 +12,21 @@ const registry = Effect.acquireRelease(
   Effect.sync(() => AtomRegistry.make()),
   (_) => Effect.sync(() => _.dispose())
 )
+
+/**
+ * A client over a fresh stub transport, plus the registry the atoms run in —
+ * the three values every test in this file opens with.
+ */
+const harness = (options?: {
+  readonly signedIn?: boolean | undefined
+  readonly bearerToken?: (() => string | Redacted.Redacted<string> | undefined) | undefined
+}) =>
+  Effect.gen(function*() {
+    const stub = Stub.make({ signedIn: options?.signedIn })
+    const client = AuthClient.make({ httpClient: stub.layer, bearerToken: options?.bearerToken })
+    const reg = yield* registry
+    return { stub, client, reg } as const
+  })
 
 /**
  * Waits until an atom's value satisfies a predicate, resolving immediately when
@@ -49,14 +65,12 @@ const waitFor = <A>(
 const settled = <A, E>(result: AsyncResult.AsyncResult<A, E>): boolean =>
   result._tag !== "Initial" && !result.waiting
 
-const password = Redacted.make("correct horse battery staple")
+const credentials = { email: "ada@example.com", password: testPassword }
 
 describe("AuthClient", () => {
   it.effect("the session query resolves for a signed-in caller", () =>
     Effect.gen(function*() {
-      const stub = Stub.make({ signedIn: true })
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness({ signedIn: true })
 
       const session = yield* Atom.getResult(client.session).pipe(
         Effect.provideService(AtomRegistry.AtomRegistry, reg)
@@ -71,9 +85,7 @@ describe("AuthClient", () => {
 
   it.effect("the session query fails with Unauthorized when signed out", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg } = yield* harness()
 
       const result = yield* Atom.getResult(client.session).pipe(
         Effect.result,
@@ -88,9 +100,7 @@ describe("AuthClient", () => {
 
   it.effect("signIn invalidates the session atom, which refetches", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness()
       yield* AtomRegistry.mount(reg, client.session)
 
       // The visitor arrives signed out.
@@ -98,10 +108,9 @@ describe("AuthClient", () => {
       assert.isTrue(AsyncResult.isFailure(before))
       assert.strictEqual(stub.countOf("GET /auth/session"), 1)
 
-      const signedIn = yield* AuthClient.run(client.signIn, {
-        email: "ada@example.com",
-        password
-      }).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
+      const signedIn = yield* AuthClient.run(client.signIn, credentials).pipe(
+        Effect.provideService(AtomRegistry.AtomRegistry, reg)
+      )
       assert.strictEqual(signedIn.user.email, "ada@example.com")
 
       // Nothing refreshed the session atom by hand: the "auth.session"
@@ -121,9 +130,7 @@ describe("AuthClient", () => {
 
   it.effect("signOut invalidates the session atom, which refetches as Unauthorized", () =>
     Effect.gen(function*() {
-      const stub = Stub.make({ signedIn: true })
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness({ signedIn: true })
       yield* AtomRegistry.mount(reg, client.session)
 
       const before = yield* waitFor(reg, client.session, AsyncResult.isSuccess)
@@ -141,15 +148,13 @@ describe("AuthClient", () => {
 
   it.effect("a query keyed on the session refetches too", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness()
       yield* AtomRegistry.mount(reg, client.sessions)
 
       const before = yield* waitFor(reg, client.sessions, settled)
       assert.isTrue(AsyncResult.isFailure(before))
 
-      yield* AuthClient.run(client.signIn, { email: "ada@example.com", password }).pipe(
+      yield* AuthClient.run(client.signIn, credentials).pipe(
         Effect.provideService(AtomRegistry.AtomRegistry, reg)
       )
 
@@ -163,15 +168,13 @@ describe("AuthClient", () => {
 
   it.effect("a declared endpoint error stays a typed error", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
+      const { client, reg, stub } = yield* harness()
       stub.rejectCredentials()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
 
-      const result = yield* AuthClient.run(client.signIn, {
-        email: "ada@example.com",
-        password
-      }).pipe(Effect.result, Effect.provideService(AtomRegistry.AtomRegistry, reg))
+      const result = yield* AuthClient.run(client.signIn, credentials).pipe(
+        Effect.result,
+        Effect.provideService(AtomRegistry.AtomRegistry, reg)
+      )
 
       assert.isTrue(Result.isFailure(result))
       if (Result.isFailure(result)) {
@@ -181,10 +184,8 @@ describe("AuthClient", () => {
 
   it.effect("a transport failure is a defect, and matchWithError separates it", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
+      const { client, reg, stub } = yield* harness()
       stub.breakTransport()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
       yield* AtomRegistry.mount(reg, client.session)
 
       const result = yield* waitFor(reg, client.session, settled)
@@ -200,9 +201,7 @@ describe("AuthClient", () => {
 
   it.effect("signInSocialUrl answers the authorization URL", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness()
 
       const url = yield* client.signInSocialUrl({ providerId: "github" }).pipe(
         Effect.provideService(AtomRegistry.AtomRegistry, reg)
@@ -214,12 +213,10 @@ describe("AuthClient", () => {
 
   it.effect("the client middleware attaches a bearer token when one is configured", () =>
     Effect.gen(function*() {
-      const stub = Stub.make({ signedIn: true })
-      const client = AuthClient.make({
-        httpClient: stub.layer,
+      const { client, reg, stub } = yield* harness({
+        signedIn: true,
         bearerToken: () => Redacted.make("opaque-session-token")
       })
-      const reg = yield* registry
 
       yield* Atom.getResult(client.session).pipe(
         Effect.provideService(AtomRegistry.AtomRegistry, reg)
@@ -230,9 +227,7 @@ describe("AuthClient", () => {
 
   it.effect("no bearer token means no Authorization header — the cookie carries the session", () =>
     Effect.gen(function*() {
-      const stub = Stub.make({ signedIn: true })
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness({ signedIn: true })
 
       yield* Atom.getResult(client.session).pipe(
         Effect.provideService(AtomRegistry.AtomRegistry, reg)
@@ -243,15 +238,11 @@ describe("AuthClient", () => {
 
   it.effect("mutations are shared per client, so two reads see one in-flight request", () =>
     Effect.gen(function*() {
-      const stub = Stub.make()
-      const client = AuthClient.make({ httpClient: stub.layer })
-      const reg = yield* registry
+      const { client, reg, stub } = yield* harness()
 
-      yield* AuthClient.run(client.signUp, {
-        name: "Ada Lovelace",
-        email: "ada@example.com",
-        password
-      }).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
+      yield* AuthClient.run(client.signUp, { name: testName, ...credentials }).pipe(
+        Effect.provideService(AtomRegistry.AtomRegistry, reg)
+      )
 
       const result = reg.get(client.signUp)
       assert.isTrue(AsyncResult.isSuccess(result))

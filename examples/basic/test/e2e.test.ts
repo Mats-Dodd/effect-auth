@@ -3,12 +3,16 @@
  *
  * Every request below crosses the real pipeline: JSON encoding, the router, the
  * `Authenticated` middleware, the cookie, the database. The only substitution
- * is infrastructural — `AuthTest.layer` swaps the example's Postgres and its
- * console mailer for an in-memory database and a capturing outbox, because a
- * test has to be able to read the token out of the e-mail the way a person
+ * is infrastructural — `AuthTest.layerHttpApi` swaps the example's Postgres and
+ * its console mailer for an in-memory database and a capturing outbox, because
+ * a test has to be able to read the token out of the e-mail the way a person
  * reads it out of their inbox.
+ *
+ * The whole file runs on one deployment: `layer()` builds the stack once, in
+ * `beforeAll`, so the database boots and migrates once rather than once per
+ * test. That is why every account below gets an address of its own.
  */
-import { assert, it } from "@effect/vitest"
+import { assert, layer } from "@effect/vitest"
 import { Effect, Layer, Option, Redacted } from "effect"
 import { AuthTest, TestHttpClient } from "effect-auth/testing"
 import { AppApi } from "../src/Api.js"
@@ -40,14 +44,16 @@ const makeClient = () => TestHttpClient.makeClient(AppApi)
 
 const cookieValue = TestHttpClient.sessionCookieValue
 
-const email = "ada@example.com"
+/** An address no sibling test will use: the database is shared. */
+const uniqueEmail = (label: string) => `${label}-${globalThis.crypto.randomUUID()}@example.com`
+
 const password = "correct horse battery staple"
 const newPassword = "a-much-longer-replacement-passphrase"
 
-it.effect(
-  "sign-up, verify, sign-in, use a protected endpoint, change password, sign out",
-  () =>
+layer(ServerLive)("examples/basic", (it) => {
+  it.effect("sign-up, verify, sign-in, use a protected endpoint, change password, sign out", () =>
     Effect.gen(function*() {
+      const email = uniqueEmail("ada")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
@@ -118,48 +124,38 @@ it.effect(
         client.auth.signInEmail({ payload: { email, password: Redacted.make(password) } })
       )
       assert.strictEqual(stale._tag, "InvalidCredentials")
-    }).pipe(Effect.provide(ServerLive)),
-  AuthTest.testTimeout
-)
+    }))
 
-it.effect(
-  "an anonymous request never reaches the application's handlers",
-  () =>
+  it.effect("an anonymous request never reaches the application's handlers", () =>
     Effect.gen(function*() {
       const { client } = yield* makeClient()
       const refused = yield* Effect.flip(client.todos.list())
       assert.strictEqual(refused._tag, "Unauthorized")
-    }).pipe(Effect.provide(ServerLive)),
-  AuthTest.testTimeout
-)
+    }))
 
-it.effect(
-  "a password reset revokes every session and installs the new password",
-  () =>
+  it.effect("a password reset revokes every session and installs the new password", () =>
     Effect.gen(function*() {
+      const email = uniqueEmail("grace")
+      const unknown = uniqueEmail("nobody")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
       yield* client.auth.signUpEmail({
-        payload: { name: "Grace Hopper", email: "grace@example.com", password: Redacted.make(password) }
+        payload: { name: "Grace Hopper", email, password: Redacted.make(password) }
       })
-      const verification = yield* emails.tokenFor("verification", "grace@example.com")
+      const verification = yield* emails.tokenFor("verification", email)
       yield* client.auth.verifyEmail({ query: { token: Redacted.value(verification) } })
-      yield* client.auth.signInEmail({
-        payload: { email: "grace@example.com", password: Redacted.make(password) }
-      })
+      yield* client.auth.signInEmail({ payload: { email, password: Redacted.make(password) } })
       assert.notStrictEqual(yield* cookieValue(cookies), "<absent>")
 
       // An unknown address answers exactly the same way, so the endpoint says
       // nothing about who has an account.
-      const unknown = yield* client.auth.requestPasswordReset({
-        payload: { email: "nobody@example.com" }
-      })
-      assert.strictEqual(unknown.success, true)
-      assert.strictEqual(Option.isNone(yield* emails.last("reset", "nobody@example.com")), true)
+      const acknowledged = yield* client.auth.requestPasswordReset({ payload: { email: unknown } })
+      assert.strictEqual(acknowledged.success, true)
+      assert.strictEqual(Option.isNone(yield* emails.last("reset", unknown)), true)
 
-      yield* client.auth.requestPasswordReset({ payload: { email: "grace@example.com" } })
-      const reset = yield* emails.tokenFor("reset", "grace@example.com")
+      yield* client.auth.requestPasswordReset({ payload: { email } })
+      const reset = yield* emails.tokenFor("reset", email)
 
       const done = yield* client.auth.resetPassword({
         payload: { token: reset, newPassword: Redacted.make(newPassword) }
@@ -179,9 +175,8 @@ it.effect(
       assert.strictEqual(replayed._tag, "InvalidToken")
 
       const signedIn = yield* client.auth.signInEmail({
-        payload: { email: "grace@example.com", password: Redacted.make(newPassword) }
+        payload: { email, password: Redacted.make(newPassword) }
       })
-      assert.strictEqual(signedIn.user.email, "grace@example.com")
-    }).pipe(Effect.provide(ServerLive)),
-  AuthTest.testTimeout
-)
+      assert.strictEqual(signedIn.user.email, email)
+    }))
+})

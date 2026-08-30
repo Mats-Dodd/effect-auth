@@ -105,6 +105,16 @@ export interface MockServer {
    * Every request sent to one endpoint.
    */
   readonly to: (url: string) => ReadonlyArray<RecordedRequest>
+  /**
+   * Forgets every request recorded so far; the routes are left alone.
+   *
+   * **When to use**
+   *
+   * At the top of each test in a sequential `layer()` block that shares one
+   * server, so that `requests` and {@link MockServer.to} describe *this* test
+   * rather than everything the block has done.
+   */
+  readonly clear: () => void
 }
 
 /**
@@ -155,7 +165,10 @@ export const mockServer = (): MockServer => {
     on: (url, handler) => {
       routes[url] = handler
     },
-    to: (url) => requests.filter((request) => request.url.startsWith(url))
+    to: (url) => requests.filter((request) => request.url.startsWith(url)),
+    clear: () => {
+      requests.length = 0
+    }
   }
 }
 
@@ -332,7 +345,12 @@ export const paramsOf = (url: string): URLSearchParams => new URL(url).searchPar
 export interface SignOptions {
   readonly issuer?: string | undefined
   readonly audience?: string | undefined
-  readonly expiresAt?: number | undefined
+  /**
+   * The `exp` claim, in seconds since the (test) epoch. `null` mints a token
+   * with no expiry at all — which a provider must never be believed about, and
+   * which is therefore worth a test.
+   */
+  readonly expiresAt?: number | null | undefined
 }
 
 /**
@@ -387,13 +405,14 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
     const pair = await generateKeyPair("RS256", { extractable: true })
     const jwk = await exportJWK(pair.publicKey)
     const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid: "k1", alg: "RS256" }] })
-    const sign = (payload: JWTPayload, options?: SignOptions) =>
-      new SignJWT(payload)
+    const sign = (payload: JWTPayload, options?: SignOptions) => {
+      const unsigned = new SignJWT(payload)
         .setProtectedHeader({ alg: "RS256", kid: "k1" })
         .setIssuer(options?.issuer ?? providerOrigin)
         .setAudience(options?.audience ?? "mock-client-id")
-        .setExpirationTime(options?.expiresAt ?? 3600)
+      return (options?.expiresAt === null ? unsigned : unsigned.setExpirationTime(options?.expiresAt ?? 3600))
         .sign(pair.privateKey)
+    }
     return { jwks, sign }
   })
 }

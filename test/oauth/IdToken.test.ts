@@ -1,41 +1,30 @@
-import { assert, describe, it } from "@effect/vitest"
+import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
-import type { JWTPayload, KeyObject } from "jose"
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose"
+import type { JWTPayload } from "jose"
 import { isRedirectResponse, verify } from "../../src/oauth/IdToken.js"
-
-const issuer = "https://issuer.test"
-const audience = "client-id"
+import { AuthTest, MockProvider } from "../../src/testing/index.js"
 
 /**
- * A key pair and the local JWKS that admits it. Verification is therefore
- * network-free: `createLocalJWKSet` answers from the key set in memory, which
- * is the whole point of `verify` taking a `KeyResolver` rather than a URL.
+ * The issuer and audience {@link MockProvider.IdTokenSigner} mints for by
+ * default — the provider a token has to have come from for `verify` to admit it.
  */
-const keys = Effect.promise(async () => {
-  const pair = await generateKeyPair("RS256", { extractable: true })
-  const jwk = await exportJWK(pair.publicKey)
-  const resolver = createLocalJWKSet({ keys: [{ ...jwk, kid: "k1", alg: "RS256" }] })
-  return { privateKey: pair.privateKey, resolver }
-})
+const issuer = MockProvider.providerOrigin
+const audience = "mock-client-id"
+
+/** The one hour after the (test) epoch that every token below expires at. */
+const expiresAt = 3600
 
 const sign = (
-  privateKey: CryptoKey | KeyObject,
+  signer: MockProvider.IdTokenSignerService,
   payload: JWTPayload,
-  options?: { readonly issuer?: string; readonly audience?: string; readonly exp?: number }
-) =>
-  Effect.promise(async () => {
-    let jwt = new SignJWT(payload).setProtectedHeader({ alg: "RS256", kid: "k1" })
-      .setIssuer(options?.issuer ?? issuer)
-      .setAudience(options?.audience ?? audience)
-    if (options?.exp !== undefined) jwt = jwt.setExpirationTime(options.exp)
-    return Redacted.make(await jwt.sign(privateKey))
-  })
+  options?: MockProvider.SignOptions
+): Effect.Effect<Redacted.Redacted<string>> =>
+  Effect.promise(async () => Redacted.make(await signer.sign(payload, options)))
 
 const verifying = (
   token: Redacted.Redacted<string>,
-  resolver: ReturnType<typeof createLocalJWKSet>,
+  keys: MockProvider.IdTokenSignerService["jwks"],
   overrides?: {
     readonly issuer?: string
     readonly audience?: string
@@ -47,29 +36,32 @@ const verifying = (
     token,
     issuer: overrides?.issuer ?? issuer,
     audience: overrides?.audience ?? audience,
-    keys: resolver,
+    keys,
     nonce: overrides?.nonce ?? null,
     algorithms: ["RS256"]
   }))
 
-/** The one hour after the (test) epoch that every token below expires at. */
-const expiresAt = 3600
-
-describe("oauth/IdToken", () => {
+/**
+ * One key pair for the whole file: verification is network-free because
+ * `createLocalJWKSet` answers from the key set in memory, which is the whole
+ * point of `verify` taking a `KeyResolver` rather than a URL — and generating
+ * that pair costs tens of milliseconds, so the block builds it once.
+ */
+layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
   describe("verify", () => {
     it.effect("accepts a well-formed token and projects its claims", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const token = yield* sign(privateKey, {
+        const signer = yield* MockProvider.IdTokenSigner
+        const token = yield* sign(signer, {
           sub: "provider-subject",
           email: "ada@example.com",
           email_verified: true,
           name: "Ada Lovelace",
           picture: "https://cdn.test/ada.png",
           nonce: "the-nonce"
-        }, { exp: expiresAt })
+        }, { expiresAt })
 
-        const result = yield* verifying(token, resolver, { nonce: "the-nonce" })
+        const result = yield* verifying(token, signer.jwks, { nonce: "the-nonce" })
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
         const claims = result.success
@@ -86,14 +78,14 @@ describe("oauth/IdToken", () => {
 
     it.effect("reads the string spelling of email_verified, and defaults it to false", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const asString = yield* sign(privateKey, { sub: "s", email_verified: "true" }, { exp: expiresAt })
-        const stringy = yield* verifying(asString, resolver)
+        const signer = yield* MockProvider.IdTokenSigner
+        const asString = yield* sign(signer, { sub: "s", email_verified: "true" }, { expiresAt })
+        const stringy = yield* verifying(asString, signer.jwks)
         assert.strictEqual(stringy._tag, "Success")
         if (stringy._tag === "Success") assert.isTrue(stringy.success.emailVerified)
 
-        const absent = yield* sign(privateKey, { sub: "s" }, { exp: expiresAt })
-        const missing = yield* verifying(absent, resolver)
+        const absent = yield* sign(signer, { sub: "s" }, { expiresAt })
+        const missing = yield* verifying(absent, signer.jwks)
         assert.strictEqual(missing._tag, "Success")
         if (missing._tag === "Success") {
           assert.isFalse(missing.success.emailVerified)
@@ -103,11 +95,13 @@ describe("oauth/IdToken", () => {
 
     it.effect("refuses a token signed by a key the provider does not publish", () =>
       Effect.gen(function*() {
-        const { resolver } = yield* keys
-        const other = yield* keys
-        const forged = yield* sign(other.privateKey, { sub: "s" }, { exp: expiresAt })
+        const signer = yield* MockProvider.IdTokenSigner
+        // The one place a second key pair is worth its cost: a forgery is a
+        // token that verifies perfectly against the wrong key set.
+        const forger = yield* MockProvider.makeIdTokenSigner()
+        const forged = yield* sign(forger, { sub: "s" }, { expiresAt })
 
-        const result = yield* verifying(forged, resolver)
+        const result = yield* verifying(forged, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
         if (result._tag === "Failure") {
           assert.strictEqual(result.failure._tag, "OAuthProviderError")
@@ -118,61 +112,63 @@ describe("oauth/IdToken", () => {
 
     it.effect("refuses another issuer's token", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const token = yield* sign(privateKey, { sub: "s" }, { issuer: "https://evil.test", exp: expiresAt })
-        const result = yield* verifying(token, resolver)
+        const signer = yield* MockProvider.IdTokenSigner
+        const token = yield* sign(signer, { sub: "s" }, { issuer: "https://evil.test", expiresAt })
+        const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
       }))
 
     it.effect("refuses a token minted for another audience", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const token = yield* sign(privateKey, { sub: "s" }, { audience: "someone-elses-client", exp: expiresAt })
-        const result = yield* verifying(token, resolver)
+        const signer = yield* MockProvider.IdTokenSigner
+        const token = yield* sign(signer, { sub: "s" }, { audience: "someone-elses-client", expiresAt })
+        const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
       }))
 
     it.effect("refuses a token with no sub", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const token = yield* sign(privateKey, { email: "ada@example.com" }, { exp: expiresAt })
-        const result = yield* verifying(token, resolver)
+        const signer = yield* MockProvider.IdTokenSigner
+        const token = yield* sign(signer, { email: "ada@example.com" }, { expiresAt })
+        const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
       }))
 
     it.effect("refuses a token with no exp, however well signed", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const token = yield* sign(privateKey, { sub: "s" })
-        const result = yield* verifying(token, resolver)
+        const signer = yield* MockProvider.IdTokenSigner
+        const token = yield* sign(signer, { sub: "s" }, { expiresAt: null })
+        const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
       }))
 
     it.effect("refuses a token whose nonce is absent or wrong when one was minted", () =>
       Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
+        const signer = yield* MockProvider.IdTokenSigner
 
-        const withoutNonce = yield* sign(privateKey, { sub: "s" }, { exp: expiresAt })
-        const absent = yield* verifying(withoutNonce, resolver, { nonce: "the-nonce" })
+        const withoutNonce = yield* sign(signer, { sub: "s" }, { expiresAt })
+        const absent = yield* verifying(withoutNonce, signer.jwks, { nonce: "the-nonce" })
         assert.strictEqual(absent._tag, "Failure")
 
-        const otherNonce = yield* sign(privateKey, { sub: "s", nonce: "somebody-elses" }, { exp: expiresAt })
-        const wrong = yield* verifying(otherNonce, resolver, { nonce: "the-nonce" })
+        const otherNonce = yield* sign(signer, { sub: "s", nonce: "somebody-elses" }, { expiresAt })
+        const wrong = yield* verifying(otherNonce, signer.jwks, { nonce: "the-nonce" })
         assert.strictEqual(wrong._tag, "Failure")
       }))
 
     it.effect("expires by the Effect clock", () =>
-      Effect.gen(function*() {
-        const { privateKey, resolver } = yield* keys
-        const token = yield* sign(privateKey, { sub: "s" }, { exp: expiresAt })
+      // The block's `TestClock` is shared: this test moves one of its own, so
+      // that the hour it burns is not also burnt by its siblings.
+      AuthTest.freshClock(Effect.gen(function*() {
+        const signer = yield* MockProvider.IdTokenSigner
+        const token = yield* sign(signer, { sub: "s" }, { expiresAt })
 
-        const fresh = yield* verifying(token, resolver)
+        const fresh = yield* verifying(token, signer.jwks)
         assert.strictEqual(fresh._tag, "Success")
 
         yield* TestClock.adjust(Duration.seconds(expiresAt + 1))
-        const stale = yield* verifying(token, resolver)
+        const stale = yield* verifying(token, signer.jwks)
         assert.strictEqual(stale._tag, "Failure")
-      }))
+      })))
   })
 
   describe("isRedirectResponse", () => {

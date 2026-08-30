@@ -4,7 +4,7 @@ import type { IdTokenClaims } from "../../src/oauth/IdToken.js"
 import { providerIssuer } from "../../src/oauth/Provider.js"
 import * as Github from "../../src/oauth/providers/Github.js"
 import * as Google from "../../src/oauth/providers/Google.js"
-import { json, mockServer, safeHttpLayer, tokensOf } from "./harness.js"
+import { MockProvider } from "../../src/testing/index.js"
 
 const githubApi = "https://api.github.com"
 
@@ -159,16 +159,16 @@ describe("oauth/providers/Github", () => {
       profile: unknown,
       emails: { readonly body: unknown; readonly status?: number }
     ) => {
-      const server = mockServer()
-      server.on(`${githubApi}/user`, () => json(profile))
+      const server = MockProvider.mockServer()
+      server.on(`${githubApi}/user`, () => MockProvider.json(profile))
       server.on(
         `${githubApi}/user/emails`,
-        () => json(emails.body, emails.status ?? 200)
+        () => MockProvider.json(emails.body, emails.status ?? 200)
       )
       return {
         server,
-        run: Effect.result(github.userInfo(tokensOf("github-access-token"))).pipe(
-          Effect.provide(safeHttpLayer(server.fetch))
+        run: Effect.result(github.userInfo(MockProvider.tokensOf("github-access-token"))).pipe(
+          Effect.provide(MockProvider.safeHttpLayer(server.fetch))
         )
       }
     }
@@ -282,25 +282,25 @@ describe("oauth/providers/Google", () => {
   })
 
   it.effect("takes the identity from the verified id_token, with no request at all", () => {
-    const server = mockServer()
+    const server = MockProvider.mockServer()
     return Effect.gen(function*() {
-      const info = yield* google.userInfo(tokensOf("google-access-token", { idTokenClaims: claims() }))
+      const info = yield* google.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
       assert.strictEqual(info.id, "google-subject-1")
       assert.strictEqual(info.email, "ada@example.com")
       assert.isTrue(info.emailVerified)
       assert.strictEqual(info.name, "Ada Lovelace")
       assert.strictEqual(info.image, "https://cdn.test/ada.png")
       assert.strictEqual(server.requests.length, 0)
-    }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   })
 
   it.effect("consults the userinfo endpoint only when the token carries no address", () => {
-    const server = mockServer()
+    const server = MockProvider.mockServer()
     server.on(Google.userInfoUrl, () =>
-      json({ sub: "somebody-else", email: "ada@example.com", email_verified: true, name: "From userinfo" }))
+      MockProvider.json({ sub: "somebody-else", email: "ada@example.com", email_verified: true, name: "From userinfo" }))
     return Effect.gen(function*() {
       const info = yield* google.userInfo(
-        tokensOf("google-access-token", { idTokenClaims: claims({ email: null, name: null, picture: null }) })
+        MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null, name: null, picture: null }) })
       )
       // The address may come from the bearer-authenticated body; the subject
       // never does — it stays the one the signature covered.
@@ -309,12 +309,12 @@ describe("oauth/providers/Google", () => {
       assert.isTrue(info.emailVerified)
       assert.strictEqual(server.requests.length, 1)
       assert.strictEqual(server.requests[0]?.redirect, "manual")
-    }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   })
 
   it.effect("refuses a token from outside the configured hosted domain", () => {
-    const server = mockServer()
-    server.on(Google.userInfoUrl, () => json({ sub: "s", email: "ada@personal.test", email_verified: true }))
+    const server = MockProvider.mockServer()
+    server.on(Google.userInfoUrl, () => MockProvider.json({ sub: "s", email: "ada@personal.test", email_verified: true }))
     const restricted = Google.make({
       clientId: "google-client",
       clientSecret: Redacted.make("google-client-secret"),
@@ -325,7 +325,7 @@ describe("oauth/providers/Google", () => {
       // chooser and can be stripped from the URL, so the restriction is only
       // real if the *claim* is checked. A personal account carries none.
       const personal = yield* Effect.result(
-        restricted.userInfo(tokensOf("google-access-token", { idTokenClaims: claims() }))
+        restricted.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
       )
       assert.strictEqual(personal._tag, "Failure")
       if (personal._tag === "Failure") {
@@ -335,14 +335,14 @@ describe("oauth/providers/Google", () => {
       // Another Workspace domain is refused just the same.
       const elsewhere = yield* Effect.result(
         restricted.userInfo(
-          tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "evil.test" } }) })
+          MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "evil.test" } }) })
         )
       )
       assert.strictEqual(elsewhere._tag, "Failure")
 
       // The configured domain passes.
       const admitted = yield* restricted.userInfo(
-        tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "acme.test" } }) })
+        MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "acme.test" } }) })
       )
       assert.strictEqual(admitted.email, "ada@example.com")
 
@@ -350,12 +350,12 @@ describe("oauth/providers/Google", () => {
       // address does not even reach the network.
       const noAddress = yield* Effect.result(
         restricted.userInfo(
-          tokensOf("google-access-token", { idTokenClaims: claims({ email: null }) })
+          MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null }) })
         )
       )
       assert.strictEqual(noAddress._tag, "Failure")
       assert.strictEqual(server.requests.length, 0)
-    }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   })
 
   it.effect("builds the same value from the environment", () =>
@@ -379,13 +379,13 @@ describe("oauth/providers/Google", () => {
     ))
 
   it.effect("fails closed when the flow handed it no verified claims", () => {
-    const server = mockServer()
+    const server = MockProvider.mockServer()
     return Effect.gen(function*() {
-      const result = yield* Effect.result(google.userInfo(tokensOf("google-access-token")))
+      const result = yield* Effect.result(google.userInfo(MockProvider.tokensOf("google-access-token")))
       assert.strictEqual(result._tag, "Failure")
       if (result._tag !== "Failure") return
       assert.strictEqual(result.failure.reason, "IdTokenInvalid")
       assert.strictEqual(server.requests.length, 0)
-    }).pipe(Effect.provide(safeHttpLayer(server.fetch)))
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   })
 })

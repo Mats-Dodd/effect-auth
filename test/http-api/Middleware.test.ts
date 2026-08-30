@@ -14,6 +14,16 @@ const configWith = (freshAge: Duration.Duration): AuthConfig.AuthConfigService =
     session: { freshAge }
   })
 
+/**
+ * `requireFresh` against a deployment whose `freshAge` is `freshAge`, for the
+ * session the caller made. The only two things any of these tests vary.
+ */
+const freshnessOf = (freshAge: Duration.Duration, session: Session) =>
+  requireFresh.pipe(
+    Effect.provideService(CurrentSession, session),
+    Effect.provideService(AuthConfig.AuthConfig, configWith(freshAge))
+  )
+
 const makeSession = Effect.gen(function*() {
   const now = yield* DateTime.now
   return Session.make({
@@ -69,10 +79,7 @@ describe("http/Middleware", () => {
         const session = yield* makeSession
         yield* TestClock.adjust(Duration.hours(23))
 
-        yield* requireFresh.pipe(
-          Effect.provideService(CurrentSession, session),
-          Effect.provideService(AuthConfig.AuthConfig, configWith(Duration.days(1)))
-        )
+        yield* freshnessOf(Duration.days(1), session)
       }))
 
     it.effect("fails once the session is older than freshAge", () =>
@@ -80,11 +87,7 @@ describe("http/Middleware", () => {
         const session = yield* makeSession
         yield* TestClock.adjust(Duration.hours(25))
 
-        const error = yield* requireFresh.pipe(
-          Effect.provideService(CurrentSession, session),
-          Effect.provideService(AuthConfig.AuthConfig, configWith(Duration.days(1))),
-          Effect.flip
-        )
+        const error = yield* Effect.flip(freshnessOf(Duration.days(1), session))
 
         assert.instanceOf(error, SessionNotFresh)
         assert.strictEqual(error.freshAgeSeconds, 86_400)
@@ -95,11 +98,7 @@ describe("http/Middleware", () => {
         const session = yield* makeSession
         yield* TestClock.adjust(Duration.minutes(10))
 
-        const error = yield* requireFresh.pipe(
-          Effect.provideService(CurrentSession, session),
-          Effect.provideService(AuthConfig.AuthConfig, configWith(Duration.minutes(5))),
-          Effect.flip
-        )
+        const error = yield* Effect.flip(freshnessOf(Duration.minutes(5), session))
 
         assert.strictEqual(error.freshAgeSeconds, 300)
       }))
