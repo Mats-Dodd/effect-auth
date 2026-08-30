@@ -1,0 +1,70 @@
+{
+  "name": "effect-auth",
+  "version": "0.1.0",
+  "description": "An Effect-native authentication library: sessions, email/password and OAuth, built on Effect v4 primitives.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": [],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.12.3",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": "./src/index.ts",
+    "./client": "./src/client/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      "./package.json": "./package.json",
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./client": {
+        "types": "./dist/client/index.d.ts",
+        "default": "./dist/client/index.js"
+      },
+      "./testing": {
+        "types": "./dist/testing/index.d.ts",
+        "default": "./dist/testing/index.js"
+      }
+    }
+  },
+  "files": [
+    "src/**/*.ts",
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepack": "pnpm build",
+    "prepublishOnly": "node scripts/prepublish-guard.mjs"
+  },
+  "peerDependencies": {
+    "@effect/sql-pglite": "4.0.0-rc.112",
+    "effect": "4.0.0-rc.112"
+  },
+  "peerDependenciesMeta": {
+    "@effect/sql-pglite": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "jose": "^6.2.10"
+  },
+  "devDependencies": {
+    "@effect/sql-pglite": "4.0.0-rc.112",
+    "@effect/vitest": "4.0.0-rc.112",
+    "@types/node": "^22.10.2",
+    "effect": "4.0.0-rc.112",
+    "typescript": "^5.7",
+    "vitest": "^4.1.10"
+  }
+}
