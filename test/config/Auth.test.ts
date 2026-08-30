@@ -102,10 +102,10 @@ it.effect("captures the reset e-mail so a test can read its token", () =>
     const emails = yield* AuthTest.TestEmails
 
     yield* passwords.signUp({ name: "Ada", email: "ada@example.com", password })
-    assert.strictEqual(Option.isNone(yield* emails.last("reset")), true)
+    assert.strictEqual(Option.isNone(yield* emails.last("reset", "ada@example.com")), true)
 
     yield* passwords.requestReset({ email: "ada@example.com" })
-    const token = yield* emails.tokenFor("reset")
+    const token = yield* emails.tokenFor("reset", "ada@example.com")
 
     const newPassword = Redacted.make("a-much-longer-replacement-passphrase")
     yield* passwords.resetPassword({ token, newPassword })
@@ -121,7 +121,8 @@ it.effect("asks nothing of an unknown address, and says nothing about it", () =>
 
     // No account: still a success, and no mail goes out.
     yield* passwords.requestReset({ email: "nobody@example.com" })
-    assert.strictEqual(Option.isNone(yield* emails.last("reset")), true)
+    assert.strictEqual(Option.isNone(yield* emails.last("reset", "nobody@example.com")), true)
+    assert.deepStrictEqual(yield* emails.to("nobody@example.com"), [])
   }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
 
 it.effect("cleanupExpired reaps what has expired and leaves what has not", () =>
@@ -170,7 +171,7 @@ it.effect("layerConfig reads the scalar settings from a ConfigProvider", () =>
         emailPassword: { enabled: true }
       }).pipe(
         Layer.provideMerge(AuthTest.layerDatabase),
-        Layer.provideMerge(AuthTest.layerEmails),
+        Layer.provideMerge(AuthTest.layerEmails()),
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
@@ -221,7 +222,7 @@ it.effect("layerWithOAuth assembles the flow over the providers it is handed", (
           Github.make({ clientId: "gh-client-id", clientSecret: Redacted.make("gh-client-secret") })
         ]
       }).pipe(
-        Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails)),
+        Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())),
         Layer.provide(noNetwork)
       )
     )
@@ -251,7 +252,7 @@ it.effect("layerConfigWithOAuth reads the provider credentials from a ConfigProv
           })
         ]
       }).pipe(
-        Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails)),
+        Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())),
         Layer.provide(noNetwork),
         Layer.provide(
           ConfigProvider.layer(
@@ -297,6 +298,6 @@ it.effect("registers the redacted header names on the application's own context"
         secret: Redacted.make("effect-auth-test-secret-do-not-use-in-production"),
         rateLimit: { enabled: false },
         redactedHeaders: ["x-tenant-token"]
-      }).pipe(Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails)))
+      }).pipe(Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())))
     )
   ), AuthTest.testTimeout)

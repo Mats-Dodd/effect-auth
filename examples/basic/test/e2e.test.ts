@@ -9,41 +9,22 @@
  * reads it out of their inbox.
  */
 import { assert, it } from "@effect/vitest"
-import { Effect, Layer, Option, Redacted, Ref } from "effect"
-import { FileSystem, Path } from "effect"
-import {
-  Cookies,
-  Etag,
-  HttpClient,
-  HttpClientRequest,
-  HttpEffect,
-  HttpPlatform,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse
-} from "effect/unstable/http"
-import { HttpApiBuilder, HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi"
-import { Authenticated, AuthCookies, AuthHandlers } from "effect-auth"
-import { AuthTest } from "effect-auth/testing"
+import { Effect, Layer, Option, Redacted } from "effect"
+import { AuthTest, TestHttpClient } from "effect-auth/testing"
 import { AppApi } from "../src/Api.js"
 import * as Todos from "../src/Todos.js"
 
 const baseUrl = AuthTest.testBaseUrl
 
-const PlatformLive = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.layer).pipe(
-  Layer.provideMerge(FileSystem.layerNoop({}))
-)
-
 /**
- * The example's server, over the test deployment.
+ * The example's server, over the test deployment: the shipped
+ * `AuthTest.layerHttpApi` implements `effect-auth`'s own group against the
+ * application's composed API and supplies the platform services, and the
+ * application adds its own handlers on top.
  */
-const ServerLive = Layer.mergeAll(
-  AuthHandlers.layer(AppApi),
-  Todos.layer,
-  PlatformLive
-).pipe(
+const ServerLive = Todos.layer.pipe(
   Layer.provideMerge(
-    AuthTest.layer({
+    AuthTest.layerHttpApi(AppApi, {
       // The flow below is only interesting if the address has to be proven.
       emailPassword: { requireEmailVerification: true },
       trustedOrigins: [baseUrl]
@@ -52,48 +33,12 @@ const ServerLive = Layer.mergeAll(
 )
 
 /**
- * A generated client wired to the router, with a cookie jar the test can read.
- *
- * `HttpEffect.toHandled` rather than the router effect on its own: it is what a
- * server adapter calls, and it is the only thing that runs the *pre-response*
- * handlers — which is how the session cookie is attached. Driving the router
- * directly would silently drop every `Set-Cookie`.
+ * A generated client wired to the router, with a cookie jar the test can read —
+ * the one the library ships, driving the application's own API.
  */
-const makeClient = Effect.fnUntraced(function*() {
-  const jar = yield* Ref.make(Cookies.empty)
-  const routes = yield* HttpRouter.toHttpEffect(HttpApiBuilder.layer(AppApi))
+const makeClient = () => TestHttpClient.makeClient(AppApi)
 
-  const transport = HttpClient.make(Effect.fnUntraced(function*(request: HttpClientRequest.HttpClientRequest) {
-    const sent = yield* Ref.make(Option.none<HttpServerResponse.HttpServerResponse>())
-    yield* HttpEffect.toHandled(routes, (_request, response) => Ref.set(sent, Option.some(response))).pipe(
-      Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromClientRequest(request))
-    )
-    return HttpServerResponse.toClientResponse(
-      Option.getOrElse(yield* Ref.get(sent), () => HttpServerResponse.empty({ status: 500 }))
-    )
-  }))
-
-  const client = yield* HttpApiClient.makeWith(AppApi, {
-    httpClient: HttpClient.withCookiesRef(transport, jar),
-    baseUrl
-  }).pipe(
-    Effect.provide(
-      HttpApiMiddleware.layerClient(Authenticated, ({ next, request }) => next(request))
-    )
-  )
-
-  return { client, jar } as const
-})
-
-const cookieValue = (jar: Ref.Ref<Cookies.Cookies>) =>
-  Effect.map(
-    Ref.get(jar),
-    (cookies) =>
-      Option.match(Cookies.get(cookies, AuthCookies.insecureSessionCookieName), {
-        onNone: () => "<absent>",
-        onSome: (cookie) => cookie.value
-      })
-  )
+const cookieValue = TestHttpClient.sessionCookieValue
 
 const email = "ada@example.com"
 const password = "correct horse battery staple"
@@ -103,7 +48,7 @@ it.effect(
   "sign-up, verify, sign-in, use a protected endpoint, change password, sign out",
   () =>
     Effect.gen(function*() {
-      const { client, jar } = yield* makeClient()
+      const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
       // 1. Register. Verification is required, so no session is handed out and
@@ -114,7 +59,7 @@ it.effect(
       assert.strictEqual(signedUp.user.email, email)
       assert.strictEqual(signedUp.user.emailVerified, false)
       assert.strictEqual(signedUp.session, null)
-      assert.strictEqual(yield* cookieValue(jar), "<absent>")
+      assert.strictEqual(yield* cookieValue(cookies), "<absent>")
 
       // 2. Signing in before the address is proven is refused, by tag.
       const refused = yield* Effect.flip(
@@ -123,7 +68,7 @@ it.effect(
       assert.strictEqual(refused._tag, "EmailNotVerified")
 
       // 3. The verification link arrived. Follow it.
-      const token = yield* emails.tokenFor("verification")
+      const token = yield* emails.tokenFor("verification", email)
       const verified = yield* client.auth.verifyEmail({ query: { token: Redacted.value(token) } })
       assert.strictEqual(verified.success, true)
 
@@ -132,7 +77,7 @@ it.effect(
         payload: { email, password: Redacted.make(password) }
       })
       assert.strictEqual(signedIn.user.email, email)
-      const cookie = yield* cookieValue(jar)
+      const cookie = yield* cookieValue(cookies)
       assert.notStrictEqual(cookie, "<absent>")
 
       // 5. The session reads back, over the cookie alone.
@@ -158,7 +103,7 @@ it.effect(
       // 8. Signing out clears the cookie and the session behind it.
       const out = yield* client.auth.signOut()
       assert.strictEqual(out.success, true)
-      assert.strictEqual(yield* cookieValue(jar), "")
+      assert.strictEqual(yield* cookieValue(cookies), "")
 
       const afterSignOut = yield* Effect.flip(client.auth.getSession())
       assert.strictEqual(afterSignOut._tag, "Unauthorized")
@@ -192,18 +137,18 @@ it.effect(
   "a password reset revokes every session and installs the new password",
   () =>
     Effect.gen(function*() {
-      const { client, jar } = yield* makeClient()
+      const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
       yield* client.auth.signUpEmail({
         payload: { name: "Grace Hopper", email: "grace@example.com", password: Redacted.make(password) }
       })
-      const verification = yield* emails.tokenFor("verification")
+      const verification = yield* emails.tokenFor("verification", "grace@example.com")
       yield* client.auth.verifyEmail({ query: { token: Redacted.value(verification) } })
       yield* client.auth.signInEmail({
         payload: { email: "grace@example.com", password: Redacted.make(password) }
       })
-      assert.notStrictEqual(yield* cookieValue(jar), "<absent>")
+      assert.notStrictEqual(yield* cookieValue(cookies), "<absent>")
 
       // An unknown address answers exactly the same way, so the endpoint says
       // nothing about who has an account.
@@ -211,10 +156,10 @@ it.effect(
         payload: { email: "nobody@example.com" }
       })
       assert.strictEqual(unknown.success, true)
-      assert.strictEqual(Option.isNone(yield* emails.last("reset")), true)
+      assert.strictEqual(Option.isNone(yield* emails.last("reset", "nobody@example.com")), true)
 
       yield* client.auth.requestPasswordReset({ payload: { email: "grace@example.com" } })
-      const reset = yield* emails.tokenFor("reset")
+      const reset = yield* emails.tokenFor("reset", "grace@example.com")
 
       const done = yield* client.auth.resetPassword({
         payload: { token: reset, newPassword: Redacted.make(newPassword) }
