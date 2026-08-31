@@ -555,6 +555,27 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         )
         assert.isTrue(Option.isNone(yield* store.findById(user.id)))
       }))
+
+    it.effect("checks freshness before the password, so a stale cookie cannot probe passwords", () =>
+      AuthTest.freshClock(Effect.gen(function*() {
+        const users = yield* Users
+        const store = yield* UserStore
+        const { session, user } = yield* register(uniqueEmail("delete-stale-probe"))
+        yield* TestClock.adjust(Duration.days(2))
+
+        // A right and a wrong password must be indistinguishable from a stale
+        // session: `InvalidCredentials` for one and anything else for the other
+        // would make this endpoint a password oracle for whoever stole the cookie.
+        const wrong = yield* Effect.flip(
+          users.requestDeletion({ user, session, password: Redacted.make("not the password") })
+        )
+        const right = yield* Effect.flip(
+          users.requestDeletion({ user, session, password: testPassword })
+        )
+        assert.strictEqual(wrong._tag, "SessionNotFresh")
+        assert.strictEqual(right._tag, "SessionNotFresh")
+        assert.isTrue(Option.isSome(yield* store.findById(user.id)))
+      })))
   })
 
   // ---------------------------------------------------------------------------

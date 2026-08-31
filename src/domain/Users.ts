@@ -634,6 +634,16 @@ export const make: <F extends UserFields>(
   })
 
   const requestDeletion = Effect.fnUntraced(function*(options: RequestDeletionOptions<F>) {
+    // Freshness is checked before anything answers differently for a right and
+    // a wrong password. Without a mailed confirmation the session is the only
+    // evidence there is, so a stale cookie must not be enough to destroy an
+    // account; and whenever a password is offered at all, a stale cookie must
+    // not be enough to *test* one — `InvalidCredentials` versus anything else
+    // would make this endpoint a password oracle for whoever stole the cookie.
+    if (options.password !== undefined || !config.user.deleteUser.confirmByEmail) {
+      yield* sessions.requireFresh(options.session)
+    }
+
     if (options.password !== undefined) {
       const matches = yield* passwords.verifyPassword(options.user.id, options.password).pipe(
         // A hasher that cannot verify is a broken deployment rather than a
@@ -647,8 +657,8 @@ export const make: <F extends UserFields>(
     }
 
     if (config.user.deleteUser.confirmByEmail) {
-      // The mailbox is the second factor here, so the session's age does not
-      // decide anything and is not consulted.
+      // The mailbox is the second factor here, so — unless a password was
+      // offered, above — the session's age does not decide anything.
       yield* verifications.retire(deleteAccountPurpose, options.user.id)
       const issued = yield* verifications.issue({
         purpose: deleteAccountPurpose,
@@ -667,9 +677,7 @@ export const make: <F extends UserFields>(
       return "ConfirmationSent" as const
     }
 
-    // Nothing was mailed, so the session itself is the only evidence there is:
-    // a stale cookie must not be enough to destroy an account.
-    yield* sessions.requireFresh(options.session)
+    // Nothing was mailed; freshness was already required above.
     yield* deleteUser(options.user)
     return "Deleted" as const
   })

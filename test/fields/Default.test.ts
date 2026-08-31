@@ -98,6 +98,23 @@ describe("fields/Default", () => {
     )
   })
 
+  it("refuses custom fields whose columns collide", () => {
+    // Columns are the snake_case of the key: `email_verified` would land on the
+    // base `emailVerified` column, and `fooBar` / `foo_bar` on one shared column.
+    assert.throws(
+      () => makeUserModel({ email_verified: UserField.withDefault(Schema.Boolean, () => false) }),
+      /column email_verified, also emailVerified/
+    )
+    assert.throws(
+      () =>
+        makeUserModel({
+          fooBar: UserField.withDefault(Schema.String, () => ""),
+          foo_bar: UserField.withDefault(Schema.String, () => "")
+        }),
+      /column foo_bar, also fooBar/
+    )
+  })
+
   it("refuses a custom field that redeclares a base one", () => {
     assert.throws(
       () => makeUserModel({ email: UserField.withDefault(Schema.String, () => "") }),

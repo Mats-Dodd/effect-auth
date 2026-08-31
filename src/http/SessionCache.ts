@@ -370,12 +370,16 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   const enabled = config.cookieCache.enabled
   const cookieName = sessionCacheCookieName(config)
   const security = sessionCacheCookieSecurity(config)
-  // The columns a stored user has that its public projection does not — a
-  // `UserField.hidden` field, and nothing else. Resolved once, here.
+  // The declared defaults of every custom column, resolved once, here. On a
+  // hit they fill in whatever the snapshot does not carry — which is exactly
+  // the `UserField.hidden` columns, since the snapshot is the public projection
+  // and a public custom field arrives in it and overrides its default.
   const hiddenDefaults = yield* model.extraDefaults
   const encodeUser = Schema.encodeUnknownEffect(model.json)
 
-  const hidden = Object.keys(hiddenDefaults)
+  // Named for the warning below: the custom columns the public projection does
+  // not carry, not every custom column.
+  const hidden = model.extraKeys.filter((key) => !Object.hasOwn(model.json.fields, key))
   if (enabled && hidden.length > 0) {
     // Said once, when the stack is built, rather than left to whoever reads the
     // module header: on a cache hit these columns carry their declared

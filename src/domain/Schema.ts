@@ -17,7 +17,7 @@
  */
 import { Context, Effect, Option, Schema, Struct } from "effect"
 import { Model, VariantSchema } from "effect/unstable/schema"
-import { pickKeys } from "../internal/records.js"
+import { camelToSnake, pickKeys } from "../internal/records.js"
 
 // -----------------------------------------------------------------------------
 // Identifiers
@@ -936,6 +936,28 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
       `effect-auth: the custom user fields ${
         shadowed.join(", ")
       } redeclare fields the base user model already has. A custom field is added to the base user, never laid over one of its fields — every part of the library, and every deployment's own code, depends on a user having the base fields with the base types.`
+    )
+  }
+  // The column is the snake_case of the key, so two keys can be distinct in
+  // TypeScript and one column in SQL: `email_verified` lands on the base
+  // `emailVerified` column (and, if writable, would let a caller flip it), and
+  // `fooBar` / `foo_bar` would share a column between them. Refused at
+  // start-up like every other misdeclared field, rather than found as a
+  // silently skipped `ADD COLUMN` and a projection reading the wrong column.
+  const columnOf = new Map<string, string>()
+  for (const key of Object.keys(baseFields)) columnOf.set(camelToSnake(key), key)
+  const collisions: Array<string> = []
+  for (const key of Object.keys(fields)) {
+    const column = camelToSnake(key)
+    const holder = columnOf.get(column)
+    if (holder !== undefined) collisions.push(`${key} (column ${column}, also ${holder})`)
+    else columnOf.set(column, key)
+  }
+  if (collisions.length > 0) {
+    throw new Error(
+      `effect-auth: the custom user fields ${
+        collisions.join(", ")
+      } map to a users column another field already occupies. Column names are the snake_case of the field name; choose keys whose snake_case forms are distinct from each other and from the base columns.`
     )
   }
 

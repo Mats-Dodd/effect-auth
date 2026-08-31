@@ -315,7 +315,11 @@ export interface CookieCacheConfig {
    *
    * The function runs on the snapshot's own contents, so it can only read what
    * the cache carries. It must be pure and cheap: it is on the hot path of every
-   * cached request.
+   * cached request. Do not key it on a `UserField.hidden` column: a snapshot
+   * carries a hidden field's declared *default*, so the version computed at
+   * write time (from the stored value) never equals the one computed at read
+   * time, every read misses, and the cache is silently disabled. Key it on a
+   * public field or a session field instead.
    */
   readonly version: string | ((session: Session, user: User) => string)
 }

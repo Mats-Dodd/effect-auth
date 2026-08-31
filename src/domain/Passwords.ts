@@ -802,9 +802,13 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     yield* Effect.fromOption(updated, () => new InvalidCredentials())
 
     // Same reasoning as in `resetPassword`: a password that has just been
-    // changed from inside a session must not still be resettable by a link
-    // somebody asked for beforehand.
-    yield* verifications.retire(passwordResetPurpose, options.userId)
+    // changed from inside a session is a re-securing of the account, so every
+    // outstanding link whose subject is this user goes with it — a reset link
+    // somebody asked for beforehand, and just as much a `change-email-verify`
+    // link that would move the account to an address they chose.
+    for (const kind of userSubjectPurposes) {
+      yield* verifications.retire(kind, options.userId)
+    }
 
     if (options.revokeOtherSessions !== false) {
       yield* options.currentSessionId === undefined

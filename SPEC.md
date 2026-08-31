@@ -964,6 +964,10 @@ Each of these is a considered difference, not an oversight.
 6. **Delete-user's direct path requires a fresh session** and answers `SessionNotFresh` (403) when
    it is stale, rather than falling back to a mail. With `confirmByEmail` on it always mails
    (24 h TTL) and answers `ConfirmationSent`, and nothing is removed until the link is followed.
+   **Freshness is checked before the optional password is verified, on both paths**: a request
+   that offers a password from a stale session is `SessionNotFresh` whether the password is right
+   or wrong, so a stolen stale cookie cannot use this endpoint as a password oracle (the
+   `credentials` bucket alone would only have halved the guess rate).
    `confirmDeletion` claims the token **first** and only then checks the subject against the caller,
    so a link presented by anybody else is burnt as well as refused.
 7. **`requestDeletion` turns a `PasswordHashError` into a defect.** The frozen `UsersService`

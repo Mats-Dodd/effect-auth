@@ -468,6 +468,33 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         assert.strictEqual(refused._tag, "InvalidToken")
       }))
 
+    it.effect("changing a password from inside a session retires a pending change-email link too", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const verifications = yield* Verifications
+        const { user } = yield* register(uniqueEmail("change-retire-move"))
+
+        // Somebody with brief access asked to move the account to their own
+        // address; the owner notices and changes the password. Re-securing the
+        // account has to kill that link the same way a reset does — otherwise
+        // the unauthenticated verify endpoint would still move the account.
+        const move = yield* verifications.issue({
+          purpose: changeEmailVerifyPurpose,
+          subject: user.id,
+          ttl: Duration.hours(1),
+          payload: { newEmail: uniqueEmail("change-retire-elsewhere") }
+        })
+
+        yield* passwords.changePassword({
+          userId: user.id,
+          currentPassword: testPassword,
+          newPassword
+        })
+
+        const moved = yield* Effect.flip(verifications.claim(changeEmailVerifyPurpose, move.token))
+        assert.strictEqual(moved._tag, "InvalidToken")
+      }))
+
     it.effect("resetPassword refuses an expired token and a policy violation", () =>
       AuthTest.freshClock(Effect.gen(function*() {
         const passwords = yield* Passwords
