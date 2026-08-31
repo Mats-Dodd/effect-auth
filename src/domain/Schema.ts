@@ -725,12 +725,14 @@ export interface UserRowCodecs {
  *
  * **Details**
  *
- * The two row constructors answer `UserInsertOf<{}>`: a row carrying the
- * deployment's own columns as well as the base ones, described by the only type
- * a module that does not know `F` can write down. That is deliberate and is
- * what makes the seam usable — the base-typed `UserStore.create` takes exactly
- * this, so a plugin can build a complete row through the ambient model and
- * store it without a cast.
+ * The two row constructors answer `UserInsertOf<{}>` and `decodeRow` answers
+ * `UserOf<{}>`: values carrying the deployment's own columns as well as the base
+ * ones, described by the only types a module that does not know `F` can write
+ * down. That is deliberate and is what makes the seam usable — the base-typed
+ * `UserStore.create` takes exactly the former, and a `SessionWithUser` wants
+ * exactly the latter, so a plugin (or a replacement `SessionStore`) can build a
+ * complete row through the ambient model, store it, and decode it back without
+ * a cast. The base fields are always present, so the narrowing is sound.
  *
  * @category models
  * @since 1.0.0
@@ -749,7 +751,7 @@ export interface AnyUserModel {
   makeInsert(input: UserInsertInput): Effect.Effect<UserInsertOf<{}>>
   completeInsert(row: UserInsertOf<{}>): Effect.Effect<UserInsertOf<{}>>
   basePatch(patch: BaseUserPatch): BaseUserPatch
-  decodeRow(row: unknown): Effect.Effect<unknown, Schema.SchemaError>
+  decodeRow(row: unknown): Effect.Effect<UserOf<{}>, Schema.SchemaError>
   readonly extraDefaults: Effect.Effect<UserRow>
 }
 

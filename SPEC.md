@@ -947,8 +947,11 @@ Each of these is a considered difference, not an oversight.
    would let an account holder enumerate registrations from their own mailbox. `confirmEmailChange`
    re-checks availability at claim time and, when the address is taken, silently sends no hop 2 —
    so the caller's observable outcome (response, mail count and kind) is identical for a free and a
-   taken address, and the occupied address is never written to. Hop 2 is also deliberately *not*
-   re-checked against the account's current address.
+   taken address, and the occupied address is never written to. When the caller's *current* address
+   is unverified there is no hop 1 to send, so both paths return before any write or mail and the
+   only residual channel is latency (one `findByEmail` versus one `findByEmail` plus an early
+   return) — recorded as accepted, not closed. Hop 2 is also deliberately *not* re-checked against
+   the account's current address.
 3. **A completed change ends `emailVerified: true`** — the link was delivered to the address it
    names — and **other sessions are not revoked**. Nothing about the account's credentials changed.
 4. **Both `requestEmailChange` and `requestDeletion` retire their purpose's outstanding tokens
@@ -1043,8 +1046,11 @@ statement for a reader who never opens this file.
 
 #### 12.1 Format
 
-The cookie's value is `base64url(json) + "." + base64url(HMAC-SHA-256(secret, json))`, and `json`
-is `Schema.fromJsonString(CacheEnvelope)` of
+The cookie's value is `base64url(json) + "." + base64url(HMAC-SHA-256(secret, macContext + json))`,
+where `macContext` is the constant `"effect-auth/session-cache/v1\n"` (`SessionCache.macContext`) —
+the `Hmac` service is shared with any other feature that signs under the deployment secret, so the
+tag is domain-separated: a tag produced over some other message can never verify as a snapshot, and
+vice versa. `json` is `Schema.fromJsonString(CacheEnvelope)` of
 
 ```
 { v: 1, version: string, tokenHash: string, expiresAt: DateTimeUtcFromString,
