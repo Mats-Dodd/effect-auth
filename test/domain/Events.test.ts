@@ -25,6 +25,14 @@ const everyEvent: ReadonlyArray<AuthEvent> = [
   { _tag: "PasswordChanged", userId, viaReset: true },
   { _tag: "PasswordResetRequested", userId },
   { _tag: "EmailVerified", userId, email: "ada@example.com" },
+  { _tag: "UserUpdated", userId, fields: ["name", "image"] },
+  // The empty `fields` an update that touched nothing but a deployment's own
+  // columns publishes — a shape the array's schema has to accept as readily as
+  // the full one.
+  { _tag: "UserUpdated", userId, fields: [] },
+  { _tag: "EmailChanged", userId, previousEmail: "ada@example.com", email: "ada@lovelace.example" },
+  { _tag: "UserDeleted", userId, email: "ada@example.com" },
+  { _tag: "TokensRefreshed", userId, accountId, providerId: "github" },
   { _tag: "AccountLinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
   { _tag: "AccountUnlinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
   { _tag: "PluginEvent", plugin: "magic-link", event: "requested", userId: null, data: { newUser: true } },
@@ -44,6 +52,14 @@ describe("domain/Events/schema", () => {
         assert.deepStrictEqual(yield* decode(encoded), event)
       }
     }))
+
+  it("samples every member of the closed union", () => {
+    // The two tests below are only as good as this list, so the list is pinned
+    // to the union itself: a member added without a sample here fails this
+    // assertion rather than quietly going unasserted in both of them.
+    const sampled = new Set(everyEvent.map((event) => event._tag))
+    assert.strictEqual(sampled.size, AuthEventSchema.members.length)
+  })
 
   it("carries no credential-shaped field", () => {
     // Events are handed to log sinks and webhooks, so a field that ever came to

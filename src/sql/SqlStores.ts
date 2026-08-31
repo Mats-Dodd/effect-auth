@@ -205,6 +205,24 @@ const decodeFirst =
 const firstAccount = decodeFirst(decodeAccount)
 
 /**
+ * Reads SQLite's integer flag back as a boolean, leaving an absent value
+ * absent.
+ *
+ * **Gotchas**
+ *
+ * `null` and `undefined` pass through untouched. A custom field may be
+ * `NullOr(Schema.Boolean)` — a nullable flag whose column is nullable on both
+ * dialects — and turning its `null` into `false` would be a silent rewrite of
+ * "not asked yet" into "declined" on every read, which the model would accept
+ * because `false` decodes just as well.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const decodeSqliteBoolean = (value: unknown): unknown =>
+  value === null || value === undefined ? value : value === 1 || value === true
+
+/**
  * SQLite has no boolean type: `users.email_verified` is an integer flag there
  * and a real boolean on PostgreSQL. These two adapters are the only dialect
  * divergence in the store implementations.
@@ -216,7 +234,7 @@ const booleanCodec = (sql: SqlClient.SqlClient) => ({
   }),
   decode: sql.onDialectOrElse({
     orElse: () => (value: unknown): unknown => value,
-    sqlite: () => (value: unknown): unknown => value === 1 || value === true
+    sqlite: () => decodeSqliteBoolean
   })
 })
 

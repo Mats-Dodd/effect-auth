@@ -29,9 +29,8 @@
 import { Context, Effect, Layer, Option, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import type { AuthConfigService } from "../config/AuthConfig.js"
-import { AuthEmails, resetPasswordUrl, verifyEmailUrl } from "../config/AuthEmails.js"
+import { AuthEmails, resetPasswordUrl, verifyEmailUrl, withCallbackUrl } from "../config/AuthEmails.js"
 import { PasswordHasher } from "../crypto/PasswordHasher.js"
-import { validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { pickKeys } from "../internal/records.js"
 import type { PasswordHashError } from "./Errors.js"
@@ -65,7 +64,9 @@ import {
   userStoreOf,
   WithAuthTransaction
 } from "./Stores.js"
-import { emailVerifyPurpose, passwordResetPurpose, Verifications } from "./Verifications.js"
+// The list of user-subject purposes is declared beside the flows that mint most
+// of them; nothing is read from it before a request runs.
+import { emailVerifyPurpose, passwordResetPurpose, userSubjectPurposes, Verifications } from "./Verifications.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -347,9 +348,11 @@ export interface PasswordsService<F extends UserFields = {}> {
    *
    * Whoever held the old password — or the mailbox — should not keep a live
    * session, so revocation is unconditional and runs in the same transaction as
-   * the hash update. Any *other* reset token outstanding for the same user is
-   * deleted in that transaction too: a second, still-unexpired link would
-   * otherwise let the account be taken straight back.
+   * the hash update. Every link outstanding for the same user is deleted in
+   * that transaction too — not merely the other reset tokens, but the
+   * change-email and delete-account ones as well: any of them would otherwise
+   * let the account be taken straight back out of the hands of somebody who has
+   * just re-secured it.
    */
   readonly resetPassword: (
     options: { readonly token: Redacted.Redacted<string>; readonly newPassword: Redacted.Redacted<string> }
@@ -511,30 +514,6 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
   const dummyHash = yield* Effect.orDie(hasher.hash(Redacted.make(dummyPassword)))
 
-  /**
-   * Appends the caller's landing page to an e-mailed link — after validating
-   * it, again.
-   *
-   * **Gotchas**
-   *
-   * The HTTP layer is expected to have validated this already, and this second
-   * pass is deliberate: what goes in here ends up in a link sent to somebody's
-   * mailbox, and an open redirect there is a phishing page with the
-   * deployment's own name on it. A candidate that does not survive
-   * `validateUrl` is dropped rather than refused — the reset mail is worth
-   * sending without it.
-   */
-  const withCallback = (
-    url: Redacted.Redacted<string>,
-    callbackURL: string | undefined
-  ): Redacted.Redacted<string> => {
-    const validated = validateUrl(config, callbackURL)
-    if (Option.isNone(validated)) return url
-    const parsed = new URL(Redacted.value(url))
-    parsed.searchParams.set("callbackURL", validated.value)
-    return Redacted.make(parsed.toString())
-  }
-
   const sendVerificationTo = Effect.fnUntraced(function*(
     user: UserOf<F>,
     callbackURL: string | undefined
@@ -545,7 +524,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       ttl: config.tokens.emailVerificationTtl,
       payload: null
     })
-    const url = withCallback(verifyEmailUrl(config, issued.token), callbackURL)
+    const url = withCallbackUrl(config, verifyEmailUrl(config, issued.token), callbackURL)
     // Delivery is the application's responsibility and its failure must not
     // change what the caller observes; it is logged and dropped.
     yield* annotateAuthLogs(Effect.ignore(
@@ -700,7 +679,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       ttl: config.tokens.passwordResetTtl,
       payload: null
     })
-    const url = withCallback(resetPasswordUrl(config, issued.token), options.redirectTo)
+    const url = withCallbackUrl(config, resetPasswordUrl(config, issued.token), options.redirectTo)
     yield* annotateAuthLogs(Effect.ignore(
       emails.sendPasswordReset({ user, token: issued.token, url }),
       { log: "Warn", message: "password reset e-mail delivery failed" }
@@ -727,11 +706,19 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
         // An OAuth-only user completing a reset gains a password credential.
         yield* createCredentialAccount(userId, passwordHash)
       }
-      // Every *other* outstanding reset link for this user dies with the one
-      // just used. Two "forgot password" clicks mint two independent tokens,
-      // and somebody with a few minutes of mailbox access must not keep a
-      // working key to an account whose owner has just re-secured it.
-      yield* verifications.retire(passwordResetPurpose, userId)
+      // Every *other* outstanding link this user is the subject of dies with
+      // the one just used, not merely the other reset links. Two "forgot
+      // password" clicks mint two independent tokens, and somebody with a few
+      // minutes of mailbox access must not keep a working key to an account
+      // whose owner has just re-secured it — and a `change-email-verify` token
+      // is the strongest such key there is, because following it moves the
+      // account to the address that asked for it. On an account whose address
+      // was never verified, one of those may well be outstanding: the flow
+      // skips its first hop there, so whoever registered the address could
+      // have aimed the account at a mailbox of their own.
+      for (const kind of userSubjectPurposes) {
+        yield* verifications.retire(kind, userId)
+      }
       return yield* sessionStore.deleteByUserId(userId)
     }))
 

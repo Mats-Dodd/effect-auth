@@ -14,11 +14,21 @@
  * fail the request rather than quietly go unasserted.
  */
 import { assert, layer } from "@effect/vitest"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Ref, Schema } from "effect"
+import type { HttpServerResponse as HttpServerResponseType } from "effect/unstable/http"
+import {
+  HttpClientRequest,
+  HttpEffect,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse
+} from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
+import { userStoreOf } from "../../src/domain/Stores.js"
+import { insecureSessionCookieName } from "../../src/http/Cookies.js"
 import { Authenticated, currentUserOf } from "../../src/http/Middleware.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
-import { testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
 import { FieldsApi, model } from "./model.js"
 
 /**
@@ -44,6 +54,52 @@ const layerFields = ProfileHandlers.pipe(
 )
 
 const makeClient = () => TestHttpClient.makeClient(ProfileApi)
+
+/** The user rows of this deployment's model, for reading a column back. */
+const users = userStoreOf(model)
+
+/**
+ * A request the generated client cannot make: a body naming keys the endpoint's
+ * payload schema does not declare.
+ *
+ * **Details**
+ *
+ * The typed client encodes every payload through that schema, so it strips
+ * `role` and `apiSecret` before the bytes are written — which is exactly why it
+ * cannot be the witness here. What is under test is the *server*, and two
+ * independent facts hold it up: `Schema.Struct` discards excess keys on decode,
+ * and `model.extrasOf` picks only the `jsonCreate`/`jsonUpdate` variants' keys
+ * before the spread into the store. A regression in either — an
+ * `onExcessProperty` annotation on the payload, `extrasOf` widening to
+ * `extraKeys` — would let a client write an application-owned column while every
+ * typed test in this file stayed green.
+ *
+ * The router is built the same way `TestHttpClient.makeClient` builds it, from
+ * the services this block already provides.
+ */
+const rawPost = Effect.fnUntraced(function*(
+  path: string,
+  body: Record<string, unknown>,
+  headers?: Record<string, string>
+) {
+  const handler = yield* HttpRouter.toHttpEffect(HttpApiBuilder.layer(ProfileApi))
+  const request = HttpClientRequest.post(`${AuthTest.testBaseUrl}${path}`, { headers }).pipe(
+    HttpClientRequest.bodyJsonUnsafe(body)
+  )
+
+  const sent = yield* Ref.make(Option.none<HttpServerResponseType.HttpServerResponse>())
+  yield* HttpEffect.toHandled(handler, (_request, response) => Ref.set(sent, Option.some(response))).pipe(
+    Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromClientRequest(request))
+  )
+
+  const response = yield* expectSome(yield* Ref.get(sent), `no response for POST ${path}`)
+  const client = HttpServerResponse.toClientResponse(response)
+  return { status: client.status, body: yield* client.json }
+})
+
+/** The `user` half of a raw response body, as a plain record. */
+const userOf = (body: unknown): Record<string, unknown> =>
+  (body as { readonly user: Record<string, unknown> }).user
 
 layer(layerFields)("fields/Http", (it) => {
   it.effect("takes a custom field at sign-up and answers with it", () =>
@@ -139,6 +195,65 @@ layer(layerFields)("fields/Http", (it) => {
       // And the write landed: the application's own endpoint reads it back off
       // `CurrentUser` on the next request.
       assert.strictEqual(yield* client.profile.plan(), "pro")
+    }))
+
+  it.effect("drops an application-owned field a raw sign-up body tries to set", () =>
+    Effect.gen(function*() {
+      const email = uniqueEmail("signup-raw-role")
+
+      const { body, status } = yield* rawPost("/auth/sign-up/email", {
+        name: testName,
+        email,
+        password: testPasswordText,
+        plan: "pro",
+        // Neither of these is on the sign-up payload: `role` is readOnly and
+        // `apiSecret` is hidden, so both are the application's to write.
+        role: "admin",
+        apiSecret: "the-client-picked-this"
+      })
+
+      assert.strictEqual(status, 200)
+      // The field a client *may* state was taken …
+      assert.strictEqual(userOf(body)["plan"], "pro")
+      // … and the two it may not were not: the response says the defaults.
+      assert.strictEqual(userOf(body)["role"], "user")
+      assert.isFalse(Object.hasOwn(userOf(body), "apiSecret"))
+
+      // And the row agrees, which is the assertion the response alone cannot
+      // make: `apiSecret` is hidden from every JSON variant, so a written value
+      // would be invisible in a body either way.
+      const store = yield* users
+      const stored = yield* expectSome(yield* store.findByEmail(email), "the account was not created")
+      assert.strictEqual(stored.role, "user")
+      assert.strictEqual(stored.apiSecret, null)
+    }))
+
+  it.effect("drops an application-owned field a raw update-user body tries to set", () =>
+    Effect.gen(function*() {
+      const email = uniqueEmail("update-raw-role")
+      const { client, cookies } = yield* makeClient()
+      yield* client.auth.signUpEmail({
+        payload: { name: testName, email, password: testPassword }
+      })
+
+      // The same browser, hand-writing the body the typed client would have
+      // stripped.
+      const token = yield* TestHttpClient.sessionCookieValue(cookies)
+      const { body, status } = yield* rawPost(
+        "/auth/update-user",
+        { name: "Ada Byron", plan: "pro", role: "admin", apiSecret: "the-client-picked-this" },
+        { cookie: `${insecureSessionCookieName}=${token}` }
+      )
+
+      assert.strictEqual(status, 200)
+      assert.strictEqual(userOf(body)["name"], "Ada Byron")
+      assert.strictEqual(userOf(body)["plan"], "pro")
+      assert.strictEqual(userOf(body)["role"], "user")
+
+      const store = yield* users
+      const stored = yield* expectSome(yield* store.findByEmail(email), "the account went missing")
+      assert.strictEqual(stored.role, "user")
+      assert.strictEqual(stored.apiSecret, null)
     }))
 
   it.effect("lets an application's own endpoint read a custom field", () =>

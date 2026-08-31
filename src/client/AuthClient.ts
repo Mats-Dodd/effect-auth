@@ -42,7 +42,7 @@
 import type { Redacted } from "effect"
 import { Effect, Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http"
-import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http"
+import { HttpClientRequest } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import type { AsyncResult, AtomRegistry } from "effect/unstable/reactivity"
@@ -104,7 +104,7 @@ import {
 } from "../http/AuthApi.js"
 import { Authenticated } from "../http/Middleware.js"
 import type { PayloadRequest, ReactivityKeys as AtomReactivityKeys } from "./internal/atoms.js"
-import { withoutPayload, withPayload, withQuery } from "./internal/atoms.js"
+import { layerFetch, withoutPayload, withPayload, withQuery } from "./internal/atoms.js"
 
 // -----------------------------------------------------------------------------
 // Reactivity keys
@@ -780,13 +780,3 @@ export const navigate = (url: string): Effect.Effect<void> =>
   Effect.sync(() => {
     globalThis.location?.assign(url)
   })
-
-// -----------------------------------------------------------------------------
-// internal
-// -----------------------------------------------------------------------------
-
-const layerFetch = (credentials: RequestCredentials): Layer.Layer<HttpClient.HttpClient> =>
-  Layer.provide(
-    FetchHttpClient.layer,
-    Layer.succeed(FetchHttpClient.RequestInit, { credentials })
-  )

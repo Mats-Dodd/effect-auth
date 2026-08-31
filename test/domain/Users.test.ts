@@ -202,8 +202,10 @@ layer(AuthTest.layer())("domain/Users", (it) => {
     it.effect("answers an address somebody else has exactly as one that is free", () =>
       Effect.gen(function*() {
         const users = yield* Users
+        const verifications = yield* VerificationStore
         const email = uniqueEmail("change-taken")
         const occupied = uniqueEmail("change-occupant")
+        const free = uniqueEmail("change-taken-free")
         const { user } = yield* registerVerified(email)
         yield* register(occupied)
 
@@ -211,7 +213,48 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         // session must not be an oracle for who else is registered here.
         assert.strictEqual(yield* users.requestEmailChange({ user, newEmail: occupied }), "Ignored")
 
-        // No row was written and nothing was sent to either mailbox.
+        // And the caller's *own* mailbox says the same as it would for a free
+        // address: hop one goes out either way. A confirmation that arrived
+        // only for a free address would be the oracle the 200 refuses to be.
+        const afterTaken = yield* mailTo(email)
+        assert.strictEqual(afterTaken.length, 1)
+        assert.strictEqual(afterTaken[0]?.kind, AuthTest.changeEmailConfirmationKind)
+        assert.include(Redacted.value(afterTaken[0]!.url), "/auth/change-email/confirm")
+
+        // Nothing reached the address that is somebody else's: the second hop is
+        // the only message it would ever get, and it is not sent.
+        assert.deepStrictEqual(yield* mailTo(occupied), [])
+
+        // A free address is one more message of the same kind to the same
+        // mailbox: same count, same kind, nothing to the new address yet.
+        assert.strictEqual(yield* users.requestEmailChange({ user, newEmail: free }), "ConfirmationSent")
+        const afterFree = yield* mailTo(email)
+        assert.strictEqual(afterFree.length, 2)
+        assert.strictEqual(afterFree[1]?.kind, AuthTest.changeEmailConfirmationKind)
+        assert.deepStrictEqual(yield* mailTo(free), [])
+
+        // The outcomes differ only in what the server writes down — the endpoint
+        // answers 200 to both, which test/http/Users.test.ts pins — and neither
+        // call left a hop-two row that could move the account to the address
+        // somebody else has.
+        assert.strictEqual(
+          yield* verifications.deleteByIdentifier(identifierOf(changeEmailVerifyPurpose, user.id)),
+          0
+        )
+      }))
+
+    it.effect("sends nothing at all when the current address is unverified and the new one is taken", () =>
+      Effect.gen(function*() {
+        const users = yield* Users
+        const email = uniqueEmail("change-taken-unverified")
+        const occupied = uniqueEmail("change-taken-occupant")
+        const { user } = yield* register(email)
+        yield* register(occupied)
+
+        // There is no first hop on this branch, and the second one goes to the
+        // new address — never to the caller — so there is nothing for a taken
+        // address to make observable.
+        assert.strictEqual(yield* users.requestEmailChange({ user, newEmail: occupied }), "Ignored")
         assert.deepStrictEqual(yield* mailTo(email), [])
         assert.deepStrictEqual(yield* mailTo(occupied), [])
       }))
@@ -291,6 +334,36 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         // … and the second hop is now in the new address's mailbox.
         const verification = yield* linkTo(AuthTest.changeEmailVerificationKind, newEmail)
         assert.notInclude(verification.url, newEmail)
+      }))
+
+    it.effect("spends the first-hop token but sends no second hop when the address has been taken", () =>
+      Effect.gen(function*() {
+        const users = yield* Users
+        const verifications = yield* VerificationStore
+        const email = uniqueEmail("hop-one-taken")
+        const occupied = uniqueEmail("hop-one-occupant")
+        const { user } = yield* registerVerified(email)
+        yield* register(occupied)
+
+        // Hop one is mailed for a taken address exactly as for a free one, so
+        // this is where the flow stops. Following it succeeds — a failure here
+        // would report, to somebody watching their own inbox, that the address
+        // belongs to somebody.
+        yield* users.requestEmailChange({ user, newEmail: occupied })
+        const confirmation = yield* linkTo(AuthTest.changeEmailConfirmationKind, email)
+        yield* users.confirmEmailChange(confirmation.token)
+
+        // Nothing reached the address that is somebody else's, and no hop-two
+        // row was minted, so the account cannot be moved onto it.
+        assert.deepStrictEqual(yield* mailTo(occupied), [])
+        assert.strictEqual(
+          yield* verifications.deleteByIdentifier(identifierOf(changeEmailVerifyPurpose, user.id)),
+          0
+        )
+
+        // And the token is spent, as every claimed link is.
+        const failure = yield* Effect.flip(users.confirmEmailChange(confirmation.token))
+        assert.strictEqual(failure._tag, "InvalidToken")
       }))
 
     it.effect("burns the first-hop token, so a link that leaked cannot be replayed", () =>

@@ -248,23 +248,16 @@ export const scopesOf = (scope: string | null): ReadonlyArray<string> =>
 // -----------------------------------------------------------------------------
 
 /**
- * Builds the `identifier` of an e-mail verification row.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const emailVerifyIdentifier = (email: string): string => `email-verify:${normalizeEmail(email)}`
-
-/**
- * Builds the `identifier` of a password reset row.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const passwordResetIdentifier = (userId: UserId): string => `password-reset:${userId}`
-
-/**
  * Builds the `identifier` of an OAuth state row.
+ *
+ * **Gotchas**
+ *
+ * The one identifier still built by hand, because OAuth state is not a
+ * {@link Verification} a caller ever claims by token: the state parameter is
+ * both the row's name and its secret. Every other purpose — an e-mail
+ * verification, a password reset, a change of address, a magic link — is named
+ * by `Verifications.identifierOf`, which is the only other place a
+ * `verifications.identifier` is composed.
  *
  * @category constructors
  * @since 1.0.0
@@ -277,11 +270,12 @@ export const oauthStateIdentifier = (nonce: string): string => `oauth-state:${no
  *
  * **Details**
  *
- * `identifier` is namespaced by purpose (see {@link emailVerifyIdentifier},
- * {@link passwordResetIdentifier}, {@link oauthStateIdentifier}) and indexed.
- * Only the hash of the secret value is stored, and consumption is a single
- * atomic delete-returning statement, which is what makes reset tokens,
- * verification links and OAuth state genuinely single-use under concurrency.
+ * `identifier` is namespaced by purpose — `<purpose>:<subject>`, built by
+ * `Verifications.identifierOf` for every purpose the library declares, and by
+ * {@link oauthStateIdentifier} for OAuth state — and indexed. Only the hash of
+ * the secret value is stored, and consumption is a single atomic
+ * delete-returning statement, which is what makes reset tokens, verification
+ * links and OAuth state genuinely single-use under concurrency.
  *
  * @category models
  * @since 1.0.0
@@ -729,6 +723,15 @@ export interface UserRowCodecs {
  * A {@link UserModel} with its field map erased — what a plugin reads out of
  * {@link UserModelRef} when it has no `F` of its own to speak of.
  *
+ * **Details**
+ *
+ * The two row constructors answer `UserInsertOf<{}>`: a row carrying the
+ * deployment's own columns as well as the base ones, described by the only type
+ * a module that does not know `F` can write down. That is deliberate and is
+ * what makes the seam usable — the base-typed `UserStore.create` takes exactly
+ * this, so a plugin can build a complete row through the ambient model and
+ * store it without a cast.
+ *
  * @category models
  * @since 1.0.0
  */
@@ -743,8 +746,8 @@ export interface AnyUserModel {
   readonly json: Schema.Top
   readonly jsonCreate: Schema.Top
   readonly jsonUpdate: Schema.Top
-  makeInsert(input: UserInsertInput): Effect.Effect<unknown>
-  completeInsert(row: UserRow): Effect.Effect<unknown>
+  makeInsert(input: UserInsertInput): Effect.Effect<UserInsertOf<{}>>
+  completeInsert(row: UserInsertOf<{}>): Effect.Effect<UserInsertOf<{}>>
   basePatch(patch: BaseUserPatch): BaseUserPatch
   decodeRow(row: unknown): Effect.Effect<unknown, Schema.SchemaError>
   readonly extraDefaults: Effect.Effect<UserRow>
@@ -1109,7 +1112,13 @@ export const baseUserModel: UserModel<{}> = makeUserModel({})
  * no `F` of its own to be generic over. Reading the model here rather than
  * taking it as a parameter is what lets such a plugin write rows a deployment's
  * custom columns are satisfied by, while the plugin's own layer signature stays
- * non-generic.
+ * non-generic:
+ *
+ * ```ts skip-type-checking
+ * const model = yield* UserModelRef
+ * const row = yield* model.makeInsert({ name, email, emailVerified: true, image: null })
+ * const user = yield* users.create(row)
+ * ```
  *
  * **Gotchas**
  *
@@ -1117,6 +1126,16 @@ export const baseUserModel: UserModel<{}> = makeUserModel({})
  * never provided this reference still works — it just cannot fill in fields it
  * does not know about, which is exactly what the provisionability rule
  * guarantees is safe.
+ *
+ * A row built this way is `UserInsertOf<{}>` — the base shape, carrying the
+ * deployment's own columns as values the plugin cannot name — so it is written
+ * through the base-typed `UserStore` and the *user* it answers with is a base
+ * `User`. A plugin that has to read a custom column is a plugin that is generic
+ * over `F`, not one that reads this reference.
+ *
+ * Provisioning through the base `User.insert` and letting the store's
+ * `completeInsert` fill the rest in — which is what this library's own magic
+ * link plugin does — is equivalent and needs no model at all.
  *
  * @category services
  * @since 1.0.0

@@ -199,6 +199,25 @@ describe.sequential("http/SessionCache over HTTP", () => {
         assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(response)))
       }))
 
+    it.effect("rewrites a cookie client's snapshot when the profile changes", () =>
+      Effect.gen(function*() {
+        const { client } = yield* signedUp(uniqueEmail("cache-update-user"))
+        yield* client.auth.getSession()
+
+        const [, response] = yield* client.auth.updateUser({
+          payload: { name: "Ada Byron" },
+          responseMode: "decoded-and-response"
+        })
+        // Rewriting the snapshot is cheaper than invalidating it, and keeps the
+        // very next request a hit — of the *new* profile, not the old one.
+        assert.isTrue(Option.isSome(TestHttpClient.responseCacheCookie(response)))
+
+        const before = store.state.reads
+        const session = yield* client.auth.getSession()
+        assert.strictEqual(store.state.reads, before, "the rewritten snapshot is a hit")
+        assert.strictEqual(session.user.name, "Ada Byron")
+      }))
+
     it.effect("clears both cookies when every session is revoked", () =>
       Effect.gen(function*() {
         const { client, cookies } = yield* signedUp(uniqueEmail("cache-revoke-all"))
@@ -256,6 +275,17 @@ describe.sequential("http/SessionCache over HTTP", () => {
         assert.strictEqual(store.state.reads, before + 2, "every bearer request reads the session")
         assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(first)))
         assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(second)))
+        assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCacheCookie(api.cookies)))
+
+        // Including the one handler that writes a snapshot of its own: after a
+        // profile update the middleware is no longer the only writer, and a
+        // bearer client would otherwise be left holding a signed snapshot in a
+        // jar it never asked for and nothing ever clears.
+        const [, updated] = yield* api.client.auth.updateUser({
+          payload: { name: "Ada Byron" },
+          responseMode: "decoded-and-response"
+        })
+        assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(updated)))
         assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCacheCookie(api.cookies)))
       }))
 

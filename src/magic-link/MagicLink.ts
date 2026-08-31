@@ -29,9 +29,13 @@
  * *An unproven account is not a credential.* Somebody can register an address
  * they do not own, wait, and hope its real owner signs in with a magic link
  * later; they would then share the account. So when a link proves control of an
- * address whose account is *unverified*, that account's sign-in methods and
- * sessions are destroyed in one transaction and the address is marked verified —
- * see {@link Options.revokeUnprovenAccounts}, which is on by default.
+ * address whose account is *unverified*, that account's sign-in methods, its
+ * sessions and every outstanding link it is the subject of are destroyed in one
+ * transaction and the address is marked verified — see
+ * {@link Options.revokeUnprovenAccounts}, which is on by default. The links
+ * matter as much as the password: a `change-email-verify` token outstanding for
+ * an unverified account moves the whole account to the address that asked for
+ * it, and the change-email flow skips its first hop precisely there.
  *
  * @since 1.0.0
  */
@@ -46,8 +50,8 @@ import { normalizeEmail, User as UserModel } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { PersistenceError } from "../domain/Stores.js"
 import { AccountStore, isUniqueViolation, SessionStore, UserStore, WithAuthTransaction } from "../domain/Stores.js"
-import type { TokenPurpose } from "../domain/Verifications.js"
-import { purpose, Verifications } from "../domain/Verifications.js"
+import type { Claimed, TokenPurpose } from "../domain/Verifications.js"
+import { purpose, userSubjectPurposes, Verifications } from "../domain/Verifications.js"
 import { resolveUrl, validateUrl, withErrorCode } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { withDefaults } from "../internal/records.js"
@@ -235,6 +239,16 @@ export interface Config {
    * OAuth identity they control — and they keep it *alongside* the real owner,
    * who has just signed in. Leave it on unless something else in the deployment
    * guarantees no account is ever created unverified.
+   *
+   * Worse than sharing, under `emailPassword.requireEmailVerification`: a
+   * magic link marks the address verified whichever way this is set (see
+   * {@link MagicLinkService.verify} — the token was delivered to the address
+   * and came back, which is the whole of what verification proves), and a
+   * verified address is exactly what that setting was withholding from the
+   * pre-registrant's password. So with this off, the real owner's first
+   * sign-in *unblocks* a credential that until then could not be used at all.
+   * A deployment that requires verification is a deployment that should leave
+   * this on.
    */
   readonly revokeUnprovenAccounts: boolean
 }
@@ -587,6 +601,16 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
         const linked = yield* accounts.listByUserIdForUpdate(user.id)
         yield* accounts.deleteByUserId(user.id)
         const revoked = yield* sessionStore.deleteByUserId(user.id)
+        // An outstanding link is a way in as much as a password is, and it
+        // outlives the session that asked for it. The one that matters most is
+        // `change-email-verify`: on an unverified account the change-email flow
+        // has no first hop, so whoever registered this address could already
+        // have a live link that moves the account to a mailbox of their own —
+        // and following it after the reclaim would hand back everything this
+        // transaction just took away.
+        for (const kind of userSubjectPurposes) {
+          yield* verifications.retire(kind, user.id)
+        }
         const updated = yield* users.update(user.id, { emailVerified: true })
         return { linked, revoked, updated }
       }))
@@ -707,18 +731,27 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       } satisfies VerifyResult
     })
 
+    /**
+     * Spends a claimed token: the half of the flow both entry points share.
+     *
+     * **Gotchas**
+     *
+     * A user provisioned here loses a race only to a concurrent sign-up for the
+     * same address, which the unique index settles. Running the resolution
+     * again finds the row the winner wrote and signs in as it; nothing is
+     * published before the write that failed, so no event can be duplicated.
+     * One retry, in one place: `verify` and `complete` must resolve that race
+     * identically.
+     */
+    const spend = (claimed: Claimed<MagicLinkPayload>, options: VerifyOptions) =>
+      Effect.retry(
+        finish(normalizeEmail(claimed.subject), claimed.payload, options),
+        { while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error), times: 1 }
+      )
+
     const verify = Effect.fnUntraced(
       function*(options: VerifyOptions) {
-        const claimed = yield* claim(options.token)
-        // A user provisioned here loses a race only to a concurrent sign-up for
-        // the same address, which the unique index settles. Running the
-        // resolution again finds the row the winner wrote and signs in as it;
-        // nothing is published before the write that failed, so no event can be
-        // duplicated.
-        return yield* Effect.retry(
-          finish(normalizeEmail(claimed.subject), claimed.payload, options),
-          { while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error), times: 1 }
-        )
+        return yield* spend(yield* claim(options.token), options)
       },
       (effect) => Effect.withSpan(effect, "MagicLink.verify")
     )
@@ -742,16 +775,12 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
           // token is not one this deployment minted.
           return failure(claimed.failure, null)
         }
-        const { payload, subject } = claimed.success
-        const finished = yield* Effect.result(
-          Effect.retry(finish(normalizeEmail(subject), payload, options), {
-            while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error),
-            times: 1
-          })
-        )
+        const finished = yield* Effect.result(spend(claimed.success, options))
         if (finished._tag === "Failure") {
           if (finished.failure._tag === "PersistenceError") return yield* Effect.fail(finished.failure)
-          return failure(finished.failure, payload.errorCallbackURL)
+          // The error URL comes out of the claimed payload, which is the one
+          // thing this path needs that `verify` does not.
+          return failure(finished.failure, claimed.success.payload.errorCallbackURL)
         }
         return { _tag: "Success", ...finished.success } satisfies VerifyOutcome
       },

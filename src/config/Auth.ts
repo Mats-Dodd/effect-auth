@@ -204,6 +204,21 @@ export interface Extras {
    * This is the seam a distributed session store plugs into, and the one place
    * where "the store" and "the SQL store" can differ. The other three stores are
    * deliberately not decorable: nothing in this library reads them on a hot path.
+   *
+   * *The user a replacement answers with is part of its contract.* The slot is
+   * typed with the base `User`, but every service above reads it through a
+   * typed view built from the deployment's model — `findByTokenHash` is what
+   * puts a user under `CurrentUser`, and what the cookie cache encodes through
+   * `model.json`. A store that round-trips the joined user through the base
+   * schema (`Schema.decodeUnknownEffect(User)`, `User.json`, `JSON.parse` of a
+   * base projection) silently drops every custom column: an application
+   * endpoint typed `user.plan` reads `undefined`, and a cache write of a model
+   * whose custom field is required dies rather than encoding. A replacement
+   * must carry the columns the model declares — decode rows with
+   * `UserModelRef`'s `decodeRow`, which `Auth.compose` provides for exactly
+   * this, or keep the row the SQL store handed it intact. A decorator that
+   * passes the user through untouched, like the example above, is safe by
+   * construction.
    */
   readonly sessionStore?: Layer.Layer<SessionStore, never, SessionStore> | undefined
 }

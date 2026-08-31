@@ -4,7 +4,8 @@ import { TestClock } from "effect/testing"
 import { Passwords } from "../../src/domain/Passwords.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
-import { Verifications } from "../../src/domain/Verifications.js"
+import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
+import { passwordResetPurpose, Verifications } from "../../src/domain/Verifications.js"
 import { MagicLink, magicLinkPurpose } from "../../src/magic-link/MagicLink.js"
 import { AuthTest, MagicLinkTest, TestEmails } from "../../src/testing/index.js"
 import { tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
@@ -142,6 +143,44 @@ describe.sequential("magic-link/MagicLink", () => {
           "EmailVerified",
           "SignedIn"
         ])
+      }))
+
+    it.effect("retires the links the unproven account was the subject of", () =>
+      Effect.gen(function*() {
+        // The same squatter, one step further on: signed in on the account they
+        // registered, they asked to move it to an address of their own. The
+        // current address is unverified, so that flow skips its first hop and
+        // the second-hop token is already in *their* mailbox.
+        const email = uniqueEmail("squatted-tokens")
+        const passwords = yield* Passwords
+        const registered = yield* passwords.signUp({ name: testName, email, password: testPassword })
+        const verifications = yield* Verifications
+
+        const move = yield* verifications.issue({
+          purpose: changeEmailVerifyPurpose,
+          subject: registered.user.id,
+          ttl: Duration.hours(1),
+          payload: { newEmail: uniqueEmail("squatter-own") }
+        })
+        const reset = yield* verifications.issue({
+          purpose: passwordResetPurpose,
+          subject: registered.user.id,
+          ttl: Duration.hours(1),
+          payload: null
+        })
+
+        // The real owner signs in with a link.
+        const token = yield* linkFor({ email })
+        const magic = yield* MagicLink
+        yield* magic.verify({ token })
+
+        // Destroying the password and the sessions is not enough: following
+        // that second hop would move the reclaimed account to the squatter's
+        // address, which is the takeover the defence exists to stop.
+        const moved = yield* Effect.flip(verifications.claim(changeEmailVerifyPurpose, move.token))
+        assert.strictEqual(moved._tag, "InvalidToken")
+        const reused = yield* Effect.flip(verifications.claim(passwordResetPurpose, reset.token))
+        assert.strictEqual(reused._tag, "InvalidToken")
       }))
 
     it.effect("refuses a replayed link", () =>

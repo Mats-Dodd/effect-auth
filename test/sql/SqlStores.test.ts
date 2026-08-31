@@ -12,6 +12,7 @@ import {
   VerificationStore,
   WithAuthTransaction
 } from "../../src/domain/Stores.js"
+import { decodeSqliteBoolean } from "../../src/sql/SqlStores.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, testName, uniqueEmail } from "../fixtures.js"
 
@@ -481,6 +482,27 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         assert.strictEqual(Option.isSome(yield* users.findById(user.id)), true)
       }))
+  })
+})
+
+// -----------------------------------------------------------------------------
+// The one dialect divergence
+// -----------------------------------------------------------------------------
+
+describe("sql/SqlStores (sqlite booleans)", () => {
+  it("reads the integer flag back, and leaves an absent value absent", () => {
+    // The suite runs on PGlite, so this adapter is never exercised by a store
+    // test — and it is applied to every boolean-flagged column, including the
+    // nullable one a deployment declares with `NullOr(Schema.Boolean)`.
+    assert.strictEqual(decodeSqliteBoolean(1), true)
+    assert.strictEqual(decodeSqliteBoolean(0), false)
+    assert.strictEqual(decodeSqliteBoolean(true), true)
+    assert.strictEqual(decodeSqliteBoolean(false), false)
+
+    // "Not asked yet" is not "declined": a null that decoded as `false` would
+    // pass `NullOr(Schema.Boolean)` and be a silent rewrite on every read.
+    assert.strictEqual(decodeSqliteBoolean(null), null)
+    assert.strictEqual(decodeSqliteBoolean(undefined), undefined)
   })
 })
 

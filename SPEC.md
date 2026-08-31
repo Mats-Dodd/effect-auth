@@ -644,8 +644,8 @@ runtime validation in the kernel.
 
 The consequence a plugin author must know: **provision through the base-typed `UserStore`.**
 `SqlStores.create` runs `model.completeInsert` on every row, so a deployment's own columns get their
-declared defaults whether or not the writer knew they existed. `Auth.UserModelRef` (a
-`Context.Reference` defaulting to `baseUserModel`) exists for a plugin that wants the model itself,
+declared defaults whether or not the writer knew they existed. `UserModelRef` (a flat export from
+`effect-auth`; a `Context.Reference` defaulting to `baseUserModel`) exists for a plugin that wants the model itself,
 but the magic link plugin does not use it, because the base store already does the right thing —
 see §10.5.
 
@@ -689,12 +689,19 @@ taken), and the emitted declaration sizes both waves agreed to watch:
 | `dist/http/AuthApi.d.ts` | 21,627 B | 51,920 B | ≤ 3× (2.40×) | ✓ |
 | `dist/client/AuthClient.d.ts` | 16,673 B | 20,818 B | ≤ 3× (1.25×) | ✓ |
 
-Five of the six hold. **Instantiations are 17 % over the ceiling this wave set itself**, and that is
-a knowingly-accepted overrun recorded here rather than a measurement to be re-taken: the check still
-runs in well under a second and a half, and types — the measure that actually tracks editor
-responsiveness — are inside their limit with 1 % to spare, which is the number to watch next. The
-levers named when the budget was set are untouched and remain available: more class-wrapping of
-default groups, and hand-written interfaces in place of the `ReturnType` in §8.4.
+Five of the six hold. **Instantiations are 17 % over the ceiling this wave set itself, and that is a
+breached gate, not a design choice.** The budget was written as a fail condition — "fail the wave if
+instantiations > 620k" — with two levers named in advance for the case of an overrun: more
+class-wrapping of default groups, and hand-written interfaces in place of the `ReturnType` in §8.4.
+Neither lever has been pulled, so what is recorded here is an outstanding deviation awaiting a
+decision (pull a lever, or raise the ceiling deliberately), not a measurement that has been
+disposed of.
+
+The reason it has not blocked the wave: the check still runs in well under a second and a half, and
+the two declaration sizes are inside 3×. The reason it cannot be left indefinitely: types are inside
+their own limit by 1 %, roughly 1,700 types, so the next endpoint added to the group breaches both
+numbers at once rather than one. Types is therefore the measure to re-take first on the next wave,
+and the levers are the first thing that wave does.
 
 #### 8.6 Backward compatibility, and `Auth.define`
 
@@ -745,8 +752,11 @@ AuthHandlers.dieOn(tags)(effect)   // serverFaultTags = ["PasswordHashError", "P
 consumer will compose. `forGroup` is that boundary written once — the cast documented in
 REFACTOR.md §5.1, which this wave widened from `layer`'s private use to a public door. Both callers
 pin `api.groups[id]` to the group value they were handed, so an API carrying a *different* group
-under the same identifier is a compile error rather than a mis-served route. `layer` is now
-literally `forGroup(AuthApiGroup, …)`, so the plugin path and the core path are the same path.
+under the same identifier is a compile error rather than a mis-served route. `forGroup` and `layer`
+are the two public doors onto one private `buildGroup`, which holds the cast; `layer` cannot go
+through `forGroup` itself, because `forGroup` would pin `groups["auth"]` to `typeof AuthApiGroup`
+while `layer`'s API carries `AuthApiGroupOf<F>`. The plugin path and the core path are still the
+same path — the cast is written once, in `buildGroup`.
 
 `dieOn` turns named infrastructural tags into defects, which is how an endpoint's declared error
 union stays the client contract rather than a list of everything that can go wrong underneath it.
@@ -876,12 +886,12 @@ created unverified.
 
 #### 10.3 Deviations from the plan, recorded
 
-1. **Users are provisioned through the base-typed `UserStore`, not `UserModelRef`.** An
-   `AnyUserModel`'s `makeInsert` answers the erased `UserRow`, which is not assignable to the
-   base-typed `create` without a cast the gate forbids. The plugin does what `Accounts.ts` does —
-   `insertRow(User.insert, …)` then `users.create(row)` — and §8.3's `completeInsert` gives a
-   deployment's own columns their defaults regardless. `UserModelRef` remains, unused by this
-   plugin.
+1. **Users are provisioned through the base-typed `UserStore`, not `UserModelRef`.**
+   `AnyUserModel.makeInsert` / `completeInsert` answer the base-typed insert row (`UserInsertOf<{}>`),
+   so the seam's documented use does compile against `UserStore.create` — but the plugin does what
+   `Accounts.ts` does — `insertRow(User.insert, …)` then `users.create(row)` — because §8.3's
+   `completeInsert` gives a deployment's own columns their defaults regardless, and one fewer service
+   is one fewer thing a plugin can misuse. `UserModelRef` remains, unused by this plugin.
 2. **The group is not parameterized by user fields.** `MagicLinkApiGroup` and `MagicLinkClient` are
    non-generic, which is what Part B asked for and what keeps the plugin cast-free. The consequence
    is client-visible and is documented in the module: in a deployment with custom user fields,
@@ -932,9 +942,13 @@ Each of these is a considered difference, not an oversight.
    that address is verified), then a verification to the new one. The new address lives in the
    token's payload and never in a URL.
 2. **The uniqueness check for a change of address is the unique index at hop two**, surfacing as
-   `UserAlreadyExists`. Hop one answers `200` whether or not the address is free, because a
-   distinguishable answer makes the endpoint an oracle for who is registered here. `hop 2` is also
-   deliberately *not* re-checked against the account's current address.
+   `UserAlreadyExists`. Hop one answers `200` **and mails the hop-1 confirmation to the caller's own
+   verified address whether or not the new address is free**: a taken address that produced no mail
+   would let an account holder enumerate registrations from their own mailbox. `confirmEmailChange`
+   re-checks availability at claim time and, when the address is taken, silently sends no hop 2 —
+   so the caller's observable outcome (response, mail count and kind) is identical for a free and a
+   taken address, and the occupied address is never written to. Hop 2 is also deliberately *not*
+   re-checked against the account's current address.
 3. **A completed change ends `emailVerified: true`** — the link was delivered to the address it
    names — and **other sessions are not revoked**. Nothing about the account's credentials changed.
 4. **Both `requestEmailChange` and `requestDeletion` retire their purpose's outstanding tokens
@@ -1067,9 +1081,11 @@ middleware as `Context.get(options.endpoint.annotations, AuthoritativeSession)`.
 endpoint bypasses the cache in **both** directions — no read, no write. It is an annotation rather
 than a second middleware because a security middleware handler already receives the endpoint, and
 because a plugin then opts in with one line on its own endpoint. Annotated in this library:
-`changePassword`, `unlinkAccount`, `changeEmail`, `deleteUser`, `deleteUserCallback`, `setPassword`
-— pinned as a list in `test/http-api/AuthApi.test.ts`, because an identity- or credential-changing
-endpoint that forgets the line would act on a snapshot up to `maxAge` old. The annotation is a
+`changePassword`, `unlinkAccount`, `changeEmail`, `deleteUser`, `deleteUserCallback`, `setPassword`,
+`getAccessToken`, `refreshToken` — pinned as a list in `test/http-api/AuthApi.test.ts`, because an
+identity- or credential-changing endpoint that forgets the line would act on a snapshot up to
+`maxAge` old, and the two token endpoints hand out provider credentials that a revoked-elsewhere
+session must not be able to fetch from a cached cookie. The annotation is a
 `Context` annotation, so it is invisible to OpenAPI and to the generated client.
 
 #### 12.4 Invalidation

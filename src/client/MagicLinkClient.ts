@@ -26,9 +26,8 @@
  *
  * @since 1.0.0
  */
-import { Layer } from "effect"
+import type { Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http"
-import { FetchHttpClient } from "effect/unstable/http"
 import { Atom, AtomHttpApi } from "effect/unstable/reactivity"
 import type { InvalidToken, RateLimited } from "../domain/Errors.js"
 import type { SessionWithUser } from "../domain/Schema.js"
@@ -36,7 +35,7 @@ import type { Ok } from "../http/AuthApi.js"
 import type { MagicLinkExchangePayload, MagicLinkSignInPayload, SignUpDisabled } from "../magic-link/Api.js"
 import { magicLinkPrefix, MagicLinkApi, MagicLinkApiGroup } from "../magic-link/Api.js"
 import { sessionKey, sessionsKey } from "./AuthClient.js"
-import { withPayload } from "./internal/atoms.js"
+import { layerFetch, withPayload } from "./internal/atoms.js"
 
 /**
  * The path the e-mailed link points at, as {@link MagicLinkApiGroup} serves it.
@@ -208,13 +207,3 @@ export const make = (options?: Options | undefined): MagicLinkClient => {
     }
   }
 }
-
-// -----------------------------------------------------------------------------
-// internal
-// -----------------------------------------------------------------------------
-
-const layerFetch = (credentials: RequestCredentials): Layer.Layer<HttpClient.HttpClient> =>
-  Layer.provide(
-    FetchHttpClient.layer,
-    Layer.succeed(FetchHttpClient.RequestInit, { credentials })
-  )

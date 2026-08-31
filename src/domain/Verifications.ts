@@ -224,6 +224,118 @@ export const emailVerifyPurpose: TokenPurpose<null> = purpose("email-verify")
  */
 export const passwordResetPurpose: TokenPurpose<null> = purpose("password-reset")
 
+
+/**
+ * What travels with either hop of an e-mail change: the address being moved to.
+ *
+ * **Gotchas**
+ *
+ * Server-side state in the `verifications` table, not a claim in a URL. That is
+ * the whole reason the payload exists — see the module header.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const ChangeEmailPayload = Schema.Struct({
+  newEmail: Schema.String
+})
+
+/**
+ * The type of a {@link ChangeEmailPayload}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type ChangeEmailPayload = typeof ChangeEmailPayload.Type
+
+/**
+ * What travels with an account-deletion link: where to send the browser
+ * afterwards.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const DeleteAccountPayload = Schema.Struct({
+  callbackURL: Schema.NullOr(Schema.String)
+})
+
+/**
+ * The type of a {@link DeleteAccountPayload}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type DeleteAccountPayload = typeof DeleteAccountPayload.Type
+
+/**
+ * The first hop of an e-mail change: the link sent to the address the account
+ * currently has. Its subject is the user's id.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const changeEmailConfirmPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
+  "change-email-confirm",
+  ChangeEmailPayload
+)
+
+/**
+ * The second hop: the link sent to the new address, which is what actually
+ * changes the column. Its subject is the user's id.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const changeEmailVerifyPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
+  "change-email-verify",
+  ChangeEmailPayload
+)
+
+/**
+ * An account-deletion confirmation link. Its subject is the user's id.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose(
+  "delete-account",
+  DeleteAccountPayload
+)
+
+/**
+ * Every purpose this library mints tokens under whose subject is a **user id**.
+ *
+ * **When to use**
+ *
+ * Wherever an account stops being the account those tokens were minted against.
+ *
+ * *A user is deleted.* Whatever is outstanding for them has to go with the row:
+ * a link that outlives the account it names is a link that will one day name
+ * somebody else's.
+ *
+ * *An account is re-secured.* A password reset, and the magic link plugin's
+ * takeover defence, both destroy the ways into an account that somebody else
+ * may have set up — and an outstanding link is one of those ways. A
+ * `change-email-verify` token in particular moves the account to the address
+ * that asked for it, so leaving one alive would hand back everything the reset
+ * just took away.
+ *
+ * **Gotchas**
+ *
+ * `email-verify` is not in the list and cannot be: its subject is the address,
+ * not the id. A caller retiring tokens for a user retires that one separately,
+ * against `normalizeEmail(user.email)`.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
+  passwordResetPurpose,
+  changeEmailConfirmPurpose,
+  changeEmailVerifyPurpose,
+  deleteAccountPurpose
+]
+
 // -----------------------------------------------------------------------------
 // Service
 // -----------------------------------------------------------------------------

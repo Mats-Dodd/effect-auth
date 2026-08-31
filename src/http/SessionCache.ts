@@ -49,7 +49,11 @@
  * *Bearer clients gain nothing.* The cache is written and read on the cookie
  * transports only — a bearer client has no cookie jar, and reading a cookie
  * alongside a bearer credential would let a cookie decide what a header-only
- * request sees.
+ * request sees. `write` enforces that itself, by refusing to write where the
+ * request presented no session cookie: the middleware knows which transport
+ * authenticated a request, but a handler rewriting the snapshot after an update
+ * does not, and a browser SPA holding a bearer token would otherwise be left
+ * with a signed profile snapshot in its jar that nothing ever clears.
  *
  * *It is not a defence.* Rotating `AuthConfig.secret` invalidates every
  * outstanding snapshot — an undecodable cookie is a miss, never a `401` — but
@@ -75,6 +79,7 @@ import {
   expiredSessionCookieOptions,
   sessionCacheCookieName,
   sessionCacheCookieSecurity,
+  sessionCookieName,
   sessionCookieOptions
 } from "./Cookies.js"
 
@@ -116,6 +121,25 @@ export const maxCookieBytes = 3072
  * @since 1.0.0
  */
 export const payloadVersion = 1
+
+/**
+ * What every cache MAC covers before the payload itself.
+ *
+ * **Details**
+ *
+ * Domain separation. `Hmac` is a published service — a plugin may sign values
+ * of its own with the same key — and a tag is only ever a tag *for* something.
+ * Prefixing the signed bytes with a context nothing else uses is what makes a
+ * tag produced elsewhere useless here: a forged envelope would have to be
+ * signed under this exact prefix, which only this module writes.
+ *
+ * It is part of the format, so changing it invalidates every outstanding
+ * snapshot — a miss, never a `401`.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const macContext = "effect-auth/session-cache/v1\n"
 
 /**
  * The wire envelope, as it is written into the cookie.
@@ -261,6 +285,12 @@ export interface SessionCacheService<F extends UserFields = {}> {
 
   /**
    * Writes a snapshot of this session and user onto the response being built.
+   *
+   * **Gotchas**
+   *
+   * A no-op unless the request presented the session cookie: the cache is a
+   * cookie-transport optimisation, and a caller that authenticated with a
+   * bearer token must not be handed one.
    */
   readonly write: (
     session: Session,
@@ -345,6 +375,21 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   const hiddenDefaults = yield* model.extraDefaults
   const encodeUser = Schema.encodeUnknownEffect(model.json)
 
+  const hidden = Object.keys(hiddenDefaults)
+  if (enabled && hidden.length > 0) {
+    // Said once, when the stack is built, rather than left to whoever reads the
+    // module header: on a cache hit these columns carry their declared
+    // defaults, because a snapshot is the public projection and a hidden field
+    // is not in it. An endpoint that reads one has to be annotated
+    // `AuthoritativeSession`, and nothing but this line will tell a deployment
+    // so.
+    yield* annotateAuthLogs(Effect.logWarning(
+      `the session cookie cache is enabled and the user model hides ${
+        hidden.join(", ")
+      }: a cached read sees the declared default of a hidden field, not the stored value. Annotate any endpoint that reads one AuthoritativeSession.`
+    ))
+  }
+
   const encode = Effect.fnUntraced(function*(payload: SessionCachePayload<F>) {
     const json = yield* Effect.orDie(encodeEnvelope({
       v: payloadVersion,
@@ -356,7 +401,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // from the *value*, so it cannot reach the encoder in the first place.
       user: yield* Effect.orDie(encodeUser(model.toPublic(payload.user)))
     }))
-    const mac = yield* hmac.sign(encodeUtf8(json))
+    const mac = yield* hmac.sign(encodeUtf8(`${macContext}${json}`))
     return `${Encoding.encodeBase64Url(json)}${cacheCookieSeparator}${Encoding.encodeBase64Url(mac)}`
   })
 
@@ -369,8 +414,9 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     if (Result.isFailure(json) || Result.isFailure(mac)) return Option.none<SessionCachePayload<F>>()
 
     // The tag is checked before anything is parsed: everything below trusts the
-    // payload to be one this deployment wrote.
-    const authentic = yield* hmac.verify(encodeUtf8(json.success), mac.success)
+    // payload to be one this deployment wrote *as a cache snapshot* — hence the
+    // context prefix, which is what "as a cache snapshot" is made of.
+    const authentic = yield* hmac.verify(encodeUtf8(`${macContext}${json.success}`), mac.success)
     if (!authentic) return Option.none<SessionCachePayload<F>>()
 
     const envelope = yield* Effect.option(decodeEnvelope(json.success))
@@ -422,6 +468,16 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
   const write = Effect.fnUntraced(function*(session: Session, user: UserOf<F>) {
     if (!enabled) return
+
+    // Cookie transports only, whoever is asking. The middleware decides that
+    // for the request it authenticates, but a handler rewriting the snapshot
+    // after a change to the user — `updateUser` — has no idea which transport
+    // reached it, and a bearer client would otherwise be handed a `Set-Cookie`
+    // it never asked for and nothing ever clears. The presented session cookie
+    // is exactly the condition the read side applies.
+    const request = yield* HttpServerRequest.HttpServerRequest
+    const presented = request.cookies[sessionCookieName(config)]
+    if (presented === undefined || presented.length === 0) return
 
     const now = yield* DateTime.now
     const expiresAt = cacheExpiry(config, session, now)

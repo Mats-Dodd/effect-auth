@@ -192,7 +192,9 @@ const contract = [
 /**
  * The endpoints that must see the session as the database has it, rather than as
  * a cookie-cache snapshot remembers it. Every one of them either reads a
- * credential, changes one, or changes the identity behind it.
+ * credential, changes one, or changes the identity behind it — the last two
+ * hand a provider's credential to the caller and rotate the stored one, which
+ * is both at once.
  */
 const authoritative = [
   "changePassword",
@@ -200,7 +202,9 @@ const authoritative = [
   "changeEmail",
   "deleteUser",
   "deleteUserCallback",
-  "setPassword"
+  "setPassword",
+  "getAccessToken",
+  "refreshToken"
 ] as const
 
 const endpoints = AuthApiGroup.endpoints as unknown as Readonly<Record<string, HttpApiEndpoint.Top>>

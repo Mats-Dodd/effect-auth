@@ -766,7 +766,9 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               }).pipe(serverFault)
               // The snapshot in this browser's cookie now names the old profile.
               // Rewriting it here is cheaper than invalidating it, and keeps the
-              // very next request a cache hit.
+              // very next request a cache hit. Unconditional because it is not:
+              // `write` is a no-op unless the request presented the session
+              // cookie, so a bearer client is handed nothing.
               yield* cache.write(session, updated)
               return { user: model.toPublic(updated) }
             }))

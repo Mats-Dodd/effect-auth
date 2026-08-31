@@ -33,16 +33,34 @@
  * `UserAlreadyExists` to somebody who has by then proven they control the
  * address.
  *
- * What is *not* identical is the latency: a free address additionally mints a
- * token, writes a row and awaits the mailer. That is the same residual channel
- * `Passwords.requestReset` documents, and it closes the same way — an
+ * The response is not the only thing a caller can watch, though: the caller owns
+ * the mailbox hop one is sent to. So a verified current address is mailed the
+ * confirmation **whether or not the new address is free** — an attacker who
+ * asks to move to somebody else's address sees exactly what they see when they
+ * ask to move to a free one — and the address is re-checked when that link is
+ * followed, where a taken one silently sends no second hop. Nothing is ever
+ * mailed to the *new* address until its own hop, so a third party's mailbox
+ * tells the attacker nothing either.
+ *
+ * What is *not* identical is the latency, on the one branch where the two paths
+ * still differ: an account whose current address is unverified has no first hop,
+ * so a free address mints a token, writes a row and awaits the mailer where a
+ * taken one returns after the lookup. Nothing arrives anywhere the caller can
+ * see in either case, which leaves timing — the same residual channel
+ * `Passwords.requestReset` documents, and it closes the same way, with an
  * `AuthEmails` implementation that enqueues and returns.
  *
  * @since 1.0.0
  */
-import { Context, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Context, Effect, Layer, Option, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
-import { AuthEmails, changeEmailConfirmUrl, changeEmailVerifyUrl, deleteAccountUrl } from "../config/AuthEmails.js"
+import {
+  AuthEmails,
+  changeEmailConfirmUrl,
+  changeEmailVerifyUrl,
+  deleteAccountUrl,
+  withCallbackUrl
+} from "../config/AuthEmails.js"
 import { resolveUrl, validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs } from "../internal/effects.js"
 import { omitUndefined, pickKeys } from "../internal/records.js"
@@ -56,89 +74,26 @@ import { baseUserModel, normalizeEmail } from "./Schema.js"
 import { Sessions } from "./Sessions.js"
 import type { PersistenceError } from "./Stores.js"
 import { isUniqueViolation, UserStore, userStoreOf, VerificationStore, WithAuthTransaction } from "./Stores.js"
-import type { TokenPurpose } from "./Verifications.js"
-import { emailVerifyPurpose, passwordResetPurpose, purpose, Verifications } from "./Verifications.js"
+import {
+  changeEmailConfirmPurpose,
+  changeEmailVerifyPurpose,
+  deleteAccountPurpose,
+  emailVerifyPurpose,
+  userSubjectPurposes,
+  Verifications
+} from "./Verifications.js"
 
-// -----------------------------------------------------------------------------
-// Purposes
-// -----------------------------------------------------------------------------
-
-/**
- * What travels with either hop of an e-mail change: the address being moved to.
- *
- * **Gotchas**
- *
- * Server-side state in the `verifications` table, not a claim in a URL. That is
- * the whole reason the payload exists — see the module header.
- *
- * @category models
- * @since 1.0.0
- */
-export const ChangeEmailPayload = Schema.Struct({
-  newEmail: Schema.String
-})
-
-/**
- * The type of a {@link ChangeEmailPayload}.
- *
- * @category models
- * @since 1.0.0
- */
-export type ChangeEmailPayload = typeof ChangeEmailPayload.Type
-
-/**
- * What travels with an account-deletion link: where to send the browser
- * afterwards.
- *
- * @category models
- * @since 1.0.0
- */
-export const DeleteAccountPayload = Schema.Struct({
-  callbackURL: Schema.NullOr(Schema.String)
-})
-
-/**
- * The type of a {@link DeleteAccountPayload}.
- *
- * @category models
- * @since 1.0.0
- */
-export type DeleteAccountPayload = typeof DeleteAccountPayload.Type
-
-/**
- * The first hop of an e-mail change: the link sent to the address the account
- * currently has. Its subject is the user's id.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const changeEmailConfirmPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
-  "change-email-confirm",
-  ChangeEmailPayload
-)
-
-/**
- * The second hop: the link sent to the new address, which is what actually
- * changes the column. Its subject is the user's id.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const changeEmailVerifyPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
-  "change-email-verify",
-  ChangeEmailPayload
-)
-
-/**
- * An account-deletion confirmation link. Its subject is the user's id.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose(
-  "delete-account",
-  DeleteAccountPayload
-)
+// The change-email and delete-account purposes are defined beside the other
+// token purposes in `Verifications.ts` (so `Passwords` can retire them without
+// importing this module) and re-exported here, where their flows live.
+export {
+  ChangeEmailPayload,
+  changeEmailConfirmPurpose,
+  changeEmailVerifyPurpose,
+  DeleteAccountPayload,
+  deleteAccountPurpose,
+  userSubjectPurposes
+} from "./Verifications.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -213,7 +168,17 @@ export type EmailChangeOutcome =
   | "ConfirmationSent"
   /** The current address is unverified, so the flow started at hop two. */
   | "VerificationSent"
-  /** The new address already belongs to somebody. Nothing was written or sent. */
+  /**
+   * The new address already belongs to somebody, so the change will go no
+   * further.
+   *
+   * **Gotchas**
+   *
+   * Hop one was still mailed where there was one to mail — a verified current
+   * address gets the same message it gets for a free address, because the
+   * caller's own mailbox must not tell them which it was. Nothing was sent to
+   * the new address, and following that first hop does nothing.
+   */
   | "Ignored"
 
 /**
@@ -427,22 +392,6 @@ export type Requirements =
   | Passwords
 
 /**
- * Every purpose this service mints tokens under whose subject is a **user id**.
- *
- * **When to use**
- *
- * When a user is deleted. Whatever is outstanding for them has to go with the
- * row: a link that outlives the account it names is a link that will one day
- * name somebody else's.
- */
-const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
-  passwordResetPurpose,
-  changeEmailConfirmPurpose,
-  changeEmailVerifyPurpose,
-  deleteAccountPurpose
-]
-
-/**
  * Builds the {@link Users} implementation for a user model.
  *
  * **Gotchas**
@@ -473,28 +422,6 @@ export const make: <F extends UserFields>(
   const transaction = yield* WithAuthTransaction
   const sessions = yield* Sessions
   const passwords = yield* Passwords
-
-  /**
-   * Appends the caller's landing page to an e-mailed link — after validating it,
-   * again.
-   *
-   * **Gotchas**
-   *
-   * The same second pass `Passwords` makes, for the same reason: what goes in
-   * here ends up in a link sent to somebody's mailbox, and an open redirect
-   * there is a phishing page with the deployment's own name on it. A candidate
-   * that does not survive `validateUrl` is dropped rather than refused.
-   */
-  const withCallback = (
-    url: Redacted.Redacted<string>,
-    callbackURL: string | undefined
-  ): Redacted.Redacted<string> => {
-    const validated = validateUrl(config, callbackURL)
-    if (Option.isNone(validated)) return url
-    const parsed = new URL(Redacted.value(url))
-    parsed.searchParams.set("callbackURL", validated.value)
-    return Redacted.make(parsed.toString())
-  }
 
   /**
    * Hands a message to the seam and forgets whatever it says.
@@ -531,7 +458,7 @@ export const make: <F extends UserFields>(
         user,
         newEmail,
         token: issued.token,
-        url: withCallback(changeEmailVerifyUrl(config, issued.token), callbackURL)
+        url: withCallbackUrl(config, changeEmailVerifyUrl(config, issued.token), callbackURL)
       }),
       "change-email verification e-mail delivery failed"
     )
@@ -591,25 +518,31 @@ export const make: <F extends UserFields>(
       return yield* Effect.fail(new EmailUnchanged())
     }
 
-    const taken = yield* users.findByEmail(newEmail)
-    if (Option.isSome(taken)) {
-      // No row, no mail, and the endpoint above answers exactly as it does for
-      // the other two outcomes. The address is deliberately absent from the log
-      // line: it is somebody else's, and this line is not the place to record
-      // that it is registered here.
+    const taken = Option.isSome(yield* users.findByEmail(newEmail))
+    if (taken) {
+      // The address is deliberately absent from the log line: it is somebody
+      // else's, and this line is not the place to record that it is registered
+      // here.
       yield* annotateAuthLogs(
-        Effect.logInfo("an e-mail change was ignored: the requested address is already in use")
+        Effect.logInfo("an e-mail change will go no further: the requested address is already in use")
       )
-      return "Ignored" as const
     }
 
     if (!user.emailVerified) {
       // An unverified address is no evidence that anybody reads it, so there is
-      // nobody to warn: the flow starts at the second hop.
+      // nobody to warn: the flow starts at the second hop — which is also the
+      // only mailbox anything would arrive in, and it is not the caller's. A
+      // taken address therefore stops here without an observable difference.
+      if (taken) return "Ignored" as const
       yield* sendVerificationHop(user, newEmail, options.callbackURL)
       return "VerificationSent" as const
     }
 
+    // Hop one goes out whether or not the address is free. The caller owns this
+    // mailbox, so a message that arrived only for a free address would tell
+    // them exactly what the 200 refuses to: whether somebody is registered
+    // here. Following it is where the collision is noticed instead.
+    //
     // As with the second hop, asking twice replaces the request rather than
     // adding to it.
     yield* verifications.retire(changeEmailConfirmPurpose, user.id)
@@ -624,11 +557,11 @@ export const make: <F extends UserFields>(
         user,
         newEmail,
         token: issued.token,
-        url: withCallback(changeEmailConfirmUrl(config, issued.token), options.callbackURL)
+        url: withCallbackUrl(config, changeEmailConfirmUrl(config, issued.token), options.callbackURL)
       }),
       "change-email confirmation e-mail delivery failed"
     )
-    return "ConfirmationSent" as const
+    return taken ? "Ignored" as const : "ConfirmationSent" as const
   })
 
   const confirmEmailChange = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
@@ -640,11 +573,25 @@ export const make: <F extends UserFields>(
     // there is nothing to confirm.
     const user = yield* Effect.fromOption(found, () => new InvalidToken())
 
+    const newEmail = normalizeEmail(claimed.payload.newEmail)
+    if (Option.isSome(yield* users.findByEmail(newEmail))) {
+      // Hop one is mailed for a taken address too — see the module header — and
+      // this is where that stops: no second hop is sent, so nothing ever
+      // reaches a mailbox that is not the caller's, and the answer is the same
+      // `Ok` a free address gets. Somebody who took the address between the two
+      // hops lands here as well, and the unique index at hop two is the
+      // backstop for the race the read cannot close.
+      yield* annotateAuthLogs(
+        Effect.logInfo("an e-mail change stopped at the first hop: the requested address is already in use")
+      )
+      return
+    }
+
     // The landing page the first hop was asked for does not survive into the
     // second: the payload carries the address and nothing else, and widening it
     // would put a caller-supplied URL into a row that is read back on an
     // unauthenticated path.
-    yield* sendVerificationHop(user, claimed.payload.newEmail, undefined)
+    yield* sendVerificationHop(user, newEmail, undefined)
   })
 
   const verifyEmailChange = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {

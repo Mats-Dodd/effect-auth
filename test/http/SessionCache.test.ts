@@ -1,4 +1,4 @@
-import { assert, describe, it, layer } from "@effect/vitest"
+import { assert, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Encoding, Option, Redacted, Result } from "effect"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
 import * as HmacCrypto from "../../src/crypto/Hmac.js"
@@ -11,7 +11,7 @@ import {
   SessionCache,
   sessionSnapshot
 } from "../../src/http/SessionCache.js"
-import { ambientCrypto } from "../../src/internal/crypto.js"
+import { ambientCrypto, encodeUtf8 } from "../../src/internal/crypto.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
@@ -165,12 +165,47 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
       assert.isTrue(Option.isSome(yield* cache.decode(ours)))
       assert.isTrue(Option.isSome(yield* rogue.decode(theirs)))
     }))
-})
 
-describe("http/SessionCache (disabled)", () => {
-  it.effect("is still provided, switched off, when a deployment did not ask for it", () =>
+  it.effect("refuses a tag the shared Hmac produced for something that is not a snapshot", () =>
     Effect.gen(function*() {
       const cache = yield* SessionCache
-      assert.isFalse(cache.enabled)
-    }).pipe(Effect.provide(AuthTest.layer())))
+      const hmac = yield* HmacCrypto.Hmac
+      const { session, user } = yield* signedUp(uniqueEmail("cache-domain"))
+      const now = yield* DateTime.now
+
+      const value = yield* cache.encode({
+        version: "",
+        tokenHash: session.tokenHash,
+        expiresAt: DateTime.addDuration(now, Duration.minutes(5)),
+        session,
+        user
+      })
+      const json = value.split(".")[0]!
+
+      // `Hmac` is published for plugins to sign values of their own with. One
+      // that signed a caller-influenced JSON document would otherwise be a tag
+      // factory for this cookie: the envelope alone verifies, and a forged
+      // snapshot is a request served as somebody else with no database read at
+      // all. The MAC covers a context string this module alone writes, so a tag
+      // over the bare payload is not a tag for a snapshot.
+      const decoded = Encoding.decodeBase64UrlString(json)
+      if (Result.isFailure(decoded)) return assert.fail("the payload half should be base64url")
+      const bare = yield* hmac.sign(encodeUtf8(decoded.success))
+      assert.isTrue(Option.isNone(yield* cache.decode(`${json}.${Encoding.encodeBase64Url(bare)}`)))
+
+      // The same bytes with the context in front are the tag this module wrote.
+      assert.isTrue(Option.isSome(yield* cache.decode(value)))
+    }))
+
+  // Nested rather than a `describe` that provides `AuthTest.layer()` inside the
+  // test body: an `it.layer` forks this block's memo map, so the deployment
+  // whose only difference is the configuration inherits the PGlite this block
+  // already booted instead of booting one to read a boolean.
+  it.layer(AuthTest.layer())("with no deployment asking for it", (it) => {
+    it.effect("is still provided, switched off", () =>
+      Effect.gen(function*() {
+        const cache = yield* SessionCache
+        assert.isFalse(cache.enabled)
+      }))
+  })
 })

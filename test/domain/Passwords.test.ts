@@ -9,7 +9,8 @@ import type { AccountId, UserId } from "../../src/domain/Schema.js"
 import { CredentialIssuer } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
-import { decodeSubjectToken } from "../../src/domain/Verifications.js"
+import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
+import { decodeSubjectToken, Verifications } from "../../src/domain/Verifications.js"
 import { AuthTest, TestEmails } from "../../src/testing/index.js"
 import { expectSome, newPassword, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
@@ -416,6 +417,34 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         )
         assert.strictEqual(replay._tag, "InvalidToken")
         yield* passwords.signIn({ email, password: newPassword })
+      }))
+
+    it.effect("a completed reset retires the change-email link the account was the subject of", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const verifications = yield* Verifications
+        const email = uniqueEmail("reset-retire-move")
+        const { user } = yield* register(email)
+
+        // The account is unverified — nobody has proved they read this address
+        // — so the change-email flow skips its first hop, and whoever
+        // registered it could already hold a link that moves it elsewhere.
+        const move = yield* verifications.issue({
+          purpose: changeEmailVerifyPurpose,
+          subject: user.id,
+          ttl: Duration.hours(1),
+          payload: { newEmail: uniqueEmail("reset-retire-elsewhere") }
+        })
+
+        yield* passwords.requestReset({ email })
+        const mail = yield* mailTo("reset", email)
+        yield* passwords.resetPassword({ token: mail.token, newPassword })
+
+        // Revoking the sessions and replacing the hash is not re-securing the
+        // account while that link is alive: following it would hand the account
+        // to the address it names.
+        const moved = yield* Effect.flip(verifications.claim(changeEmailVerifyPurpose, move.token))
+        assert.strictEqual(moved._tag, "InvalidToken")
       }))
 
     it.effect("changing a password from inside a session retires pending reset links too", () =>

@@ -534,115 +534,118 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         }))
     })
   })
-})
 
-layer(AuthTest.layerHttp())("http/Handlers opt-in flows", (it) => {
-  it.effect("does not serve change-email or delete-user until a deployment asks for them", () =>
-    Effect.gen(function*() {
-      const { client } = yield* signedUp(uniqueEmail("opt-in-off"))
+  // A `describe` inside this block rather than a second top-level `layer()`:
+  // the deployment is the same one, so grouping keeps the file on the single
+  // PGlite the block above booted.
+  describe("opt-in flows", () => {
+    it.effect("does not serve change-email or delete-user until a deployment asks for them", () =>
+      Effect.gen(function*() {
+        const { client } = yield* signedUp(uniqueEmail("opt-in-off"))
 
-      // The endpoints are *declared* unconditionally — a schema-driven API has
-      // one shape, not one per configuration — so a deployment that has not
-      // opted in answers 404, which is what "this deployment does not serve
-      // that" means over HTTP rather than inventing an error the contract does
-      // not mention.
-      assert.strictEqual(
-        yield* refusedStatus(client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-new") } })),
-        404
-      )
-      assert.strictEqual(yield* refusedStatus(client.auth.deleteUser({ payload: {} })), 404)
-      assert.strictEqual(
-        yield* refusedStatus(client.auth.confirmEmailChange({ query: { token: "irrelevant" } })),
-        404
-      )
+        // The endpoints are *declared* unconditionally — a schema-driven API has
+        // one shape, not one per configuration — so a deployment that has not
+        // opted in answers 404, which is what "this deployment does not serve
+        // that" means over HTTP rather than inventing an error the contract does
+        // not mention.
+        assert.strictEqual(
+          yield* refusedStatus(client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-new") } })),
+          404
+        )
+        assert.strictEqual(yield* refusedStatus(client.auth.deleteUser({ payload: {} })), 404)
+        assert.strictEqual(
+          yield* refusedStatus(client.auth.confirmEmailChange({ query: { token: "irrelevant" } })),
+          404
+        )
 
-      // And the account is still there, which is the assertion that matters.
-      const session = yield* client.auth.getSession()
-      assert.strictEqual(session.user.emailVerified, false)
-    }))
+        // And the account is still there, which is the assertion that matters.
+        const session = yield* client.auth.getSession()
+        assert.strictEqual(session.user.emailVerified, false)
+      }))
 
-  it.layer(AuthTest.layerHttp({ user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } } }))(
-    "once they are switched on",
-    (it) => {
-      it.effect("stops answering 404 and reaches the domain instead", () =>
-        Effect.gen(function*() {
-          const { client } = yield* signedUp(uniqueEmail("opt-in-on"))
-          const newEmail = uniqueEmail("opt-in-next")
+    it.layer(AuthTest.layerHttp({ user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } } }))(
+      "once they are switched on",
+      (it) => {
+        it.effect("stops answering 404 and reaches the domain instead", () =>
+          Effect.gen(function*() {
+            const { client } = yield* signedUp(uniqueEmail("opt-in-on"))
+            const newEmail = uniqueEmail("opt-in-next")
 
-          // The gate is the only thing under test here: the request now gets
-          // past it and into the service, which does what it does. What that is
-          // — the two hops, the enumeration rules, the freshness guard — is
-          // `test/http/Users.test.ts`'s subject.
-          const answered = yield* client.auth.changeEmail({ payload: { newEmail } })
-          assert.strictEqual(answered.success, true)
-          // Reaching the service is what a 404 would have prevented, and this
-          // is the evidence of it: the flow has begun. This account's own
-          // address is unverified, so it begins at the second hop.
-          const emails = yield* AuthTest.TestEmails
-          assert.isTrue(Option.isSome(yield* emails.last(AuthTest.changeEmailVerificationKind, newEmail)))
-        }))
-    }
-  )
-})
+            // The gate is the only thing under test here: the request now gets
+            // past it and into the service, which does what it does. What that is
+            // — the two hops, the enumeration rules, the freshness guard — is
+            // `test/http/Users.test.ts`'s subject.
+            const answered = yield* client.auth.changeEmail({ payload: { newEmail } })
+            assert.strictEqual(answered.success, true)
+            // Reaching the service is what a 404 would have prevented, and this
+            // is the evidence of it: the flow has begun. This account's own
+            // address is unverified, so it begins at the second hop.
+            const emails = yield* AuthTest.TestEmails
+            assert.isTrue(Option.isSome(yield* emails.last(AuthTest.changeEmailVerificationKind, newEmail)))
+          }))
+      }
+    )
+  })
 
-layer(AuthTest.layerHttp())("http/Handlers form_post callback", (it) => {
-  it.effect("turns a cross-site POST into a top-level GET carrying the same parameters", () =>
-    Effect.gen(function*() {
-      const { client, cookies } = yield* makeClient()
+  describe("form_post callback", () => {
+    it.effect("turns a cross-site POST into a top-level GET carrying the same parameters", () =>
+      Effect.gen(function*() {
+        const { client, cookies } = yield* makeClient()
 
-      const [, response] = yield* client.auth.oauthCallbackForm({
-        params: { providerId: "apple" },
-        payload: { code: "the-code", state: "the-state", user: `{"name":{"firstName":"Ada"}}` },
-        responseMode: "decoded-and-response"
-      })
+        const [, response] = yield* client.auth.oauthCallbackForm({
+          params: { providerId: "apple" },
+          payload: { code: "the-code", state: "the-state", user: `{"name":{"firstName":"Ada"}}` },
+          responseMode: "decoded-and-response"
+        })
 
-      // The whole endpoint is a hop. A cross-site POST carries no
-      // `SameSite=Lax` cookie, so completing the flow here could neither read
-      // this browser's session nor write one it would keep.
-      assert.strictEqual(response.status, 302)
-      const location = new URL(response.headers["location"] ?? "")
-      assert.strictEqual(location.origin, "http://localhost:3000")
-      assert.strictEqual(location.pathname, "/auth/callback/apple")
-      assert.strictEqual(location.searchParams.get("code"), "the-code")
-      assert.strictEqual(location.searchParams.get("state"), "the-state")
-      assert.strictEqual(location.searchParams.get("user"), `{"name":{"firstName":"Ada"}}`)
-      // Nothing the provider did not send.
-      assert.isFalse(location.searchParams.has("error"))
-      // And nothing is signed in by a hop.
-      assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
-    }))
+        // The whole endpoint is a hop. A cross-site POST carries no
+        // `SameSite=Lax` cookie, so completing the flow here could neither read
+        // this browser's session nor write one it would keep.
+        assert.strictEqual(response.status, 302)
+        const location = new URL(response.headers["location"] ?? "")
+        assert.strictEqual(location.origin, "http://localhost:3000")
+        assert.strictEqual(location.pathname, "/auth/callback/apple")
+        assert.strictEqual(location.searchParams.get("code"), "the-code")
+        assert.strictEqual(location.searchParams.get("state"), "the-state")
+        assert.strictEqual(location.searchParams.get("user"), `{"name":{"firstName":"Ada"}}`)
+        // Nothing the provider did not send.
+        assert.isFalse(location.searchParams.has("error"))
+        // And nothing is signed in by a hop.
+        assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
+      }))
 
-  it.effect("sends the browser to this deployment, whatever the provider named", () =>
-    Effect.gen(function*() {
-      // The target is built from `baseUrl` and `basePath`, never from the
-      // request's own `Host` — which is attacker-controllable, and a `Location`
-      // built from one is an open redirect.
-      const { client } = yield* makeClient({ headers: { host: "evil.test" } })
+    it.effect("sends the browser to this deployment, whatever the provider named", () =>
+      Effect.gen(function*() {
+        // The target is built from `baseUrl` and `basePath`, never from the
+        // request's own `Host` — which is attacker-controllable, and a `Location`
+        // built from one is an open redirect.
+        const { client } = yield* makeClient({ headers: { host: "evil.test" } })
 
-      const [, response] = yield* client.auth.oauthCallbackForm({
-        params: { providerId: "apple" },
-        payload: { error: "user_cancelled_authorize" },
-        responseMode: "decoded-and-response"
-      })
+        const [, response] = yield* client.auth.oauthCallbackForm({
+          params: { providerId: "apple" },
+          payload: { error: "user_cancelled_authorize" },
+          responseMode: "decoded-and-response"
+        })
 
-      const location = new URL(response.headers["location"] ?? "")
-      assert.strictEqual(location.origin, "http://localhost:3000")
-      assert.strictEqual(location.searchParams.get("error"), "user_cancelled_authorize")
-    }))
+        const location = new URL(response.headers["location"] ?? "")
+        assert.strictEqual(location.origin, "http://localhost:3000")
+        assert.strictEqual(location.searchParams.get("error"), "user_cancelled_authorize")
+      }))
 
-  it.effect("escapes a provider id rather than letting it shape the path", () =>
-    Effect.gen(function*() {
-      const { client } = yield* makeClient()
+    it.effect("escapes a provider id rather than letting it shape the path", () =>
+      Effect.gen(function*() {
+        const { client } = yield* makeClient()
 
-      const [, response] = yield* client.auth.oauthCallbackForm({
-        params: { providerId: "../../evil" },
-        payload: {},
-        responseMode: "decoded-and-response"
-      })
+        const [, response] = yield* client.auth.oauthCallbackForm({
+          params: { providerId: "../../evil" },
+          payload: {},
+          responseMode: "decoded-and-response"
+        })
 
-      const location = new URL(response.headers["location"] ?? "")
-      assert.strictEqual(location.pathname, "/auth/callback/..%2F..%2Fevil")
-    }))
+        const location = new URL(response.headers["location"] ?? "")
+        assert.strictEqual(location.pathname, "/auth/callback/..%2F..%2Fevil")
+      }))
+  })
 })
 
 describe("http/Handlers dieOn", () => {

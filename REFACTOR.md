@@ -113,7 +113,7 @@ returns exactly these five lines, and no others:
 | # | Site | What is restated |
 |---|---|---|
 | 5.1 | `src/http/Handlers.ts:405` | `HttpApiBuilder.group`, for one named group of a composed API |
-| 5.3 | `src/domain/Schema.ts:1086` | `makeUserModel`, re-typing the erased model build |
+| 5.3 | `src/domain/Schema.ts:1089` | `makeUserModel`, re-typing the erased model build |
 | 5.2 | `src/client/AuthClient.ts:622` | `AtomHttpApi.Service`, the same boundary as 5.1 |
 | 5.4 | `src/client/AuthClient.ts:643` | the argument type of the `signUpEmail` mutation atom |
 | 5.4 | `src/client/AuthClient.ts:654` | the argument type of the `updateUser` mutation atom |
@@ -169,8 +169,11 @@ Each is justified in-code at its own site, at the length the four entries below 
    `src/`, forced or otherwise, and no suppression comment. (If effect's own APIs ever force one,
    it needs a one-line comment naming the forcing API and the final reviewer has to agree it is
    forced. None does today.)
-3. No conditional types in any exported layer/function signature, and exactly one `ReturnType`
-   (`AuthApiGroupOf`, sanctioned in SPEC.md §8.4).
+3. No conditional types in any exported layer/function signature, and exactly one `ReturnType` in an
+   exported signature (`AuthApiGroupOf`, sanctioned in SPEC.md §8.4). `grep -rn ReturnType src/`
+   returns a second hit, `Effect.Services<ReturnType<typeof respond>>` in
+   `src/testing/TestHttpClient.ts`: a local, non-exported type that predates this wave, and not a
+   signature violation. The gate is over exported signatures, not over the grep.
 4. Every `Context.Service` in src/ follows §4.
 5. README quickstart, example app (`examples/basic`), `testing/TestLayer.ts`, and the client all
    compile against the new API; README shows both `Auth.layer` and `Auth.layerWithOAuth`.

@@ -29,9 +29,10 @@
  * @since 1.0.0
  */
 import type { Effect } from "effect"
-import { Context, Redacted } from "effect"
+import { Context, Option, Redacted } from "effect"
 import type { EmailDeliveryError } from "../domain/Errors.js"
 import type { User } from "../domain/Schema.js"
+import { validateUrl } from "../http/OriginCheck.js"
 import type { AuthConfigService } from "./AuthConfig.js"
 
 /**
@@ -234,3 +235,38 @@ export const deleteAccountUrl = (
   config: AuthConfigService,
   token: Redacted.Redacted<string>
 ): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.deleteAccount, token)
+
+/**
+ * Appends the caller's landing page to an e-mailed link — after validating it,
+ * again.
+ *
+ * **When to use**
+ *
+ * Wherever a flow puts a `callbackURL` a caller supplied into a link it is
+ * about to mail: the reset and verification links, both hops of a change of
+ * address. One combinator rather than one per module, so that the parameter
+ * name a landing page reads is decided in a single place.
+ *
+ * **Gotchas**
+ *
+ * The HTTP layer is expected to have validated the candidate already, and this
+ * second pass is deliberate: what goes in here ends up in a link sent to
+ * somebody's mailbox, and an open redirect there is a phishing page with the
+ * deployment's own name on it. A candidate that does not survive
+ * `OriginCheck.validateUrl` is dropped rather than refused — the message is
+ * worth sending without it.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const withCallbackUrl = (
+  config: AuthConfigService,
+  url: Redacted.Redacted<string>,
+  callbackURL: string | null | undefined
+): Redacted.Redacted<string> => {
+  const validated = validateUrl(config, callbackURL)
+  if (Option.isNone(validated)) return url
+  const parsed = new URL(Redacted.value(url))
+  parsed.searchParams.set("callbackURL", validated.value)
+  return Redacted.make(parsed.toString())
+}

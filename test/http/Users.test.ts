@@ -283,111 +283,114 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
         }))
     }
   )
-})
 
-// -----------------------------------------------------------------------------
-// The guards that need a clock of their own
-// -----------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // The guards that need a clock of their own
+  // ---------------------------------------------------------------------------
 
-layer(layerMovingClock(served))("http/Users freshness and expiry", (it) => {
-  // The three of them share the deployment's clock, so they have to run in
-  // order: a sibling's `adjust` would otherwise age this test's session out
-  // from under it.
-  describe.sequential("on the deployment's own clock", () => {
-    it.effect("refuses to start an e-mail change from a stale session", () =>
-      Effect.gen(function*() {
-        const { client } = yield* signedUp(uniqueEmail("stale-change"))
+  // Nested rather than a second top-level `layer()`: an `it.layer` forks this
+  // block's memo map, so the deployment below reuses the PGlite the block above
+  // already booted instead of standing up a second one for the file.
+  it.layer(layerMovingClock(served))("freshness and expiry", (it) => {
+    // The three of them share the deployment's clock, so they have to run in
+    // order: a sibling's `adjust` would otherwise age this test's session out
+    // from under it.
+    describe.sequential("on the deployment's own clock", () => {
+      it.effect("refuses to start an e-mail change from a stale session", () =>
+        Effect.gen(function*() {
+          const { client } = yield* signedUp(uniqueEmail("stale-change"))
 
-        // `session.freshAge` is a day. The address is the account's recovery
-        // path, so a cookie that has been lying around must not be enough to
-        // start moving it.
-        yield* TestClock.adjust(Duration.days(2))
-        const refused = yield* Effect.flip(
-          client.auth.changeEmail({ payload: { newEmail: uniqueEmail("stale-change-new") } })
-        )
-        assert.strictEqual(refused._tag, "SessionNotFresh")
-      }))
-
-    it.effect("refuses to delete an account from a stale session", () =>
-      Effect.gen(function*() {
-        const { client } = yield* signedUp(uniqueEmail("stale-delete"))
-
-        yield* TestClock.adjust(Duration.days(2))
-        const refused = yield* Effect.flip(client.auth.deleteUser({ payload: {} }))
-        assert.strictEqual(refused._tag, "SessionNotFresh")
-        // And the account is still there — the session simply has to be renewed.
-        yield* client.auth.getSession()
-      }))
-
-    it.effect("expires a change-email link an hour after it was minted", () =>
-      Effect.gen(function*() {
-        const email = uniqueEmail("expiring-link")
-        const newEmail = uniqueEmail("expiring-link-new")
-        const { client } = yield* signedUp(email)
-
-        yield* client.auth.changeEmail({ payload: { newEmail } })
-        const token = yield* tokenFor(AuthTest.changeEmailVerificationKind, newEmail)
-
-        // `tokens.changeEmailTtl` is an hour by default.
-        yield* TestClock.adjust(Duration.hours(2))
-        const refused = yield* Effect.flip(client.auth.verifyEmailChange({ query: { token } }))
-        assert.strictEqual(refused._tag, "InvalidToken")
-        assert.strictEqual((yield* client.auth.getSession()).user.email, email)
-      }))
-  })
-})
-
-// -----------------------------------------------------------------------------
-// The counters
-// -----------------------------------------------------------------------------
-
-layer(AuthTest.layerHttp({ ...served, rateLimit: { enabled: true } }))(
-  "http/Users with the rate limits switched on",
-  (it) => {
-    it.effect("refuses the fourth change-email attempt in a window", () =>
-      Effect.gen(function*() {
-        const headers = { "x-forwarded-for": "203.0.113.21" }
-        const { client } = yield* signedUp(uniqueEmail("limited-change"), { headers })
-
-        // The endpoint answers 200 whatever the address, so the counter is the
-        // only thing standing between a signed-in session and an unbounded
-        // supply of outbound mail.
-        for (let i = 0; i < 3; i++) {
-          yield* client.auth.changeEmail({ payload: { newEmail: uniqueEmail(`limited-${i}`) } })
-        }
-        const limited = yield* Effect.flip(
-          client.auth.changeEmail({ payload: { newEmail: uniqueEmail("limited-4") } })
-        )
-        assert.strictEqual(limited._tag, "RateLimited")
-        if (limited._tag === "RateLimited") {
-          assert.isAbove(limited.retryAfterSeconds, 0)
-        }
-      }))
-
-    it.effect("counts delete-user on a bucket of its own", () =>
-      Effect.gen(function*() {
-        const headers = { "x-forwarded-for": "203.0.113.22" }
-        const { client } = yield* signedUp(uniqueEmail("limited-delete"), { headers })
-
-        // Three refusals of the wrong password, and the fourth attempt is
-        // refused by the counter instead — the key carries the path, so this
-        // browser's change-email attempts are counted separately.
-        for (let i = 0; i < 3; i++) {
+          // `session.freshAge` is a day. The address is the account's recovery
+          // path, so a cookie that has been lying around must not be enough to
+          // start moving it.
+          yield* TestClock.adjust(Duration.days(2))
           const refused = yield* Effect.flip(
-            client.auth.deleteUser({ payload: { password: Redacted.make("guess number one") } })
+            client.auth.changeEmail({ payload: { newEmail: uniqueEmail("stale-change-new") } })
           )
-          assert.strictEqual(refused._tag, "InvalidCredentials")
-        }
-        const limited = yield* Effect.flip(
-          client.auth.deleteUser({ payload: { password: Redacted.make("guess number two") } })
-        )
-        assert.strictEqual(limited._tag, "RateLimited")
+          assert.strictEqual(refused._tag, "SessionNotFresh")
+        }))
 
-        // A different caller is counted separately, and still gets in.
-        const innocent = yield* signedUp(uniqueEmail("limited-delete-other"), {
-          headers: { "x-forwarded-for": "203.0.113.23" }
-        })
-        assert.strictEqual((yield* innocent.client.auth.deleteUser({ payload: {} })).status, "Deleted")
-      }))
-  }
-)
+      it.effect("refuses to delete an account from a stale session", () =>
+        Effect.gen(function*() {
+          const { client } = yield* signedUp(uniqueEmail("stale-delete"))
+
+          yield* TestClock.adjust(Duration.days(2))
+          const refused = yield* Effect.flip(client.auth.deleteUser({ payload: {} }))
+          assert.strictEqual(refused._tag, "SessionNotFresh")
+          // And the account is still there — the session simply has to be renewed.
+          yield* client.auth.getSession()
+        }))
+
+      it.effect("expires a change-email link an hour after it was minted", () =>
+        Effect.gen(function*() {
+          const email = uniqueEmail("expiring-link")
+          const newEmail = uniqueEmail("expiring-link-new")
+          const { client } = yield* signedUp(email)
+
+          yield* client.auth.changeEmail({ payload: { newEmail } })
+          const token = yield* tokenFor(AuthTest.changeEmailVerificationKind, newEmail)
+
+          // `tokens.changeEmailTtl` is an hour by default.
+          yield* TestClock.adjust(Duration.hours(2))
+          const refused = yield* Effect.flip(client.auth.verifyEmailChange({ query: { token } }))
+          assert.strictEqual(refused._tag, "InvalidToken")
+          assert.strictEqual((yield* client.auth.getSession()).user.email, email)
+        }))
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // The counters
+  // ---------------------------------------------------------------------------
+
+  it.layer(AuthTest.layerHttp({ ...served, rateLimit: { enabled: true } }))(
+    "with the rate limits switched on",
+    (it) => {
+      it.effect("refuses the fourth change-email attempt in a window", () =>
+        Effect.gen(function*() {
+          const headers = { "x-forwarded-for": "203.0.113.21" }
+          const { client } = yield* signedUp(uniqueEmail("limited-change"), { headers })
+
+          // The endpoint answers 200 whatever the address, so the counter is the
+          // only thing standing between a signed-in session and an unbounded
+          // supply of outbound mail.
+          for (let i = 0; i < 3; i++) {
+            yield* client.auth.changeEmail({ payload: { newEmail: uniqueEmail(`limited-${i}`) } })
+          }
+          const limited = yield* Effect.flip(
+            client.auth.changeEmail({ payload: { newEmail: uniqueEmail("limited-4") } })
+          )
+          assert.strictEqual(limited._tag, "RateLimited")
+          if (limited._tag === "RateLimited") {
+            assert.isAbove(limited.retryAfterSeconds, 0)
+          }
+        }))
+
+      it.effect("counts delete-user on a bucket of its own", () =>
+        Effect.gen(function*() {
+          const headers = { "x-forwarded-for": "203.0.113.22" }
+          const { client } = yield* signedUp(uniqueEmail("limited-delete"), { headers })
+
+          // Three refusals of the wrong password, and the fourth attempt is
+          // refused by the counter instead — the key carries the path, so this
+          // browser's change-email attempts are counted separately.
+          for (let i = 0; i < 3; i++) {
+            const refused = yield* Effect.flip(
+              client.auth.deleteUser({ payload: { password: Redacted.make("guess number one") } })
+            )
+            assert.strictEqual(refused._tag, "InvalidCredentials")
+          }
+          const limited = yield* Effect.flip(
+            client.auth.deleteUser({ payload: { password: Redacted.make("guess number two") } })
+          )
+          assert.strictEqual(limited._tag, "RateLimited")
+
+          // A different caller is counted separately, and still gets in.
+          const innocent = yield* signedUp(uniqueEmail("limited-delete-other"), {
+            headers: { "x-forwarded-for": "203.0.113.23" }
+          })
+          assert.strictEqual((yield* innocent.client.auth.deleteUser({ payload: {} })).status, "Deleted")
+        }))
+    }
+  )
+})

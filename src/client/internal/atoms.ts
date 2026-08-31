@@ -1,6 +1,6 @@
 /**
  * The wrappers every generated-client module in this package builds its atoms
- * with.
+ * with, and the transport they are built on.
  *
  * **Details**
  *
@@ -19,6 +19,9 @@
  * @internal
  */
 import type { Record } from "effect"
+import { Layer } from "effect"
+import type { HttpClient } from "effect/unstable/http"
+import { FetchHttpClient } from "effect/unstable/http"
 import type { AsyncResult } from "effect/unstable/reactivity"
 import { Atom } from "effect/unstable/reactivity"
 
@@ -122,3 +125,24 @@ export const withoutPayload = <A, E>(
   self: Atom.AtomResultFn<Keyed, A, E>,
   reactivityKeys: ReactivityKeys | undefined
 ): Atom.AtomResultFn<void, A, E> => rewrite<Keyed, void, A, E>(self, () => ({ reactivityKeys }))
+
+/**
+ * The default transport a generated client is built on: `fetch`, told what to
+ * do with cookies.
+ *
+ * **Details**
+ *
+ * `credentials: "include"` is what makes the session cookie travel to an API on
+ * another origin, and it is the default every client in this package passes. It
+ * lives here rather than in one of them because an application may hold two —
+ * the auth client and a plugin's — and two transports that disagree about
+ * cookies would be two different sign-in behaviours for endpoints of the same
+ * deployment.
+ *
+ * @internal
+ */
+export const layerFetch = (credentials: RequestCredentials): Layer.Layer<HttpClient.HttpClient> =>
+  Layer.provide(
+    FetchHttpClient.layer,
+    Layer.succeed(FetchHttpClient.RequestInit, { credentials })
+  )

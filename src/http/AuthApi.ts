@@ -869,6 +869,10 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         error: [NotFound, TokenRefreshFailed]
       })
         .middleware(Authenticated)
+        // What comes back is a third party's credential, and the refresh this
+        // may run rotates the one on the row. A session revoked elsewhere must
+        // not still be able to spend either through a snapshot of itself.
+        .annotate(AuthoritativeSession, true)
         .annotateMerge(OpenApi.annotations({
           summary: "A usable provider access token for one of the caller's accounts",
           description:
@@ -880,6 +884,11 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         error: [NotFound, TokenRefreshFailed]
       })
         .middleware(Authenticated)
+        // It rewrites the stored provider credentials and hands back a refresh
+        // token whose life is measured in months: the cache's revocation lag
+        // has no business anywhere near it. Both handlers read the account row
+        // anyway, so the annotation costs this endpoint nothing.
+        .annotate(AuthoritativeSession, true)
         .annotateMerge(OpenApi.annotations({
           summary: "Spend one of the caller's refresh tokens",
           description:
