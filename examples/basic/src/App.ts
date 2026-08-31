@@ -3,15 +3,17 @@
  *
  * This is the file the README's quickstart is copied from, and the file the
  * end-to-end test drives. Reading it top to bottom is the shortest description
- * of what wiring `effect-auth` into an application costs.
+ * of what wiring `effect-auth` into an application costs — including a
+ * deployment's own user field, a plugin, and the two seams an application owns.
  */
 import { PgliteClient } from "@effect/sql-pglite"
-import { Layer, Redacted } from "effect"
+import { Duration, Layer, Redacted } from "effect"
 import { FileSystem, Path } from "effect"
 import { Etag, FetchHttpClient, HttpPlatform } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { Auth, AuthHandlers, Github, Migrations } from "effect-auth"
+import { Github, MagicLink } from "effect-auth"
 import { AppApi } from "./Api.js"
+import { auth } from "./Auth.js"
 import * as Mailer from "./Mailer.js"
 import * as Todos from "./Todos.js"
 
@@ -22,17 +24,23 @@ import * as Todos from "./Todos.js"
  */
 export const baseUrl = process.env["BASE_URL"] ?? "http://localhost:3000"
 
+const secret = Redacted.make(
+  process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production"
+)
+
 /**
- * An in-memory PGlite database with the `effect-auth` tables created.
+ * An in-memory PGlite database with the `effect-auth` tables created, plus the
+ * `plan` column this deployment's model declared.
  *
  * **Gotchas**
  *
- * `Migrations.layer` is the quickstart convenience: it runs the migrator when
- * the layer is built. A real deployment either merges `Migrations.migrations`
- * into its own `Migrator` record or runs them as a deploy step, so that a
- * process restart is never a schema change.
+ * `auth.layerMigrations` is the quickstart convenience `Migrations.layer` is: it
+ * runs the migrator when the layer is built. A real deployment either merges
+ * `Migrations.migrations` and `Migrations.forUserFields(auth.model)` into its own
+ * `Migrator` record or runs them as a deploy step, so that a process restart is
+ * never a schema change.
  */
-export const DatabaseLive = Migrations.layer.pipe(
+export const DatabaseLive = auth.layerMigrations.pipe(
   Layer.provideMerge(PgliteClient.layer())
 )
 
@@ -41,8 +49,14 @@ export const DatabaseLive = Migrations.layer.pipe(
  *
  * Its remaining requirements are exactly the two seams an application owns: the
  * database and the mailer. No OAuth provider is configured here, so this is
- * `Auth.layer` — the entry point that neither provides an `OAuthFlow` nor asks
+ * `auth.layer` — the entry point that neither provides an `OAuthFlow` nor asks
  * for an `HttpClient`.
+ *
+ * **Details**
+ *
+ * `user.changeEmail` and `user.deleteUser` are off by default, because letting
+ * somebody move or destroy their own account is a product decision. This example
+ * serves both, so the end-to-end test can drive them.
  *
  * **When to use**
  *
@@ -50,10 +64,11 @@ export const DatabaseLive = Migrations.layer.pipe(
  * below. That is the entire change: providers are values, and which entry point
  * you call is what decides whether the flow exists.
  */
-export const AuthLive = Auth.layer({
+export const AuthLive = auth.layer({
   baseUrl,
-  secret: Redacted.make(process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production"),
+  secret,
   emailPassword: { enabled: true, requireEmailVerification: false },
+  user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
   trustedOrigins: [baseUrl]
 }).pipe(
   Layer.provide(DatabaseLive),
@@ -74,10 +89,11 @@ export const AuthLive = Auth.layer({
  *
  * The transport must not follow redirects. `FetchHttpClient.layer` does not.
  */
-export const AuthWithGithubLive = Auth.layerWithOAuth({
+export const AuthWithGithubLive = auth.layerWithOAuth({
   baseUrl,
-  secret: Redacted.make(process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production"),
+  secret,
   emailPassword: { enabled: true, requireEmailVerification: false },
+  user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
   trustedOrigins: [baseUrl],
   providers: [
     Github.make({
@@ -92,6 +108,25 @@ export const AuthWithGithubLive = Auth.layerWithOAuth({
 )
 
 /**
+ * The magic link plugin, over the configured library.
+ *
+ * **Details**
+ *
+ * The whole of what installing a plugin costs. `Layer.provideMerge(AuthLive)`
+ * discharges everything it needs from the deployment — `Verifications`,
+ * `Sessions`, the stores, the transaction runner — and republishes them, so what
+ * comes out is the deployment *and* the plugin. The one thing it asks of the
+ * application is a mailer of its own, and forgetting it is a compile error.
+ *
+ * The plugin owns no table: a link is a `Verifications` row, so
+ * {@link DatabaseLive} needs nothing added to it.
+ */
+export const MagicLinkLive = MagicLink.layer({ ttl: Duration.minutes(10) }).pipe(
+  Layer.provideMerge(AuthLive),
+  Layer.provide(Mailer.magicLinkLayer)
+)
+
+/**
  * The platform services an `HttpApi` needs in order to encode a response.
  */
 const PlatformLive = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.layer).pipe(
@@ -99,18 +134,25 @@ const PlatformLive = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.lay
 )
 
 /**
- * Both groups of handlers, over the configured library.
+ * All three groups of handlers, over one build of the deployment.
  *
- * `AuthLive` discharges `AuthHandlers.layer`'s requirements completely — swap
- * in {@link AuthWithGithubLive} and it still does, because the OAuth flow is a
- * service the handlers look up optionally rather than one they require.
+ * `auth.handlers(AppApi)` is `AuthHandlers.layer(AppApi, auth.model)` with the
+ * model already applied, and `MagicLink.handlers(AppApi)` is
+ * `AuthHandlers.forGroup(MagicLinkApiGroup, …)` applied to the same API. Both
+ * are provided the same `MagicLinkLive`, so the plugin and the core read one
+ * `Sessions`, one `UserStore` and one rate limiter.
  */
-export const HandlersLive = Layer.mergeAll(AuthHandlers.layer(AppApi), Todos.layer).pipe(
-  Layer.provide(AuthLive)
+export const HandlersLive = Layer.mergeAll(
+  auth.handlers(AppApi),
+  MagicLink.handlers(AppApi),
+  Todos.layer
+).pipe(
+  Layer.provide(MagicLinkLive)
 )
 
 /**
- * The router: `effect-auth`'s eighteen endpoints plus the application's two.
+ * The router: `effect-auth`'s twenty-eight endpoints, the plugin's three, and
+ * the application's two.
  */
 export const AppLive = HttpApiBuilder.layer(AppApi).pipe(
   Layer.provide(HandlersLive),

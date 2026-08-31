@@ -102,6 +102,26 @@ Rules:
 
 ## 5. The permitted boundary casts (and only these)
 
+As of the v2 wave (plugin SDK, core parity, cookie cache, custom user fields) the gate
+
+```sh
+grep -rnE "as any|as unknown" src/
+```
+
+returns exactly these five lines, and no others:
+
+| # | Site | What is restated |
+|---|---|---|
+| 5.1 | `src/http/Handlers.ts:405` | `HttpApiBuilder.group`, for one named group of a composed API |
+| 5.3 | `src/domain/Schema.ts:1086` | `makeUserModel`, re-typing the erased model build |
+| 5.2 | `src/client/AuthClient.ts:622` | `AtomHttpApi.Service`, the same boundary as 5.1 |
+| 5.4 | `src/client/AuthClient.ts:643` | the argument type of the `signUpEmail` mutation atom |
+| 5.4 | `src/client/AuthClient.ts:654` | the argument type of the `updateUser` mutation atom |
+
+Line numbers move; the count and the modules do not. Three casts is the ceiling for
+`AuthClient.ts`, one for `Handlers.ts`, one for `Schema.ts`, and zero everywhere else in `src/`.
+Each is justified in-code at its own site, at the length the four entries below give it.
+
 1. `src/http/Handlers.ts` — `HttpApiBuilder.group`, restated for one named group of a composed
    API (`buildGroup`). Two things about its signature make it unusable from a library: `HttpApi`
    is invariant in its group union, so a consumer's composed api is not assignable to
@@ -114,7 +134,7 @@ Rules:
    group they were given at every call site, which is the check the types can no longer make.
    Keep it to exactly one `as unknown as` in that module. Widened by the plugin-SDK wave, which
    added `forGroup`.
-2. `src/client/AuthClient.ts:466` — same boundary for `AtomHttpApi.Service`. Same treatment.
+2. `src/client/AuthClient.ts` — same boundary for `AtomHttpApi.Service`. Same treatment.
    Also replace the `AtomResultFn<any, A, E>` helper params with proper generics.
 3. `src/domain/Schema.ts` — `makeUserModel`. `VariantSchema`'s field validation and variant
    extraction cannot be proved for a field map that is still a type parameter, so the model is
@@ -136,22 +156,29 @@ Rules:
    `AuthApiGroupOf<F>`: a handler built against a parameterized payload could not read
    `payload.name`. It is a widening in both directions that the module honours — the extras of a
    payload are recovered through `model.extrasOf`, and the extras of a response are produced by
-   `model.toPublic` — and it keeps the nineteen handlers type-checked once rather than once per
+   `model.toPublic` — and it keeps the twenty-eight handlers type-checked once rather than once per
    deployment. Cast count there is unchanged.
 
 ## 6. Definition of done (gates — the final reviewer runs all of these)
 
-1. `pnpm build && pnpm check && pnpm test` green (357+ tests; count must not go down).
+1. `pnpm build && pnpm check && pnpm test` green (count must not go down; 357 at the end of the
+   tightening refactor, 643 at the end of the v2 wave).
 2. Grep gate over `src/` (tests excluded):
    `grep -rnE "as any|as unknown|: any\b|<any[,>]| as Layer| as Effect|@ts-expect-error|@ts-ignore" src/`
-   returns EXACTLY the two §5 casts (plus type-level `any` only where effect's own APIs force a
-   variance position — each such site needs a one-line comment naming the forcing API, and the
-   final reviewer must agree it's forced).
-3. No conditional types in any exported layer/function signature.
+   returns EXACTLY the five §5 casts and nothing else — no `any` in a type position anywhere in
+   `src/`, forced or otherwise, and no suppression comment. (If effect's own APIs ever force one,
+   it needs a one-line comment naming the forcing API and the final reviewer has to agree it is
+   forced. None does today.)
+3. No conditional types in any exported layer/function signature, and exactly one `ReturnType`
+   (`AuthApiGroupOf`, sanctioned in SPEC.md §8.4).
 4. Every `Context.Service` in src/ follows §4.
 5. README quickstart, example app (`examples/basic`), `testing/TestLayer.ts`, and the client all
    compile against the new API; README shows both `Auth.layer` and `Auth.layerWithOAuth`.
 6. SPEC.md gains an "Amendments" entry (append to the existing section) recording: providers as
-   values, the two entry points, the narrowed Services, the interface-split convention.
+   values, the two entry points, the narrowed Services, the interface-split convention. The v2 wave
+   adds §§8–12 for the typed-view kernel, the plugin SDK, magic link, core parity and the cookie
+   cache.
 7. All conventions from SPEC.md §"Coding conventions" still hold (it.effect, assert, JSDoc
    categories, etc.).
+8. The generated OpenAPI document (`test/http-api/__snapshots__/openapi.json`) mentions no
+   `tokenHash`, `passwordHash` or `valueHash`, in any casing.

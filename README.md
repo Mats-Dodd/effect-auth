@@ -12,7 +12,7 @@ const AuthLive = Auth.layerWithOAuth({
 }).pipe(Layer.provide(PgLive), Layer.provide(MyMailer), Layer.provide(FetchHttpClient.layer))
 ```
 
-That is the whole installation. Eighteen endpoints, an OpenAPI document, a typed client and a
+That is the whole installation. Twenty-eight endpoints, an OpenAPI document, a typed client and a
 `CurrentUser` in your own handlers' context.
 
 ## Why
@@ -152,14 +152,23 @@ A missing credential is one `ConfigError` when the layer is built, not a provide
 
 ```ts
 const MyMailer = Layer.succeed(AuthEmails.AuthEmails)({
-  sendVerification: (email) => send(email.user.email, "Confirm your address", Redacted.value(email.url)),
-  sendPasswordReset: (email) => send(email.user.email, "Reset your password", Redacted.value(email.url))
+  sendVerification: (e) => send(e.user.email, "Confirm your address", Redacted.value(e.url)),
+  sendPasswordReset: (e) => send(e.user.email, "Reset your password", Redacted.value(e.url)),
+  // The first hop of a change of address goes to the address the account has
+  // now and says where it is being moved to; the second goes to the new one,
+  // and is what moves it.
+  sendChangeEmailConfirmation: (e) => send(e.user.email, `Confirm the move to ${e.newEmail}`, Redacted.value(e.url)),
+  sendChangeEmailVerification: (e) => send(e.newEmail, "Verify your new address", Redacted.value(e.url)),
+  sendDeleteAccountConfirmation: (e) => send(e.user.email, "Confirm deleting your account", Redacted.value(e.url))
 })
 ```
 
-Both methods may fail with `EmailDeliveryError`. The endpoints that trigger them still answer `200`
+Every method may fail with `EmailDeliveryError`. The endpoints that trigger them still answer `200`
 regardless — whether an address has an account must not be observable — so a delivery failure is a
-signal for your logs, not for the caller.
+signal for your logs, not for the caller. The last three are only ever called by the change-email
+and delete-account flows, which are off by default; a deployment that leaves them off still has to
+implement them, because the interface is the same for every deployment. A plugin, by contrast, brings
+a mailer service of its own rather than widening this one — see [Plugins](#plugins).
 
 ### Your own protected endpoints
 
@@ -180,7 +189,14 @@ Effect.gen(function*() {
 `Migrations.layer` runs the migrator when the layer is built. That is right for a local example and
 wrong for a fleet, where a process restart must never be a schema change. In production either merge
 `Migrations.migrations` into your own `Migrator` record (number yours above `0004`) or run them as a
-deploy step, and provide `Auth.layer` with a bare `SqlClient`.
+deploy step, and provide `Auth.layer` with a bare `SqlClient`. A deployment with
+[custom user fields](#custom-user-fields) adds `Migrations.forUserFields(model)` to that record under
+an id of its own.
+
+A plugin never joins that record. `Migrations.make({ table, migrations })` gives one its own
+bookkeeping table and its own ids from `0001`, sequenced with
+`Plugin.Migrations.layer.pipe(Layer.provide(Migrations.layer))` — because `Migrator` orders ids
+globally, so a lower id merged in later would silently never run.
 
 Every timestamp column is `text` holding an ISO-8601 UTC string. That is portable across Postgres
 and SQLite and lexicographically sortable, which is what makes the expiry predicates correct on both.
@@ -188,32 +204,208 @@ SQLite deployments must enable `PRAGMA foreign_keys = ON` for the cascade delete
 
 ## Endpoints
 
-All under `/auth`. Ten of them carry the `Authenticated` middleware and answer `401` without a
-session.
+Twenty-eight, all under `/auth`. Seventeen of them carry the `Authenticated` middleware (✓) and answer
+`401` without a session; six of those bypass the cookie cache in both directions (▲, see
+[Cookie cache](#cookie-cache)).
 
-| Endpoint | Method / path |
-|---|---|
-| `signUpEmail` | `POST /sign-up/email` |
-| `signInEmail` | `POST /sign-in/email` |
-| `signOut` | `POST /sign-out` |
-| `getSession` | `GET /session` |
-| `listSessions` | `GET /sessions` |
-| `revokeSession` | `POST /revoke-session` |
-| `revokeSessions` | `POST /revoke-sessions` |
-| `revokeOtherSessions` | `POST /revoke-other-sessions` |
-| `requestPasswordReset` | `POST /request-password-reset` |
-| `resetPassword` | `POST /reset-password` |
-| `changePassword` | `POST /change-password` |
-| `sendVerificationEmail` | `POST /send-verification-email` |
-| `verifyEmail` | `GET /verify-email?token=` |
-| `signInSocial` | `POST /sign-in/social` |
-| `oauthCallback` | `GET /callback/:providerId` |
-| `listAccounts` | `GET /accounts` |
-| `linkSocial` | `POST /link-social` |
-| `unlinkAccount` | `POST /unlink-account` |
+**Sessions**
 
-With `emailPassword.enabled: false` the seven credential endpoints answer `404`: they are declared
-in the contract but not served by that deployment.
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `signUpEmail` | `POST /sign-up/email` | |
+| `signInEmail` | `POST /sign-in/email` | |
+| `signOut` | `POST /sign-out` | ✓ |
+| `getSession` | `GET /session` | ✓ |
+| `listSessions` | `GET /sessions` | ✓ |
+| `revokeSession` | `POST /revoke-session` | ✓ |
+| `revokeSessions` | `POST /revoke-sessions` | ✓ |
+| `revokeOtherSessions` | `POST /revoke-other-sessions` | ✓ |
+
+**Credentials**
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `requestPasswordReset` | `POST /request-password-reset` | |
+| `resetPassword` | `POST /reset-password` | |
+| `changePassword` | `POST /change-password` | ✓ ▲ |
+| `setPassword` | `POST /set-password` | ✓ ▲ |
+| `sendVerificationEmail` | `POST /send-verification-email` | |
+| `verifyEmail` | `GET /verify-email?token=` | |
+
+**The account itself**
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `updateUser` | `POST /update-user` | ✓ |
+| `changeEmail` | `POST /change-email` | ✓ ▲ |
+| `confirmEmailChange` | `GET /change-email/confirm?token=` | |
+| `verifyEmailChange` | `GET /change-email/verify?token=` | |
+| `deleteUser` | `POST /delete-user` | ✓ ▲ |
+| `deleteUserCallback` | `GET /delete-user/callback?token=` | ✓ ▲ |
+
+**OAuth**
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `signInSocial` | `POST /sign-in/social` | |
+| `oauthCallback` | `GET /callback/:providerId` | |
+| `oauthCallbackForm` | `POST /callback/:providerId` | |
+| `listAccounts` | `GET /accounts` | ✓ |
+| `linkSocial` | `POST /link-social` | ✓ |
+| `unlinkAccount` | `POST /unlink-account` | ✓ ▲ |
+| `getAccessToken` | `POST /get-access-token` | ✓ |
+| `refreshToken` | `POST /refresh-token` | ✓ |
+
+An endpoint whose feature a deployment has not switched on answers `404`: it is declared in the
+contract and not served here. That is the eight credential endpoints under
+`emailPassword.enabled: false`, the three change-email paths under `user.changeEmail.enabled` and
+the two delete-account paths under `user.deleteUser.enabled` — the last two default to `false`, because
+letting somebody move or destroy their own account is a product decision.
+
+### The account endpoints
+
+`updateUser` patches the fields the body names — `name`, `image`, and whichever of your own user
+fields a client may write ([Custom user fields](#custom-user-fields)). An absent key leaves the
+column alone; an explicit `null` image clears it. The address is deliberately not editable here.
+
+`changeEmail` is the two-hop flow that moves it, and it always goes through the mail. It needs a
+fresh session, and it answers `200` whether or not the new address is free — telling a caller that
+an address is taken would make it an oracle for who is registered here. A *verified* current address
+gets a confirmation link first (`confirmEmailChange`), which mails the second hop; an unverified one
+skips straight to it. `verifyEmailChange` is what actually moves the account, from a link delivered
+to the new address, so it ends up verified. Somebody who claimed the address between the two hops is
+a `UserAlreadyExists` at the unique index. The new address travels in the token's server-side
+payload and never in a URL.
+
+`deleteUser` with `user.deleteUser.confirmByEmail` off needs a fresh session, takes the password
+when the account has one, and is done: the row, its sessions and its sign-in methods are gone. With
+it on, it mails a link and answers `ConfirmationSent`, and `deleteUserCallback` — which must be
+followed by the account's *own* signed-in browser — finishes the job. That token is claimed first
+and only then checked against the caller, so a link presented by anybody else is burnt as well as
+refused.
+
+`setPassword` gives a first password to an account provisioned through a provider. It can never
+*replace* one — that is `changePassword`, or the reset flow — so an existing credential is
+`PasswordAlreadySet`, including when two concurrent calls race at the unique index. It requires a
+fresh session and revokes nothing: no credential was invalidated.
+
+`getAccessToken` hands back a usable provider access token for one of the caller's linked accounts,
+refreshing first only when the stored one is absent or about to expire and the provider supports it.
+`refreshToken` spends the refresh token unconditionally, for a client that has already learnt the
+access token is no good. An account that is not the caller's is `NotFound`, exactly as one that does
+not exist. Tokens cross the wire as `Redacted<string>`; the granted `scope` is never overwritten by
+a refresh.
+
+## Custom user fields
+
+Most applications want a column or two of their own on the person: a plan, a locale, a tenant, an
+internal role. Declaring them here rather than in a table beside `users` is what makes them travel —
+through sign-up, through `GET /session`, through `updateUser`, into `CurrentUser` in your own
+handlers, and into the generated client's types.
+
+Declare them once, and derive everything from the declaration:
+
+```ts
+import { Schema } from "effect"
+import { HttpApi } from "effect/unstable/httpapi"
+import { Auth, UserField } from "effect-auth"
+
+export const auth = Auth.define({
+  user: {
+    fields: {
+      // A client may state it at sign-up; the model fills it in when it does not.
+      plan: UserField.withDefault(Schema.Literals(["free", "pro"]), () => "free" as const),
+      // Readable everywhere, settable by nobody: yours to write, through the store.
+      role: UserField.readOnly(Schema.Literals(["user", "admin"]), () => "user" as const),
+      // In every database variant, in no JSON one — never in a response, a client or a cookie.
+      apiSecret: UserField.hidden(Schema.NullOr(Schema.String), () => null)
+    }
+  }
+})
+
+export const AppApi = HttpApi.make("app").addHttpApi(auth.Api).add(MyOwnGroup)
+```
+
+`auth` carries everything that had to know: `auth.layer` (and the three other entry points),
+`auth.handlers(AppApi)`, `auth.layerMigrations`, the schemas (`auth.User`, `auth.UserPublic`,
+`auth.SessionWithUser`, …) and the service views (`auth.CurrentUser`, `auth.UserStore`,
+`auth.Sessions`, `auth.Passwords`, `auth.Users`). Wiring is otherwise the quickstart, unchanged:
+
+```ts
+const AuthLive = auth.layer({ baseUrl, secret, emailPassword: { enabled: true } }).pipe(
+  Layer.provide(auth.layerMigrations.pipe(Layer.provideMerge(PgLive))),
+  Layer.provide(MyMailer)
+)
+
+const ServerLive = HttpApiBuilder.layer(AppApi).pipe(
+  Layer.provide(auth.handlers(AppApi)),
+  Layer.provide(AuthLive)
+)
+```
+
+### What each kind means
+
+| Constructor | At sign-up | In a response | In `updateUser` |
+|---|---|---|---|
+| `UserField.required(schema)` | required in the body † | ✓ | ✓ |
+| `UserField.withDefault(schema, () => v)` | optional, defaulted | ✓ | ✓ |
+| `UserField.readOnly(schema, () => v)` | dropped | ✓ | dropped |
+| `UserField.hidden(schema, () => v)` | dropped | — | dropped |
+
+A value a client is not allowed to state is *dropped*, not refused — the same thing Schema does with
+any excess property, and the same thing better-auth does with a provider profile. So a body claiming
+`role: "admin"` gets an account with `role: "user"` and a `200`.
+
+† `required` only works when the schema carries a constructor default of its own, because of the
+rule below; without one, `makeUserModel` refuses the model. Most fields want `withDefault`.
+
+### Reading one in your own handler
+
+```ts
+Effect.gen(function*() {
+  const user = yield* auth.CurrentUser   // UserOf<F> — `user.plan` is "free" | "pro"
+  return user.plan === "pro" ? yield* everything : yield* theFreeSlice
+})
+```
+
+`auth.CurrentUser` is the *same* context key the middleware fills, seen through your model. Nothing
+in `Authenticated`'s signature, in `Auth.Services` or in any `Layer` type moved to make that work —
+which is why a plugin written against `CurrentUser` still composes into your deployment.
+
+### In the browser
+
+```ts
+import { AuthClient } from "effect-auth/client"
+import { model } from "./auth-model.js"   // a browser-safe module: `makeUserModel(fields)`
+
+const client = AuthClient.make({ api: AppApi, model })
+// client.session's user is typed with `plan`; `apiSecret` is not a key on it at all
+```
+
+The model has to be stated on both sides, and `Auth.define` is deliberately not browser-safe (it
+reaches the database and the hasher). Put the field map in a module of its own, call `makeUserModel`
+on it for the client and hand the same map to `Auth.define` on the server.
+
+### The one rule
+
+**Every field must be constructible without a value.** OAuth provisioning, a magic link and any
+plugin create users from the base fields alone, so a field with no default has nothing to be set to.
+`makeUserModel` checks this when it builds — at module scope — and throws a message naming the
+offending field, so a mistake is a start-up failure rather than a sign-in that fails in production.
+In practice: use `withDefault`, `readOnly` or `hidden`, or give the schema a constructor default of
+its own.
+
+Two consequences worth knowing. A `hidden` field is absent from the cookie cache as well as from
+every response, so a cached read sees its *default* — an endpoint that reads one must be annotated
+`AuthoritativeSession` ([Cookie cache](#cookie-cache)). And `Migrations.forUserFields(model)` emits
+the `ALTER TABLE users ADD COLUMN` for each field (`auth.layerMigrations` runs it); a type it cannot
+map to a column is a `MigrationError` naming the field, and hand-written DDL is the escape hatch.
+
+If you would rather not take the bundle, every piece is a function: `makeUserModel(fields)`,
+`makeAuthApi(model)`, `AuthHandlers.layer(api, model)`, `Auth.layer({ …, user: { model } })`,
+`SqlStores.layerFor(model)`, `currentUserOf(model)`. `Auth.define` is convenience over exactly
+those, and calling it twice with the same fields builds two models — the same shape and *different
+types*, which the compiler points out at the first call site that mixes them.
 
 ## Client
 
@@ -235,9 +427,27 @@ registry.set(auth.signIn, {
 })
 ```
 
-`signIn`, `signUp`, `signOut` and the revoke mutations carry the reactivity key `"auth.session"`, so
-the `session` atom refetches itself when one of them succeeds. `signInSocialUrl(payload)` returns
-the provider URL to navigate to.
+Three query atoms — `session`, `sessions`, `accounts` — and a mutation for every endpoint a browser
+drives: `signUp`, `signIn`, `signOut`, `revokeSession`, `revokeSessions`, `revokeOtherSessions`,
+`requestPasswordReset`, `resetPassword`, `changePassword`, `setPassword`, `sendVerificationEmail`,
+`verifyEmail`, `updateUser`, `changeEmail`, `confirmEmailChange`, `verifyEmailChange`, `deleteUser`,
+`signInSocial`, `linkSocial`, `unlinkAccount`, `getAccessToken`, `refreshToken`. The two that only a
+provider or a mail client ever calls — `deleteUserCallback` and `oauthCallbackForm` — are not
+wrapped.
+
+Each mutation carries the reactivity keys of what it invalidates, so the atoms refetch themselves.
+`"auth.session"` for everything that establishes, ends or edits the current session and its user
+(`signUp`, `signIn`, `signOut`, `resetPassword`, `changePassword`, `verifyEmail`, `updateUser`,
+`confirmEmailChange`, `verifyEmailChange`); `"auth.sessions"` for the revoke mutations and the two
+that revoke everything on their way past; `"auth.accounts"` for `setPassword` and `unlinkAccount`;
+all three for `deleteUser`. `signInSocialUrl(payload)` returns the provider URL to navigate to.
+
+A deployment with its own user fields passes the model, and the atoms carry it:
+
+```ts
+const auth = AuthClient.make({ api: AppApi, model })
+// auth.session's user has `plan` on it, and no `apiSecret`
+```
 
 Read results with `AsyncResult.matchWithError`, not `AsyncResult.match`: `AtomHttpApi` makes
 transport and decode failures *defects* and keeps only the endpoint's declared errors in the error
@@ -684,30 +894,44 @@ Stream.runForEach(Auth.events, (event) => audit(event))
 ```
 
 `UserCreated`, `SignedIn`, `SignedOut`, `SessionRevoked`, `PasswordChanged`,
-`PasswordResetRequested`, `EmailVerified`, `AccountLinked`, `AccountUnlinked` — every one published
-after the writes it describes have committed. The hub drops rather than blocks: a stalled consumer
-costs events, never a wedged sign-in, and there is no replay, so subscribe before the traffic you
-care about.
+`PasswordResetRequested`, `EmailVerified`, `UserUpdated`, `EmailChanged`, `UserDeleted`,
+`TokensRefreshed`, `AccountLinked`, `AccountUnlinked`, and `PluginEvent` — every one published after
+the writes it describes have committed. The hub drops rather than blocks: a stalled consumer costs
+events, never a wedged sign-in, and there is no replay, so subscribe before the traffic you care
+about.
+
+The union is closed, so a plugin publishes `PluginEvent { plugin, event, userId, data }` rather than
+a member of its own. No event carries a token, a password, a hash or a provider credential — events
+routinely end up in log sinks and webhooks, and `data` is held to the same rule.
 
 ## Example
 
-`examples/basic` is a complete Node server — the auth group, one protected `GET /todos` group, a
-console mailer, PGlite — with an end-to-end test that drives sign-up → verify → sign-in → protected
-endpoint → change password → sign-out through the generated `HttpApiClient`. It is the integration
-test bed and the source of the snippets above.
+`examples/basic` is a complete Node server in six files — the auth group carrying a deployment's own
+`plan` field, the magic link plugin, one protected `GET /todos` group of its own, two console
+mailers, PGlite. Its end-to-end test drives sign-up → verify → sign-in → protected endpoint →
+change password → sign-out, the reset flow, `update-user` on the custom field, `set-password` for an
+account that has none, and a magic link that provisions the account it names — all through the
+generated `HttpApiClient`. It is the integration test bed and the source of the snippets above.
 
 ## Roadmap
 
-v1 is authentication over sessions, credentials and OAuth. Planned next:
+Shipped since v1: the [plugin seams](#plugins) and [magic link](#magic-link) on top of them, the
+account endpoints (update, change-email, delete, set-password) and OAuth token refresh, four more
+providers plus [OIDC discovery](#the-providers), the [cookie cache](#cookie-cache), and
+[custom user fields](#custom-user-fields).
 
-- **Magic links** and e-mail OTP.
+Planned next:
+
+- **E-mail OTP**, the other passwordless shape, as a second plugin.
 - **Two-factor authentication**: TOTP, recovery codes, and a `SessionNotFresh`-style step-up guard.
-- **Redis-backed sessions** and a shared `RateLimiterStore`, for deployments where process-local is
-  not good enough. The `sessionStore` seam above is what the first plugs into.
-- **JWT / JWKS issuance**, for handing a verified identity to a service that is not this one.
 - **Passkeys** (WebAuthn).
-- **A plugin SDK**: the shape that lets a third party add endpoints, tables and events without
-  forking.
+- **Redis-backed sessions** and a shared `RateLimiterStore`, for deployments where process-local is
+  not good enough. The [`sessionStore` seam](#swapping-the-session-store) is what the first plugs
+  into.
+- **JWT / JWKS issuance**, for handing a verified identity to a service that is not this one.
+- **Encryption at rest for provider tokens.** They are stored as the provider issued them today,
+  which is a known gap rather than a decision.
+- **Organizations / multi-tenancy**, most likely as a plugin over the same seams.
 - **Authorization**, as a separate package: a policy middleware that `require`s `CurrentUser` and
   `CurrentSession`, most likely Cedar-backed. Deliberately not in this one.
 

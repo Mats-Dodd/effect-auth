@@ -683,8 +683,8 @@ export interface UserModel<F extends UserFields> {
 export type UserPayloadVariant = "jsonCreate" | "jsonUpdate"
 
 /**
- * What {@link UserModel.withExtras} lays a model's custom fields alongside: any
- * struct, read for its field map.
+ * What {@link UserModel.withExtras} lays a model's custom fields alongside — a
+ * struct of whatever shape, read for its field map.
  *
  * @category models
  * @since 1.0.0

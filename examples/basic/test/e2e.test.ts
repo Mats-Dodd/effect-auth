@@ -4,35 +4,55 @@
  * Every request below crosses the real pipeline: JSON encoding, the router, the
  * `Authenticated` middleware, the cookie, the database. The only substitution
  * is infrastructural — `AuthTest.layerHttpApi` swaps the example's Postgres and
- * its console mailer for an in-memory database and a capturing outbox, because
+ * its console mailers for an in-memory database and a capturing outbox, because
  * a test has to be able to read the token out of the e-mail the way a person
- * reads it out of their inbox.
+ * reads it out of their inbox. The example's own `Mailer.layer` and
+ * `Mailer.magicLinkLayer` print those links instead, which is the only reason
+ * they are not the ones under test here.
  *
  * The whole file runs on one deployment: `layer()` builds the stack once, in
  * `beforeAll`, so the database boots and migrates once rather than once per
  * test. That is why every account below gets an address of its own.
  */
 import { assert, layer } from "@effect/vitest"
-import { Effect, Layer, Option, Redacted } from "effect"
-import { AuthTest, TestHttpClient } from "effect-auth/testing"
+import { Duration, Effect, Layer, Option, Redacted } from "effect"
+import { MagicLink, Stores } from "effect-auth"
+import { AuthTest, MagicLinkTest, TestHttpClient } from "effect-auth/testing"
 import { AppApi } from "../src/Api.js"
+import { auth, freeTodoLimit } from "../src/Auth.js"
 import * as Todos from "../src/Todos.js"
 
 const baseUrl = AuthTest.testBaseUrl
 
 /**
- * The example's server, over the test deployment: the shipped
- * `AuthTest.layerHttpApi` implements `effect-auth`'s own group against the
- * application's composed API and supplies the platform services, and the
- * application adds its own handlers on top.
+ * The example's server, over the test deployment.
+ *
+ * Three things about it are the point of the example rather than of the test:
+ * `user.model` is the deployment's own, so the `plan` column exists and the
+ * endpoints carry it; the magic link plugin goes in through `layerHttpApi`'s
+ * third parameter, which provides it the *same* deployment build the auth
+ * handlers get; and the application's own group is merged on top exactly as
+ * `App.ts` merges it.
  */
 const ServerLive = Todos.layer.pipe(
   Layer.provideMerge(
-    AuthTest.layerHttpApi(AppApi, {
-      // The flow below is only interesting if the address has to be proven.
-      emailPassword: { requireEmailVerification: true },
-      trustedOrigins: [baseUrl]
-    })
+    AuthTest.layerHttpApi(
+      AppApi,
+      {
+        // The flow below is only interesting if the address has to be proven.
+        emailPassword: { requireEmailVerification: true },
+        // Off by default in production; this deployment serves both.
+        user: {
+          model: auth.model,
+          changeEmail: { enabled: true },
+          deleteUser: { enabled: true }
+        },
+        trustedOrigins: [baseUrl]
+      },
+      MagicLink.handlers(AppApi).pipe(
+        Layer.provide(MagicLinkTest.layerMagicLink({ ttl: Duration.minutes(10) }))
+      )
+    )
   )
 )
 
@@ -66,6 +86,9 @@ layer(ServerLive)("examples/basic", (it) => {
       assert.strictEqual(signedUp.user.emailVerified, false)
       assert.strictEqual(signedUp.session, null)
       assert.strictEqual(yield* cookieValue(cookies), "<absent>")
+      // The deployment's own field, filled in from the model's default because
+      // the body said nothing about it.
+      assert.strictEqual(signedUp.user.plan, "free")
 
       // 2. Signing in before the address is proven is refused, by tag.
       const refused = yield* Effect.flip(
@@ -178,5 +201,137 @@ layer(ServerLive)("examples/basic", (it) => {
         payload: { email, password: Redacted.make(newPassword) }
       })
       assert.strictEqual(signedIn.user.email, email)
+    }))
+
+  it.effect("the deployment's own user field reaches its own handler, and update-user changes it", () =>
+    Effect.gen(function*() {
+      const email = uniqueEmail("katherine")
+      const { client } = yield* makeClient()
+      const emails = yield* AuthTest.TestEmails
+
+      // A client may state `plan` at sign-up, because it was declared with
+      // `UserField.withDefault`.
+      const signedUp = yield* client.auth.signUpEmail({
+        payload: { name: "Katherine Johnson", email, password: Redacted.make(password), plan: "free" }
+      })
+      assert.strictEqual(signedUp.user.plan, "free")
+
+      const verification = yield* emails.tokenFor("verification", email)
+      yield* client.auth.verifyEmail({ query: { token: Redacted.value(verification) } })
+      yield* client.auth.signInEmail({ payload: { email, password: Redacted.make(password) } })
+
+      // `Todos.ts` reads `plan` off `auth.CurrentUser` — the same context key the
+      // middleware fills, seen through this deployment's model.
+      for (let n = 0; n < freeTodoLimit; n++) {
+        yield* client.todos.create({ payload: { title: `orbit ${n}` } })
+      }
+      const capped = yield* Effect.flip(client.todos.create({ payload: { title: "one too many" } }))
+      assert.strictEqual(capped._tag, "TodoLimitReached")
+
+      // `POST /auth/update-user` patches the deployment's own column beside the
+      // base ones, and answers with the user it wrote.
+      const upgraded = yield* client.auth.updateUser({
+        payload: { name: "Katherine G. Johnson", plan: "pro" }
+      })
+      assert.strictEqual(upgraded.user.plan, "pro")
+      assert.strictEqual(upgraded.user.name, "Katherine G. Johnson")
+
+      // …and the application's handler sees the new value on the next request.
+      const allowed = yield* client.todos.create({ payload: { title: "one more" } })
+      assert.strictEqual(allowed.title, "one more")
+
+      // An absent key leaves the column alone.
+      const renamed = yield* client.auth.updateUser({ payload: { name: "Katherine Johnson" } })
+      assert.strictEqual(renamed.user.plan, "pro")
+    }))
+
+  it.effect("an account with no password can be given one, and signs in with it afterwards", () =>
+    Effect.gen(function*() {
+      const email = uniqueEmail("dorothy")
+      const { client } = yield* makeClient()
+      const emails = yield* AuthTest.TestEmails
+      const accounts = yield* Stores.AccountStore
+
+      yield* client.auth.signUpEmail({
+        payload: { name: "Dorothy Vaughan", email, password: Redacted.make(password) }
+      })
+      const verification = yield* emails.tokenFor("verification", email)
+      yield* client.auth.verifyEmail({ query: { token: Redacted.value(verification) } })
+      const signedIn = yield* client.auth.signInEmail({
+        payload: { email, password: Redacted.make(password) }
+      })
+
+      // The shape `POST /auth/set-password` exists for is an account provisioned
+      // through a provider: a session, and no credential to sign in with. The
+      // example has no provider configured, so the store makes one — dropping the
+      // credential row leaves exactly that account behind.
+      const removed = yield* accounts.deleteByUserId(signedIn.user.id)
+      assert.strictEqual(removed, 1)
+
+      const noCredential = yield* Effect.flip(
+        client.auth.signInEmail({ payload: { email, password: Redacted.make(password) } })
+      )
+      assert.strictEqual(noCredential._tag, "InvalidCredentials")
+
+      // The session is untouched by any of that, and it is fresh, so the account
+      // may give itself a first password.
+      const set = yield* client.auth.setPassword({
+        payload: { newPassword: Redacted.make(newPassword) }
+      })
+      assert.strictEqual(set.success, true)
+
+      // It is a first password, never a replacement: asking twice is refused.
+      const again = yield* Effect.flip(
+        client.auth.setPassword({ payload: { newPassword: Redacted.make(password) } })
+      )
+      assert.strictEqual(again._tag, "PasswordAlreadySet")
+
+      const back = yield* client.auth.signInEmail({
+        payload: { email, password: Redacted.make(newPassword) }
+      })
+      assert.strictEqual(back.user.id, signedIn.user.id)
+    }))
+
+  it.effect("a magic link signs a stranger in, and provisions the account it names", () =>
+    Effect.gen(function*() {
+      const email = uniqueEmail("mary")
+      const { client, cookies } = yield* makeClient()
+      const emails = yield* AuthTest.TestEmails
+
+      // The plugin's endpoint, on the application's own composed API. It answers
+      // 200 for every well-formed address — this one has no account at all.
+      const acknowledged = yield* client.magicLink.signIn({
+        payload: { email, name: "Mary Jackson", callbackURL: "/welcome" }
+      })
+      assert.strictEqual(acknowledged.success, true)
+
+      // The message went to the address, with no user behind it: that `null` is
+      // why the plugin carries a mailer of its own instead of a method on
+      // `AuthEmails`.
+      const sent = yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email)
+      const delivered = yield* emails.last(MagicLinkTest.magicLinkKind, email)
+      assert.strictEqual(Option.isSome(delivered), true)
+      if (Option.isSome(delivered)) assert.strictEqual(delivered.value.user, null)
+
+      // `exchange` is the JSON twin of the link's own `verify`: it claims the
+      // token, creates the account, answers a session and sets the cookie.
+      const exchanged = yield* client.magicLink.exchange({ payload: { token: sent } })
+      assert.strictEqual(exchanged.user.email, email)
+      // Followed a link that was delivered to the address, so it is proven.
+      assert.strictEqual(exchanged.user.emailVerified, true)
+      assert.notStrictEqual(yield* cookieValue(cookies), "<absent>")
+
+      // The plugin's group is not parameterized by this deployment's user fields,
+      // so `exchange` answers the base projection — the custom column is one
+      // `GET /auth/session` away, and the cookie it just set works immediately.
+      // The account was provisioned through the base-typed `UserStore`, and the
+      // model's default filled `plan` in anyway.
+      const session = yield* client.auth.getSession()
+      assert.strictEqual(session.user.id, exchanged.user.id)
+      assert.strictEqual(session.user.plan, "free")
+
+      // The token was single-use.
+      const replayed = yield* Effect.flip(client.magicLink.exchange({ payload: { token: sent } }))
+      assert.strictEqual(replayed._tag, "InvalidToken")
     }))
 })

@@ -425,6 +425,12 @@ describe.sequential("oauth/providers/Apple form_post", () => {
         assert.strictEqual(session.user.email, email)
         // Apple's `email_verified: "true"` is the string spelling, and counts.
         assert.isTrue(session.user.emailVerified)
+        // The display name Apple posted *once*, to the endpoint above: the form
+        // handler puts `user` on the GET's query string and the callback handler
+        // forwards it into `CallbackOptions.params`, which is the only route by
+        // which an unsigned value reaches `userInfo`. It names the account and
+        // nothing else.
+        assert.strictEqual(session.user.name, "Ada Lovelace")
 
         // The one request that carries the client secret: a fresh ES256
         // assertion, which Apple would verify against the `.p8`'s public half.

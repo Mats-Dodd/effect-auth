@@ -381,7 +381,7 @@ export const forGroup = <
  * every call site.
  *
  * `layer` passes the *base* auth group rather than `AuthApiGroupOf<F>`, which is
- * what lets its nineteen handlers be type-checked once instead of once per
+ * what lets its twenty-eight handlers be type-checked once instead of once per
  * deployment. An endpoint whose payload type mentions `F` has a request shape
  * TypeScript cannot resolve — `HttpApiEndpoint`'s `RequestFromParts` branches on
  * the payload type, and a conditional over an unresolved `F` stays deferred, so
@@ -703,6 +703,11 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 code: query.code,
                 state: query.state,
                 error: query.error,
+                // Apple's one-shot display name: it is posted to
+                // `oauthCallbackForm`, which puts it on this GET's query string,
+                // and `userInfo` is the only thing that reads it. Unsigned and
+                // attacker-controllable — carried, never trusted.
+                ...(query.user === undefined ? {} : { params: { user: query.user } }),
                 ...clientMeta(config, request)
               }).pipe(serverFault)
 

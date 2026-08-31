@@ -613,7 +613,7 @@ export const UnlinkAccountPayload = Schema.Struct({
  * **Gotchas**
  *
  * The return type is inferred rather than annotated — a group's type *is* the
- * union of its nineteen endpoint types, and writing that down would be a second
+ * union of its twenty-eight endpoint types, and writing that down would be a second
  * copy of this declaration to keep in step. {@link AuthApiGroupOf} names it, and
  * is the one `ReturnType` in the library.
  *
