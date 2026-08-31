@@ -11,9 +11,9 @@
  * purpose so vitest does not collect an empty suite.
  */
 import type { Layer } from "effect"
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
-import { AuthApi } from "../../src/http/AuthApi.js"
+import { AuthApi, AuthApiGroup } from "../../src/http/AuthApi.js"
 import type { HandlerServices } from "../../src/http/Handlers.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 
@@ -77,3 +77,42 @@ const TodosApi = HttpApi.make("app").add(Todos)
 
 // @ts-expect-error — there is no `auth` group to implement.
 AuthHandlers.layer(TodosApi)
+
+// ---------------------------------------------------------------------------
+// `forGroup`: the same boundary, for a group this library does not own. The
+// core layer is one application of it, and a plugin's is another.
+// ---------------------------------------------------------------------------
+
+const todos = AuthHandlers.forGroup(Todos, (handlers) =>
+  Effect.succeed(handlers.handle("listTodos", () => Effect.succeed(["write the plan"]))))
+
+const TodoAppApi = HttpApi.make("app").addHttpApi(AuthApi).add(Todos)
+
+// The service produced follows the *consuming* API's identifier, and nothing of
+// the consumer's own leaks into either channel.
+eq<
+  Exact<
+    ReturnType<typeof todos<"app", typeof AuthApiGroup | typeof Todos>>,
+    Layer.Layer<HttpApiGroup.Service<"app", "todos">, never, never>
+  >
+>(true)
+
+const _composedTodos: Layer.Layer<HttpApiGroup.Service<"app", "todos">> = todos(TodoAppApi)
+
+/** A group that shares the name and nothing else. */
+const TodoImpostor = HttpApiGroup.make("todos").add(
+  HttpApiEndpoint.get("listSomethingElse", "/todos", { success: Schema.String })
+)
+const TodoImpostorApi = HttpApi.make("app").add(TodoImpostor)
+
+// @ts-expect-error — `groups.todos` is not the group these handlers implement.
+todos(TodoImpostorApi)
+
+// @ts-expect-error — a re-prefixed group is a different group type, and the
+// routes registered would not be the ones this API serves.
+todos(HttpApi.make("app").add(Todos).prefix("/api"))
+
+// @ts-expect-error — there is no `todos` group to implement.
+todos(AuthApi)
+
+export type { _composedTodos }

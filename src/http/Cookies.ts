@@ -15,7 +15,12 @@ import type { Cookies } from "effect/unstable/http"
 import { Headers } from "effect/unstable/http"
 import { HttpApiSecurity } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
-import { cookieName as resolveCookieName, defaultCookieName } from "../config/AuthConfig.js"
+import {
+  cacheCookieName as resolveCacheCookieName,
+  cookieName as resolveCookieName,
+  defaultCacheCookieName,
+  defaultCookieName
+} from "../config/AuthConfig.js"
 
 // -----------------------------------------------------------------------------
 // Names
@@ -51,6 +56,31 @@ export const secureSessionCookieName: string = `__Secure-${defaultCookieName}`
  * @since 1.0.0
  */
 export const sessionCookieName = (config: AuthConfigService): string => resolveCookieName(config)
+
+/**
+ * The session cache cookie name used when the deployment is not served over TLS.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const insecureSessionCacheCookieName: string = defaultCacheCookieName
+
+/**
+ * The session cache cookie name used when the deployment is served over TLS.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const secureSessionCacheCookieName: string = `__Secure-${defaultCacheCookieName}`
+
+/**
+ * The name the session cache cookie is actually written under for a given
+ * configuration.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const sessionCacheCookieName = (config: AuthConfigService): string => resolveCacheCookieName(config)
 
 // -----------------------------------------------------------------------------
 // Attributes
@@ -149,6 +179,46 @@ export const insecureSessionCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecu
  * @since 1.0.0
  */
 export const bearerSecurity: HttpApiSecurity.Http = HttpApiSecurity.bearer
+
+/**
+ * The scheme the session *cache* cookie is written under on a TLS deployment.
+ *
+ * **Gotchas**
+ *
+ * This is not a credential and no middleware declares it: it is a scheme only
+ * because `HttpApiBuilder.securitySetCookie` — the one way to attach a
+ * `Set-Cookie` from inside a handler or a middleware — takes the cookie's name
+ * from one. The cache cookie is read straight off the request instead, since
+ * presenting it alone authenticates nothing.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const secureSessionCacheCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
+  key: secureSessionCacheCookieName,
+  in: "cookie"
+})
+
+/**
+ * The scheme the session cache cookie is written under on a plain-HTTP
+ * deployment. See {@link secureSessionCacheCookieSecurity}.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const insecureSessionCacheCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
+  key: insecureSessionCacheCookieName,
+  in: "cookie"
+})
+
+/**
+ * The scheme whose key is the cache cookie name this configuration writes.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const sessionCacheCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
+  config.cookie.secure ? secureSessionCacheCookieSecurity : insecureSessionCacheCookieSecurity
 
 // -----------------------------------------------------------------------------
 // Log redaction

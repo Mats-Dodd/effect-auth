@@ -58,6 +58,7 @@ export * as Ids from "./domain/Ids.js"
 export * as Passwords from "./domain/Passwords.js"
 export * as Sessions from "./domain/Sessions.js"
 export * as Stores from "./domain/Stores.js"
+export * as Verifications from "./domain/Verifications.js"
 
 // -----------------------------------------------------------------------------
 // Persistence
@@ -75,6 +76,7 @@ export * as AuthHandlers from "./http/Handlers.js"
 export * as MiddlewareLive from "./http/MiddlewareLive.js"
 export * as OriginCheck from "./http/OriginCheck.js"
 export * as RateLimits from "./http/RateLimits.js"
+export * as SessionCache from "./http/SessionCache.js"
 
 // -----------------------------------------------------------------------------
 // OAuth

@@ -57,7 +57,7 @@ import type { Account, Session, User } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { AccountTokens, PersistenceError } from "../domain/Stores.js"
 import { VerificationStore } from "../domain/Stores.js"
-import { resolveUrl } from "../http/OriginCheck.js"
+import { resolveUrl, withErrorCode } from "../http/OriginCheck.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
 import { isRedirectResponse, Jwks, layerJwks, verify as verifyIdToken } from "./IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
@@ -433,18 +433,6 @@ export const errorCode = (error: CallbackError): string => {
 }
 
 const snakeCase = (value: string): string => value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
-
-/**
- * Appends the safe error code to a validated error URL.
- *
- * @category combinators
- * @since 1.0.0
- */
-export const withErrorCode = (url: string, code: string): string => {
-  const parsed = new URL(url)
-  parsed.searchParams.set("error", code)
-  return parsed.toString()
-}
 
 // -----------------------------------------------------------------------------
 // Service

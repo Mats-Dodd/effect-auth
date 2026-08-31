@@ -31,11 +31,18 @@
  * an `Authorization` header is not, and demanding an `Origin` there would
  * reject every non-browser client while stopping no attack.
  *
+ * The session cookie cache, when a deployment switches it on, sits between the
+ * origin check and `Sessions.verify`: a request presenting a valid snapshot is
+ * served from it with no database read at all, and one that is not leaves a
+ * fresh snapshot behind. It applies to the cookie transports only, and never to
+ * an endpoint annotated `AuthoritativeSession` — see `http/SessionCache.ts`,
+ * whose module header carries the threat model this trades against.
+ *
  * @since 1.0.0
  */
-import { DateTime, Duration, Effect, Layer, Redacted } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
-import type { HttpApiSecurity } from "effect/unstable/httpapi"
+import type { HttpApiEndpoint, HttpApiSecurity } from "effect/unstable/httpapi"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -50,8 +57,9 @@ import {
   sessionCookieOptions
 } from "./Cookies.js"
 import type { CurrentUser } from "./Middleware.js"
-import { Authenticated, CurrentSession, currentUserOf } from "./Middleware.js"
+import { Authenticated, AuthoritativeSession, CurrentSession, currentUserOf } from "./Middleware.js"
 import { checkOrigin } from "./OriginCheck.js"
+import { SessionCache, sessionCacheOf } from "./SessionCache.js"
 
 // -----------------------------------------------------------------------------
 // Cookies
@@ -165,12 +173,16 @@ export const clearSessionCookie = (
 export const make = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const sessions = yield* sessionsOf(model)
+  const cache = yield* sessionCacheOf(model)
   const currentUser = currentUserOf(model)
 
   const authenticate = (transport: { readonly cookie: boolean }) =>
     Effect.fnUntraced(function*<A, E, R>(
       httpEffect: Effect.Effect<A, E, R>,
-      options: { readonly credential: Redacted.Redacted<string> }
+      options: {
+        readonly credential: Redacted.Redacted<string>
+        readonly endpoint: HttpApiEndpoint.Top
+      }
     ) {
       // An absent cookie or header decodes to the empty credential. Failing here
       // is what lets `HttpApiBuilder` try the next declared transport.
@@ -180,6 +192,25 @@ export const make = Effect.fnUntraced(function*<F extends UserFields>(model: Use
 
       if (transport.cookie) {
         yield* checkOrigin(config)
+      }
+
+      // The cache is a cookie-transport optimisation and nothing else: a bearer
+      // client has no jar, and an endpoint that changes a credential or an
+      // identity has to see the row rather than a snapshot of it — see
+      // `AuthoritativeSession`.
+      const cacheable = transport.cookie && !Context.get(options.endpoint.annotations, AuthoritativeSession)
+
+      if (cacheable) {
+        const cached = yield* cache.read(options.credential)
+        if (Option.isSome(cached)) {
+          // No touch and no `Set-Cookie`: a snapshot expires at the instant the
+          // rolling refresh becomes due, so a session that needed either would
+          // not have been served from here.
+          return yield* httpEffect.pipe(
+            Effect.provideService(currentUser, cached.value.user),
+            Effect.provideService(CurrentSession, cached.value.session)
+          )
+        }
       }
 
       const verified = yield* Effect.result(sessions.verify(options.credential))
@@ -199,6 +230,11 @@ export const make = Effect.fnUntraced(function*<F extends UserFields>(model: Use
       if (transport.cookie && refreshed) {
         yield* setSessionCookie(config, session, options.credential)
       }
+      if (cacheable) {
+        // Written after the refresh, so the snapshot carries the expiry the
+        // cookie was just re-sent with.
+        yield* cache.write(session, user)
+      }
 
       return yield* httpEffect.pipe(
         Effect.provideService(currentUser, user),
@@ -214,7 +250,10 @@ export const make = Effect.fnUntraced(function*<F extends UserFields>(model: Use
   // would nullify the `__Secure-` prefix.
   const refused = <A, E, R>(
     _httpEffect: Effect.Effect<A, E, R>,
-    _options: { readonly credential: Redacted.Redacted<string> }
+    _options: {
+      readonly credential: Redacted.Redacted<string>
+      readonly endpoint: HttpApiEndpoint.Top
+    }
   ): Effect.Effect<A, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> =>
     Effect.fail(new Unauthorized())
 
@@ -247,7 +286,7 @@ export const make = Effect.fnUntraced(function*<F extends UserFields>(model: Use
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
-): Layer.Layer<Authenticated, never, AuthConfig | Sessions> => Layer.effect(Authenticated, make(model))
+): Layer.Layer<Authenticated, never, AuthConfig | Sessions | SessionCache> => Layer.effect(Authenticated, make(model))
 
 /**
  * {@link layerFor}, for a deployment that added no user fields of its own.
@@ -255,4 +294,4 @@ export const layerFor = <F extends UserFields>(
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<Authenticated, never, AuthConfig | Sessions> = layerFor(baseUserModel)
+export const layer: Layer.Layer<Authenticated, never, AuthConfig | Sessions | SessionCache> = layerFor(baseUserModel)

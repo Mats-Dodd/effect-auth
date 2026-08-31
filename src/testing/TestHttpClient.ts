@@ -24,7 +24,7 @@ import {
 } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApiBuilder, HttpApiClient, HttpApiMiddleware } from "effect/unstable/httpapi"
-import { insecureSessionCookieName } from "../http/Cookies.js"
+import { insecureSessionCacheCookieName, insecureSessionCookieName } from "../http/Cookies.js"
 import { Authenticated } from "../http/Middleware.js"
 import type { SentEmail } from "./TestEmails.js"
 import { testBaseUrl, TestApi } from "./TestLayer.js"
@@ -176,6 +176,34 @@ export const sessionCookie = (
   cookies: Ref.Ref<Cookies.Cookies>
 ): Effect.Effect<Option.Option<Cookies.Cookie>> =>
   Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, insecureSessionCookieName))
+
+/**
+ * The session *cache* cookie a single response wrote, if it wrote one.
+ *
+ * **When to use**
+ *
+ * To tell a cache write from a cache hit: a hit writes nothing, so the presence
+ * of this on a response is exactly the "the snapshot was refreshed" signal.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const responseCacheCookie = (
+  response: HttpClientResponse.HttpClientResponse,
+  name: string = insecureSessionCacheCookieName
+): Option.Option<Cookies.Cookie> => Cookies.get(response.cookies, name)
+
+/**
+ * The session cache cookie currently in a jar, if there is one.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const sessionCacheCookie = (
+  cookies: Ref.Ref<Cookies.Cookies>,
+  name: string = insecureSessionCacheCookieName
+): Effect.Effect<Option.Option<Cookies.Cookie>> =>
+  Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, name))
 
 /**
  * The value of the session cookie, `""` when it was expired away, and

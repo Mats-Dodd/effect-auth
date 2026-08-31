@@ -146,6 +146,55 @@ export class Authenticated extends HttpApiMiddleware.Service<Authenticated, {
 }) {}
 
 // -----------------------------------------------------------------------------
+// Annotations
+// -----------------------------------------------------------------------------
+
+/**
+ * Marks an endpoint that must see the session as the *database* has it.
+ *
+ * **When to use**
+ *
+ * On every endpoint whose decision depends on the current state of the
+ * credential or the identity behind it: changing a password, unlinking a sign-in
+ * method, changing an address, deleting an account. Annotate it, and the session
+ * cookie cache is bypassed for that endpoint — neither read nor written — so the
+ * handler cannot act on a snapshot taken up to `cookieCache.maxAge` ago.
+ *
+ * It is an endpoint annotation rather than a second middleware because the
+ * `Authenticated` middleware can read the annotations of the endpoint it is
+ * wrapping, and because a plugin then opts in by declaring one line on its own
+ * endpoint rather than by composing a different middleware.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Schema } from "effect"
+ * import { HttpApiEndpoint } from "effect/unstable/httpapi"
+ * import { Authenticated, AuthoritativeSession } from "effect-auth"
+ *
+ * const rotateKeys = HttpApiEndpoint.post("rotateKeys", "/rotate-keys", {
+ *   success: Schema.Struct({ success: Schema.Boolean })
+ * })
+ *   .middleware(Authenticated)
+ *   .annotate(AuthoritativeSession, true)
+ * ```
+ *
+ * **Gotchas**
+ *
+ * The default is `false`, so an endpoint that says nothing is cacheable. That is
+ * the right default — the vast majority of authenticated endpoints only need to
+ * know *who* is calling — but it means a new credential-changing endpoint has to
+ * remember this line.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const AuthoritativeSession: Context.Reference<boolean> = Context.Reference<boolean>(
+  "effect-auth/AuthoritativeSession",
+  { defaultValue: () => false }
+)
+
+// -----------------------------------------------------------------------------
 // Guards
 // -----------------------------------------------------------------------------
 

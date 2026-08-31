@@ -215,6 +215,30 @@ export const validateUrl = (
   return resolved === config.baseUrl && candidate !== config.baseUrl ? Option.none() : Option.some(resolved)
 }
 
+/**
+ * Appends an error code to a URL a browser is about to be sent to.
+ *
+ * **When to use**
+ *
+ * On the redirect target of a flow that failed — an OAuth callback, a magic
+ * link — so the page the person lands on can say what went wrong. The code is a
+ * fixed, safe classification chosen by this library, never a message and never
+ * anything the caller supplied.
+ *
+ * **Gotchas**
+ *
+ * The URL must already have been through {@link resolveUrl}: this function
+ * validates nothing, it only appends a query parameter to whatever it is given.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const withErrorCode = (url: string, code: string): string => {
+  const parsed = new URL(url)
+  parsed.searchParams.set("error", code)
+  return parsed.toString()
+}
+
 // -----------------------------------------------------------------------------
 // CSRF
 // -----------------------------------------------------------------------------

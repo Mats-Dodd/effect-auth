@@ -26,7 +26,9 @@ const everyEvent: ReadonlyArray<AuthEvent> = [
   { _tag: "PasswordResetRequested", userId },
   { _tag: "EmailVerified", userId, email: "ada@example.com" },
   { _tag: "AccountLinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
-  { _tag: "AccountUnlinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" }
+  { _tag: "AccountUnlinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
+  { _tag: "PluginEvent", plugin: "magic-link", event: "requested", userId: null, data: { newUser: true } },
+  { _tag: "PluginEvent", plugin: "magic-link", event: "verified", userId, data: {} }
 ]
 
 describe("domain/Events/schema", () => {

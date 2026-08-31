@@ -17,6 +17,12 @@
  * identifier infer, and — because the group carries its own routes — means the
  * routes registered are the ones that API actually declares, prefix included.
  *
+ * Three of the exports here belong to a plugin rather than to this group.
+ * {@link forGroup} is the same boundary {@link layer} is built on, offered to a
+ * module that serves endpoints of its own; {@link dieOn} is how it keeps its own
+ * infrastructural failures out of its endpoints' error unions; and
+ * {@link clearSessionCookies} is what any handler that ends a session must call.
+ *
  * **Gotchas**
  *
  * Two error tags never reach a caller. `PersistenceError` and
@@ -25,7 +31,7 @@
  *
  * @since 1.0.0
  */
-import type { Layer } from "effect"
+import type { Layer, Scope } from "effect"
 import { Effect, Option, Redacted } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { HttpServerResponse } from "effect/unstable/http"
@@ -35,29 +41,86 @@ import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
-import { OAuthProviderError, PasswordHashError } from "../domain/Errors.js"
+import { OAuthProviderError } from "../domain/Errors.js"
 import { Passwords, passwordsOf } from "../domain/Passwords.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import { Sessions, sessionsOf } from "../domain/Sessions.js"
-import { PersistenceError } from "../domain/Stores.js"
-import { OAuthFlow, withErrorCode } from "../oauth/Flow.js"
+import { OAuthFlow } from "../oauth/Flow.js"
 import type { AuthApiGroupOf } from "./AuthApi.js"
 import { AuthApiGroup } from "./AuthApi.js"
 import type { Authenticated } from "./Middleware.js"
 import { CurrentSession, currentUserOf } from "./Middleware.js"
 import { clearSessionCookie, setSessionCookie } from "./MiddlewareLive.js"
-import { resolveUrl, validateUrl } from "./OriginCheck.js"
+import { resolveUrl, validateUrl, withErrorCode } from "./OriginCheck.js"
 import type { Bucket } from "./RateLimits.js"
 import { clientAddress, consumeWith, credentials, email as emailBucket } from "./RateLimits.js"
+import type { SessionCacheService } from "./SessionCache.js"
+import { SessionCache } from "./SessionCache.js"
 
 // -----------------------------------------------------------------------------
-// Helpers
+// Failures
 // -----------------------------------------------------------------------------
 
-/** Everything a caller is allowed to see — see {@link serverFault}. */
-const isCallerError = <E>(error: E): error is Exclude<E, PasswordHashError | PersistenceError> =>
-  !(error instanceof PasswordHashError) && !(error instanceof PersistenceError)
+/** A tagged error — everything {@link dieOn} can be pointed at. */
+interface Tagged {
+  readonly _tag: string
+}
+
+/**
+ * Whether an error is one the fault filter leaves alone, stated as the
+ * narrowing the compiler cannot derive from a membership test.
+ */
+const isDischarged = <E extends Tagged, Tags extends ReadonlyArray<string>>(
+  error: E,
+  tags: Tags
+): error is Exclude<E, { readonly _tag: Tags[number] }> => !tags.includes(error._tag)
+
+/**
+ * Turns the failures whose tags are named into defects, and takes them out of
+ * the error channel.
+ *
+ * **When to use**
+ *
+ * For the errors that mean *the deployment is broken* rather than *the caller
+ * did something wrong*: they must render as an opaque `500` with the cause in
+ * the logs, and they must not appear in an endpoint's declared error union. A
+ * plugin whose services can fail its own infrastructural way names those tags
+ * here, exactly as this library names its two in {@link serverFaultTags}.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { AuthHandlers } from "effect-auth"
+ *
+ * const mailerFault = AuthHandlers.dieOn(["EmailDeliveryError"])
+ * ```
+ *
+ * **Gotchas**
+ *
+ * The tags are matched by string. Pass the array `as const` (or a
+ * `ReadonlyArray` constant like {@link serverFaultTags}) so the return type
+ * names the tags rather than widening to `string` — with a widened `Tags` the
+ * whole error channel disappears from the type while the runtime keeps failing.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const dieOn =
+  <const Tags extends ReadonlyArray<string>>(tags: Tags) =>
+  <A, E extends Tagged, R>(
+    effect: Effect.Effect<A, E, R>
+  ): Effect.Effect<A, Exclude<E, { readonly _tag: Tags[number] }>, R> =>
+    Effect.catch(effect, (error) => isDischarged(error, tags) ? Effect.fail(error) : Effect.die(error))
+
+/**
+ * The two failures no endpoint of this library declares: a storage fault and a
+ * hashing fault. Both mean the deployment is broken.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const serverFaultTags = ["PasswordHashError", "PersistenceError"] as const
 
 /**
  * Turns the two server-fault errors into defects.
@@ -74,10 +137,15 @@ const isCallerError = <E>(error: E): error is Exclude<E, PasswordHashError | Per
  * @category combinators
  * @since 1.0.0
  */
-export const serverFault = <A, E, R>(
+export const serverFault: <A, E extends Tagged, R>(
   effect: Effect.Effect<A, E, R>
-): Effect.Effect<A, Exclude<E, PasswordHashError | PersistenceError>, R> =>
-  Effect.catch(effect, (error) => isCallerError(error) ? Effect.fail(error) : Effect.die(error))
+) => Effect.Effect<A, Exclude<E, { readonly _tag: "PasswordHashError" | "PersistenceError" }>, R> = dieOn(
+  serverFaultTags
+)
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
 
 /**
  * What the session row records about the client that created it.
@@ -136,6 +204,26 @@ export const redirectTo = (location: string) =>
  */
 export const acknowledged = { success: true } as const
 
+/**
+ * Ends this browser's session on the response being built: the session cookie
+ * *and* whatever the cookie cache left beside it.
+ *
+ * **When to use**
+ *
+ * Wherever a handler signs the caller out — sign-out, revoking every session, a
+ * completed password reset, a deleted account. Clearing only the session cookie
+ * would leave a snapshot behind, and a snapshot is served without a database
+ * read: the person would stay signed in until it expired.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const clearSessionCookies = (
+  config: AuthConfigService,
+  cache: SessionCacheService
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.andThen(clearSessionCookie(config), cache.clear)
+
 // -----------------------------------------------------------------------------
 // Layer
 // -----------------------------------------------------------------------------
@@ -158,8 +246,142 @@ export type HandlerServices =
   | Sessions
   | Passwords
   | Accounts
+  | SessionCache
   | Authenticated
   | RateLimiter.RateLimiter
+
+// -----------------------------------------------------------------------------
+// Groups
+// -----------------------------------------------------------------------------
+
+/**
+ * Implements one `HttpApiGroup` inside whatever `HttpApi` a consumer composed it
+ * into.
+ *
+ * **When to use**
+ *
+ * In every plugin that serves endpoints. `HttpApiBuilder.group` takes the API
+ * the group was *added to*, and a library cannot name that API — so a plugin
+ * that called it directly would either force its consumers onto a fixed API or
+ * repeat this module's boundary cast. `forGroup` is that boundary, written once:
+ * hand it your group and your handlers, and what comes back is the function a
+ * consumer applies to their own API.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Effect, Schema } from "effect"
+ * import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
+ * import { AuthHandlers } from "effect-auth"
+ *
+ * const PingGroup = HttpApiGroup.make("ping").add(
+ *   HttpApiEndpoint.get("ping", "/ping", { success: Schema.String })
+ * )
+ *
+ * export const layer = AuthHandlers.forGroup(PingGroup, (handlers) =>
+ *   Effect.succeed(handlers.handle("ping", () => Effect.succeed("pong"))))
+ * ```
+ *
+ * **Gotchas**
+ *
+ * The API passed to the result must be the one passed to `HttpApiBuilder.layer`:
+ * the routes are read off the group *it* carries, so an API whose prefix was
+ * changed after the call would serve the old paths. A group merely *named* the
+ * same thing, or the group re-prefixed with `HttpApi.prefix` (which rewrites the
+ * endpoint paths in the type), is rejected rather than mis-served.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const forGroup = <
+  const Id extends string,
+  Group extends HttpApiGroup.Constraint,
+  Return
+>(
+  // `Id` is inferred from the value's own `identifier`, which is what makes the
+  // key of the mapped type below a literal rather than `string`.
+  group: Group & { readonly identifier: Id },
+  build: (
+    handlers: HttpApiBuilder.Handlers.FromGroup<Group>
+  ) => HttpApiBuilder.Handlers.ValidateReturn<Return>
+) =>
+<ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+  api:
+    & HttpApi.HttpApi<ApiId, Groups>
+    & { readonly groups: { readonly [K in Id]: Group } }
+): Layer.Layer<
+  HttpApiGroup.Service<ApiId, Id>,
+  HttpApiBuilder.Handlers.Error<Return>,
+  Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
+> => buildGroup(api, group, build)
+
+/**
+ * `HttpApiBuilder.group`, restated for one named group of a composed API.
+ *
+ * **Details**
+ *
+ * The only cast in this module, and the boundary both {@link forGroup} and
+ * {@link layer} exist to make safe. Two things about `HttpApiBuilder.group`'s
+ * signature make it unusable from a library:
+ *
+ * `HttpApi` is invariant in its group union, so a consumer's composed API —
+ * `HttpApi.make("app").addHttpApi(AuthApi).add(Todos)` — is not assignable to
+ * `HttpApi<ApiId, typeof AuthApiGroup>`, even though it demonstrably contains
+ * that exact group.
+ *
+ * And its group identifier is constrained by `HttpApiGroup.Identifier<Groups>`,
+ * a conditional type that stays deferred while `Groups` is a type parameter — so
+ * no generic caller can name the group it is implementing, whatever it casts the
+ * API to.
+ *
+ * What is cast is therefore the *function*, not the API, and the function being
+ * cast is the two-line wrapper right here: it reads the identifier off the group
+ * value and passes the API through untouched. That is sound because
+ * `HttpApiBuilder.group` reads nothing but `api.groups[identifier]` (see its
+ * implementation), so the routes registered are the consumer's own group's,
+ * whatever the types above say. What the callers add is the check the types can
+ * no longer make: each of them pins `groups[id]` to the group it was given, at
+ * every call site.
+ *
+ * `layer` passes the *base* auth group rather than `AuthApiGroupOf<F>`, which is
+ * what lets its nineteen handlers be type-checked once instead of once per
+ * deployment. An endpoint whose payload type mentions `F` has a request shape
+ * TypeScript cannot resolve — `HttpApiEndpoint`'s `RequestFromParts` branches on
+ * the payload type, and a conditional over an unresolved `F` stays deferred, so
+ * `payload` would have no readable properties at all. The difference between the
+ * two groups is confined to three endpoints, and in both directions it is a
+ * widening that module honours: sign-up *receives* a payload with the model's
+ * extra fields on it (recovered, typed, through `model.extrasOf`) and the three
+ * user-bearing endpoints *answer* with a user that has them (produced by
+ * `model.toPublic`). Encoding and decoding are done by the consumer's own group
+ * either way, so the extras are on the wire whatever this says.
+ *
+ * (It goes via `unknown` because the two signatures are not comparable in either
+ * direction — which is the whole point of restating one as the other.)
+ */
+const buildGroup = (<Return>(
+  api: HttpApi.HttpApi<string, HttpApiGroup.Constraint>,
+  group: HttpApiGroup.Constraint,
+  build: (
+    handlers: HttpApiBuilder.Handlers.FromGroup<HttpApiGroup.Constraint>
+  ) => HttpApiBuilder.Handlers.ValidateReturn<Return>
+) => HttpApiBuilder.group(api, group.identifier, build)) as unknown as <
+  ApiId extends string,
+  Groups extends HttpApiGroup.Constraint,
+  const Id extends string,
+  Group extends HttpApiGroup.Constraint & { readonly identifier: Id },
+  Return
+>(
+  api: HttpApi.HttpApi<ApiId, Groups>,
+  group: Group,
+  build: (
+    handlers: HttpApiBuilder.Handlers.FromGroup<Group>
+  ) => HttpApiBuilder.Handlers.ValidateReturn<Return>
+) => Layer.Layer<
+  HttpApiGroup.Service<ApiId, Id>,
+  HttpApiBuilder.Handlers.Error<Return>,
+  Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
+>
 
 /**
  * Implements the `auth` group of an `HttpApi` that contains it.
@@ -240,38 +462,9 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
   HandlerServices
 > => {
   const CurrentUser = currentUserOf(model)
-  return HttpApiBuilder.group(
-    // The only cast in this module, and the boundary the whole signature exists
-    // to make safe. `HttpApi` is invariant in its group union, so a consumer's
-    // composed API — `HttpApi.make("app").addHttpApi(AuthApi).add(TodosGroup)` —
-    // is not assignable to `HttpApi<ApiId, typeof AuthApiGroup>`, even though it
-    // demonstrably contains that exact group: `layer`'s parameter requires
-    // `groups.auth` to *be* the group the model passed alongside it declares,
-    // checked by the compiler at every call site. `HttpApiBuilder.group` reads
-    // nothing but `api.groups["auth"]` (see its implementation), so narrowing
-    // the union it sees to the one group named here cannot change what runs, and
-    // the routes still come off the consumer's own group value.
-    //
-    // It narrows to the *base* group rather than to `AuthApiGroupOf<F>`, which
-    // is what lets the nineteen handlers below be type-checked once instead of
-    // once per deployment. An endpoint whose payload type mentions `F` has a
-    // request shape TypeScript cannot resolve — `HttpApiEndpoint`'s
-    // `RequestFromParts` branches on the payload type, and a conditional over an
-    // unresolved `F` stays deferred, so `payload` would have no readable
-    // properties at all. The difference between the two groups is confined to
-    // three endpoints, and in both directions it is a widening this module
-    // honours: sign-up *receives* a payload with the model's extra fields on it
-    // (recovered, typed, through `model.extrasOf`) and the three user-bearing
-    // endpoints *answer* with a user that has them (produced by
-    // `model.toPublic`). Encoding and decoding are done by the consumer's own
-    // group either way, so the extras are on the wire whatever this narrowing
-    // says.
-    //
-    // (It goes via `unknown` because a one-step conversion is refused:
-    // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
-    // compiler's comparability check.)
-    api as unknown as HttpApi.HttpApi<ApiId, typeof AuthApiGroup>,
-    "auth",
+  return buildGroup(
+    api,
+    AuthApiGroup,
     (handlers) =>
       Effect.gen(function*() {
         const config = yield* AuthConfig
@@ -281,6 +474,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
         const sessions = yield* sessionsOf(model)
         const passwords = yield* passwordsOf(model)
         const accounts = yield* Accounts
+        const cache = yield* SessionCache
         const limiter = yield* RateLimiter.RateLimiter
         // Resolved once, and optional: see `HandlerServices`.
         const flow = yield* Effect.serviceOption(OAuthFlow)
@@ -340,7 +534,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
             Effect.gen(function*() {
               const session = yield* CurrentSession
               yield* sessions.signOut(session).pipe(serverFault)
-              yield* clearSessionCookie(config)
+              yield* clearSessionCookies(config, cache)
               return acknowledged
             }))
           .handle("getSession", () =>
@@ -367,7 +561,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               const user = yield* CurrentUser
               yield* sessions.revokeAll(user.id).pipe(serverFault)
               // This one revoked the caller's own session too.
-              yield* clearSessionCookie(config)
+              yield* clearSessionCookies(config, cache)
               return acknowledged
             }))
           .handle("revokeOtherSessions", () =>
@@ -396,7 +590,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 newPassword: payload.newPassword
               }).pipe(serverFault)
               // Every session was revoked, this browser's included.
-              yield* clearSessionCookie(config)
+              yield* clearSessionCookies(config, cache)
               return acknowledged
             }))
           .handle("changePassword", ({ payload }) =>

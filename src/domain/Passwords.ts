@@ -26,12 +26,11 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Effect, Encoding, Layer, Option, Redacted, Result } from "effect"
+import { Context, Effect, Layer, Option, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthEmails, resetPasswordUrl, verifyEmailUrl } from "../config/AuthEmails.js"
 import { PasswordHasher } from "../crypto/PasswordHasher.js"
-import { Token } from "../crypto/Token.js"
 import { validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { pickKeys } from "../internal/records.js"
@@ -53,15 +52,7 @@ import type {
   UserModel,
   UserOf
 } from "./Schema.js"
-import {
-  Account,
-  baseUserModel,
-  CredentialIssuer,
-  emailVerifyIdentifier,
-  normalizeEmail,
-  passwordResetIdentifier,
-  Verification
-} from "./Schema.js"
+import { Account, baseUserModel, CredentialIssuer, normalizeEmail } from "./Schema.js"
 import type { CreatedSession } from "./Sessions.js"
 import { Sessions } from "./Sessions.js"
 import type { PersistenceError } from "./Stores.js"
@@ -71,9 +62,9 @@ import {
   SessionStore,
   UserStore,
   userStoreOf,
-  VerificationStore,
   WithAuthTransaction
 } from "./Stores.js"
+import { emailVerifyPurpose, passwordResetPurpose, Verifications } from "./Verifications.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -125,68 +116,6 @@ export const dummyPassword = "effect-auth::timing-defence::not-a-real-password"
  * @since 1.0.0
  */
 export const absentUserId = "00000000-0000-0000-0000-000000000000" as UserId
-
-// -----------------------------------------------------------------------------
-// Subject tokens
-// -----------------------------------------------------------------------------
-
-/**
- * The separator between a subject-token's subject and its secret. Neither half
- * can contain it: the subject is base64url encoded and the secret is a
- * base64url token.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const subjectTokenSeparator = "."
-
-/**
- * Pairs the subject a single-use token belongs to with the secret itself.
- *
- * @category models
- * @since 1.0.0
- */
-export interface SubjectToken {
-  /** The user id (password reset) or normalized e-mail address (verification). */
-  readonly subject: string
-  /** The 43-character random half, the only part that is hashed and stored. */
-  readonly secret: Redacted.Redacted<string>
-}
-
-/**
- * Builds the token that goes into an e-mail link:
- * `<base64url(subject)>.<secret>`.
- *
- * **Details**
- *
- * `Verification.identifier` is namespaced by subject (`password-reset:<userId>`,
- * `email-verify:<email>`), and `VerificationStore.consume` — the atomic
- * single-use claim — needs both the identifier and the value hash. A recipient
- * presenting only a bare secret could not name the row, so the subject travels
- * with it. The subject is not a secret; the 256 bits of randomness beside it
- * are, and only their digest is stored.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const encodeSubjectToken = (subject: string, secret: Redacted.Redacted<string>): Redacted.Redacted<string> =>
-  Redacted.make(`${Encoding.encodeBase64Url(subject)}${subjectTokenSeparator}${Redacted.value(secret)}`)
-
-/**
- * Splits a subject token back into its subject and its secret, or `None` when
- * it is not a subject token at all.
- *
- * @category combinators
- * @since 1.0.0
- */
-export const decodeSubjectToken = (token: Redacted.Redacted<string>): Option.Option<SubjectToken> => {
-  const raw = Redacted.value(token)
-  const at = raw.indexOf(subjectTokenSeparator)
-  if (at <= 0 || at === raw.length - 1) return Option.none()
-  const subject = Encoding.decodeBase64UrlString(raw.slice(0, at))
-  if (Result.isFailure(subject)) return Option.none()
-  return Option.some({ subject: subject.success, secret: Redacted.make(raw.slice(at + 1)) })
-}
 
 // -----------------------------------------------------------------------------
 // Policy
@@ -498,21 +427,19 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   | AuthEmails
   | AuthEvents
   | PasswordHasher
-  | Token
+  | Verifications
   | Sessions
   | UserStore
   | SessionStore
   | AccountStore
-  | VerificationStore
   | WithAuthTransaction
 > = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const hasher = yield* PasswordHasher
-  const tokens = yield* Token
   const users = yield* userStoreOf(model)
   const accounts = yield* AccountStore
   const sessionStore = yield* SessionStore
-  const verifications = yield* VerificationStore
+  const verifications = yield* Verifications
   const transaction = yield* WithAuthTransaction
   const emails = yield* AuthEmails
   const sessions = yield* Sessions
@@ -544,49 +471,21 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     return Redacted.make(parsed.toString())
   }
 
-  /** Mints a single-use value, stores its digest, and returns the subject token. */
-  const issue = Effect.fnUntraced(function*(identifier: string, subject: string, expiresAt: DateTime.Utc) {
-    const secret = yield* tokens.generateToken
-    const valueHash = yield* tokens.hashToken(secret)
-    const row = yield* insertRow(Verification.insert, {
-      identifier,
-      valueHash,
-      payload: null,
-      expiresAt
-    })
-    yield* verifications.create(row)
-    return encodeSubjectToken(subject, secret)
-  })
-
-  /** Claims a single-use value named by a subject token. */
-  const claim = Effect.fnUntraced(function*(
-    token: Redacted.Redacted<string>,
-    identifierOf: (subject: string) => string
-  ) {
-    const parts = yield* Effect.fromOption(decodeSubjectToken(token), () => new InvalidToken())
-    const valueHash = yield* tokens.hashToken(parts.secret)
-    const consumed = yield* verifications.consume(identifierOf(parts.subject), valueHash)
-    // An expired row was never claimable and a claimed row is already gone:
-    // both are `None` here, and both are one and the same answer.
-    yield* Effect.fromOption(consumed, () => new InvalidToken())
-    return parts.subject
-  })
-
   const sendVerificationTo = Effect.fnUntraced(function*(
     user: UserOf<F>,
     callbackURL: string | undefined
   ) {
-    const now = yield* DateTime.now
-    const token = yield* issue(
-      emailVerifyIdentifier(user.email),
-      user.email,
-      DateTime.addDuration(now, config.tokens.emailVerificationTtl)
-    )
-    const url = withCallback(verifyEmailUrl(config, token), callbackURL)
+    const issued = yield* verifications.issue({
+      purpose: emailVerifyPurpose,
+      subject: normalizeEmail(user.email),
+      ttl: config.tokens.emailVerificationTtl,
+      payload: null
+    })
+    const url = withCallback(verifyEmailUrl(config, issued.token), callbackURL)
     // Delivery is the application's responsibility and its failure must not
     // change what the caller observes; it is logged and dropped.
     yield* annotateAuthLogs(Effect.ignore(
-      emails.sendVerification({ user, token, url }),
+      emails.sendVerification({ user, token: issued.token, url }),
       { log: "Warn", message: "verification e-mail delivery failed" }
     ))
   })
@@ -731,15 +630,15 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       return
     }
     const user = found.value
-    const now = yield* DateTime.now
-    const token = yield* issue(
-      passwordResetIdentifier(user.id),
-      user.id,
-      DateTime.addDuration(now, config.tokens.passwordResetTtl)
-    )
-    const url = withCallback(resetPasswordUrl(config, token), options.redirectTo)
+    const issued = yield* verifications.issue({
+      purpose: passwordResetPurpose,
+      subject: user.id,
+      ttl: config.tokens.passwordResetTtl,
+      payload: null
+    })
+    const url = withCallback(resetPasswordUrl(config, issued.token), options.redirectTo)
     yield* annotateAuthLogs(Effect.ignore(
-      emails.sendPasswordReset({ user, token, url }),
+      emails.sendPasswordReset({ user, token: issued.token, url }),
       { log: "Warn", message: "password reset e-mail delivery failed" }
     ))
     yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: user.id })
@@ -749,8 +648,8 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     options: { readonly token: Redacted.Redacted<string>; readonly newPassword: Redacted.Redacted<string> }
   ) {
     yield* checkPolicy(options.newPassword, config)
-    const subject = yield* claim(options.token, (userId) => passwordResetIdentifier(userId as UserId))
-    const userId = subject as UserId
+    const claimed = yield* verifications.claim(passwordResetPurpose, options.token)
+    const userId = claimed.subject as UserId
 
     yield* Effect.fromOption(yield* users.findById(userId), () => new InvalidToken())
 
@@ -768,7 +667,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // just used. Two "forgot password" clicks mint two independent tokens,
       // and somebody with a few minutes of mailbox access must not keep a
       // working key to an account whose owner has just re-secured it.
-      yield* verifications.deleteByIdentifier(passwordResetIdentifier(userId))
+      yield* verifications.retire(passwordResetPurpose, userId)
       return yield* sessionStore.deleteByUserId(userId)
     }))
 
@@ -804,7 +703,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     // Same reasoning as in `resetPassword`: a password that has just been
     // changed from inside a session must not still be resettable by a link
     // somebody asked for beforehand.
-    yield* verifications.deleteByIdentifier(passwordResetIdentifier(options.userId))
+    yield* verifications.retire(passwordResetPurpose, options.userId)
 
     if (options.revokeOtherSessions !== false) {
       yield* options.currentSessionId === undefined
@@ -826,9 +725,9 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   })
 
   const verifyEmail = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
-    const email = yield* claim(token, emailVerifyIdentifier)
+    const claimed = yield* verifications.claim(emailVerifyPurpose, token)
 
-    const found = yield* users.findByEmail(normalizeEmail(email))
+    const found = yield* users.findByEmail(normalizeEmail(claimed.subject))
     const user = yield* Effect.fromOption(found, () => new InvalidToken())
 
     const updated = yield* users.update(user.id, model.basePatch({ emailVerified: true }))
@@ -872,12 +771,11 @@ export const layerFor = <F extends UserFields>(
   | AuthEmails
   | AuthEvents
   | PasswordHasher
-  | Token
+  | Verifications
   | Sessions
   | UserStore
   | SessionStore
   | AccountStore
-  | VerificationStore
   | WithAuthTransaction
 > => Layer.effect(passwordsOf(model), make(model))
 
@@ -894,11 +792,10 @@ export const layer: Layer.Layer<
   | AuthEmails
   | AuthEvents
   | PasswordHasher
-  | Token
+  | Verifications
   | Sessions
   | UserStore
   | SessionStore
   | AccountStore
-  | VerificationStore
   | WithAuthTransaction
 > = layerFor(baseUserModel)

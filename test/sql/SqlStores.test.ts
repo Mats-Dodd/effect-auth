@@ -356,6 +356,43 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         assert.strictEqual(yield* accounts.deleteById(account.id, owner.id), true)
         assert.strictEqual(yield* accounts.countByUserId(owner.id), 0)
       }))
+
+    it.effect("deletes every method of one user, and only that user's", () =>
+      Effect.gen(function*() {
+        const accounts = yield* AccountStore
+        const owner = yield* createUser(uniqueEmail("acc-purge-owner"))
+        const other = yield* createUser(uniqueEmail("acc-purge-other"))
+
+        const link = (userId: typeof owner.id, providerId: string) =>
+          Effect.flatMap(
+            Account.insert.makeEffect({
+              issuer: oauthIssuer(providerId),
+              accountId: unique(providerId),
+              providerId,
+              userId,
+              accessToken: null,
+              refreshToken: null,
+              idToken: null,
+              accessTokenExpiresAt: null,
+              refreshTokenExpiresAt: null,
+              scope: null,
+              passwordHash: null
+            }),
+            (row) => accounts.create(row)
+          )
+
+        yield* link(owner.id, "github")
+        yield* link(owner.id, "google")
+        yield* link(other.id, "github")
+
+        assert.strictEqual(yield* accounts.deleteByUserId(owner.id), 2)
+        assert.strictEqual(yield* accounts.countByUserId(owner.id), 0)
+        // The neighbour's row is untouched: the statement is scoped by user.
+        assert.strictEqual(yield* accounts.countByUserId(other.id), 1)
+
+        // And a user with nothing linked is not an error.
+        assert.strictEqual(yield* accounts.deleteByUserId(owner.id), 0)
+      }))
   })
 
   // ---------------------------------------------------------------------------

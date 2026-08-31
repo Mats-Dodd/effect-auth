@@ -615,6 +615,14 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
           )
         ),
 
+      deleteByUserId: (userId) =>
+        persist("AccountStore.deleteByUserId")(
+          Effect.map(
+            sql<RawIdRow>`DELETE FROM accounts WHERE user_id = ${userId} RETURNING id`,
+            (rows) => rows.length
+          )
+        ),
+
       countByUserId: (userId) =>
         persist("AccountStore.countByUserId")(
           Effect.map(

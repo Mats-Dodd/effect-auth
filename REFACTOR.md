@@ -102,12 +102,18 @@ Rules:
 
 ## 5. The permitted boundary casts (and only these)
 
-1. `src/http/Handlers.ts` — `HttpApiBuilder.group` needs the concrete api type; a library
-   accepts any consumer api structurally containing the auth group. Tighten the constraint from
-   `HttpApiGroup.Constraint` to the auth group's actual type
-   (`{ readonly groups: { readonly auth: typeof AuthApiGroup } }` or the tightest shape that
-   accepts `HttpApi.make("app").addHttpApi(AuthApi).add(other)`), keep ONE `as` with a
-   why-this-is-safe comment.
+1. `src/http/Handlers.ts` — `HttpApiBuilder.group`, restated for one named group of a composed
+   API (`buildGroup`). Two things about its signature make it unusable from a library: `HttpApi`
+   is invariant in its group union, so a consumer's composed api is not assignable to
+   `HttpApi<ApiId, typeof AuthApiGroup>`; and its group identifier is constrained by
+   `HttpApiGroup.Identifier<Groups>`, a conditional that stays deferred while `Groups` is a type
+   parameter, so no generic caller can name the group it implements whatever it casts the api to.
+   What is cast is therefore the *function*, not the api, and the function being cast is a
+   two-line wrapper that reads the identifier off the group value and passes the api through
+   untouched. Both callers — `forGroup` (the plugin door) and `layer` — pin `groups[id]` to the
+   group they were given at every call site, which is the check the types can no longer make.
+   Keep it to exactly one `as unknown as` in that module. Widened by the plugin-SDK wave, which
+   added `forGroup`.
 2. `src/client/AuthClient.ts:466` — same boundary for `AtomHttpApi.Service`. Same treatment.
    Also replace the `AtomResultFn<any, A, E>` helper params with proper generics.
 3. `src/domain/Schema.ts` — `makeUserModel`. `VariantSchema`'s field validation and variant

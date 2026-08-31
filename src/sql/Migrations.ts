@@ -316,6 +316,81 @@ export const forUserFields = <F extends UserFields>(
     }
   })
 
+// -----------------------------------------------------------------------------
+// Migration sets
+// -----------------------------------------------------------------------------
+
+/**
+ * A migration record together with everything derived from it: the loader, the
+ * effect that runs it, and the layer that runs it while it is built.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface MigrationSet {
+  /** The migrations themselves, keyed `<id>_<name>`. */
+  readonly migrations: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>
+  /** {@link MigrationSet.migrations} as a `Migrator` loader. */
+  readonly loader: Migrator.Loader
+  /** Runs them, answering with the ones that were applied. */
+  readonly run: Effect.Effect<
+    ReadonlyArray<readonly [id: number, name: string]>,
+    Migrator.MigrationError | SqlError.SqlError,
+    SqlClient.SqlClient
+  >
+  /** {@link MigrationSet.run}, as a layer that applies them while it is built. */
+  readonly layer: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient>
+}
+
+/**
+ * Gathers a plugin's migrations into a {@link MigrationSet} with a bookkeeping
+ * table of its own.
+ *
+ * **When to use**
+ *
+ * In every plugin that owns tables. `Migrator.fromRecord` orders and records
+ * migrations by a *global* numeric id, so a plugin that merged its statements
+ * into this library's record — or into the application's — would be one
+ * renumbering away from a migration that never runs: an id lower than one
+ * already recorded is silently skipped. A table per plugin is what keeps each
+ * set's numbering its own business, and it is why every set starts at `0001`.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Effect } from "effect"
+ * import { SqlClient } from "effect/unstable/sql"
+ * import { Migrations } from "effect-auth"
+ *
+ * const createLinks = Effect.flatMap(
+ *   SqlClient.SqlClient,
+ *   (sql) => sql`CREATE TABLE IF NOT EXISTS magic_links (id text PRIMARY KEY)`
+ * )
+ *
+ * export const Migrations$ = Migrations.make({
+ *   table: "effect_auth_magic_link_migrations",
+ *   migrations: { "0001_create_links": createLinks }
+ * })
+ * ```
+ *
+ * **Gotchas**
+ *
+ * Sequence the layers where one set's tables reference another's:
+ * `Plugin.Migrations.layer.pipe(Layer.provide(Migrations.layer))`. Two sets built
+ * over the same `SqlClient` with no ordering between them run concurrently.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const make = (options: {
+  readonly table: string
+  readonly migrations: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>>
+}): MigrationSet => {
+  const loader = Migrator.fromRecord(options.migrations)
+  const run = Migrator.make({})({ loader, table: options.table })
+  return { migrations: options.migrations, loader, run, layer: Layer.effectDiscard(run) }
+}
+
 /**
  * Every `effect-auth` migration, keyed by `<id>_<name>` as
  * `Migrator.fromRecord` expects.
@@ -350,12 +425,23 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
 }
 
 /**
+ * The name of the table this library records its own migrations in.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const table = "effect_auth_migrations"
+
+/** {@link migrations}, and everything derived from them. */
+const core = make({ table, migrations })
+
+/**
  * The `Migrator` loader for {@link migrations}.
  *
  * @category models
  * @since 1.0.0
  */
-export const loader: Migrator.Loader = Migrator.fromRecord(migrations)
+export const loader: Migrator.Loader = core.loader
 
 /**
  * Runs the `effect-auth` migrations against the ambient `SqlClient`, returning
@@ -368,7 +454,7 @@ export const run: Effect.Effect<
   ReadonlyArray<readonly [id: number, name: string]>,
   Migrator.MigrationError | SqlError.SqlError,
   SqlClient.SqlClient
-> = Migrator.make({})({ loader, table: "effect_auth_migrations" })
+> = core.run
 
 /**
  * A layer that applies the `effect-auth` migrations while it is being built.
@@ -389,8 +475,7 @@ export const run: Effect.Effect<
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> = Layer
-  .effectDiscard(run)
+export const layer: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> = core.layer
 
 /**
  * {@link layer}, plus the columns a model's custom user fields need.

@@ -14,12 +14,22 @@ import type { RateLimiter } from "effect/unstable/persistence"
 import type { SqlClient } from "effect/unstable/sql"
 import { Auth, AuthApi, AuthEmails, AuthHandlers } from "../../src/index.js"
 import type { AuthConfig } from "../../src/config/AuthConfig.js"
+import type { Hmac } from "../../src/crypto/Hmac.js"
+import type { Token } from "../../src/crypto/Token.js"
 import type { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthEvents } from "../../src/domain/Events.js"
 import type { Passwords } from "../../src/domain/Passwords.js"
 import type { Sessions } from "../../src/domain/Sessions.js"
-import type { AccountStore, SessionStore, UserStore, VerificationStore } from "../../src/domain/Stores.js"
+import type {
+  AccountStore,
+  SessionStore,
+  UserStore,
+  VerificationStore,
+  WithAuthTransaction
+} from "../../src/domain/Stores.js"
+import type { Verifications } from "../../src/domain/Verifications.js"
 import type { Authenticated } from "../../src/http/Middleware.js"
+import type { SessionCache } from "../../src/http/SessionCache.js"
 import type { OAuthFlow } from "../../src/oauth/Flow.js"
 import * as Github from "../../src/oauth/providers/Github.js"
 
@@ -37,6 +47,11 @@ type Exposed =
   | SessionStore
   | AccountStore
   | VerificationStore
+  | WithAuthTransaction
+  | Token
+  | Hmac
+  | Verifications
+  | SessionCache
   | Sessions
   | Accounts
   | Passwords
@@ -58,8 +73,13 @@ const _plain: Layer.Layer<Exposed, never, SqlClient.SqlClient | AuthEmails.AuthE
 // @ts-expect-error `OAuthFlow` belongs to `layerWithOAuth`, not to `layer`.
 const _noFlow: Layer.Layer<OAuthFlow, never, SqlClient.SqlClient | AuthEmails.AuthEmails> = AuthLive
 
-// @ts-expect-error `Token` is internal to the stack, not part of its surface.
-const _noToken: Layer.Layer<import("../../src/crypto/Token.js").Token> = AuthLive
+// `Token` and `Hmac` *are* part of the surface: a plugin mints its own single-use
+// values with one and signs its own cookies with the other.
+const _token: Layer.Layer<Token | Hmac, never, SqlClient.SqlClient | AuthEmails.AuthEmails> = AuthLive
+
+// @ts-expect-error the password hasher stays internal to the stack: replacing it
+// is an option, not a layer a consumer can shadow.
+const _noHasher: Layer.Layer<import("../../src/crypto/PasswordHasher.js").PasswordHasher> = AuthLive
 
 // ---------------------------------------------------------------------------
 // With OAuth: the specification's snippet, verbatim in shape.
@@ -138,7 +158,8 @@ export type {
   _handlersOverPlain,
   _noEmptyProviders,
   _noFlow,
-  _noToken,
+  _noHasher,
   _plain,
+  _token,
   _withProviders
 }

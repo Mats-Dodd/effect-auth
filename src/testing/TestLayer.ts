@@ -37,6 +37,7 @@ import type { OAuthServices, ProviderList, Services } from "../config/Auth.js"
 import { layer as authLayer, layerWithOAuth as authOAuthLayer } from "../config/Auth.js"
 import type {
   AuthConfigOptions,
+  CookieCacheConfig,
   CookieConfig,
   EmailPasswordConfig,
   EmailPathConfig,
@@ -51,7 +52,8 @@ import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents } from "../domain/Events.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
-import type { AuthStores } from "../domain/Stores.js"
+import type { AuthStores, SessionStoreService } from "../domain/Stores.js"
+import { SessionStore } from "../domain/Stores.js"
 import type { AuthApiGroupOf } from "../http/AuthApi.js"
 import { AuthApi } from "../http/AuthApi.js"
 import * as AuthHandlers from "../http/Handlers.js"
@@ -62,7 +64,7 @@ import type { EmailDelivery } from "./TestEmails.js"
 import { layerEmails, TestEmails } from "./TestEmails.js"
 
 export type { EmailDelivery, EmailKind, SentEmail, TestEmailsService } from "./TestEmails.js"
-export { layerEmails, TestEmails } from "./TestEmails.js"
+export { layerEmails, resetKind, TestEmails, verificationKind } from "./TestEmails.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -125,6 +127,15 @@ export interface Settings {
   readonly rateLimit?: PartialOptions<RateLimitConfig> | undefined
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
   /**
+   * Cookie cache overrides. Off by default, exactly as in production.
+   */
+  readonly cookieCache?: PartialOptions<CookieCacheConfig> | undefined
+  /**
+   * A `SessionStore` laid over the SQL one — the seam
+   * {@link countingSessionStore} plugs into.
+   */
+  readonly sessionStore?: Layer.Layer<SessionStore, never, SessionStore> | undefined
+  /**
    * Scrypt cost overrides. Defaults to {@link testScryptOptions}, and is
    * ignored when {@link Settings.hasher} is given.
    */
@@ -184,7 +195,8 @@ export const testConfig = (options?: Settings): AuthConfigOptions => ({
   cookie: options?.cookie,
   tokens: options?.tokens,
   rateLimit: { enabled: false, ...options?.rateLimit },
-  emailPaths: options?.emailPaths
+  emailPaths: options?.emailPaths,
+  cookieCache: options?.cookieCache
 })
 
 const hasherOf = (options?: Settings): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
@@ -203,7 +215,12 @@ const hasherOf = (options?: Settings): Layer.Layer<PasswordHasher, never, Crypto
  */
 const composed = <F extends UserFields>(options: Settings | undefined, model: UserModel<F>) =>
   Layer.fresh(
-    authLayer({ ...testConfig(options), passwordHasher: hasherOf(options), user: { model } }).pipe(
+    authLayer({
+      ...testConfig(options),
+      passwordHasher: hasherOf(options),
+      sessionStore: options?.sessionStore,
+      user: { model }
+    }).pipe(
       Layer.provideMerge(layerEmails(options?.emailDelivery))
     )
   )
@@ -432,6 +449,7 @@ const flowDeployment = <F extends UserFields>(
     authOAuthLayer({
       ...testConfig(options),
       passwordHasher: hasherOf(options),
+      sessionStore: options.sessionStore,
       providers: options.providers,
       user: { model }
     }).pipe(
@@ -463,38 +481,103 @@ export const TestApi = HttpApi.make("test-app").addHttpApi(AuthApi)
 
 /**
  * Everything a request has to cross: {@link layer}, the handlers of `api`'s
- * `auth` group, and {@link layerPlatform}.
+ * `auth` group, whatever `extra` adds, and {@link layerPlatform}.
+ *
+ * **When to use**
+ *
+ * `extra` is the plugin seam. Hand it a plugin's handler layer — or its whole
+ * stack — and it is provided the *same* `layer(options)` build the auth handlers
+ * get, so the plugin reads the deployment's own `Sessions`, `UserStore` and rate
+ * limiter rather than a second copy of them. Whatever it provides is part of the
+ * result, which is what lets a test's `HttpApiBuilder.layer` see a plugin's group
+ * implemented.
+ *
+ * **Example**
+ *
+ * ```ts skip-type-checking
+ * const TestLayer = AuthTest.layerHttpApi(MagicLinkTest.TestApi, options, MagicLink.handlers(MagicLinkTest.TestApi))
+ * ```
+ *
+ * **Gotchas**
+ *
+ * Two signatures rather than one optional parameter, because a `Layer`'s output
+ * is contravariant: there is no value that "provides `Extra`" to fall back on
+ * when no layer was given, and inventing one would need a cast. The two
+ * signatures say the same thing the two call shapes mean.
  *
  * @category layers
  * @since 1.0.0
  */
-export const layerHttpApi = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
+export function layerHttpApi<
+  ApiId extends string,
+  Groups extends HttpApiGroup.Constraint,
+  F extends UserFields = {}
+>(
   api:
     & HttpApi.HttpApi<ApiId, Groups>
     & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
   options?: Options<F>
-): HttpApiLayer<ApiId> =>
-  Layer.merge(
-    // `options.user.model` reaches both halves: the handlers, so sign-up accepts
-    // the deployment's own fields, and the deployment, so its stores write them.
-    // `AuthHandlers.layer` is what rejects an API and a model that disagree.
-    AuthHandlers.layer(api, options?.user?.model).pipe(Layer.provideMerge(layer(options))),
-    layerPlatform
-  )
+): HttpApiLayer<ApiId>
+export function layerHttpApi<
+  ApiId extends string,
+  Groups extends HttpApiGroup.Constraint,
+  Extra,
+  F extends UserFields = {}
+>(
+  api:
+    & HttpApi.HttpApi<ApiId, Groups>
+    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  options: Options<F> | undefined,
+  extra: Layer.Layer<Extra, never, DeploymentServices>
+): HttpApiLayer<ApiId, Extra>
+export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
+  api:
+    & HttpApi.HttpApi<ApiId, Groups>
+    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  options?: Options<F>,
+  // `Layer<never, …>` accepts a layer providing anything at all — the output
+  // channel is contravariant — so this is the widest parameter, not the
+  // narrowest.
+  extra?: Layer.Layer<never, never, DeploymentServices>
+): HttpApiLayer<ApiId> {
+  // One build, provided to both halves: a plugin's handlers and the auth
+  // handlers then share the deployment's services rather than getting two
+  // instances of them — which is the whole point of the seam, since a plugin
+  // reads `Sessions`, `UserStore` and the rest of what the deployment published.
+  const deployment = layer(options)
+  // `options.user.model` reaches both halves: the handlers, so sign-up accepts
+  // the deployment's own fields, and the deployment, so its stores write them.
+  // `AuthHandlers.layer` is what rejects an API and a model that disagree.
+  const handlers = AuthHandlers.layer(api, options?.user?.model)
+  const groups = extra === undefined ? handlers : Layer.merge(handlers, extra)
+  return Layer.merge(groups.pipe(Layer.provideMerge(deployment)), layerPlatform)
+}
 
 /**
- * What {@link layerHttpApi} builds: the deployment, the handlers of the API's
- * `auth` group, and the platform services a response is encoded with.
+ * Everything a test deployment publishes — what an `extra` layer handed to
+ * {@link layerHttpApi} may ask for.
  *
  * @category models
  * @since 1.0.0
  */
-export type HttpApiLayer<ApiId extends string> = Layer.Layer<
-  | HttpApiGroup.Service<ApiId, "auth">
+export type DeploymentServices =
   | Services
   | SqlClient.SqlClient
   | PgliteClient.PgliteClient
   | TestEmails
+
+/**
+ * What {@link layerHttpApi} builds: the deployment, the handlers of the API's
+ * `auth` group, whatever `extra` provided, and the platform services a response
+ * is encoded with.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type HttpApiLayer<ApiId extends string, Extra = never> = Layer.Layer<
+  | HttpApiGroup.Service<ApiId, "auth">
+  | Extra
+  | DeploymentServices
   | Path.Path
   | Etag.Generator
   | HttpPlatform.HttpPlatform
@@ -509,7 +592,17 @@ export type HttpApiLayer<ApiId extends string> = Layer.Layer<
  * @category layers
  * @since 1.0.0
  */
-export const layerHttp = (options?: Settings): HttpApiLayer<"test-app"> => layerHttpApi(TestApi, options)
+export function layerHttp(options?: Settings): HttpApiLayer<"test-app">
+export function layerHttp<Extra>(
+  options: Settings | undefined,
+  extra: Layer.Layer<Extra, never, DeploymentServices>
+): HttpApiLayer<"test-app", Extra>
+export function layerHttp(
+  options?: Settings,
+  extra?: Layer.Layer<never, never, DeploymentServices>
+): HttpApiLayer<"test-app"> {
+  return extra === undefined ? layerHttpApi(TestApi, options) : layerHttpApi(TestApi, options, extra)
+}
 
 // -----------------------------------------------------------------------------
 // Seams
@@ -599,6 +692,70 @@ export const countingHasher = (
         return inner.verify(password, hash)
       })
   })
+  return { layer, state }
+}
+
+/**
+ * What {@link countingSessionStore} counts.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface SessionStoreCounts {
+  /** How many times a session was resolved from its token — a database read. */
+  reads: number
+  /** How many times the rolling refresh wrote a new expiry. */
+  touches: number
+}
+
+/**
+ * A `SessionStore` that delegates to the real one and counts the two operations
+ * an authenticated request performs.
+ *
+ * **When to use**
+ *
+ * For the cookie cache, whose whole claim is *zero database reads on a hit*. It
+ * is invisible from the outside — a cached request and an uncached one answer
+ * identically — so what distinguishes the two is exactly this counter.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { AuthTest } from "effect-auth/testing"
+ *
+ * const store = AuthTest.countingSessionStore()
+ * const TestLayer = AuthTest.layerHttp({ cookieCache: { enabled: true }, sessionStore: store.layer })
+ * ```
+ *
+ * **Gotchas**
+ *
+ * The counter is shared by every test the layer is built for, so a block that
+ * asserts on it must run sequentially.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const countingSessionStore = (): {
+  readonly layer: Layer.Layer<SessionStore, never, SessionStore>
+  readonly state: SessionStoreCounts
+} => {
+  const state: SessionStoreCounts = { reads: 0, touches: 0 }
+  const layer = Layer.effect(
+    SessionStore,
+    Effect.map(SessionStore, (inner): SessionStoreService => ({
+      ...inner,
+      findByTokenHash: (tokenHash) =>
+        Effect.suspend(() => {
+          state.reads++
+          return inner.findByTokenHash(tokenHash)
+        }),
+      touch: (id, expiresAt) =>
+        Effect.suspend(() => {
+          state.touches++
+          return inner.touch(id, expiresAt)
+        })
+    }))
+  )
   return { layer, state }
 }
 

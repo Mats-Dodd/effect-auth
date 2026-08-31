@@ -1,6 +1,7 @@
-import { assert, describe, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
+import { assert, describe, it, layer } from "@effect/vitest"
+import { Cause, DateTime, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { TestClock } from "effect/testing"
+import * as AuthHandlers from "../../src/http/Handlers.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
 
@@ -236,7 +237,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         yield* emails.last("reset", email),
         "a reset e-mail should have gone out"
       )
-      assert.strictEqual(sent.user.email, email)
+      assert.strictEqual(sent.to, email)
 
       yield* other.client.auth.resetPassword({
         payload: {
@@ -510,4 +511,27 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         }))
     })
   })
+})
+
+describe("http/Handlers dieOn", () => {
+  class Broken extends Schema.TaggedError<Broken>("Broken")("Broken", {}) {}
+  class Refused extends Schema.TaggedError<Refused>("Refused")("Refused", {}) {}
+
+  const filter = AuthHandlers.dieOn(["Broken"] as const)
+
+  it.effect("takes the named tags out of the error channel and into the defects", () =>
+    Effect.gen(function*() {
+      const died = yield* Effect.exit(filter(Effect.fail(new Broken())))
+      assert.strictEqual(died._tag, "Failure")
+      assert.isTrue(died._tag === "Failure" && Cause.hasDies(died.cause))
+    }))
+
+  it.effect("leaves every other failure exactly where it was", () =>
+    Effect.gen(function*() {
+      const failed: Refused = yield* Effect.flip(filter(Effect.fail(new Refused())))
+      assert.strictEqual(failed._tag, "Refused")
+
+      // And the two server faults are what `serverFault` is `dieOn` of.
+      assert.deepStrictEqual([...AuthHandlers.serverFaultTags], ["PasswordHashError", "PersistenceError"])
+    }))
 })

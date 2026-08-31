@@ -12,20 +12,49 @@
  * between its tests has one outbox between them too, so "the last reset
  * e-mail" is only a well-defined thing to ask for once an address is named.
  *
+ * A plugin's mailer is its own service with its own shape, so the outbox is not
+ * tied to `AuthEmails`: {@link TestEmailsService.record} is the seam a plugin's
+ * test layer implements its mailer over, and the recipient it records is a plain
+ * address — which a plugin's mail may have without a user behind it at all.
+ *
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Option, Redacted, Ref } from "effect"
 import type { AuthEmail } from "../config/AuthEmails.js"
 import { AuthEmails } from "../config/AuthEmails.js"
 import { EmailDeliveryError } from "../domain/Errors.js"
+import type { User } from "../domain/Schema.js"
 
 /**
- * Which of the two authentication e-mails was delivered.
+ * What kind of e-mail was delivered.
+ *
+ * **Details**
+ *
+ * A plain string rather than a union: a plugin adds kinds of its own, and a
+ * closed union here would mean every plugin's test harness had to widen a type
+ * belonging to this library. The kinds this library itself records are the
+ * constants below.
  *
  * @category models
  * @since 1.0.0
  */
-export type EmailKind = "verification" | "reset"
+export type EmailKind = string
+
+/**
+ * The kind recorded for the "confirm your address" message.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const verificationKind: EmailKind = "verification"
+
+/**
+ * The kind recorded for the "reset your password" message.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const resetKind: EmailKind = "reset"
 
 /**
  * One e-mail the application asked to have delivered.
@@ -33,8 +62,25 @@ export type EmailKind = "verification" | "reset"
  * @category models
  * @since 1.0.0
  */
-export interface SentEmail extends AuthEmail {
+export interface SentEmail {
+  /** What kind of message it was — see {@link verificationKind}. */
   readonly kind: EmailKind
+  /**
+   * Who it went to.
+   *
+   * **Details**
+   *
+   * Recorded separately from `user` because a plugin may mail an address that
+   * belongs to nobody — a magic link to an unknown address, which must look
+   * exactly like one to a known address.
+   */
+  readonly to: string
+  /** The user it was about, or `null` when the flow does not know one. */
+  readonly user: User | null
+  /** The raw single-use token the link carries. */
+  readonly token: Redacted.Redacted<string>
+  /** The link itself. */
+  readonly url: Redacted.Redacted<string>
 }
 
 /**
@@ -71,6 +117,18 @@ export type EmailDelivery = "ok" | "failing"
  * @since 1.0.0
  */
 export interface TestEmailsService {
+  /**
+   * Records one message, and then reports whatever this outbox's `delivery`
+   * setting says.
+   *
+   * **When to use**
+   *
+   * From a plugin's own mailer layer, which is a service of its own shape:
+   * implement it over this and the plugin's mail lands in the same outbox, with
+   * the same failure behaviour, as the library's own.
+   */
+  readonly record: (email: SentEmail) => Effect.Effect<void, EmailDeliveryError>
+
   /**
    * Every e-mail delivered so far, oldest first.
    */
@@ -121,7 +179,7 @@ export class TestEmails extends Context.Service<TestEmails, TestEmailsService>()
 const normalise = (address: string): string => address.trim().toLowerCase()
 
 const matches = (email: SentEmail, kind: EmailKind, address: string | undefined): boolean =>
-  email.kind === kind && (address === undefined || normalise(email.user.email) === normalise(address))
+  email.kind === kind && (address === undefined || normalise(email.to) === normalise(address))
 
 /**
  * The capturing mailer, providing both {@link TestEmails} and the `AuthEmails`
@@ -143,14 +201,18 @@ export const layerEmails = (
     Effect.gen(function*() {
       const outbox = yield* Ref.make<ReadonlyArray<SentEmail>>([])
 
-      const record = (kind: EmailKind) => (email: AuthEmail) =>
-        Ref.update(outbox, (sent) => [...sent, { ...email, kind }]).pipe(
+      const record = (email: SentEmail) =>
+        Ref.update(outbox, (sent) => [...sent, email]).pipe(
           Effect.andThen(
             delivery === "ok"
               ? Effect.void
               : Effect.fail(new EmailDeliveryError({ reason: "TestMailerRefused" }))
           )
         )
+
+      /** The library's own two messages, which always know their user. */
+      const recordAuthEmail = (kind: EmailKind) => (email: AuthEmail) =>
+        record({ kind, to: email.user.email, user: email.user, token: email.token, url: email.url })
 
       const last = (kind: EmailKind, address?: string) =>
         Effect.map(Ref.get(outbox), (sent) => {
@@ -159,11 +221,12 @@ export const layerEmails = (
         })
 
       return Context.make(TestEmails, {
+        record,
         all: Ref.get(outbox),
         to: (address) =>
           Effect.map(
             Ref.get(outbox),
-            (sent) => sent.filter((email) => normalise(email.user.email) === normalise(address))
+            (sent) => sent.filter((email) => normalise(email.to) === normalise(address))
           ),
         last,
         tokenFor: (kind, address) =>
@@ -184,8 +247,8 @@ export const layerEmails = (
         clear: Ref.set(outbox, [])
       }).pipe(
         Context.add(AuthEmails, {
-          sendVerification: record("verification"),
-          sendPasswordReset: record("reset")
+          sendVerification: recordAuthEmail(verificationKind),
+          sendPasswordReset: recordAuthEmail(resetKind)
         })
       )
     })

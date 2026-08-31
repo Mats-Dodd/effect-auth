@@ -24,6 +24,8 @@ import type { HttpClient } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
 import type { RateLimiter } from "effect/unstable/persistence"
 import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
+import type { Hmac } from "../crypto/Hmac.js"
+import { layer as hmacLayer } from "../crypto/Hmac.js"
 import type { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { layerScrypt } from "../crypto/PasswordHasher.js"
 import type { Token } from "../crypto/Token.js"
@@ -52,7 +54,8 @@ import {
 import type { SessionsService } from "../domain/Sessions.js"
 import { layerFor as sessionsLayerFor, Sessions, sessionsOf } from "../domain/Sessions.js"
 import type { AccountStore, AuthStores, PersistenceError, UserStore, UserStoreService } from "../domain/Stores.js"
-import { SessionStore, userStoreOf, VerificationStore } from "../domain/Stores.js"
+import { SessionStore, userStoreOf, VerificationStore, WithAuthTransaction } from "../domain/Stores.js"
+import { layer as verificationsLayer, Verifications } from "../domain/Verifications.js"
 import type { AuthApiGroupOf } from "../http/AuthApi.js"
 import { makeAuthApi, makeAuthApiGroup } from "../http/AuthApi.js"
 import * as AuthCookies from "../http/Cookies.js"
@@ -61,6 +64,7 @@ import type { Authenticated, CurrentUser } from "../http/Middleware.js"
 import { currentUserOf } from "../http/Middleware.js"
 import { layerFor as middlewareLayerFor } from "../http/MiddlewareLive.js"
 import * as RateLimits from "../http/RateLimits.js"
+import { layerFor as sessionCacheLayerFor, SessionCache } from "../http/SessionCache.js"
 import { optionalConfig } from "../internal/config.js"
 import { layerWebCrypto } from "../internal/crypto.js"
 import { layer as flowLayer, OAuthFlow } from "../oauth/Flow.js"
@@ -71,6 +75,7 @@ import * as SqlStores from "../sql/SqlStores.js"
 import type {
   AuthConfigOptions,
   AuthConfigService,
+  CookieCacheConfig,
   CookieConfig,
   EmailPasswordConfig,
   EmailPathConfig,
@@ -143,6 +148,40 @@ export interface Extras {
    * and authorization headers this library already registers.
    */
   readonly redactedHeaders?: ReadonlyArray<string | RegExp> | undefined
+
+  /**
+   * A `SessionStore` laid over the SQL one.
+   *
+   * **When to use**
+   *
+   * To decorate the store the stack builds — a cache in front of
+   * `findByTokenHash`, a counter, a metric — or to replace it outright with one
+   * backed by something other than the `SqlClient`. The layer is *provided* the
+   * SQL store and *merged over* it, so it may delegate to what it is given, and
+   * whatever it publishes is what every service above sees.
+   *
+   * **Example**
+   *
+   * ```ts
+   * import { Effect, Layer } from "effect"
+   * import { Stores } from "effect-auth"
+   *
+   * const Counting = Layer.effect(
+   *   Stores.SessionStore,
+   *   Effect.map(Stores.SessionStore, (inner) => ({
+   *     ...inner,
+   *     findByTokenHash: (hash: string) => Effect.tap(inner.findByTokenHash(hash), () => Effect.logDebug("read"))
+   *   }))
+   * )
+   * ```
+   *
+   * **Gotchas**
+   *
+   * This is the seam a distributed session store plugs into, and the one place
+   * where "the store" and "the SQL store" can differ. The other three stores are
+   * deliberately not decorable: nothing in this library reads them on a hot path.
+   */
+  readonly sessionStore?: Layer.Layer<SessionStore, never, SessionStore> | undefined
 }
 
 /**
@@ -247,6 +286,7 @@ export interface ConfigSettings extends Extras {
   readonly tokens?: PartialOptions<TokenConfig> | undefined
   readonly rateLimit?: PartialOptions<RateLimitConfig> | undefined
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
+  readonly cookieCache?: PartialOptions<CookieCacheConfig> | undefined
 }
 
 /**
@@ -309,15 +349,20 @@ export interface OAuthConfigOptions<F extends UserFields = {}> extends ConfigOpt
  *
  * **Details**
  *
- * Exactly the services an application — or `AuthHandlers.layer` — has a reason
- * to reach: the resolved configuration, the event hub, the four stores, the
- * three domain services, the middleware implementation and the rate limiter.
+ * Exactly the services an application — or `AuthHandlers.layer`, or a plugin —
+ * has a reason to reach: the resolved configuration, the event hub, the four
+ * stores and the transaction runner, the two crypto services a plugin builds its
+ * own tokens and signed values with (`Token`, `Hmac`), the domain services, the
+ * session cookie cache, the middleware implementation and the rate limiter.
  *
- * `Token`, `PasswordHasher` and `OAuthProviders` are deliberately absent. They
- * are implementation detail of this stack, provided *into* it and not out of
- * it, so replacing one is a change to the options here rather than a layer a
- * consumer can shadow. `Hmac` is not built at all — nothing in v1 reads it;
- * its module stays public for the v2 cookie cache.
+ * `PasswordHasher` and `OAuthProviders` are deliberately absent. They are
+ * implementation detail of this stack, provided *into* it and not out of it, so
+ * replacing one is a change to the options here rather than a layer a consumer
+ * can shadow.
+ *
+ * The widening is what makes the plugin convention work: a plugin's layer names
+ * what it needs in its own `Requirements`, and a consumer discharges all of it
+ * with one `Layer.provideMerge(AuthLive)`.
  *
  * @category models
  * @since 1.0.0
@@ -329,6 +374,11 @@ export type Services =
   | SessionStore
   | AccountStore
   | VerificationStore
+  | WithAuthTransaction
+  | Token
+  | Hmac
+  | Verifications
+  | SessionCache
   | Sessions
   | Accounts
   | Passwords
@@ -368,39 +418,69 @@ export type OAuthRequirements = Requirements | HttpClient.HttpClient
 // -----------------------------------------------------------------------------
 
 /**
- * The two services that need random bytes and message digests, over the
- * WebCrypto-backed `Crypto` default.
+ * The two services this stack *exposes* that need randomness or the instance
+ * secret, over the WebCrypto-backed `Crypto` default.
  *
  * **Details**
  *
- * `Crypto` is provided *into* this tier and never surfaces, so it stays a
- * detail of this stack rather than something an application has to satisfy —
- * see `Requirements`. A deployment that wants a platform implementation hands
- * in a `passwordHasher` built over it, or provides `Crypto.Crypto` above these
- * two layers itself.
+ * `Crypto` is provided *into* this tier and never surfaces, so it stays a detail
+ * of this stack rather than something an application has to satisfy — see
+ * `Requirements`. A deployment that wants a platform implementation provides
+ * `Crypto.Crypto` above these layers itself.
+ *
+ * `Hmac` is built from the configuration *value* rather than from `AuthConfig`,
+ * because this tier sits below the one that publishes the service — and there is
+ * nothing to wait for: the secret is already resolved by the time `compose`
+ * runs.
  */
-const cryptoTier = (
+const secretTier = (config: AuthConfigService): Layer.Layer<Token | Hmac> =>
+  Layer.mergeAll(
+    tokenLayer.pipe(Layer.provide(layerWebCrypto)),
+    hmacLayer.pipe(Layer.provide(Layer.succeed(AuthConfig)(config)))
+  )
+
+/**
+ * The password hasher, which stays an implementation detail.
+ *
+ * **Details**
+ *
+ * Separate from {@link secretTier} for exactly one reason: `Token` is part of
+ * this stack's surface (a plugin mints its own single-use values with it) and
+ * the hasher is not. Replacing the hasher is a change to `Extras.passwordHasher`
+ * rather than a layer a consumer can shadow, which is what keeps the cost
+ * parameters a deployment's hashes were written at in one place.
+ */
+const hasherTier = (
   hasher: Layer.Layer<PasswordHasher, never, Crypto.Crypto> | undefined
-): Layer.Layer<Token | PasswordHasher> =>
-  Layer.mergeAll(tokenLayer, hasher ?? layerScrypt()).pipe(Layer.provide(layerWebCrypto))
+): Layer.Layer<PasswordHasher> => (hasher ?? layerScrypt()).pipe(Layer.provide(layerWebCrypto))
 
 /**
  * Everything below the domain services: the resolved settings, the stores, the
  * event hub and the rate limiter.
+ *
+ * **Details**
+ *
+ * `Extras.sessionStore`, when given, is laid *over* the SQL stores: it is
+ * provided them, so it may delegate, and merged above them, so what it publishes
+ * is the `SessionStore` every service in the stack resolves.
  */
 const baseTier = <F extends UserFields>(
   config: AuthConfigService,
   options: Extras,
   model: UserModel<F>
-): Layer.Layer<AuthConfig | AuthStores | AuthEvents | RateLimiter.RateLimiter, never, SqlClient.SqlClient> =>
-  Layer.mergeAll(
+): Layer.Layer<AuthConfig | AuthStores | AuthEvents | RateLimiter.RateLimiter, never, SqlClient.SqlClient> => {
+  const stores = options.sessionStore === undefined
+    ? SqlStores.layerFor(model)
+    : options.sessionStore.pipe(Layer.provideMerge(SqlStores.layerFor(model)))
+  return Layer.mergeAll(
     Layer.succeed(AuthConfig)(config),
-    SqlStores.layerFor(model),
+    stores,
     // `capacity` is optional and `undefined`-able, so an absent
     // `eventCapacity` is simply an absent capacity — no ternary needed.
     eventsLayer({ capacity: options.eventCapacity }),
     RateLimits.layer
   )
+}
 
 /**
  * The whole stack, over whichever services sit on the top tier alongside the
@@ -423,9 +503,17 @@ const compose = <A, RIn, F extends UserFields>(
 ) =>
   middlewareLayerFor(model).pipe(
     Layer.provideMerge(top),
-    Layer.provideMerge(Layer.mergeAll(sessionsLayerFor(model), accountsLayer)),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        sessionsLayerFor(model),
+        accountsLayer,
+        verificationsLayer,
+        sessionCacheLayerFor(model)
+      )
+    ),
     Layer.provideMerge(baseTier(config, options, model)),
-    Layer.provide(cryptoTier(options.passwordHasher)),
+    Layer.provideMerge(secretTier(config)),
+    Layer.provide(hasherTier(options.passwordHasher)),
     // The model itself, for a plugin that provisions users and has no `F` of
     // its own to be generic over. A `Context.Reference` has a default, so this
     // layer provides `never` and merging it widens nothing.
@@ -459,6 +547,7 @@ const oauthTop = <F extends UserFields>(
   | AuthEmails
   | Accounts
   | Sessions
+  | Verifications
   | Token
   | PasswordHasher
   | HttpClient.HttpClient
@@ -520,7 +609,8 @@ const resolveConfig = <F extends UserFields>(
         cookie: options.cookie,
         tokens: options.tokens,
         rateLimit: options.rateLimit,
-        emailPaths: options.emailPaths
+        emailPaths: options.emailPaths,
+        cookieCache: options.cookieCache
       })
   )
 

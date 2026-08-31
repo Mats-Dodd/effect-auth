@@ -37,7 +37,7 @@ import {
   SessionId,
   SessionPublic
 } from "../domain/Schema.js"
-import { Authenticated } from "./Middleware.js"
+import { Authenticated, AuthoritativeSession } from "./Middleware.js"
 
 // -----------------------------------------------------------------------------
 // Shared schemas
@@ -464,6 +464,9 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         error: [InvalidCredentials, SessionNotFresh, PasswordPolicyViolation]
       })
         .middleware(Authenticated)
+        // The password it checks has to be the one in the database, not one a
+        // snapshot remembered: see `AuthoritativeSession`.
+        .annotate(AuthoritativeSession, true)
         .annotateMerge(OpenApi.annotations({
           summary: "Change the caller's password",
           description: "Requires the current password and a session no older than the configured freshAge."
@@ -525,6 +528,8 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         error: [CannotUnlinkLastAccount, NotFound, SessionNotFresh]
       })
         .middleware(Authenticated)
+        // Unlinking counts the sign-in methods a user has *now*.
+        .annotate(AuthoritativeSession, true)
         .annotateMerge(OpenApi.annotations({
           summary: "Remove one of the caller's sign-in methods",
           description: "Refuses to remove the last one, and requires a fresh session."

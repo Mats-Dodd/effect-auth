@@ -280,6 +280,46 @@ export const AccountUnlinked = Schema.TaggedStruct("AccountUnlinked", {
 export type AccountUnlinked = typeof AccountUnlinked.Type
 
 /**
+ * Something a plugin did that a subscriber should be able to see.
+ *
+ * **Details**
+ *
+ * The event union is closed — a subscriber matches on `_tag` exhaustively — so a
+ * plugin cannot add a member of its own. This is the door instead: `plugin` names
+ * the module (`"magic-link"`, `"two-factor"`), `event` names what happened
+ * (`"requested"`, `"verified"`), `userId` is present when the flow knows one, and
+ * `data` carries whatever else is worth recording.
+ *
+ * **Gotchas**
+ *
+ * `data` is forwarded to log sinks and webhooks exactly as the rest of the union
+ * is, so the same rule applies to it and more sharply: no token, no hash, no
+ * credential, no e-mail body. An identifier and a classification are enough for a
+ * subscriber to go and read whatever else it needs.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const PluginEvent = Schema.TaggedStruct("PluginEvent", {
+  /** The plugin that published it, in kebab-case. */
+  plugin: Schema.String,
+  /** What happened, named by the plugin. */
+  event: Schema.String,
+  /** The user it concerns, or `null` where the flow has not identified one. */
+  userId: Schema.NullOr(UserId),
+  /** Anything else worth recording. Never a secret — see the gotcha above. */
+  data: Schema.Record(Schema.String, Schema.Unknown)
+})
+
+/**
+ * The type of a {@link PluginEvent}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type PluginEvent = typeof PluginEvent.Type
+
+/**
  * Everything `effect-auth` publishes.
  *
  * **Gotchas**
@@ -301,7 +341,8 @@ export const AuthEvent = Schema.Union([
   PasswordResetRequested,
   EmailVerified,
   AccountLinked,
-  AccountUnlinked
+  AccountUnlinked,
+  PluginEvent
 ])
 
 /**

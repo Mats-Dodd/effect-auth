@@ -10,6 +10,7 @@
  */
 import type { Redacted } from "effect"
 import { Context, Duration, Layer } from "effect"
+import type { Session, User } from "../domain/Schema.js"
 import { trustedOrigins } from "../http/OriginCheck.js"
 import { withDefaults } from "../internal/records.js"
 
@@ -174,6 +175,58 @@ export interface RateLimitConfig {
 }
 
 /**
+ * The session cookie cache: the zero-database-read fast path for
+ * `GET /session` and for every endpoint behind the `Authenticated` middleware.
+ *
+ * **Details**
+ *
+ * When it is on, a signed snapshot of the session and its user rides in a second
+ * cookie, and a request that presents a valid one is served without touching the
+ * session store. See `src/http/SessionCache.ts` for the format, the threat model
+ * and — importantly — the limitations, which are what {@link CookieCacheConfig.maxAge}
+ * trades against.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface CookieCacheConfig {
+  /**
+   * Whether the cache is written and read at all. Default `false`: a deployment
+   * opts into the revocation lag below, it is never opted in for them.
+   */
+  readonly enabled: boolean
+  /**
+   * How long a snapshot may be trusted. Default 5 minutes.
+   *
+   * **Gotchas**
+   *
+   * This is exactly the window in which a session revoked in *another* browser
+   * still answers requests in this one: nothing consults the database while a
+   * snapshot is valid. Five minutes is the same trade `better-auth` makes;
+   * shorten it where a sign-out has to bite sooner, and switch the cache off
+   * where it has to bite immediately.
+   */
+  readonly maxAge: Duration.Duration
+  /**
+   * A value that invalidates every outstanding snapshot when it changes.
+   *
+   * **When to use**
+   *
+   * Bump the string after a deployment whose user shape changed, or pass a
+   * function to make the cache sensitive to something about the principal — a
+   * tenant, a role, a `passwordChangedAt` — so that changing it invalidates that
+   * person's snapshots and nobody else's. Default `""`.
+   *
+   * **Gotchas**
+   *
+   * The function runs on the snapshot's own contents, so it can only read what
+   * the cache carries. It must be pure and cheap: it is on the hot path of every
+   * cached request.
+   */
+  readonly version: string | ((session: Session, user: User) => string)
+}
+
+/**
  * The paths, relative to `baseUrl`, that the e-mails link to.
  *
  * @category models
@@ -236,6 +289,7 @@ export interface AuthConfigService {
   readonly tokens: TokenConfig
   readonly rateLimit: RateLimitConfig
   readonly emailPaths: EmailPathConfig
+  readonly cookieCache: CookieCacheConfig
 }
 
 /**
@@ -269,6 +323,7 @@ export interface AuthConfigOptions {
   readonly tokens?: PartialOptions<TokenConfig> | undefined
   readonly rateLimit?: PartialOptions<RateLimitConfig> | undefined
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
+  readonly cookieCache?: PartialOptions<CookieCacheConfig> | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -339,6 +394,18 @@ export const defaultEmailPaths: EmailPathConfig = {
 }
 
 /**
+ * The default cookie cache configuration: off, five minutes, no version.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const defaultCookieCache: CookieCacheConfig = {
+  enabled: false,
+  maxAge: Duration.minutes(5),
+  version: ""
+}
+
+/**
  * The name of the session cookie, before any `__Secure-` prefix.
  *
  * **Gotchas**
@@ -378,6 +445,31 @@ export const isSecureUrl = (url: string): boolean => url.startsWith("https:")
 export const cookieName = (config: AuthConfigService): string =>
   config.cookie.secure ? `__Secure-${defaultCookieName}` : defaultCookieName
 
+/**
+ * The name of the session cache cookie, before any `__Secure-` prefix.
+ *
+ * **Details**
+ *
+ * A second cookie rather than a bigger session cookie: the session token is the
+ * credential and must stay small, `HttpOnly` and independent of whatever the
+ * cache happens to hold, and a snapshot that outgrows its budget has to be
+ * droppable without touching the session.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const defaultCacheCookieName = "effect_auth.session_data"
+
+/**
+ * The name the session cache cookie is actually set under — the same
+ * `__Secure-` rule as {@link cookieName}.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const cacheCookieName = (config: AuthConfigService): string =>
+  config.cookie.secure ? `__Secure-${defaultCacheCookieName}` : defaultCacheCookieName
+
 // -----------------------------------------------------------------------------
 // Constructors
 // -----------------------------------------------------------------------------
@@ -413,7 +505,8 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
     cookie: withDefaults(defaultCookie(options.baseUrl), options.cookie),
     tokens: withDefaults(defaultTokens, options.tokens),
     rateLimit: withDefaults(defaultRateLimit, options.rateLimit),
-    emailPaths: withDefaults(defaultEmailPaths, options.emailPaths)
+    emailPaths: withDefaults(defaultEmailPaths, options.emailPaths),
+    cookieCache: withDefaults(defaultCookieCache, options.cookieCache)
   }
   // The origin set is on the hot path of every state-changing request and every
   // redirect target, and it is a pure function of the two fields above — so it

@@ -3,10 +3,11 @@ import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
 import type { AuthEvent } from "../../src/domain/Events.js"
-import { decodeSubjectToken, Passwords } from "../../src/domain/Passwords.js"
+import { Passwords } from "../../src/domain/Passwords.js"
 import { CredentialIssuer } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
+import { decodeSubjectToken } from "../../src/domain/Verifications.js"
 import { AuthTest, TestEmails } from "../../src/testing/index.js"
 import { expectSome, newPassword, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
@@ -210,7 +211,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           assert.strictEqual(Option.isNone(session), true)
 
           const mail = yield* mailTo("verification", email)
-          assert.strictEqual(mail.user.id, user.id)
+          assert.strictEqual(mail.user?.id, user.id)
           // The link is built from baseUrl and the configured path, and carries
           // the token in its query string.
           const url = new URL(Redacted.value(mail.url))

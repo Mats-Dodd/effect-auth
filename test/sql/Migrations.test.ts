@@ -65,3 +65,36 @@ describe("sql/Migrations", () => {
       }
     }).pipe(Effect.provide(PgliteClient.layer())))
 })
+
+describe("sql/Migrations.make", () => {
+  const createLinks = Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`CREATE TABLE IF NOT EXISTS plugin_links (id text PRIMARY KEY)`
+  )
+
+  const plugin = Migrations.make({
+    table: "effect_auth_plugin_migrations",
+    migrations: { "0001_create_links": createLinks }
+  })
+
+  it.effect("records a plugin's migrations in a bookkeeping table of its own", () =>
+    Effect.gen(function*() {
+      // Sequenced, as a plugin whose tables reference this library's must be.
+      yield* Migrations.run
+      const applied = yield* plugin.run
+
+      // Its numbering starts at 1 and is entirely its own business: this is
+      // exactly what merging the two records would have made impossible.
+      assert.deepStrictEqual(applied, [[1, "create_links"]])
+      assert.deepStrictEqual(yield* plugin.run, [])
+
+      const sql = yield* SqlClient.SqlClient
+      const tables = yield* sql<TableRow>`SELECT table_name AS "name" FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name LIKE '%migrations' ORDER BY table_name`
+
+      assert.deepStrictEqual(tables.map((row) => row.name), [
+        "effect_auth_migrations",
+        "effect_auth_plugin_migrations"
+      ])
+    }).pipe(Effect.provide(PgliteClient.layer())))
+})

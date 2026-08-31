@@ -432,6 +432,24 @@ export interface AccountStoreService {
   readonly deleteById: (id: AccountId, userId: UserId) => Effect.Effect<boolean, PersistenceError>
 
   /**
+   * Deletes every sign-in method of a user. Returns the number of rows removed.
+   *
+   * **When to use**
+   *
+   * Where the *set* of credentials has to go without the user going with it —
+   * proving ownership of an address that somebody else had registered against
+   * it, for instance, which revokes whatever they had linked. Deleting the user
+   * cascades instead, and needs none of this.
+   *
+   * **Gotchas**
+   *
+   * This bypasses the "never unlink the last method" guard by design: it is the
+   * whole set, and the caller is expected to be establishing a new one in the
+   * same transaction.
+   */
+  readonly deleteByUserId: (userId: UserId) => Effect.Effect<number, PersistenceError>
+
+  /**
    * Counts a user's sign-in methods. Used to refuse unlinking the last one.
    */
   readonly countByUserId: (userId: UserId) => Effect.Effect<number, PersistenceError>
