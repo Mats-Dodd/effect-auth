@@ -16,6 +16,7 @@
  *
  * @since 1.0.0
  */
+export * as MagicLinkTest from "./MagicLinkTest.js"
 export * as MockProvider from "./MockProvider.js"
 export * as TestEmails from "./TestEmails.js"
 export * as TestHttpClient from "./TestHttpClient.js"

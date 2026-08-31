@@ -1,11 +1,17 @@
 import { assert, describe, it } from "@effect/vitest"
-import { DateTime, Duration, Effect, Redacted } from "effect"
+import { Context, DateTime, Duration, Effect, Redacted, Schema } from "effect"
 import { TestClock } from "effect/testing"
-import { HttpApiMiddleware } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiMiddleware } from "effect/unstable/httpapi"
 import * as AuthConfig from "../../src/config/AuthConfig.js"
 import { SessionNotFresh } from "../../src/domain/Errors.js"
 import { Session, SessionId, UserId } from "../../src/domain/Schema.js"
-import { Authenticated, CurrentSession, CurrentUser, requireFresh } from "../../src/http/Middleware.js"
+import {
+  Authenticated,
+  AuthoritativeSession,
+  CurrentSession,
+  CurrentUser,
+  requireFresh
+} from "../../src/http/Middleware.js"
 
 const configWith = (freshAge: Duration.Duration): AuthConfig.AuthConfigService =>
   AuthConfig.make({
@@ -70,6 +76,45 @@ describe("http/Middleware", () => {
     it("keys the principal under distinct service ids", () => {
       assert.strictEqual(CurrentSession.key, "effect-auth/CurrentSession")
       assert.strictEqual(CurrentUser.key, "effect-auth/CurrentUser")
+    })
+  })
+
+  /**
+   * The annotation the cookie cache is switched off by, read exactly as
+   * `MiddlewareLive` reads it.
+   *
+   * **Gotchas**
+   *
+   * *Which* of this library's endpoints carry it is pinned in
+   * `test/http-api/AuthApi.test.ts`; what is pinned here is the mechanism a
+   * plugin's own endpoint opts in through, and the default an endpoint that says
+   * nothing gets.
+   */
+  describe("AuthoritativeSession", () => {
+    const plain = HttpApiEndpoint.get("plain", "/plain", { success: Schema.String })
+      .middleware(Authenticated)
+
+    const authoritative = HttpApiEndpoint.get("authoritative", "/authoritative", { success: Schema.String })
+      .middleware(Authenticated)
+      .annotate(AuthoritativeSession, true)
+
+    it("defaults to false, so an endpoint that says nothing is cacheable", () => {
+      assert.isFalse(Context.get(plain.annotations, AuthoritativeSession))
+    })
+
+    it("is true on an endpoint that annotates it", () => {
+      assert.isTrue(Context.get(authoritative.annotations, AuthoritativeSession))
+    })
+
+    it("is a reference on the endpoint's annotations, not a middleware of its own", () => {
+      assert.strictEqual(AuthoritativeSession.key, "effect-auth/AuthoritativeSession")
+      // Annotating changes nothing else about the endpoint: the same middleware,
+      // the same declared errors, and therefore the same client and the same
+      // OpenAPI document.
+      assert.deepStrictEqual(
+        Array.from(authoritative.middlewares),
+        Array.from(plain.middlewares)
+      )
     })
   })
 

@@ -567,15 +567,19 @@ layer(AuthTest.layerHttp())("http/Handlers opt-in flows", (it) => {
       it.effect("stops answering 404 and reaches the domain instead", () =>
         Effect.gen(function*() {
           const { client } = yield* signedUp(uniqueEmail("opt-in-on"))
+          const newEmail = uniqueEmail("opt-in-next")
 
-          // The gate is the only thing under test here. `Users.requestEmailChange`
-          // has no body yet and dies saying so, which is precisely the evidence
-          // that the request got past the gate and into the service — a 404
-          // would mean it never did.
-          const reached = yield* Effect.exit(
-            client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-next") } })
-          )
-          assert.isTrue(reached._tag === "Failure" && Cause.hasDies(reached.cause))
+          // The gate is the only thing under test here: the request now gets
+          // past it and into the service, which does what it does. What that is
+          // — the two hops, the enumeration rules, the freshness guard — is
+          // `test/http/Users.test.ts`'s subject.
+          const answered = yield* client.auth.changeEmail({ payload: { newEmail } })
+          assert.strictEqual(answered.success, true)
+          // Reaching the service is what a 404 would have prevented, and this
+          // is the evidence of it: the flow has begun. This account's own
+          // address is unverified, so it begins at the second hop.
+          const emails = yield* AuthTest.TestEmails
+          assert.isTrue(Option.isSome(yield* emails.last(AuthTest.changeEmailVerificationKind, newEmail)))
         }))
     }
   )

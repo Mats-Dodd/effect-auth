@@ -77,8 +77,11 @@ const extras = MockProvider.mockProvider({
   }
 })
 
+/** A public PKCE client: there is no secret, so none is sent. */
+const publicClient = MockProvider.mockProvider({ id: "public", clientSecret: undefined })
+
 const flowLayer = AuthTest.layerFlow({
-  providers: [provider, other, extras],
+  providers: [provider, other, extras, publicClient],
   fetch: server.fetch,
   baseUrl: appOrigin,
   trustedOrigins: ["https://console.example.com"]
@@ -740,6 +743,29 @@ describe.sequential("oauth/Flow", () => {
             !request.url.startsWith(MockProvider.tokenUrl)
           )
           assert.deepStrictEqual(leaked, [])
+        }))
+
+      it.effect("gets no client_secret at all from a public client, which has none", () =>
+        Effect.gen(function*() {
+          yield* wellBehaved(someone("public-client"))
+          const flow = yield* OAuthFlow
+          const started = yield* flow.start({ providerId: "public" })
+          yield* flow.callback({
+            providerId: "public",
+            code: "code",
+            state: Redacted.value(started.state)
+          })
+
+          const exchange = server.to(MockProvider.tokenUrl)[0]
+          assert.isDefined(exchange)
+          if (exchange === undefined) return
+          const form = MockProvider.formOf(exchange)
+          assert.strictEqual(form.get("grant_type"), "authorization_code")
+          assert.strictEqual(form.get("client_id"), "mock-client-id")
+          assert.isNotNull(form.get("code_verifier"))
+          // Not an empty one: the parameter is absent, which is what a provider
+          // distinguishes a public client by.
+          assert.isNull(form.get("client_secret"))
         }))
     })
   })

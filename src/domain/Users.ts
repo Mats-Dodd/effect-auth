@@ -25,36 +25,39 @@
  * **Gotchas — enumeration**
  *
  * `requestEmailChange` answers the same whether or not the new address already
- * belongs to somebody: `"Ignored"` does the same work as the other outcomes
- * minus the write, and the endpoint above it answers `200` regardless. A
- * distinguishable answer would turn a signed-in session into an oracle for "is
- * this person registered here". The collision is caught at the *second* hop
- * instead, by the unique index, and reported as `UserAlreadyExists` to somebody
- * who has by then proven they control the address.
+ * belongs to somebody: the lookup runs on every path, `"Ignored"` is reported to
+ * the endpoint above exactly as the other two outcomes are, and that endpoint
+ * answers `200` regardless. A distinguishable answer would turn a signed-in
+ * session into an oracle for "is this person registered here". The collision is
+ * caught at the *second* hop instead, by the unique index, and reported as
+ * `UserAlreadyExists` to somebody who has by then proven they control the
+ * address.
+ *
+ * What is *not* identical is the latency: a free address additionally mints a
+ * token, writes a row and awaits the mailer. That is the same residual channel
+ * `Passwords.requestReset` documents, and it closes the same way — an
+ * `AuthEmails` implementation that enqueues and returns.
  *
  * @since 1.0.0
  */
-import type { Redacted } from "effect"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
-import { AuthEmails } from "../config/AuthEmails.js"
-import type {
-  EmailUnchanged,
-  InvalidCredentials,
-  InvalidToken,
-  SessionNotFresh,
-  UserAlreadyExists,
-  UserNotFound
-} from "./Errors.js"
-import { AuthEvents } from "./Events.js"
+import { AuthEmails, changeEmailConfirmUrl, changeEmailVerifyUrl, deleteAccountUrl } from "../config/AuthEmails.js"
+import { resolveUrl, validateUrl } from "../http/OriginCheck.js"
+import { annotateAuthLogs } from "../internal/effects.js"
+import { omitUndefined, pickKeys } from "../internal/records.js"
+import type { SessionNotFresh } from "./Errors.js"
+import { EmailUnchanged, InvalidCredentials, InvalidToken, UserAlreadyExists, UserNotFound } from "./Errors.js"
+import type { UpdatedUserField } from "./Events.js"
+import { AuthEvents, publishSafely } from "./Events.js"
 import { Passwords } from "./Passwords.js"
 import type { Session, UserExtras, UserFields, UserId, UserModel, UserOf } from "./Schema.js"
-import { baseUserModel } from "./Schema.js"
+import { baseUserModel, normalizeEmail } from "./Schema.js"
 import { Sessions } from "./Sessions.js"
 import type { PersistenceError } from "./Stores.js"
-import { UserStore, VerificationStore, WithAuthTransaction } from "./Stores.js"
+import { isUniqueViolation, UserStore, userStoreOf, VerificationStore, WithAuthTransaction } from "./Stores.js"
 import type { TokenPurpose } from "./Verifications.js"
-import { purpose, Verifications } from "./Verifications.js"
+import { emailVerifyPurpose, passwordResetPurpose, purpose, Verifications } from "./Verifications.js"
 
 // -----------------------------------------------------------------------------
 // Purposes
@@ -424,17 +427,20 @@ export type Requirements =
   | Passwords
 
 /**
- * The defect a method of this service raises until its body lands.
+ * Every purpose this service mints tokens under whose subject is a **user id**.
  *
- * **Gotchas**
+ * **When to use**
  *
- * A defect rather than a failure, and deliberately: these methods' error
- * channels are the contract every caller above is already written against, so an
- * unimplemented one must not be catchable as though it were one of them. It
- * renders as an opaque `500`, exactly as any other broken deployment does.
+ * When a user is deleted. Whatever is outstanding for them has to go with the
+ * row: a link that outlives the account it names is a link that will one day
+ * name somebody else's.
  */
-const notImplemented = (method: string): Effect.Effect<never> =>
-  Effect.die(`effect-auth/Users: ${method} is not implemented`)
+const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
+  passwordResetPurpose,
+  changeEmailConfirmPurpose,
+  changeEmailVerifyPurpose,
+  deleteAccountPurpose
+]
 
 /**
  * Builds the {@link Users} implementation for a user model.
@@ -445,6 +451,12 @@ const notImplemented = (method: string): Effect.Effect<never> =>
  * carries a request-time requirement — the same shape `Passwords.make` has, and
  * for the same reason.
  *
+ * `VerificationStore` is in {@link Requirements} without being resolved here:
+ * every row this module writes or retires goes through `Verifications`, which is
+ * the service that owns the store. It stays in the requirement so that the
+ * declared shape of the layer does not depend on which side of that seam a given
+ * method happens to sit on.
+ *
  * @category constructors
  * @since 1.0.0
  */
@@ -453,24 +465,295 @@ export const make: <F extends UserFields>(
 ) => Effect.Effect<UsersService<F>, never, Requirements> = Effect.fnUntraced(function*<F extends UserFields>(
   model: UserModel<F>
 ) {
-  yield* AuthConfig
-  yield* AuthEmails
-  yield* AuthEvents
-  yield* Verifications
-  yield* UserStore
-  yield* VerificationStore
-  yield* WithAuthTransaction
-  yield* Sessions
-  yield* Passwords
+  const config = yield* AuthConfig
+  const emails = yield* AuthEmails
+  const events = yield* AuthEvents
+  const verifications = yield* Verifications
+  const users = yield* userStoreOf(model)
+  const transaction = yield* WithAuthTransaction
+  const sessions = yield* Sessions
+  const passwords = yield* Passwords
+
+  /**
+   * Appends the caller's landing page to an e-mailed link — after validating it,
+   * again.
+   *
+   * **Gotchas**
+   *
+   * The same second pass `Passwords` makes, for the same reason: what goes in
+   * here ends up in a link sent to somebody's mailbox, and an open redirect
+   * there is a phishing page with the deployment's own name on it. A candidate
+   * that does not survive `validateUrl` is dropped rather than refused.
+   */
+  const withCallback = (
+    url: Redacted.Redacted<string>,
+    callbackURL: string | undefined
+  ): Redacted.Redacted<string> => {
+    const validated = validateUrl(config, callbackURL)
+    if (Option.isNone(validated)) return url
+    const parsed = new URL(Redacted.value(url))
+    parsed.searchParams.set("callbackURL", validated.value)
+    return Redacted.make(parsed.toString())
+  }
+
+  /**
+   * Hands a message to the seam and forgets whatever it says.
+   *
+   * Delivery is the application's responsibility and its failure must not change
+   * what the caller observes — least of all on the change-email path, where a
+   * distinguishable answer would be the enumeration oracle the whole flow is
+   * shaped to avoid.
+   */
+  const deliver = <E>(email: Effect.Effect<void, E>, message: string): Effect.Effect<void> =>
+    annotateAuthLogs(Effect.ignore(email, { log: "Warn", message }))
+
+  /**
+   * The second hop: a token minted for the new address and mailed to it.
+   *
+   * Any hop-two token already outstanding for this user is retired first, so a
+   * person who asks twice has exactly one live link — the latest one. Two of
+   * them would be two addresses the account could still be moved to.
+   */
+  const sendVerificationHop = Effect.fnUntraced(function*(
+    user: UserOf<F>,
+    newEmail: string,
+    callbackURL: string | undefined
+  ) {
+    yield* verifications.retire(changeEmailVerifyPurpose, user.id)
+    const issued = yield* verifications.issue({
+      purpose: changeEmailVerifyPurpose,
+      subject: user.id,
+      ttl: config.tokens.changeEmailTtl,
+      payload: { newEmail }
+    })
+    yield* deliver(
+      emails.sendChangeEmailVerification({
+        user,
+        newEmail,
+        token: issued.token,
+        url: withCallback(changeEmailVerifyUrl(config, issued.token), callbackURL)
+      }),
+      "change-email verification e-mail delivery failed"
+    )
+  })
+
+  /**
+   * Deletes the row and everything that outlives it. The retirements share the
+   * delete's transaction: a token that survived a rolled-back deletion would be
+   * a live link to an account whose owner believes it is gone.
+   */
+  const deleteUser = Effect.fnUntraced(function*(user: UserOf<F>) {
+    yield* transaction.run(Effect.gen(function*() {
+      yield* users.delete(user.id)
+      for (const kind of userSubjectPurposes) {
+        yield* verifications.retire(kind, user.id)
+      }
+      // The one purpose keyed by the address rather than by the id.
+      yield* verifications.retire(emailVerifyPurpose, normalizeEmail(user.email))
+    }))
+    yield* publishSafely(events, { _tag: "UserDeleted", userId: user.id, email: user.email })
+  })
+
+  // ---------------------------------------------------------------------------
+
+  const update = Effect.fnUntraced(function*(options: UpdateOptions<F>) {
+    const found = yield* users.findById(options.userId)
+    const current = yield* Effect.fromOption(found, () => new UserNotFound())
+
+    // An absent key is a column the statement does not touch, so the two
+    // `undefined`s are dropped before anything else looks at them.
+    const base = omitUndefined({ name: options.name, image: options.image })
+    const fields: Array<UpdatedUserField> = []
+    if (base.name !== undefined && base.name !== current.name) fields.push("name")
+    if (Object.hasOwn(base, "image") && base.image !== current.image) fields.push("image")
+
+    // The custom half arrives in the model's `jsonUpdate` shape and the store
+    // takes its `update` shape. Only the model knows the two are the same
+    // columns, so the mapping is here rather than at the caller: `basePatch`
+    // states the base half's type and the extras are laid over it by name.
+    const patch = Object.assign(model.basePatch(base), pickKeys(options, model.extraKeys))
+
+    const written = yield* users.update(options.userId, patch)
+    // The row went between the read above and this write — a concurrent
+    // deletion, not a caller mistake.
+    const updated = yield* Effect.fromOption(written, () => new UserNotFound())
+
+    yield* publishSafely(events, { _tag: "UserUpdated", userId: updated.id, fields })
+    return updated
+  })
+
+  const requestEmailChange = Effect.fnUntraced(function*(options: RequestEmailChangeOptions<F>) {
+    const user = options.user
+    const newEmail = normalizeEmail(options.newEmail)
+    if (newEmail === normalizeEmail(user.email)) {
+      // The one refusal this step makes out loud: the caller already knows
+      // their own address, so saying so tells them nothing they did not have.
+      return yield* Effect.fail(new EmailUnchanged())
+    }
+
+    const taken = yield* users.findByEmail(newEmail)
+    if (Option.isSome(taken)) {
+      // No row, no mail, and the endpoint above answers exactly as it does for
+      // the other two outcomes. The address is deliberately absent from the log
+      // line: it is somebody else's, and this line is not the place to record
+      // that it is registered here.
+      yield* annotateAuthLogs(
+        Effect.logInfo("an e-mail change was ignored: the requested address is already in use")
+      )
+      return "Ignored" as const
+    }
+
+    if (!user.emailVerified) {
+      // An unverified address is no evidence that anybody reads it, so there is
+      // nobody to warn: the flow starts at the second hop.
+      yield* sendVerificationHop(user, newEmail, options.callbackURL)
+      return "VerificationSent" as const
+    }
+
+    // As with the second hop, asking twice replaces the request rather than
+    // adding to it.
+    yield* verifications.retire(changeEmailConfirmPurpose, user.id)
+    const issued = yield* verifications.issue({
+      purpose: changeEmailConfirmPurpose,
+      subject: user.id,
+      ttl: config.tokens.changeEmailTtl,
+      payload: { newEmail }
+    })
+    yield* deliver(
+      emails.sendChangeEmailConfirmation({
+        user,
+        newEmail,
+        token: issued.token,
+        url: withCallback(changeEmailConfirmUrl(config, issued.token), options.callbackURL)
+      }),
+      "change-email confirmation e-mail delivery failed"
+    )
+    return "ConfirmationSent" as const
+  })
+
+  const confirmEmailChange = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
+    const claimed = yield* verifications.claim(changeEmailConfirmPurpose, token)
+    const userId = claimed.subject as UserId
+
+    const found = yield* users.findById(userId)
+    // The account went while the link sat in a mailbox. The token is spent and
+    // there is nothing to confirm.
+    const user = yield* Effect.fromOption(found, () => new InvalidToken())
+
+    // The landing page the first hop was asked for does not survive into the
+    // second: the payload carries the address and nothing else, and widening it
+    // would put a caller-supplied URL into a row that is read back on an
+    // unauthenticated path.
+    yield* sendVerificationHop(user, claimed.payload.newEmail, undefined)
+  })
+
+  const verifyEmailChange = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
+    const claimed = yield* verifications.claim(changeEmailVerifyPurpose, token)
+    const userId = claimed.subject as UserId
+    const newEmail = normalizeEmail(claimed.payload.newEmail)
+
+    const found = yield* users.findById(userId)
+    const user = yield* Effect.fromOption(found, () => new InvalidToken())
+    const previousEmail = user.email
+
+    const updated = yield* transaction.run(Effect.gen(function*() {
+      // The address ends up verified: the link that got here was delivered to
+      // it, which is the whole of what verification means.
+      const written = yield* users.update(userId, model.basePatch({ email: newEmail, emailVerified: true }))
+      const stored = yield* Effect.fromOption(written, () => new InvalidToken())
+      // Every other link that could move this account dies with the one just
+      // used — including a first hop somebody asked for in the meantime.
+      for (const kind of [changeEmailConfirmPurpose, changeEmailVerifyPurpose]) {
+        yield* verifications.retire(kind, userId)
+      }
+      return stored
+    })).pipe(
+      // Somebody claimed the address between the two hops. The unique index is
+      // what settles it, so there is no check-then-act window to lose.
+      Effect.catchTag(
+        "PersistenceError",
+        (error): Effect.Effect<never, UserAlreadyExists | PersistenceError> =>
+          isUniqueViolation(error) ? Effect.fail(new UserAlreadyExists()) : Effect.fail(error)
+      )
+    )
+
+    yield* publishSafely(events, {
+      _tag: "EmailChanged",
+      userId: updated.id,
+      previousEmail,
+      email: updated.email
+    })
+    return updated
+  })
+
+  const requestDeletion = Effect.fnUntraced(function*(options: RequestDeletionOptions<F>) {
+    if (options.password !== undefined) {
+      const matches = yield* passwords.verifyPassword(options.user.id, options.password).pipe(
+        // A hasher that cannot verify is a broken deployment rather than a
+        // refusable request, and this method's callers are written against a
+        // channel that does not mention it.
+        Effect.catchTag("PasswordHashError", (error) => Effect.die(error))
+      )
+      if (!matches) {
+        return yield* Effect.fail(new InvalidCredentials())
+      }
+    }
+
+    if (config.user.deleteUser.confirmByEmail) {
+      // The mailbox is the second factor here, so the session's age does not
+      // decide anything and is not consulted.
+      yield* verifications.retire(deleteAccountPurpose, options.user.id)
+      const issued = yield* verifications.issue({
+        purpose: deleteAccountPurpose,
+        subject: options.user.id,
+        ttl: config.tokens.deleteAccountTtl,
+        payload: { callbackURL: Option.getOrNull(validateUrl(config, options.callbackURL)) }
+      })
+      yield* deliver(
+        emails.sendDeleteAccountConfirmation({
+          user: options.user,
+          token: issued.token,
+          url: deleteAccountUrl(config, issued.token)
+        }),
+        "delete-account confirmation e-mail delivery failed"
+      )
+      return "ConfirmationSent" as const
+    }
+
+    // Nothing was mailed, so the session itself is the only evidence there is:
+    // a stale cookie must not be enough to destroy an account.
+    yield* sessions.requireFresh(options.session)
+    yield* deleteUser(options.user)
+    return "Deleted" as const
+  })
+
+  const confirmDeletion = Effect.fnUntraced(function*(options: ConfirmDeletionOptions) {
+    // Claimed before the owner is checked, so a link presented by the wrong
+    // person is burnt as well as refused. Leaving it claimable would let
+    // somebody who has read another person's mail park it until they had a
+    // session of their own.
+    const claimed = yield* verifications.claim(deleteAccountPurpose, options.token)
+    if (claimed.subject !== options.userId) {
+      return yield* Effect.fail(new InvalidToken())
+    }
+
+    const found = yield* users.findById(options.userId)
+    const user = yield* Effect.fromOption(found, () => new InvalidToken())
+    yield* deleteUser(user)
+
+    // Validated once when the token was minted and again here: the row is
+    // server-side state, but it is state built out of what a caller supplied.
+    return { redirectTo: resolveUrl(config, claimed.payload.callbackURL) } satisfies DeletionResult
+  })
 
   return usersOf(model).of({
-    update: () => notImplemented("update"),
-    requestEmailChange: () => notImplemented("requestEmailChange"),
-    confirmEmailChange: () => notImplemented("confirmEmailChange"),
-    verifyEmailChange: () => notImplemented("verifyEmailChange"),
-    requestDeletion: () => notImplemented("requestDeletion"),
-    confirmDeletion: () => notImplemented("confirmDeletion"),
-    delete: () => notImplemented("delete")
+    update,
+    requestEmailChange,
+    confirmEmailChange,
+    verifyEmailChange,
+    requestDeletion,
+    confirmDeletion,
+    delete: deleteUser
   })
 })
 

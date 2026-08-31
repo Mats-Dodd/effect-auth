@@ -50,19 +50,14 @@ import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
 import type { OAuthIdentity } from "../domain/Accounts.js"
 import { Accounts } from "../domain/Accounts.js"
-import type {
-  AccountAlreadyLinked,
-  NotFound,
-  OAuthProviderError,
-  TokenRefreshFailed,
-  UserNotFound
-} from "../domain/Errors.js"
-import { OAuthStateMismatch } from "../domain/Errors.js"
+import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../domain/Errors.js"
+import { NotFound, OAuthStateMismatch, TokenRefreshFailed } from "../domain/Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "../domain/Events.js"
 import type { Account, AccountId, Session, User, UserId } from "../domain/Schema.js"
+import { scopesOf } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { AccountTokens, PersistenceError } from "../domain/Stores.js"
-import { VerificationStore } from "../domain/Stores.js"
+import { AccountStore, VerificationStore } from "../domain/Stores.js"
 import { resolveUrl, withErrorCode } from "../http/OriginCheck.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
 import { isRedirectResponse, Jwks, layerJwks, verify as verifyIdToken } from "./IdToken.js"
@@ -74,6 +69,7 @@ import {
   providerIssuer,
   providerRequestTimeout,
   reservedAuthorizationParams,
+  reservedTokenParams,
   resilient,
   resolveClientSecret,
   revealToken
@@ -289,6 +285,25 @@ export const decodeTokens = (body: unknown, now: DateTime.Utc): OAuthTokens | nu
 
 const addSeconds = (now: DateTime.Utc, seconds: number): DateTime.Utc =>
   DateTime.addDuration(now, Duration.seconds(Math.max(0, Math.trunc(seconds))))
+
+/**
+ * How one caller of the token endpoint reports its three failure modes.
+ *
+ * **Details**
+ *
+ * The code exchange and the refresh are the same HTTP request and fail in the
+ * same three ways — the client secret could not be produced, the provider could
+ * not be reached, the provider answered and refused — but they are different
+ * errors to the caller. The mapping travels with the request.
+ */
+interface TokenFailures<E> {
+  /** The provider's client secret could not be resolved. */
+  readonly secret: (error: OAuthProviderError) => E
+  /** The request never got an answer: transport, timeout, or a refused redirect. */
+  readonly unavailable: () => E
+  /** The provider answered with an error status, or with no usable token. */
+  readonly rejected: () => E
+}
 
 // -----------------------------------------------------------------------------
 // Models
@@ -640,6 +655,7 @@ export const make: () => Effect.Effect<
   | Token
   | VerificationStore
   | Accounts
+  | AccountStore
   | Sessions
   | AuthEvents
   | Jwks
@@ -648,6 +664,7 @@ export const make: () => Effect.Effect<
   const config = yield* AuthConfig
   const registry = yield* OAuthProviders
   const accounts = yield* Accounts
+  const accountStore = yield* AccountStore
   const sessions = yield* Sessions
   const events = yield* AuthEvents
   const keySets = yield* Jwks
@@ -686,43 +703,79 @@ export const make: () => Effect.Effect<
     } satisfies StartResult
   }, (effect, options) => Effect.withSpan(effect, "OAuthFlow.start", { attributes: { providerId: options.providerId } }))
 
-  const exchange = Effect.fnUntraced(function*(
-    provider: OAuthProviderConfig,
-    code: string,
-    codeVerifier: string
-  ) {
-    const failed = providerError(provider.id, "TokenExchangeFailed")
+  /**
+   * One request to the provider's token endpoint: the code exchange and the
+   * refresh are the same request with a different `grant_type`.
+   *
+   * **Gotchas**
+   *
+   * The two callers report the same three failures as different errors — a
+   * failed sign-in is an `OAuthProviderError`, a failed refresh is a
+   * `TokenRefreshFailed` naming the account — so the mapping is a parameter
+   * rather than a `catchTag` at the boundary.
+   */
+  const tokenRequest = Effect.fnUntraced(function*<E>(options: {
+    readonly provider: OAuthProviderConfig
+    /** The flow's own parameters. They always win over `extraParams`. */
+    readonly params: Readonly<Record<string, string>>
+    /** A provider's configured extras, filtered by {@link reservedTokenParams}. */
+    readonly extraParams?: Readonly<Record<string, string>> | undefined
+    readonly failures: TokenFailures<E>
+  }) {
+    const { extraParams, failures, params, provider } = options
     // Resolved per request, not per layer: a provider whose secret is minted
     // rather than configured mints one that expires. A public PKCE client has
     // none, and sends none — PKCE is what proves the exchange there.
-    const secret = yield* resolveClientSecret(provider)
+    const secret = yield* Effect.mapError(resolveClientSecret(provider), failures.secret)
+
+    // A map rather than an object: the keys are configuration-supplied, and a
+    // duplicate must overwrite rather than be appended a second time.
+    const form = new Map<string, string>()
+    for (const [key, value] of Object.entries(extraParams ?? {})) {
+      if (reservedTokenParams.has(key)) continue
+      form.set(key, value)
+    }
+    for (const [key, value] of Object.entries(params)) form.set(key, value)
+    form.set("client_id", provider.clientId)
+    // The one place the secret is unwrapped. `client_secret_post`: it goes in
+    // the body of this single request and nowhere else.
+    if (Option.isSome(secret)) form.set("client_secret", Redacted.value(secret.value))
+
     const request = HttpClientRequest.post(provider.tokenUrl, {
       acceptJson: true,
-      body: HttpBody.urlParams({
+      body: HttpBody.urlParams([...form])
+    })
+
+    // This is the one request that carries the client secret, and the one a
+    // provider outage can hang forever: it gets a deadline, and a couple of
+    // retries for a connection that never got made.
+    const response = yield* Effect.mapError(resilient(client.execute(request)), failures.unavailable)
+    if (response.status >= 400) return yield* Effect.fail(failures.rejected())
+    const body = yield* Effect.mapError(Effect.timeout(response.json, providerRequestTimeout), failures.rejected)
+    const tokens = decodeTokens(body, yield* DateTime.now)
+    if (tokens === null) return yield* Effect.fail(failures.rejected())
+    return tokens
+  })
+
+  const exchange = (
+    provider: OAuthProviderConfig,
+    code: string,
+    codeVerifier: string
+  ): Effect.Effect<OAuthTokens, OAuthProviderError> =>
+    tokenRequest({
+      provider,
+      params: {
         grant_type: "authorization_code",
         code,
         redirect_uri: callbackUri(config, provider),
-        code_verifier: codeVerifier,
-        client_id: provider.clientId,
-        // The one place the secret is unwrapped. `client_secret_post`: it goes
-        // in the body of this single request and nowhere else.
-        ...(Option.isNone(secret) ? {} : { client_secret: Redacted.value(secret.value) })
-      })
+        code_verifier: codeVerifier
+      },
+      failures: {
+        secret: (error) => error,
+        unavailable: () => providerError(provider.id, "ProviderUnavailable"),
+        rejected: () => providerError(provider.id, "TokenExchangeFailed")
+      }
     })
-
-    // The exchange is the one request that carries the client secret, and the
-    // one a provider outage can hang forever: it gets a deadline, and a couple
-    // of retries for a connection that never got made.
-    const response = yield* Effect.mapError(
-      resilient(client.execute(request)),
-      () => providerError(provider.id, "ProviderUnavailable")
-    )
-    if (response.status >= 400) return yield* Effect.fail(failed)
-    const body = yield* Effect.mapError(Effect.timeout(response.json, providerRequestTimeout), () => failed)
-    const tokens = decodeTokens(body, yield* DateTime.now)
-    if (tokens === null) return yield* Effect.fail(failed)
-    return tokens
-  })
 
   const withIdToken = Effect.fnUntraced(function*(
     provider: OAuthProviderConfig,
@@ -903,16 +956,141 @@ export const make: () => Effect.Effect<
   }, (effect, options) =>
     Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } }))
 
+  // ---------------------------------------------------------------------------
+  // Provider tokens, after the flow
+  // ---------------------------------------------------------------------------
+
+  const refreshFailure = (accountId: AccountId, reason: TokenRefreshFailed["reason"]): TokenRefreshFailed =>
+    new TokenRefreshFailed({ accountId, reason })
+
+  /**
+   * The caller's own account, or `NotFound` — which is also the answer for
+   * somebody else's account, and deliberately the same one.
+   */
+  const findAccount = Effect.fnUntraced(function*(selector: TokenSelector) {
+    const found = yield* accountStore.findByIdAndUserId(selector.accountId, selector.userId)
+    return yield* Effect.fromOption(found, () => new NotFound())
+  })
+
+  /** Whether a refresh could even be attempted, before anything is spent. */
+  const refreshable = (account: Account): boolean => {
+    if (account.refreshToken === null) return false
+    const provider = registry.find(account.providerId)
+    return Option.isSome(provider) && provider.value.tokenRefresh?.enabled !== false
+  }
+
+  /** Whether the stored access token is inside {@link accessTokenSkew} of expiry. */
+  const expiring = (account: Account, now: DateTime.Utc): boolean => {
+    if (account.accessToken === null) return true
+    // An expiry the provider never stated is not an expiry that has arrived.
+    if (account.accessTokenExpiresAt === null) return false
+    const remaining = DateTime.toEpochMillis(account.accessTokenExpiresAt) - DateTime.toEpochMillis(now)
+    return remaining < Duration.toMillis(accessTokenSkew)
+  }
+
+  /** What the account currently holds, as the endpoint answers it. */
+  const storedTokens = (account: Account): Effect.Effect<AccessTokenResult, TokenRefreshFailed> =>
+    account.accessToken === null
+      ? Effect.fail(refreshFailure(account.id, "AccessTokenMissing"))
+      : Effect.succeed({
+        accessToken: Redacted.make(account.accessToken),
+        accessTokenExpiresAt: account.accessTokenExpiresAt,
+        idToken: account.idToken === null ? null : Redacted.make(account.idToken),
+        scopes: scopesOf(account.scope),
+        providerId: account.providerId,
+        accountId: account.id
+      })
+
+  const refreshFor = Effect.fnUntraced(function*(account: Account) {
+    const provider = yield* Effect.mapError(
+      registry.get(account.providerId),
+      () => refreshFailure(account.id, "ProviderNotSupported")
+    )
+    if (provider.tokenRefresh?.enabled === false) {
+      return yield* Effect.fail(refreshFailure(account.id, "RefreshNotSupported"))
+    }
+    const refreshToken = account.refreshToken
+    if (refreshToken === null) {
+      return yield* Effect.fail(refreshFailure(account.id, "RefreshTokenMissing"))
+    }
+
+    const tokens = yield* tokenRequest({
+      provider,
+      params: { grant_type: "refresh_token", refresh_token: refreshToken },
+      extraParams: provider.tokenRefresh?.params,
+      failures: {
+        // A secret that cannot be minted is, to the caller, a provider this
+        // deployment cannot talk to right now.
+        secret: () => refreshFailure(account.id, "ProviderUnavailable"),
+        unavailable: () => refreshFailure(account.id, "ProviderUnavailable"),
+        rejected: () => refreshFailure(account.id, "RefreshRejected")
+      }
+    })
+
+    // `scope` is absent on purpose: providers routinely omit it from a refresh
+    // response, and writing that omission down as "no scopes" would erase what
+    // the person actually consented to. A refresh token the provider did not
+    // rotate is kept for the same reason — the stored one still works.
+    const patch: AccountTokens = {
+      accessToken: Redacted.value(tokens.accessToken),
+      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
+      ...(tokens.refreshToken === null ? {} : {
+        refreshToken: Redacted.value(tokens.refreshToken),
+        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt
+      }),
+      ...(tokens.idToken === null ? {} : { idToken: Redacted.value(tokens.idToken) })
+    }
+    // The account was unlinked between the read and the write: there is nothing
+    // to answer with, and what was just minted belongs to nobody.
+    const row = yield* Effect.fromOption(
+      yield* accountStore.updateTokens(account.id, patch),
+      () => new NotFound()
+    )
+
+    yield* publishSafely(events, {
+      _tag: "TokensRefreshed",
+      userId: row.userId,
+      accountId: row.id,
+      providerId: row.providerId
+    })
+
+    const stored = yield* storedTokens(row)
+    // Unreachable: the row either kept its refresh token or was given a new one.
+    if (row.refreshToken === null) {
+      return yield* Effect.fail(refreshFailure(row.id, "RefreshTokenMissing"))
+    }
+    return {
+      ...stored,
+      refreshToken: Redacted.make(row.refreshToken),
+      refreshTokenExpiresAt: row.refreshTokenExpiresAt
+    } satisfies RefreshedTokens
+  })
+
+  const accessToken = Effect.fnUntraced(function*(selector: TokenSelector) {
+    const account = yield* findAccount(selector)
+    // The hot path: a token with life left in it, or one that could not be
+    // renewed anyway, is handed straight back.
+    if (!expiring(account, yield* DateTime.now) || !refreshable(account)) {
+      return yield* storedTokens(account)
+    }
+    return yield* refreshFor(account)
+  }, (effect, selector) =>
+    Effect.withSpan(effect, "OAuthFlow.accessToken", { attributes: { accountId: selector.accountId } }))
+
+  const refreshTokens = Effect.fnUntraced(
+    function*(selector: TokenSelector) {
+      return yield* refreshFor(yield* findAccount(selector))
+    },
+    (effect, selector) =>
+      Effect.withSpan(effect, "OAuthFlow.refreshTokens", { attributes: { accountId: selector.accountId } })
+  )
+
   return OAuthFlow.of({
     start,
     callback,
     complete,
-    // Declared before they are implemented: the two token endpoints and the
-    // generated client are written against this contract. A defect rather than a
-    // failure — an unimplemented method must not be catchable as one of the
-    // errors it declares.
-    accessToken: () => Effect.die("effect-auth/OAuthFlow: accessToken is not implemented"),
-    refreshTokens: () => Effect.die("effect-auth/OAuthFlow: refreshTokens is not implemented")
+    accessToken,
+    refreshTokens
   })
 })
 
@@ -937,6 +1115,7 @@ export const layer: Layer.Layer<
   | Token
   | VerificationStore
   | Accounts
+  | AccountStore
   | Sessions
   | AuthEvents
   | HttpClient.HttpClient

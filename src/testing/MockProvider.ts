@@ -226,6 +226,78 @@ export const userInfoUrl = `${providerOrigin}/userinfo`
  */
 export const authorizeUrl = `${providerOrigin}/authorize`
 
+/**
+ * Where the stubbed provider publishes its signing keys.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const jwksUrl = `${providerOrigin}/jwks`
+
+/**
+ * Where the stubbed provider publishes its OIDC discovery document.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const discoveryUrl = `${providerOrigin}/.well-known/openid-configuration`
+
+/**
+ * A discovery document for the stubbed provider.
+ *
+ * **When to use**
+ *
+ * `OidcDiscovery.make` tests. The defaults describe a well-formed provider whose
+ * endpoints are the ones {@link mockServer} already answers on; `overrides`
+ * bends one field at a time, and a `null` *removes* a field, which is how the
+ * `IssuerMissing`, `EndpointsMissing` and `KeysMissing` cases are written.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { MockProvider } from "effect-auth/testing"
+ *
+ * const keyless = MockProvider.discoveryDocument({ jwks_uri: null })
+ * ```
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const discoveryDocument = (
+  overrides?: Readonly<Record<string, unknown>>
+): Record<string, unknown> => {
+  const document: Record<string, unknown> = {
+    issuer: providerOrigin,
+    authorization_endpoint: authorizeUrl,
+    token_endpoint: tokenUrl,
+    userinfo_endpoint: userInfoUrl,
+    jwks_uri: jwksUrl,
+    scopes_supported: ["openid", "email", "profile"],
+    id_token_signing_alg_values_supported: ["RS256"],
+    response_types_supported: ["code"]
+  }
+  for (const [key, value] of Object.entries(overrides ?? {})) {
+    if (value === null) delete document[key]
+    else document[key] = value
+  }
+  return document
+}
+
+/**
+ * The parameters of a `Location` header, as the browser would take them to the
+ * `GET` callback.
+ *
+ * **When to use**
+ *
+ * Following the `302` that `POST /auth/callback/:providerId` answers with, which
+ * is the whole of what that endpoint does.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const queryOf = (location: string): Record<string, string> =>
+  Object.fromEntries(new URL(location).searchParams.entries())
+
 const readString = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
   if (!Object.hasOwn(record, key)) return null
   const value = record[key]
@@ -366,6 +438,11 @@ export interface IdTokenSignerService {
    */
   readonly jwks: KeyResolver
   /**
+   * The same key set as a provider would *publish* it, for a test that serves a
+   * `jwks_uri` over {@link mockServer} rather than pinning a resolver.
+   */
+  readonly keySet: { readonly keys: ReadonlyArray<Readonly<Record<string, unknown>>> }
+  /**
    * Mints a signed `id_token` for `payload`.
    */
   readonly sign: (payload: JWTPayload, options?: SignOptions) => Promise<string>
@@ -404,7 +481,8 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
   return Effect.promise(async () => {
     const pair = await generateKeyPair("RS256", { extractable: true })
     const jwk = await exportJWK(pair.publicKey)
-    const jwks = createLocalJWKSet({ keys: [{ ...jwk, kid: "k1", alg: "RS256" }] })
+    const keySet = { keys: [{ ...jwk, kid: "k1", alg: "RS256", use: "sig" }] }
+    const jwks = createLocalJWKSet(keySet)
     const sign = (payload: JWTPayload, options?: SignOptions) => {
       const unsigned = new SignJWT(payload)
         .setProtectedHeader({ alg: "RS256", kid: "k1" })
@@ -413,7 +491,7 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
       return (options?.expiresAt === null ? unsigned : unsigned.setExpirationTime(options?.expiresAt ?? 3600))
         .sign(pair.privateKey)
     }
-    return { jwks, sign }
+    return { jwks, keySet, sign }
   })
 }
 

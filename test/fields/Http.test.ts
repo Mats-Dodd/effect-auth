@@ -112,6 +112,35 @@ layer(layerFields)("fields/Http", (it) => {
       assert.notInclude(JSON.stringify(current), "apiSecret")
     }))
 
+  it.effect("patches a custom field through update-user, and leaves the rest alone", () =>
+    Effect.gen(function*() {
+      const email = uniqueEmail("update-plan")
+      const { client } = yield* makeClient()
+
+      yield* client.auth.signUpEmail({
+        payload: { name: testName, email, password: testPassword, plan: "pro" }
+      })
+
+      // The base half and the deployment's own half of the body are patched by
+      // the same statement …
+      const updated = yield* client.auth.updateUser({ payload: { name: "Ada Byron", plan: "free" } })
+      assert.strictEqual(updated.user.name, "Ada Byron")
+      assert.strictEqual(updated.user.plan, "free")
+      // … and the two fields a client may not write are where they were.
+      assert.strictEqual(updated.user.role, "user")
+      assert.isFalse(Object.hasOwn(updated.user, "apiSecret"))
+
+      // A custom field the body does not name is a column the statement does
+      // not touch — not one reset to the model's default.
+      yield* client.auth.updateUser({ payload: { plan: "pro" } })
+      const renamed = yield* client.auth.updateUser({ payload: { name: "Ada Lovelace" } })
+      assert.strictEqual(renamed.user.plan, "pro")
+
+      // And the write landed: the application's own endpoint reads it back off
+      // `CurrentUser` on the next request.
+      assert.strictEqual(yield* client.profile.plan(), "pro")
+    }))
+
   it.effect("lets an application's own endpoint read a custom field", () =>
     Effect.gen(function*() {
       const email = uniqueEmail("own-endpoint")

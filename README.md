@@ -266,8 +266,71 @@ Auth.layerWithOAuth({
 })
 ```
 
-`Github.makeConfig` / `Google.makeConfig` are the same constructors reading each field from `Config`,
-for `Auth.layerConfigWithOAuth`.
+Every provider has a `makeConfig` twin reading each field from `Config`, for
+`Auth.layerConfigWithOAuth`.
+
+### The providers
+
+| provider | kind | identity | notes |
+|---|---|---|---|
+| `Github` | OAuth2 | numeric user id | `webUrl`/`apiUrl` for Enterprise Server; the address comes from `/user/emails`, and only its `verified` flag counts |
+| `Google` | OIDC | `sub` | `hostedDomain` restricts sign-in to one Workspace domain, checked on the `hd` *claim* |
+| `Discord` | OAuth2 | snowflake | `identify email`; `prompt` defaults to `"none"`; `Discord.avatarUrl` builds the CDN or default-avatar URL; no address (the scope was refused) is a refusal |
+| `Gitlab` | OAuth2 | numeric user id | `baseUrl` points at a self-hosted instance; an account that is not `active`, or is `locked`, is refused |
+| `Microsoft` | OIDC | `oid` | Entra ID; `tenantId` (`"common"` by default) and `authority`; `clientSecret` is optional for a public PKCE client |
+| `Apple` | OIDC | `sub` | Sign in with Apple; the client secret is minted per token request from the `.p8` key |
+| `OidcDiscovery` | OIDC | `sub` | any provider that publishes `.well-known/openid-configuration` |
+
+**Microsoft** is the multi-tenant case. `common`, `organizations` and `consumers` cannot pin an
+issuer, so the expected one is derived from the token's own `tid` claim and compared with `iss`, a
+personal account is refused under `organizations` and required under `consumers`, and the account is
+stored under the per-tenant issuer the verified token named. The identity is `oid` — Entra's `sub` is
+per application — and `emailVerified` is `false` unless the optional `email_verified` claim was
+configured or Entra's own verified-address list names the address.
+
+**Apple** needs a Services ID, a team id, a key id and the `.p8` signing key:
+
+```ts
+Apple.make({
+  clientId: "com.example.web",
+  teamId: "ABCDE12345",
+  keyId: "FGHIJ67890",
+  privateKey: Redacted.make(process.env.APPLE_PRIVATE_KEY!)
+})
+```
+
+The client secret is a short-lived ES256 assertion, minted afresh for every token request rather than
+configured; `Apple.makeConfig` mints one at build time, so a broken key fails the boot instead of
+somebody's first sign-in. Asking for the `name` scope makes Apple `POST` the callback cross-site,
+which `POST /auth/callback/:providerId` answers with a `302` to its `GET` twin — a cross-site POST
+carries no `SameSite=Lax` cookie, so the flow has to complete on the top-level navigation. The name
+Apple posts there arrives once, is unsigned, and is used for the display name and nothing else. A
+native application whose tokens name its bundle identifier passes `appBundleIdentifier`, or
+`audience: [servicesId, bundleId]` to accept both.
+
+**Any other OIDC provider** — Auth0, Okta, Keycloak, Zitadel, your own identity server — is one
+`OidcDiscovery.make`:
+
+```ts
+Auth.layerConfigWithOAuth({
+  // …
+  providers: [
+    Effect.flatMap(
+      Config.redacted("OIDC_CLIENT_SECRET"),
+      (clientSecret) =>
+        OidcDiscovery.make({ id: "acme", issuer: "https://id.acme.test", clientId, clientSecret })
+    )
+  ]
+})
+```
+
+Discovery runs once, while the stack is built, so a provider that cannot be discovered fails the boot
+with a `DiscoveryError` naming the reason (`Unreachable`, `Malformed`, `IssuerMissing`,
+`IssuerMismatch`, `EndpointsMissing`, `KeysMissing`). The document must declare the very issuer that
+was configured, the fetch refuses redirects like every other outbound OAuth request, a document with
+no `jwks_uri` and no pinned key set is a failure rather than a skipped signature check, and only the
+asymmetric entries of the advertised algorithm list are admitted. Anything stated in the options wins
+over the document, so a gateway that rewrites one endpoint does not cost you discovery of the rest.
 
 `POST /sign-in/social` answers `{ url, redirect: true }`; navigate the browser there. The provider
 returns to `GET /auth/callback/:providerId`, which consumes the state, exchanges the code, verifies
@@ -290,6 +353,230 @@ Configure OAuth with `FetchHttpClient.layer` (or an `HttpClient` you know does n
 redirects). The flow refuses redirects two ways — `redirect: "manual"` through the fetch options,
 *and* a response check — but only the second lock applies to a non-fetch-backed client, which may
 have followed a redirect internally before answering.
+
+## Cookie cache
+
+Every authenticated request reads the session and its user in one query. The cookie cache removes
+even that: beside the session cookie the server writes a second, short-lived cookie carrying a
+**signed snapshot** of exactly what `GET /auth/session` answers with, and a request presenting a
+valid snapshot is served with **no database read at all**.
+
+It is off by default. Switch it on per deployment:
+
+```ts
+const AuthLive = Auth.layer({
+  baseUrl: "https://app.example.com",
+  secret: Redacted.make(process.env.AUTH_SECRET!),
+  cookieCache: {
+    enabled: true,
+    maxAge: Duration.minutes(5),  // the default, and the revocation lag below
+    version: ""                   // bump to invalidate every outstanding snapshot
+  }
+})
+```
+
+The value is `base64url(json) + "." + base64url(HMAC-SHA-256(secret, json))`, written under
+`effect_auth.session_data` (`__Secure-`-prefixed on TLS, with the session cookie's own attributes).
+The signed payload carries the session, the user's public projection, a version string, the
+snapshot's expiry, and the SHA-256 of the session token it was minted for. Reading it verifies the
+tag, checks that digest against the credential actually presented, then the expiry and the version.
+Every failure — a tampered payload, another deployment's secret, a snapshot from another browser, an
+unreadable value — is a *miss*, which reads the database as before. It is never a `401`.
+
+A snapshot expires at `min(now + maxAge, refreshDueAt(session), session.expiresAt)`. Clamping to the
+refresh instant is what keeps the rolling session refresh honest: the first request after a session
+becomes refresh-due misses the cache, rolls the expiry forward and re-sends both cookies. Nothing
+here ever re-signs or extends a session.
+
+**What you are trading.** Read this before switching it on.
+
+- **Revocation lag.** A session revoked in one browser keeps working in another for up to `maxAge`,
+  because a valid snapshot means no database read. The same holds for a user row that changed
+  elsewhere. `maxAge` is exactly the size of that window; a deployment that cannot accept it
+  anywhere leaves the cache off.
+- **Integrity, not confidentiality.** The payload is signed, not encrypted — anyone holding the
+  cookie can read it. It contains only what the endpoint would have answered with, which is why a
+  `UserField.hidden` column is absent from it and why nothing secret may ever be added.
+- **A hidden field is not carried.** A cached read sees a `UserField.hidden` field's declared
+  default, not its stored value. An endpoint that reads one must be annotated (below).
+- **It is not a defence.** Rotating `secret` invalidates every outstanding snapshot, but that is
+  mass *cache* invalidation, not sign-out: the session tokens themselves are untouched.
+- **Bearer clients gain nothing.** The cache is written and read on the cookie transports only. A
+  header-only client has no jar, and letting a cookie decide what such a request sees is exactly
+  what must not happen.
+
+Endpoints whose decision depends on the *current* row bypass the cache in both directions —
+`changePassword`, `setPassword`, `unlinkAccount`, `changeEmail`, `deleteUser` and
+`deleteUserCallback`. Your own endpoints opt in the same way, with one line and no second
+middleware:
+
+```ts
+const rotateKeys = HttpApiEndpoint.post("rotateKeys", "/rotate-keys", { success: Ok })
+  .middleware(Authenticated)
+  .annotate(AuthoritativeSession, true)
+```
+
+Signing out, revoking every session, resetting a password and deleting an account clear *both*
+cookies: clearing only the session cookie would leave a snapshot behind, and a snapshot is served
+without a database read. `version` bumps everything at once — pass a function
+(`(session, user) => string`) to make invalidation sensitive to something about the principal, such
+as a tenant or a role, remembering that it runs on the snapshot's own contents and on the hot path.
+
+### Swapping the session store
+
+`sessionStore` is the other half of the same subject: a layer laid *over* the SQL stores, provided
+them (so it may delegate) and merged above them (so what it publishes is the `SessionStore` every
+service resolves). It is the seam a distributed store — Redis, or anything else — plugs into, and
+the one place where "the store" and "the SQL store" can differ. The other three stores are
+deliberately not decorable: nothing in this library reads them on a hot path.
+
+```ts
+const Cached = Layer.effect(
+  Stores.SessionStore,
+  Effect.map(Stores.SessionStore, (inner) => ({
+    ...inner,
+    findByTokenHash: (hash: string) => readThrough(hash, inner.findByTokenHash(hash))
+  }))
+)
+
+const AuthLive = Auth.layer({ ..., sessionStore: Cached })
+```
+
+`AuthTest.countingSessionStore()` is the same seam in the test harness, and is how this repository's
+own suite asserts that a cache hit performs zero reads.
+
+## Plugins
+
+A plugin is a module, not a registration. There is no plugin object, no `plugins: [...]` array and
+no lifecycle: a feature that adds endpoints exports the same four things this library's own core
+does, and a consumer composes them with plain layers.
+
+| Export | What it is |
+|---|---|
+| `XApiGroup` | an `HttpApiGroup`, browser-safe, with its own `/auth/<kebab>` prefix |
+| `layer(options)` | its domain service, over whatever `Auth.layer` published |
+| `handlers(api)` | `AuthHandlers.forGroup(XApiGroup, …)` — applied to *your* composed API |
+| `XClient` (optional) | a browser client, and a testing module beside it |
+
+```ts
+const AuthLive = Auth.layer(options).pipe(Layer.provide(PgLive), Layer.provide(MyMailer))
+
+const MagicLinkLive = MagicLink.layer({ ttl: Duration.minutes(10) }).pipe(
+  Layer.provideMerge(AuthLive),          // the plugin reads the deployment's own services
+  Layer.provide(MyMagicLinkMailer)       // …and one seam of its own
+)
+
+const AppApi = HttpApi.make("app").addHttpApi(AuthApi).add(MagicLink.MagicLinkApiGroup).add(Todos)
+
+const HandlersLive = Layer.mergeAll(
+  AuthHandlers.layer(AppApi),
+  MagicLink.handlers(AppApi),
+  Todos.layer
+).pipe(Layer.provide(MagicLinkLive))
+```
+
+`AuthHandlers.forGroup(group, build)` is what makes the third line possible. `HttpApiBuilder.group`
+takes the API a group was *added to*, and a library cannot name the API you will compose — so a
+plugin calling it directly would either fix its consumers to one API or repeat this library's
+boundary cast. `forGroup` is that boundary, written once: hand it your group and your handlers, and
+what comes back is a function you apply to your own API. The API's `groups.<id>` is pinned to the
+group you passed, so an API carrying a *different* group under the same name is a compile error
+rather than a mis-served route.
+
+The rest of the seams a plugin uses:
+
+- **Tokens.** `Verifications.purpose(name, payloadSchema?)` declares a class of single-use tokens;
+  `issue` / `claim` / `retire` do the rest. The row is namespaced `"<purpose>:<subject>"`, only the
+  digest is stored, and the payload is server-side state — put a callback URL in one, never a
+  credential.
+- **Errors.** Your own `Schema.TaggedError`s with `httpApiStatus`. `AuthHandlers.dieOn(tags)` keeps
+  your infrastructural failures out of your endpoints' error unions, exactly as `serverFault` keeps
+  this library's two out of its own.
+- **Mail.** A service of your own in your `Requirements`, not a method on `AuthEmails`: a plugin
+  cannot widen an interface every deployment implements, and the shapes differ (a magic link may
+  have no user behind the address). Forgetting it is a compile error.
+- **Events.** `PluginEvent { plugin, event, userId, data }` on the closed `AuthEvent` union. No
+  secrets in `data` — events reach log sinks and webhooks.
+- **Tables.** `Migrations.make({ table, migrations })` gives a plugin its own bookkeeping table and
+  its own ids from `0001`. Never merge a plugin's migrations into this library's record: the migrator
+  orders globally, so a lower id added later never runs.
+- **Users.** Provision through the base-typed `UserStore`. The deployment's own custom columns are
+  filled in from the model's declared defaults, which is what the provisionability rule on
+  `makeUserModel` guarantees.
+- **Testing.** `AuthTest.layerHttpApi(api, options, extra)` provides your handler layer the *same*
+  deployment build the auth handlers get, so both groups read one `Sessions` and one rate limiter.
+  `TestEmails.record` is the seam your mailer's test layer implements over.
+
+### Magic link
+
+The first plugin, and the worked example of all of the above. Passwordless sign-in by a single-use
+link. It owns no table — a link is a `Verifications` token — so a deployment that has run this
+library's migrations needs no new ones.
+
+| Endpoint | Method / path |
+|---|---|
+| `signIn` | `POST /auth/magic-link/sign-in` |
+| `verify` | `GET /auth/magic-link/verify?token=` |
+| `exchange` | `POST /auth/magic-link/exchange` |
+
+```ts
+MagicLink.layer({
+  ttl: Duration.minutes(5),        // how long a link may be followed for
+  disableSignUp: false,            // refuse an address that has no account
+  path: "/auth/magic-link/verify", // where the e-mailed link points
+  revokeUnprovenAccounts: true     // the takeover defence below
+})
+```
+
+`signIn` answers `200` for every well-formed address — one with an account, one without, and one
+whose message could not be delivered — because a distinguishable answer would tell an
+unauthenticated caller who is registered here. `verify` is for the browser: it claims the token,
+sets the session cookie and redirects, and it redirects on failure too, to the link's own
+`errorCallbackURL` carrying `?error=invalid_token` or `?error=sign_up_disabled`. `exchange` is the
+JSON twin for a single-page or mobile client, and sets the cookie as well.
+
+The callback URLs travel in the token's server-side payload rather than in the link, so a link
+cannot be edited into a link that lands somewhere else; each of them is validated against
+`trustedOrigins` when the link is minted, and dropped rather than refused if it does not survive
+that. A link created the account when it is followed? Then `newUserCallbackURL` wins over
+`callbackURL`.
+
+**The unproven-account rule.** Somebody can register an address they do not own, wait, and hope its
+real owner later signs in with a magic link — they would then share the account. So when a link
+proves control of an address whose account is *unverified*, that account's sign-in methods and
+sessions are destroyed in one transaction and the address is marked verified. Switching
+`revokeUnprovenAccounts` off keeps the address verification and keeps the squatter's password: do it
+only if something else in the deployment guarantees no account is ever created unverified.
+
+The mailer is one method:
+
+```ts
+const MyMagicLinkMailer = Layer.succeed(MagicLink.MagicLinkEmails)({
+  sendMagicLink: ({ email, user, token, url }) =>
+    send(email, user === null ? "Create your account" : "Sign in", Redacted.value(url))
+})
+```
+
+`user` is `null` when the address has no account. Both messages must go out, and a delivery failure
+is logged and swallowed — the endpoint answers `200` either way.
+
+In the browser, `MagicLinkClient` is a client of its own, so an application that does not serve magic
+links never ships it:
+
+```ts
+import { MagicLinkClient } from "effect-auth/client"
+
+const magicLink = MagicLinkClient.make({ baseUrl: "https://app.example.com" })
+
+registry.set(magicLink.signIn, { email, callbackURL: "/welcome" })
+// …and, from the page the link lands on:
+registry.set(magicLink.exchange, { token: Redacted.make(tokenFromTheUrl) })
+```
+
+It takes no `api` option: the group's prefix is baked into its declaration, so the paths it calls are
+the ones your composed API serves. `exchange` carries `"auth.session"`, so an `AuthClient` built
+beside it refetches its session atom by itself. If you would rather drive your own composed API,
+`HttpApiClient.group(AppApi, { group: "magicLink" })` needs nothing from this library at all.
 
 ## Testing
 
@@ -355,6 +642,12 @@ someone else's behalf.
 **Open redirects.** Every user-supplied `callbackURL` and `redirectTo` must be path-relative or have
 an origin in `trustedOrigins`; anything else falls back to `baseUrl`.
 
+**Cookie cache.** Off unless a deployment asks for it. When it is on, an authenticated request may
+be served from a signed snapshot rather than from the database, which buys a request with no reads
+and costs a revocation lag of at most `cookieCache.maxAge`. The full trade — including why the
+snapshot is signed but not encrypted, and which endpoints bypass it — is in
+[Cookie cache](#cookie-cache) above.
+
 **OAuth.** PKCE S256 always, no `plain` fallback. State is single-use with a ten-minute TTL and is
 stored hashed. Token and user-info fetches refuse redirects. `id_token` verification is fail-closed
 on issuer, audience, expiry, signature and nonce; a provider that declares an issuer but publishes
@@ -409,10 +702,8 @@ v1 is authentication over sessions, credentials and OAuth. Planned next:
 
 - **Magic links** and e-mail OTP.
 - **Two-factor authentication**: TOTP, recovery codes, and a `SessionNotFresh`-style step-up guard.
-- **Cookie cache**: a signed, short-lived session snapshot in the cookie (the `Hmac` service is
-  already here for it) so the common request does no database read at all.
 - **Redis-backed sessions** and a shared `RateLimiterStore`, for deployments where process-local is
-  not good enough.
+  not good enough. The `sessionStore` seam above is what the first plugs into.
 - **JWT / JWKS issuance**, for handing a verified identity to a service that is not this one.
 - **Passkeys** (WebAuthn).
 - **A plugin SDK**: the shape that lets a third party add endpoints, tables and events without

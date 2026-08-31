@@ -34,11 +34,12 @@ import { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { pickKeys } from "../internal/records.js"
-import type { PasswordAlreadySet, PasswordHashError } from "./Errors.js"
+import type { PasswordHashError } from "./Errors.js"
 import {
   EmailNotVerified,
   InvalidCredentials,
   InvalidToken,
+  PasswordAlreadySet,
   PasswordPolicyViolation,
   UserAlreadyExists
 } from "./Errors.js"
@@ -744,13 +745,63 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     yield* publishSafely(events, { _tag: "PasswordChanged", userId, viaReset: true })
   })
 
+  const verifyPassword = Effect.fnUntraced(function*(
+    userId: UserId,
+    password: Redacted.Redacted<string>
+  ) {
+    const account = yield* credentialAccountFor(userId)
+    const storedHash = Option.isSome(account) ? account.value.passwordHash : null
+    // One verification, always. A user with no credential is checked against the
+    // dummy hash — produced by this hasher at this cost — so "no password set"
+    // and "wrong password" take the same time as well as answering the same.
+    const matches = yield* hasher.verify(password, storedHash ?? dummyHash)
+    return storedHash !== null && matches
+  })
+
+  const setPassword = Effect.fnUntraced(function*(options: SetPasswordOptions) {
+    yield* checkPolicy(options.newPassword, config)
+
+    const existing = yield* credentialAccountFor(options.userId)
+    if (Option.isSome(existing) && existing.value.passwordHash !== null) {
+      return yield* Effect.fail(new PasswordAlreadySet())
+    }
+
+    const passwordHash = yield* hasher.hash(options.newPassword)
+
+    // Two fibres can both pass the check above. Only one insert survives the
+    // unique index on `(issuer, account_id)`, and the loser is told the same
+    // thing the check would have told it.
+    const created = createCredentialAccount(options.userId, passwordHash).pipe(
+      Effect.catchTag(
+        "PersistenceError",
+        (error): Effect.Effect<Account, PasswordAlreadySet | PersistenceError> =>
+          isUniqueViolation(error) ? Effect.fail(new PasswordAlreadySet()) : Effect.fail(error)
+      )
+    )
+
+    const account = Option.isNone(existing)
+      ? yield* created
+      // A credential row with no hash — nothing this library writes, but a
+      // migration from another system might. `None` means it was removed
+      // between the read and the write, which leaves the create as the answer.
+      : yield* Effect.flatMap(
+        accounts.updatePasswordHash(options.userId, passwordHash),
+        Option.match({ onNone: () => created, onSome: Effect.succeed })
+      )
+
+    yield* publishSafely(events, {
+      _tag: "AccountLinked",
+      userId: options.userId,
+      accountId: account.id,
+      providerId: account.providerId,
+      issuer: account.issuer
+    })
+  })
+
   const changePassword = Effect.fnUntraced(function*(options: ChangePasswordOptions) {
     yield* checkPolicy(options.newPassword, config)
 
-    const account = yield* credentialAccountFor(options.userId)
-    const storedHash = Option.isSome(account) ? account.value.passwordHash : null
-    const matches = yield* hasher.verify(options.currentPassword, storedHash ?? dummyHash)
-    if (storedHash === null || !matches) {
+    if (!(yield* verifyPassword(options.userId, options.currentPassword))) {
       return yield* Effect.fail(new InvalidCredentials())
     }
 
@@ -812,13 +863,8 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     requestReset,
     resetPassword,
     changePassword,
-    // Declared here and implemented in the wave that owns the flows above them:
-    // the endpoints and the `Users` service are written against this contract,
-    // so the shape lands before the bodies do. A defect rather than a failure —
-    // an unimplemented method must not be catchable as one of the errors it
-    // declares.
-    verifyPassword: () => Effect.die("effect-auth/Passwords: verifyPassword is not implemented"),
-    setPassword: () => Effect.die("effect-auth/Passwords: setPassword is not implemented"),
+    verifyPassword,
+    setPassword,
     sendVerificationEmail,
     verifyEmail
   })

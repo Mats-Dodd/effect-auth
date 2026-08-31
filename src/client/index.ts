@@ -30,6 +30,18 @@
 export * as AuthClient from "./AuthClient.js"
 
 /**
+ * The magic link plugin's client, for a deployment that serves
+ * `MagicLink.MagicLinkApiGroup`.
+ *
+ * It is a client of its own rather than members on `AuthClient`, exactly as the
+ * plugin is a module of its own on the server: an application that does not serve
+ * magic links never imports it, and never ships it to a browser.
+ *
+ * @since 1.0.0
+ */
+export * as MagicLinkClient from "./MagicLinkClient.js"
+
+/**
  * The reactivity primitives the client's atoms are built from, re-exported so
  * that an application reads results with exactly the version of `effect` the
  * atoms were created by.

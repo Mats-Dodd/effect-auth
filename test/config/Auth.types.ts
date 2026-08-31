@@ -6,7 +6,7 @@
  * There is nothing to run here — the assertions are the annotations. The file
  * is covered by `pnpm check`, which compiles `test/` alongside `src/`.
  */
-import { Config, Layer, Redacted } from "effect"
+import { Config, Effect, Layer, Redacted } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -33,6 +33,7 @@ import type { Verifications } from "../../src/domain/Verifications.js"
 import type { Authenticated } from "../../src/http/Middleware.js"
 import type { SessionCache } from "../../src/http/SessionCache.js"
 import type { OAuthFlow } from "../../src/oauth/Flow.js"
+import * as OidcDiscovery from "../../src/oauth/Discovery.js"
 import * as Github from "../../src/oauth/providers/Github.js"
 
 declare const PgLive: Layer.Layer<SqlClient.SqlClient>
@@ -125,7 +126,20 @@ const _configured: Layer.Layer<
     Github.makeConfig({
       clientId: Config.string("GITHUB_CLIENT_ID"),
       clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
-    })
+    }),
+    // A discovered provider is the entry that puts `DiscoveryError` and
+    // `HttpClient` in the list's type — and it composes with the ones that only
+    // read the environment.
+    Effect.flatMap(
+      Config.redacted("OIDC_CLIENT_SECRET"),
+      (clientSecret) =>
+        OidcDiscovery.make({
+          id: "acme",
+          issuer: "https://id.acme.test",
+          clientId: "acme-client",
+          clientSecret
+        })
+    )
   ]
 })
 

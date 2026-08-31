@@ -87,5 +87,16 @@ export * as IdToken from "./oauth/IdToken.js"
 export * as OAuthFlow from "./oauth/Flow.js"
 export * as OAuthProvider from "./oauth/Provider.js"
 export * as OAuthState from "./oauth/State.js"
+export * as OidcDiscovery from "./oauth/Discovery.js"
+export * as Apple from "./oauth/providers/Apple.js"
+export * as Discord from "./oauth/providers/Discord.js"
 export * as Github from "./oauth/providers/Github.js"
+export * as Gitlab from "./oauth/providers/Gitlab.js"
 export * as Google from "./oauth/providers/Google.js"
+export * as Microsoft from "./oauth/providers/Microsoft.js"
+
+// -----------------------------------------------------------------------------
+// Plugins
+// -----------------------------------------------------------------------------
+
+export * as MagicLink from "./magic-link/index.js"

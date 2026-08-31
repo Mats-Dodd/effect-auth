@@ -539,3 +539,121 @@ mis-served. The `/auth` prefix is therefore fixed; serving the endpoints elsewhe
 concern (mount the server under a path, or put a rewriting proxy in front of it), and
 `AuthConfig.basePath` remains how the library is told where they are publicly reachable, so
 callback URIs and e-mail links agree with it.
+
+## Amendments (v2): the session cookie cache
+
+`src/http/SessionCache.ts` and the middleware path that reads it are new surface, not a deviation
+from anything above. This section is the contract; the module's own JSDoc carries the same threat
+statement for a reader who never opens this file.
+
+### Format
+
+The cookie's value is `base64url(json) + "." + base64url(HMAC-SHA-256(secret, json))`, and `json`
+is `Schema.fromJsonString(CacheEnvelope)` of
+
+```
+{ v: 1, version: string, tokenHash: string, expiresAt: DateTimeUtcFromString,
+  session: Record<string, unknown>, user: Record<string, unknown> }
+```
+
+The two halves are carried **already encoded** — what goes on the wire is exactly `Session.json` and
+the model's `json` projection of the user, which is what `GET /auth/session` answers with. They are
+decoded back through the *stored* variants (`Session`, `UserModel.decodeRow`), because a hit has to
+answer with the same `Session` and `UserOf<F>` a database read would; re-encoding a decoded json
+value to get there would be a third pass on every request. `tokenHash` is the base64url SHA-256 of
+the session token the snapshot was minted for; it lives at the top level of the envelope, where it
+is the binding, and `sessionSnapshot` therefore has no `tokenHash` of its own. Integrity only: the
+payload is signed, never encrypted. A value over `maxCookieBytes` (3072) is skipped with a `Debug`
+log rather than written, since a browser would drop it silently.
+
+### Placement and arithmetic
+
+In `MiddlewareLive.authenticate`, after the empty-credential guard and `checkOrigin`, before
+`sessions.verify`. Cookie transports only — never bearer. A hit provides `CurrentUser` /
+`CurrentSession` from the snapshot with no touch and no `Set-Cookie`; a miss runs `sessions.verify`
+unchanged, re-sends the session cookie when the refresh moved the expiry, and then writes a fresh
+snapshot.
+
+Cache expiry is `min(now + cookieCache.maxAge, refreshDueAt(session), session.expiresAt)`. Clamping
+to the refresh instant is what keeps the rolling refresh exactly as it was: the first request after
+a session becomes refresh-due misses, touches and rewrites. Nothing in this module re-signs or
+extends a session, and a snapshot whose computed lifetime is `<= 0` is not written at all.
+
+### Authoritative reads
+
+`Middleware.AuthoritativeSession` is a `Context.Reference<boolean>` (default `false`) read by the
+middleware as `Context.get(options.endpoint.annotations, AuthoritativeSession)`. An annotated
+endpoint bypasses the cache in **both** directions — no read, no write. It is an annotation rather
+than a second middleware because a security middleware handler already receives the endpoint, and
+because a plugin then opts in with one line on its own endpoint. Annotated in this library:
+`changePassword`, `unlinkAccount`, `changeEmail`, `deleteUser`, `deleteUserCallback`, `setPassword`
+— pinned as a list in `test/http-api/AuthApi.test.ts`, because an identity- or credential-changing
+endpoint that forgets the line would act on a snapshot up to `maxAge` old. The annotation is a
+`Context` annotation, so it is invisible to OpenAPI and to the generated client.
+
+### Invalidation
+
+`cookieCache.version: string | ((session, user) => string)` (default `""`) is compared on every
+read; a mismatch is a miss. The function runs on the snapshot's own contents, so it invalidates when
+the *deployment's* function changes, and it must be pure and cheap. `clearSessionCookies(config,
+cache)` — session cookie *and* snapshot — is called by `signOut`, `revokeSessions`, `resetPassword`
+and the delete-account paths; clearing only the session cookie would leave the person signed in
+behind a snapshot nothing reads the database for. `updateUser` writes a fresh snapshot;
+`verifyEmailChange` clears instead, since it is unauthenticated and has no `CurrentSession` to build
+one from.
+
+### Configuration and service
+
+`AuthConfig.cookieCache: { enabled: false, maxAge: 5 minutes, version: "" }`, resolved with
+`withDefaults`. Cookie names are `effect_auth.session_data` and its `__Secure-` twin, chosen by
+`cookie.secure` exactly as the session cookie's are, and written with `sessionCookieOptions` so a
+snapshot carries the credential's own `httpOnly` / `Secure` / `SameSite` / `path` / `domain`.
+
+```ts
+SessionCacheService<F> { enabled; encode(payload); decode(value): Option; read(credential); write(session, user); clear }
+SessionCache.layerFor(model): Layer<SessionCache, never, AuthConfig | Hmac | Token>
+```
+
+A disabled deployment still gets the service, with every read a miss and every write and `clear` a
+no-op, so nothing that depends on it has to branch on the configuration. `sessionCacheOf(model)` is
+the typed view, as for the other field-sensitive readers.
+
+### The trade, stated
+
+Recorded here because switching this on is a security decision, not a performance one.
+
+1. **Revocation lag.** A session revoked in one browser keeps answering in another for up to
+   `maxAge`; so does a user row that changed. This is the cost, `maxAge` is its exact size, and the
+   default is `enabled: false` so it is never paid unasked.
+2. **Integrity, not confidentiality.** Anybody holding the cookie can read the payload. It is what
+   the endpoint would have answered with, so that is not a leak — but nothing secret may be added to
+   it, and a `UserField.hidden` column is deliberately absent.
+3. **A hidden field is not carried**, so a cached read sees its declared *default*. An endpoint that
+   reads one must be annotated `AuthoritativeSession`.
+4. **Binding.** `tokenHash` is inside the signed payload and is compared against the digest of the
+   credential presented, so a snapshot cannot be replayed beside another session, and swapping the
+   two cookies is a miss rather than a confusion.
+5. **Bearer clients gain nothing**, by construction: reading a cookie beside a bearer credential
+   would let a cookie decide what a header-only request sees.
+6. **It is not a defence.** Rotating `secret` invalidates every outstanding snapshot — an
+   undecodable cookie is a miss, never a `401` — but the session tokens themselves are untouched.
+
+### `Extras.sessionStore`
+
+The related seam: `Auth.Options.sessionStore?: Layer<SessionStore, never, SessionStore>` is provided
+the SQL stores and merged over them, so it may decorate or replace the one service this library
+reads on the hot path. It is where a distributed session store plugs in; the other three stores are
+deliberately not decorable. `AuthTest.countingSessionStore()` is the same seam in the harness, and
+is how the suite proves a cache hit performs zero reads.
+
+### Tests
+
+`test/http/SessionCache.test.ts` (round trip, tampered payload and tag, another deployment's secret,
+`sessionSnapshot` without `tokenHash`, each of the three `cacheExpiry` bounds, the service present
+but off when disabled); `test/http/SessionCacheHttp.test.ts`, sequential over one
+`countingSessionStore` (zero reads on a hit, garbage cookie, another browser's snapshot, a bumped
+version, the `Max-Age` clamp and the touch on the request that finds the refresh due, a session
+revoked elsewhere answering until the snapshot expires, authoritative endpoints reading and writing
+nothing, sign-out / revoke-all / password-reset clearing both cookies, bearer untouched, the
+opt-out default writing nothing, the `__Secure-` twin); `test/fields/Cache.test.ts` (a deployment's
+own field in the snapshot, a hidden one absent from the cookie and defaulted on read).

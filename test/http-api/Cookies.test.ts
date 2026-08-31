@@ -38,6 +38,40 @@ describe("http/Cookies", () => {
       assert.strictEqual(AuthCookies.insecureSessionCookieSecurity.in, "cookie")
       assert.strictEqual(AuthCookies.bearerSecurity.scheme, "Bearer")
     })
+
+    it("names the cookie cache beside the session, under the same prefix rule", () => {
+      assert.strictEqual(AuthCookies.insecureSessionCacheCookieName, "effect_auth.session_data")
+      assert.strictEqual(AuthCookies.secureSessionCacheCookieName, "__Secure-effect_auth.session_data")
+
+      assert.strictEqual(AuthCookies.sessionCacheCookieName(secureConfig), AuthCookies.secureSessionCacheCookieName)
+      assert.strictEqual(AuthCookies.sessionCacheCookieName(devConfig), AuthCookies.insecureSessionCacheCookieName)
+
+      // Two cookies, never one name for both: the session cookie is the
+      // credential and the cache cookie is a snapshot signed against it.
+      assert.notStrictEqual(AuthCookies.sessionCacheCookieName(devConfig), AuthCookies.sessionCookieName(devConfig))
+    })
+
+    it("writes the cache cookie under the scheme its own name comes from", () => {
+      // Not a credential and not declared by any middleware: the scheme exists
+      // only because `securitySetCookie` takes the cookie's name from one.
+      assert.strictEqual(
+        AuthCookies.secureSessionCacheCookieSecurity.key,
+        AuthCookies.secureSessionCacheCookieName
+      )
+      assert.strictEqual(AuthCookies.secureSessionCacheCookieSecurity.in, "cookie")
+      assert.strictEqual(
+        AuthCookies.insecureSessionCacheCookieSecurity.key,
+        AuthCookies.insecureSessionCacheCookieName
+      )
+      assert.strictEqual(
+        AuthCookies.sessionCacheCookieSecurity(secureConfig).key,
+        AuthCookies.secureSessionCacheCookieName
+      )
+      assert.strictEqual(
+        AuthCookies.sessionCacheCookieSecurity(devConfig).key,
+        AuthCookies.insecureSessionCacheCookieName
+      )
+    })
   })
 
   describe("attributes", () => {
@@ -66,6 +100,18 @@ describe("http/Cookies", () => {
       assert.strictEqual(options.path, "/app")
       assert.strictEqual(options.domain, ".example.com")
       assert.strictEqual(options.sameSite, "strict")
+    })
+
+    it("gives the cache cookie the session cookie's attributes and its own lifetime", () => {
+      // One helper writes both, so a snapshot is `httpOnly` and `Secure`
+      // wherever the credential beside it is — and only its `Max-Age` differs.
+      const config = secure({ path: "/app", domain: ".example.com" })
+      const session = AuthCookies.sessionCookieOptions(config, { maxAge: Duration.days(7) })
+      const snapshot = AuthCookies.sessionCookieOptions(config, { maxAge: Duration.minutes(5) })
+
+      assert.deepStrictEqual({ ...snapshot, maxAge: undefined }, { ...session, maxAge: undefined })
+      assert.strictEqual(snapshot.httpOnly, true)
+      assert.deepStrictEqual(snapshot.maxAge, Duration.minutes(5))
     })
 
     it("repeats path and domain when expiring, so the browser replaces the cookie", () => {

@@ -3,7 +3,9 @@ import { Config, ConfigProvider, DateTime, Effect, Option, Redacted } from "effe
 import type { IdTokenClaims } from "../../src/oauth/IdToken.js"
 import type { OAuthProviderConfig } from "../../src/oauth/Provider.js"
 import { providerIssuer, resolveClientSecret } from "../../src/oauth/Provider.js"
+import * as Discord from "../../src/oauth/providers/Discord.js"
 import * as Github from "../../src/oauth/providers/Github.js"
+import * as Gitlab from "../../src/oauth/providers/Gitlab.js"
 import * as Google from "../../src/oauth/providers/Google.js"
 import { MockProvider } from "../../src/testing/index.js"
 
@@ -397,4 +399,312 @@ describe("oauth/providers/Google", () => {
       assert.strictEqual(server.requests.length, 0)
     }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   })
+})
+
+describe("oauth/providers/Discord", () => {
+  const discord = Discord.make({
+    clientId: "discord-client",
+    clientSecret: Redacted.make("discord-client-secret")
+  })
+
+  const withProfile = (profile: unknown) => {
+    const server = MockProvider.mockServer()
+    server.on(Discord.userInfoUrl, () => MockProvider.json(profile))
+    return {
+      server,
+      run: Effect.result(discord.userInfo(MockProvider.tokensOf("discord-access-token"))).pipe(
+        Effect.provide(MockProvider.safeHttpLayer(server.fetch))
+      )
+    }
+  }
+
+  it("is a plain OAuth2 provider that asks for identify and email", () => {
+    assert.strictEqual(discord.id, "discord")
+    assert.isUndefined(discord.issuer)
+    assert.strictEqual(providerIssuer(discord), "local:oauth:discord")
+    assert.strictEqual(discord.authorizationUrl, "https://discord.com/api/oauth2/authorize")
+    assert.strictEqual(discord.tokenUrl, "https://discord.com/api/oauth2/token")
+    assert.deepStrictEqual([...discord.scopes], ["identify", "email"])
+    // `none` is what makes a repeat sign-in a single redirect rather than a
+    // consent screen somebody has already agreed to.
+    assert.strictEqual(discord.authorizationParams?.prompt, "none")
+  })
+
+  it("lets a deployment ask for the consent screen every time", () => {
+    const consenting = Discord.make({
+      clientId: "id",
+      clientSecret: Redacted.make("secret"),
+      prompt: "consent",
+      scopes: ["guilds"],
+      authorizationParams: { permissions: "8" }
+    })
+    assert.deepStrictEqual({ ...consenting.authorizationParams }, { prompt: "consent", permissions: "8" })
+    assert.deepStrictEqual([...consenting.scopes], ["identify", "email", "guilds"])
+  })
+
+  describe("avatarUrl", () => {
+    it("builds the CDN URL for an avatar, animated ones as a gif", () => {
+      assert.strictEqual(
+        Discord.avatarUrl({ id: "80351110224678912", avatar: "8342729096ea3675442027381ff50dfe", discriminator: "0" }),
+        "https://cdn.discordapp.com/avatars/80351110224678912/8342729096ea3675442027381ff50dfe.png"
+      )
+      assert.strictEqual(
+        Discord.avatarUrl({ id: "80351110224678912", avatar: "a_1269e74af4df7417b13759eae50c83dc", discriminator: "0" }),
+        "https://cdn.discordapp.com/avatars/80351110224678912/a_1269e74af4df7417b13759eae50c83dc.gif"
+      )
+    })
+
+    it("picks a default avatar from the snowflake, or from the legacy discriminator", () => {
+      // The new username system: `(id >> 22) % 6`, which overflows a `number`
+      // and is why the shift is done in `BigInt`.
+      assert.strictEqual(
+        Discord.avatarUrl({ id: "80351110224678912", avatar: null, discriminator: "0" }),
+        "https://cdn.discordapp.com/embed/avatars/5.png"
+      )
+      // The legacy one: `discriminator % 5`.
+      assert.strictEqual(
+        Discord.avatarUrl({ id: "80351110224678912", avatar: null, discriminator: "1337" }),
+        "https://cdn.discordapp.com/embed/avatars/2.png"
+      )
+    })
+
+    it("answers something for a profile whose fields make no sense", () => {
+      // A provider body is not to be surprised by: `BigInt("nonsense")` throws
+      // and `parseInt("")` is NaN, and neither may reach the caller.
+      assert.strictEqual(
+        Discord.avatarUrl({ id: "not-a-snowflake", avatar: null, discriminator: null }),
+        "https://cdn.discordapp.com/embed/avatars/0.png"
+      )
+      assert.strictEqual(
+        Discord.avatarUrl({ id: "1", avatar: null, discriminator: "not-a-number" }),
+        "https://cdn.discordapp.com/embed/avatars/0.png"
+      )
+    })
+  })
+
+  describe("userInfo", () => {
+    it.effect("reads the identity from one bearer-authenticated call", () => {
+      const { run, server } = withProfile({
+        id: "80351110224678912",
+        username: "ada",
+        global_name: "Ada Lovelace",
+        discriminator: "0",
+        avatar: "8342729096ea3675442027381ff50dfe",
+        email: "ada@example.com",
+        verified: true
+      })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Success")
+        if (result._tag !== "Success") return
+        assert.strictEqual(result.success.id, "80351110224678912")
+        assert.strictEqual(result.success.email, "ada@example.com")
+        assert.isTrue(result.success.emailVerified)
+        assert.strictEqual(result.success.name, "Ada Lovelace")
+        assert.strictEqual(
+          result.success.image,
+          "https://cdn.discordapp.com/avatars/80351110224678912/8342729096ea3675442027381ff50dfe.png"
+        )
+        assert.strictEqual(server.requests.length, 1)
+        assert.strictEqual(server.requests[0]?.redirect, "manual")
+        assert.strictEqual(server.requests[0]?.headers.authorization, "Bearer discord-access-token")
+      })
+    })
+
+    it.effect("falls back to the username, and calls an unverified address unverified", () => {
+      const { run } = withProfile({
+        id: "1",
+        username: "ada",
+        discriminator: "0",
+        avatar: null,
+        email: "ada@example.com",
+        // Discord spells this `false` for an unconfirmed address, and nothing
+        // but a literal `true` counts as a claim.
+        verified: false
+      })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Success")
+        if (result._tag !== "Success") return
+        assert.strictEqual(result.success.name, "ada")
+        assert.isFalse(result.success.emailVerified)
+      })
+    })
+
+    it.effect("fails when the email scope was refused", () => {
+      // Discord omits `email` entirely rather than sending null, and an identity
+      // with no address can be neither linked nor provisioned.
+      const { run } = withProfile({ id: "1", username: "ada", discriminator: "0", avatar: null, verified: true })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Failure")
+        if (result._tag !== "Failure") return
+        assert.strictEqual(result.failure.reason, "UserInfoFailed")
+      })
+    })
+
+    it.effect("fails when the profile carries no id", () => {
+      const { run } = withProfile({ username: "ada", email: "ada@example.com" })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Failure")
+      })
+    })
+  })
+
+  it.effect("builds the same value from the environment", () =>
+    Effect.gen(function*() {
+      const provider = yield* Discord.makeConfig({
+        clientId: Config.string("DISCORD_CLIENT_ID"),
+        clientSecret: Config.redacted("DISCORD_CLIENT_SECRET"),
+        prompt: Config.literals(["none", "consent"], "DISCORD_PROMPT")
+      })
+      assert.strictEqual(provider.id, "discord")
+      assert.strictEqual(provider.clientId, "discord-from-the-environment")
+      assert.deepStrictEqual(yield* secretOf(provider), Option.some("discord-secret-from-the-environment"))
+      assert.strictEqual(provider.authorizationParams?.prompt, "consent")
+    }).pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+        DISCORD_CLIENT_ID: "discord-from-the-environment",
+        DISCORD_CLIENT_SECRET: "discord-secret-from-the-environment",
+        DISCORD_PROMPT: "consent"
+      })))
+    ))
+})
+
+describe("oauth/providers/Gitlab", () => {
+  const gitlab = Gitlab.make({
+    clientId: "gitlab-client",
+    clientSecret: Redacted.make("gitlab-client-secret")
+  })
+
+  const withProfile = (profile: unknown, provider: OAuthProviderConfig = gitlab) => {
+    const server = MockProvider.mockServer()
+    server.on(Gitlab.endpointsOf().userInfoUrl, () => MockProvider.json(profile))
+    server.on("https://gitlab.acme.internal/api/v4/user", () => MockProvider.json(profile))
+    return {
+      server,
+      run: Effect.result(provider.userInfo(MockProvider.tokensOf("gitlab-access-token"))).pipe(
+        Effect.provide(MockProvider.safeHttpLayer(server.fetch))
+      )
+    }
+  }
+
+  const active = {
+    id: 4321,
+    username: "ada",
+    name: "Ada Lovelace",
+    email: "ada@example.com",
+    state: "active",
+    avatar_url: "https://gitlab.com/uploads/ada.png"
+  }
+
+  it("is a plain OAuth2 provider pointed at gitlab.com by default", () => {
+    assert.strictEqual(gitlab.id, "gitlab")
+    assert.isUndefined(gitlab.issuer)
+    assert.strictEqual(providerIssuer(gitlab), "local:oauth:gitlab")
+    assert.strictEqual(gitlab.authorizationUrl, "https://gitlab.com/oauth/authorize")
+    assert.strictEqual(gitlab.tokenUrl, "https://gitlab.com/oauth/token")
+    assert.deepStrictEqual([...gitlab.scopes], ["read_user"])
+  })
+
+  it("derives every endpoint from a self-hosted instance, trailing slashes and all", () => {
+    assert.deepStrictEqual(Gitlab.endpointsOf("https://gitlab.acme.internal///"), {
+      authorizationUrl: "https://gitlab.acme.internal/oauth/authorize",
+      tokenUrl: "https://gitlab.acme.internal/oauth/token",
+      userInfoUrl: "https://gitlab.acme.internal/api/v4/user"
+    })
+  })
+
+  describe("userInfo", () => {
+    it.effect("reads the identity from the API, with the numeric id as a string", () => {
+      const { run, server } = withProfile(active)
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Success")
+        if (result._tag !== "Success") return
+        assert.strictEqual(result.success.id, "4321")
+        assert.strictEqual(result.success.email, "ada@example.com")
+        // GitLab does not promise `email_verified`, and absent means no.
+        assert.isFalse(result.success.emailVerified)
+        assert.strictEqual(result.success.name, "Ada Lovelace")
+        assert.strictEqual(result.success.image, "https://gitlab.com/uploads/ada.png")
+        assert.strictEqual(server.requests[0]?.redirect, "manual")
+        assert.strictEqual(server.requests[0]?.headers.authorization, "Bearer gitlab-access-token")
+      })
+    })
+
+    it.effect("believes email_verified when GitLab does state it", () => {
+      const { run } = withProfile({ ...active, email_verified: true })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.isTrue(result._tag === "Success" && result.success.emailVerified)
+      })
+    })
+
+    it.effect("refuses an account that is not active", () => {
+      // A blocked, deactivated or banned account still holds a working token.
+      return Effect.gen(function*() {
+        for (const state of ["blocked", "deactivated", "banned", "ldap_blocked"]) {
+          const { run } = withProfile({ ...active, state })
+          const result = yield* run
+          assert.strictEqual(result._tag, "Failure", state)
+          if (result._tag === "Failure") assert.strictEqual(result.failure.reason, "UserInfoFailed")
+        }
+
+        // And an answer that names no state at all fails closed.
+        const { run } = withProfile({ ...active, state: undefined })
+        const result = yield* run
+        assert.strictEqual(result._tag, "Failure")
+      })
+    })
+
+    it.effect("refuses a locked account", () => {
+      const { run } = withProfile({ ...active, locked: true })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Failure")
+      })
+    })
+
+    it.effect("talks to the self-hosted instance it was configured with", () => {
+      const enterprise = Gitlab.make({
+        clientId: "id",
+        clientSecret: Redacted.make("secret"),
+        baseUrl: "https://gitlab.acme.internal"
+      })
+      const { run, server } = withProfile(active, enterprise)
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Success")
+        assert.strictEqual(server.requests[0]?.url, "https://gitlab.acme.internal/api/v4/user")
+      })
+    })
+
+    it.effect("fails when the profile carries no address", () => {
+      const { run } = withProfile({ ...active, email: undefined })
+      return Effect.gen(function*() {
+        const result = yield* run
+        assert.strictEqual(result._tag, "Failure")
+      })
+    })
+  })
+
+  it.effect("builds the same value from the environment", () =>
+    Effect.gen(function*() {
+      const provider = yield* Gitlab.makeConfig({
+        clientId: Config.string("GITLAB_CLIENT_ID"),
+        clientSecret: Config.redacted("GITLAB_CLIENT_SECRET"),
+        baseUrl: Config.string("GITLAB_BASE_URL")
+      })
+      assert.strictEqual(provider.clientId, "gitlab-from-the-environment")
+      assert.deepStrictEqual(yield* secretOf(provider), Option.some("gitlab-secret-from-the-environment"))
+      assert.strictEqual(provider.authorizationUrl, "https://gitlab.acme.internal/oauth/authorize")
+    }).pipe(
+      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
+        GITLAB_CLIENT_ID: "gitlab-from-the-environment",
+        GITLAB_CLIENT_SECRET: "gitlab-secret-from-the-environment",
+        GITLAB_BASE_URL: "https://gitlab.acme.internal"
+      })))
+    ))
 })

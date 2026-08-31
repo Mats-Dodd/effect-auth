@@ -1,9 +1,11 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
+import { SqlClient } from "effect/unstable/sql"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
 import type { AuthEvent } from "../../src/domain/Events.js"
 import { Passwords } from "../../src/domain/Passwords.js"
+import type { AccountId, UserId } from "../../src/domain/Schema.js"
 import { CredentialIssuer } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
@@ -34,6 +36,33 @@ const register = Effect.fnUntraced(function*(email: string) {
  */
 const forUser = (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
   events.filter((event) => event.userId === userId)
+
+/**
+ * Removes a user's password credential, leaving them as an OAuth-only user
+ * would be: a row in `users`, and no `local:credential` account.
+ */
+const dropCredential = Effect.fnUntraced(function*(userId: UserId) {
+  const accounts = yield* AccountStore
+  const credential = yield* expectSome(
+    yield* accounts.findByIssuerAccountId(CredentialIssuer, userId),
+    "expected a credential account"
+  )
+  assert.isTrue(yield* accounts.deleteById(credential.id, userId))
+})
+
+/**
+ * Empties a credential row's hash column.
+ *
+ * **Gotchas**
+ *
+ * Raw SQL because nothing in this library can produce this state: a credential
+ * row it wrote always carries a hash. A store migrated from another system may
+ * not, which is the case `setPassword` has to fill in rather than duplicate.
+ */
+const clearPasswordHash = Effect.fnUntraced(function*(accountId: AccountId) {
+  const sql = yield* SqlClient.SqlClient
+  yield* Effect.orDie(sql`UPDATE accounts SET password_hash = NULL WHERE id = ${accountId}`)
+})
 
 /** The most recent e-mail of a kind sent to one address. */
 const mailTo = Effect.fnUntraced(function*(kind: "verification" | "reset", address: string) {
@@ -559,8 +588,148 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
   })
 
   // ---------------------------------------------------------------------------
+  // Verify and set
+  // ---------------------------------------------------------------------------
+
+  describe("verifyPassword", () => {
+    it.effect("answers true for the stored password and false for anything else", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const { user } = yield* register(uniqueEmail("verify-password"))
+
+        assert.isTrue(yield* passwords.verifyPassword(user.id, testPassword))
+        assert.isFalse(yield* passwords.verifyPassword(user.id, Redacted.make("not-the-password")))
+      }))
+
+    it.effect("answers false, rather than failing, for a user who has no password at all", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const { user } = yield* register(uniqueEmail("verify-no-credential"))
+        yield* dropCredential(user.id)
+
+        assert.isFalse(yield* passwords.verifyPassword(user.id, testPassword))
+      }))
+  })
+
+  describe("setPassword", () => {
+    it.effect("gives a user with no credential their first password, and links it", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const accounts = yield* AccountStore
+        const sessions = yield* Sessions
+        const email = uniqueEmail("set-password")
+        const { session, user } = yield* register(email)
+        const current = yield* expectSome(session, "expected a session")
+        yield* dropCredential(user.id)
+
+        const { events } = yield* AuthTest.recordingEvents(
+          passwords.setPassword({ userId: user.id, newPassword })
+        )
+        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["AccountLinked"])
+        const linked = events.find((event) => event._tag === "AccountLinked")
+        assert.strictEqual(linked?._tag === "AccountLinked" ? linked.providerId : null, "credential")
+
+        const credential = yield* expectSome(
+          yield* accounts.findByIssuerAccountId(CredentialIssuer, user.id),
+          "expected a credential account"
+        )
+        assert.notStrictEqual(credential.passwordHash, null)
+        assert.notStrictEqual(credential.passwordHash, Redacted.value(newPassword))
+
+        // The new credential works, and nothing that already existed was
+        // invalidated: no password was replaced, so no session was revoked.
+        yield* passwords.signIn({ email, password: newPassword })
+        assert.strictEqual((yield* sessions.verify(current.token)).session.id, current.session.id)
+      }))
+
+    it.effect("can never replace a password: a user who has one is told so", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const email = uniqueEmail("set-password-twice")
+        const { user } = yield* register(email)
+
+        const failure = yield* Effect.flip(passwords.setPassword({ userId: user.id, newPassword }))
+        assert.strictEqual(failure._tag, "PasswordAlreadySet")
+
+        // The original is untouched, and the refused one was never usable.
+        yield* passwords.signIn({ email, password: testPassword })
+        assert.strictEqual(
+          (yield* Effect.flip(passwords.signIn({ email, password: newPassword })))._tag,
+          "InvalidCredentials"
+        )
+      }))
+
+    it.effect("enforces the password policy before writing anything", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const accounts = yield* AccountStore
+        const { user } = yield* register(uniqueEmail("set-password-policy"))
+        yield* dropCredential(user.id)
+
+        const failure = yield* Effect.flip(
+          passwords.setPassword({ userId: user.id, newPassword: Redacted.make("tiny") })
+        )
+        assert.strictEqual(failure._tag, "PasswordPolicyViolation")
+        assert.isTrue(Option.isNone(yield* accounts.findByIssuerAccountId(CredentialIssuer, user.id)))
+      }))
+
+    it.effect("fills in a credential row that carries no hash", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const accounts = yield* AccountStore
+        const email = uniqueEmail("set-password-hashless")
+        const { user } = yield* register(email)
+
+        // Nothing this library writes, but a migration from another system
+        // might: the row exists and the hash column is empty.
+        const credential = yield* expectSome(
+          yield* accounts.findByIssuerAccountId(CredentialIssuer, user.id),
+          "expected a credential account"
+        )
+        yield* clearPasswordHash(credential.id)
+        assert.isNull(
+          (yield* expectSome(
+            yield* accounts.findByIssuerAccountId(CredentialIssuer, user.id),
+            "expected a credential account"
+          )).passwordHash
+        )
+
+        yield* passwords.setPassword({ userId: user.id, newPassword })
+        yield* passwords.signIn({ email, password: newPassword })
+      }))
+  })
+
+  // ---------------------------------------------------------------------------
   // The timing defence
   // ---------------------------------------------------------------------------
+
+  // One verification per call, whoever the user is and whatever they have — the
+  // same defence `signIn` needs, for the same reason: `verifyPassword` is what
+  // re-authenticates somebody before their account is deleted.
+  describe.sequential("verifyPassword (timing defence)", () => {
+    const hasher = AuthTest.countingHasher()
+
+    it.layer(AuthTest.layer({ hasher: hasher.layer }))((it) => {
+      it.effect("verifies exactly one hash, with or without a credential to check", () =>
+        Effect.gen(function*() {
+          const passwords = yield* Passwords
+          const { user } = yield* register(uniqueEmail("verify-timing"))
+
+          const right = hasher.state.verifies
+          assert.isTrue(yield* passwords.verifyPassword(user.id, testPassword))
+          assert.strictEqual(hasher.state.verifies - right, 1)
+
+          const wrong = hasher.state.verifies
+          assert.isFalse(yield* passwords.verifyPassword(user.id, Redacted.make("nope")))
+          assert.strictEqual(hasher.state.verifies - wrong, 1)
+
+          yield* dropCredential(user.id)
+          const none = hasher.state.verifies
+          assert.isFalse(yield* passwords.verifyPassword(user.id, testPassword))
+          assert.strictEqual(hasher.state.verifies - none, 1)
+        }))
+    })
+  })
 
   // The counter belongs to the hashing layer, and the layer is built once for
   // the sub-block, so these two must not run beside each other. The database
@@ -644,5 +813,49 @@ describe("domain/Passwords/signUp (registration race)", () => {
           assert.strictEqual(failure.failure._tag, "UserAlreadyExists")
         }
       }
+    }).pipe(Effect.provide(AuthTest.layer())))
+})
+
+/**
+ * The same reasoning as the registration race, and the same isolation: the
+ * losing fibre's insert is rolled back, and a rollback on the shared PGlite
+ * connection would take a concurrent sibling's uncommitted writes with it.
+ */
+describe("domain/Passwords/setPassword (race)", () => {
+  it.effect("gives the loser of two concurrent first-passwords PasswordAlreadySet, not a 500", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const email = uniqueEmail("set-password-race")
+      const { user } = yield* register(email)
+      yield* dropCredential(user.id)
+
+      // Both fibres read "no credential" before either insert lands, so this is
+      // the path where the unique index on `(issuer, account_id)` — not the
+      // read — is what refuses the second one.
+      const results = yield* Effect.all(
+        [
+          Effect.result(passwords.setPassword({ userId: user.id, newPassword })),
+          Effect.result(passwords.setPassword({ userId: user.id, newPassword: Redacted.make("a-second-password") }))
+        ],
+        { concurrency: 2 }
+      )
+
+      const successes = results.filter((result) => result._tag === "Success")
+      const failures = results.filter((result) => result._tag === "Failure")
+      assert.strictEqual(successes.length, 1)
+      assert.strictEqual(failures.length, 1)
+      for (const failure of failures) {
+        if (failure._tag === "Failure") {
+          assert.strictEqual(failure.failure._tag, "PasswordAlreadySet")
+        }
+      }
+
+      // Exactly one password was set, and it is one of the two that were asked
+      // for — never a mix, and never both.
+      const attempts = yield* Effect.all([
+        Effect.result(passwords.signIn({ email, password: newPassword })),
+        Effect.result(passwords.signIn({ email, password: Redacted.make("a-second-password") }))
+      ])
+      assert.strictEqual(attempts.filter((attempt) => attempt._tag === "Success").length, 1)
     }).pipe(Effect.provide(AuthTest.layer())))
 })

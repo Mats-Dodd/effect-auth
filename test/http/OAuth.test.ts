@@ -1,13 +1,19 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { Context, DateTime, Effect, Layer, Option, Redacted, Ref } from "effect"
 import { OAuthStateMismatch } from "../../src/domain/Errors.js"
+import type { Account, User } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
-import type { CallbackOutcome, StartOptions } from "../../src/oauth/Flow.js"
+import type { CallbackOutcome, RefreshedTokens, StartOptions, TokenSelector } from "../../src/oauth/Flow.js"
 import { OAuthFlow } from "../../src/oauth/Flow.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { uniqueEmail } from "../fixtures.js"
+
+/** One call the handlers made to a token method, and which one it was. */
+interface TokenCall extends TokenSelector {
+  readonly method: "accessToken" | "refreshTokens"
+}
 
 /**
  * Drives the OAuth endpoints without a provider.
@@ -29,20 +35,45 @@ import { uniqueEmail } from "../fixtures.js"
 class StubFlow extends Context.Service<StubFlow, {
   /** The next outcome `GET /callback/:providerId` will resolve to. */
   readonly setOutcome: (outcome: CallbackOutcome) => Effect.Effect<void>
+  /** What the two token methods will answer with. */
+  readonly setTokens: (tokens: RefreshedTokens) => Effect.Effect<void>
   /** Every `start` the handlers made since the last `reset`. */
   readonly starts: Effect.Effect<ReadonlyArray<StartOptions>>
-  /** Forgets the recorded starts and the staged outcome. */
+  /** Every token method call the handlers made since the last `reset`. */
+  readonly tokenCalls: Effect.Effect<ReadonlyArray<TokenCall>>
+  /** Forgets the recorded calls and everything staged. */
   readonly reset: Effect.Effect<void>
 }>()("test/http/StubFlow") {}
 
 const stubLayer = Layer.effectContext(Effect.gen(function*() {
   const started = yield* Ref.make<ReadonlyArray<StartOptions>>([])
   const outcome = yield* Ref.make<Option.Option<CallbackOutcome>>(Option.none())
+  const tokens = yield* Ref.make<Option.Option<RefreshedTokens>>(Option.none())
+  const calls = yield* Ref.make<ReadonlyArray<TokenCall>>([])
+
+  /** Records the selector the handler built, and answers what was staged. */
+  const answerTokens = (method: TokenCall["method"]) => (selector: TokenSelector) =>
+    Effect.flatMap(
+      Ref.update(calls, (all) => [...all, { ...selector, method }]),
+      () =>
+        Effect.flatMap(
+          Ref.get(tokens),
+          Option.match({
+            onNone: () => Effect.die("no provider tokens were staged"),
+            onSome: Effect.succeed
+          })
+        )
+    )
 
   return Context.make(StubFlow, {
     setOutcome: (next: CallbackOutcome) => Ref.set(outcome, Option.some(next)),
+    setTokens: (next: RefreshedTokens) => Ref.set(tokens, Option.some(next)),
     starts: Ref.get(started),
-    reset: Effect.andThen(Ref.set(started, []), Ref.set(outcome, Option.none()))
+    tokenCalls: Ref.get(calls),
+    reset: Effect.andThen(
+      Effect.andThen(Ref.set(started, []), Ref.set(outcome, Option.none())),
+      Effect.andThen(Ref.set(tokens, Option.none()), Ref.set(calls, []))
+    )
   }).pipe(
     Context.add(OAuthFlow, {
       start: (options) =>
@@ -56,8 +87,8 @@ const stubLayer = Layer.effectContext(Effect.gen(function*() {
           }
         ),
       callback: () => Effect.die("the handlers must call `complete`, not `callback`"),
-      accessToken: () => Effect.die("the stub flow holds no provider tokens"),
-      refreshTokens: () => Effect.die("the stub flow holds no provider tokens"),
+      accessToken: answerTokens("accessToken"),
+      refreshTokens: answerTokens("refreshTokens"),
       complete: () =>
         Effect.flatMap(
           Ref.get(outcome),
@@ -87,6 +118,24 @@ const mintSession = Effect.fnUntraced(function*(email: string) {
   const account = (yield* accounts.listByUserId(user.id))[0]!
   const created = yield* sessions.create({ userId: user.id })
   return { user, account, session: created.session, token: created.token }
+})
+
+/** The one account a freshly signed-up user holds: their credential. */
+const onlyAccount = Effect.fnUntraced(function*(userId: User["id"]) {
+  const accounts = yield* AccountStore
+  return (yield* accounts.listByUserId(userId))[0]!
+})
+
+/** What the stubbed flow answers a token request with. */
+const staged = (accountId: Account["id"]): RefreshedTokens => ({
+  accessToken: Redacted.make("an-access-token"),
+  accessTokenExpiresAt: DateTime.makeUnsafe(1_000_000),
+  idToken: Redacted.make("an-id-token"),
+  scopes: ["profile", "email"],
+  providerId: "github",
+  accountId,
+  refreshToken: Redacted.make("a-refresh-token"),
+  refreshTokenExpiresAt: null
 })
 
 /** Signs a new account up, and mints a session for it outside the browser. */
@@ -271,6 +320,69 @@ describe.sequential("http/Handlers OAuth", () => {
           "http://localhost:3000/oops?error=state_mismatch"
         )
         assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
+      }))
+
+    // ---------------------------------------------------------------------------
+    // Provider tokens
+    //
+    // Declared beside the tests above rather than in a `describe` of their own:
+    // `layer()` closes its scope after the last test it collected, and it does
+    // not see into a nested suite that some of its siblings are not in.
+    // ---------------------------------------------------------------------------
+
+    it.effect("hands the flow the caller's own user id, and answers the credential", () =>
+      Effect.gen(function*() {
+        const stub = yield* StubFlow
+        yield* stub.reset
+        const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("access-token") })
+        const account = yield* onlyAccount(browser.user.id)
+        yield* stub.setTokens(staged(account.id))
+
+        const answer = yield* browser.client.auth.getAccessToken({ payload: { accountId: account.id } })
+
+        // A bearer credential for somebody's account at the provider: it
+        // reaches the response body as a `Redacted`, and a log line never.
+        assert.strictEqual(Redacted.value(answer.accessToken), "an-access-token")
+        assert.strictEqual(answer.idToken === null ? null : Redacted.value(answer.idToken), "an-id-token")
+        assert.deepStrictEqual(answer.scopes, ["profile", "email"])
+        assert.strictEqual(answer.providerId, "github")
+        assert.strictEqual(answer.accountId, account.id)
+
+        // The selector is half session and half request: naming somebody
+        // else's account can only ever be a `NotFound`.
+        assert.deepStrictEqual(yield* stub.tokenCalls, [
+          { method: "accessToken", userId: browser.user.id, accountId: account.id }
+        ])
+      }))
+
+    it.effect("spends the refresh token only when asked to, and reports the new pair", () =>
+      Effect.gen(function*() {
+        const stub = yield* StubFlow
+        yield* stub.reset
+        const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("refresh-token") })
+        const account = yield* onlyAccount(browser.user.id)
+        yield* stub.setTokens(staged(account.id))
+
+        const answer = yield* browser.client.auth.refreshToken({ payload: { accountId: account.id } })
+        assert.strictEqual(Redacted.value(answer.refreshToken), "a-refresh-token")
+        assert.strictEqual(Redacted.value(answer.accessToken), "an-access-token")
+
+        assert.deepStrictEqual(yield* stub.tokenCalls, [
+          { method: "refreshTokens", userId: browser.user.id, accountId: account.id }
+        ])
+      }))
+
+    it.effect("refuses a caller with no session, without asking the flow anything", () =>
+      Effect.gen(function*() {
+        const stub = yield* StubFlow
+        yield* stub.reset
+        const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("token-no-session") })
+        const account = yield* onlyAccount(browser.user.id)
+
+        const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        const error = yield* Effect.flip(client.auth.getAccessToken({ payload: { accountId: account.id } }))
+        assert.strictEqual(error._tag, "Unauthorized")
+        assert.deepStrictEqual(yield* stub.tokenCalls, [])
       }))
   })
 })
