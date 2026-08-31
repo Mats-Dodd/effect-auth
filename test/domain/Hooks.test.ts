@@ -329,7 +329,15 @@ const passwordHooks: AuthHooksService = {
   beforeUserCreate: ({ candidate, source }) =>
     candidate.email.includes("veto")
       ? Effect.fail(new PolicyRefused({ code: "not_welcome", detail: source._tag }))
-      : Effect.succeed({ ...candidate, name: `${candidate.name} (${source._tag})` }),
+      : Effect.succeed({
+        ...candidate,
+        name: `${candidate.name} (${source._tag})`,
+        // A policy that rewrites the *address* — moving a sign-up onto a
+        // canonical domain is the real shape of this — and does not normalize
+        // what it wrote. Normalizing is the library's job: see the test below
+        // for what a row stored in the hook's own casing would cost.
+        ...(candidate.email.includes("recase") ? { email: candidate.email.toUpperCase() } : {})
+      }),
   afterUserCreate: ({ user }) =>
     user.email.includes("after-fails")
       ? Effect.fail(new PolicyRefused({ code: "related_row_refused" }))
@@ -354,6 +362,33 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       assert.strictEqual(user.name, `${testName} (EmailPassword)`)
       const stored = yield* expectSome(yield* store.findByEmail(email), "the registered row")
       assert.strictEqual(stored.name, `${testName} (EmailPassword)`)
+    }))
+
+  it.effect("normalizes an address a hook rewrote, so the account is still reachable", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const store = yield* UserStore
+      const email = uniqueEmail("hooks-password-recase")
+
+      const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+
+      // The address is stored normalized whatever casing the hook answered
+      // with — `email` is a plain string in the schema, so nothing else would
+      // have caught this.
+      assert.strictEqual(user.email, email)
+      assert.isTrue(Option.isSome(yield* store.findByEmail(email)))
+
+      // And the consequence that makes it matter: every read of a user by
+      // address goes through `normalizeEmail`, so a row stored as the hook
+      // typed it would be one no sign-in, no reset and no link could ever find
+      // again — while a second sign-up for the same mailbox would sail past
+      // both the duplicate check and the unique index.
+      const signedIn = yield* passwords.signIn({ email, password: testPassword })
+      assert.strictEqual(signedIn.user.id, user.id)
+      const duplicate = yield* Effect.flip(
+        passwords.signUp({ name: testName, email, password: testPassword })
+      )
+      assert.strictEqual(duplicate._tag, "UserAlreadyExists")
     }))
 
   it.effect("refuses a sign-up the policy rejects, leaving no user and no credential", () =>

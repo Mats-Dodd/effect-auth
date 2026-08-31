@@ -156,14 +156,17 @@ describe.sequential("magic-link/Hooks", () => {
           : Effect.void
     })
   )("the endpoints under a policy", (it) => {
-    it.effect("redirects a refused link to baseUrl with the hook's own code", () =>
+    it.effect("redirects a refused link to its own error page with the hook's code", () =>
       Effect.gen(function*() {
         const email = uniqueEmail("http-refused")
         const { client, cookies } = yield* makeClient()
         const users = yield* UserStore
 
-        // The link's own error page is not where a refusal lands: where a policy
-        // sends somebody is one decision this library makes in one place.
+        // The link's own error page, exactly as an expired token's would be: the
+        // payload carrying it is claimed before either hook is asked, so the URL
+        // is in hand when the refusal arrives and a policy does not silently
+        // drop the page every other failure of this link lands on. `?error=` is
+        // this library's classification and `&code=` the deployment's own.
         yield* client.magicLink.signIn({ payload: { email, errorCallbackURL: "/oops" } })
         const [, response] = yield* client.magicLink.verify({
           query: { token: Redacted.value(yield* linkToken(email)) },
@@ -173,7 +176,7 @@ describe.sequential("magic-link/Hooks", () => {
         assert.strictEqual(response.status, 302)
         assert.strictEqual(
           response.headers["location"],
-          `${AuthTest.testBaseUrl}/?error=policy_refused&code=domain_not_allowed`
+          `${AuthTest.testBaseUrl}/oops?error=policy_refused&code=domain_not_allowed`
         )
         // No account, and no session cookie to go with it.
         assert.isTrue(Option.isNone(yield* users.findByEmail(email)))

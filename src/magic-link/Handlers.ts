@@ -26,7 +26,6 @@ import { RateLimiter } from "effect/unstable/persistence"
 import { AuthConfig } from "../config/AuthConfig.js"
 import * as AuthHandlers from "../http/Handlers.js"
 import { setSessionCookie } from "../http/MiddlewareLive.js"
-import { policyRefusedTarget } from "../http/OriginCheck.js"
 import type { Bucket } from "../http/RateLimits.js"
 import { consumeWith, credentials, email as emailBucket } from "../http/RateLimits.js"
 import { MagicLinkApiGroup } from "./Api.js"
@@ -115,21 +114,13 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
             })
           }
           // Success or failure, the browser arrived by a top-level navigation and
-          // leaves by one.
+          // leaves by one. A deployment's own refusal is one of those failures
+          // and `complete` has already resolved it into the link's own error
+          // URL carrying `?error=policy_refused&code=…` — the token was claimed
+          // before either hook was asked, so the link is spent whichever way it
+          // went, and no cookie is set: no session exists.
           return AuthHandlers.redirectTo(outcome.redirectTo)
-        }).pipe(
-          // A refusal is a caller-visible outcome, never a fault — and this
-          // endpoint is a top-level navigation, so it leaves by one too. The
-          // token was claimed before either hook was asked, so the link is spent
-          // whichever way this went, and no cookie is set: no session exists.
-          Effect.catchTag(
-            "PolicyRefused",
-            // No callback URL survives a refusal: the one the person asked
-            // for travels in the token payload, which the very call that
-            // refused has already claimed.
-            (refused) => Effect.succeed(AuthHandlers.redirectTo(policyRefusedTarget(config, null, refused.code)))
-          )
-        ))
+        }))
       .handle("exchange", ({ payload, request }) =>
         Effect.gen(function*() {
           yield* rateLimit(credentials, request)

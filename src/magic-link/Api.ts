@@ -187,7 +187,7 @@ export class MagicLinkApiGroup extends HttpApiGroup.make("magicLink")
     }).annotateMerge(OpenApi.annotations({
       summary: "Follow a sign-in link",
       description:
-        "Claims the single-use token, establishes the session, sets the cookie and redirects. Every failure is a redirect too — to the errorCallbackURL the link was minted with, carrying ?error=invalid_token or ?error=sign_up_disabled — because the person arrived here by a top-level browser navigation and has to land on a page. A deployment hook that refuses the account or the session redirects as well, to baseUrl carrying ?error=policy_refused&code=..., with the code that hook chose; the link is spent either way."
+        "Claims the single-use token, establishes the session, sets the cookie and redirects. Every failure is a redirect too — to the errorCallbackURL the link was minted with, carrying ?error=invalid_token or ?error=sign_up_disabled — because the person arrived here by a top-level browser navigation and has to land on a page. A deployment hook that refuses the account or the session redirects to that same errorCallbackURL carrying ?error=policy_refused&code=..., with the code that hook chose; the link is spent either way."
     })),
     HttpApiEndpoint.post("exchange", "/exchange", {
       payload: MagicLinkExchangePayload,

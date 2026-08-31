@@ -568,6 +568,16 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   })
 
   /**
+   * Puts what a `beforeUserCreate` answered with back through the schema, and
+   * re-normalizes the address it answered with. See `Users.provision`'s twin of
+   * this for why the address matters.
+   */
+  const rewritten = Effect.fnUntraced(function*(answer: UserInsertOf<{}>) {
+    const validated = yield* insertRow(model.insert, answer)
+    return Object.assign(validated, { email: normalizeEmail(validated.email) })
+  })
+
+  /**
    * Writes the user row a sign-up creates, asking the deployment's policy on
    * the way in and on the way out.
    *
@@ -583,14 +593,25 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
    * sign-up rather than leave a user with no credential.
    */
   const provision = Effect.fnUntraced(function*(candidate: UserInsertOf<F>) {
+    // The deployment's own columns are complete before the hook is asked — the
+    // caller built this row with the model's own `makeInsert`, so this is a
+    // no-op here — and the call is kept anyway because the three copies of this
+    // sequence have to be the same sequence: on the other two the candidate is
+    // built from the base fields alone and completing it is what makes a
+    // `hooksOf`-typed policy read the same row whichever source ran.
+    const completed = yield* model.completeInsert(candidate)
+
     const before = hooks.beforeUserCreate
     // A rewrite goes back through the model's own `insert` variant: what a hook
     // hands back is an ordinary object, and nothing else would stop it storing
     // a row the schema rejects. The unrewritten path came out of the caller's
-    // own `makeInsert`, so it is not validated twice.
+    // own `makeInsert`, so it is not validated twice. The address is
+    // re-normalized with it: every lookup in this library reads a user by
+    // `normalizeEmail(…)`, so a rewritten address that skipped it would be a
+    // row nothing could ever find again.
     const row = before === undefined
-      ? candidate
-      : yield* insertRow(model.insert, yield* before({ candidate, source: passwordSource }))
+      ? completed
+      : yield* rewritten(yield* before({ candidate: completed, source: passwordSource }))
 
     const user = yield* users.create(row)
 

@@ -21,7 +21,6 @@
 import { Context, Effect, Layer, Option } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { insertRow } from "../internal/effects.js"
-import { pickKeys } from "../internal/records.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import { AccountAlreadyLinked, CannotUnlinkLastAccount, NotFound, UserNotFound } from "./Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "./Events.js"
@@ -277,8 +276,8 @@ export const make: () => Effect.Effect<
   const hooks = yield* AuthHooks
   // The deployment's own model, behind a reference whose default is the base
   // one. This module is base-typed on purpose — an identity carries base fields
-  // and nothing else — but a hook may not be, so the model is what says which
-  // of the columns on a rewritten row are the deployment's.
+  // and nothing else — but a hook may not be, so the model is what completes
+  // the candidate a policy is shown and what validates the row it answers with.
   const model = yield* UserModelRef
 
   const insertAccount = Effect.fnUntraced(function*(userId: UserId, identity: OAuthIdentity) {
@@ -308,16 +307,24 @@ export const make: () => Effect.Effect<
   /**
    * Puts what a `beforeUserCreate` answered with back through the schema.
    *
-   * The base half is checked by the base user model, which is the only one this
-   * module can name — so a hook cannot store a row the base schema would have
-   * rejected. The deployment's own columns ride across by name, because
-   * `User.insert` does not know them and would drop the very rewrite a hook
-   * installed through `hooksOf` was written to make; `completeInsert` then fills
-   * in whichever of them the hook left out.
+   * **Details**
+   *
+   * Through the *deployment's* `insert` variant rather than the base model's:
+   * that is the only schema that knows the deployment's own columns, so it is
+   * the only one that can refuse a rewrite whose `plan` is not one of the two
+   * the field declares. Validating the base half alone and copying the rest
+   * across by name — which is what this did — let an out-of-schema value reach
+   * `UserStore.create`, where only the shipped SQL store happens to catch it.
+   * It fills in whatever the hook left out, exactly as `completeInsert` did.
+   *
+   * **Gotchas**
+   *
+   * The address is re-normalized on the way out, for the reason
+   * `Users.provision`'s twin of this gives.
    */
-  const revalidate = Effect.fnUntraced(function*(rewritten: UserInsertOf<{}>) {
-    const validated = yield* insertRow(UserModel.insert, rewritten)
-    return yield* model.completeInsert(Object.assign(validated, pickKeys(rewritten, model.extraKeys)))
+  const rewritten = Effect.fnUntraced(function*(answer: UserInsertOf<{}>) {
+    const validated = yield* model.makeInsert(answer)
+    return Object.assign(validated, { email: normalizeEmail(validated.email) })
   })
 
   /**
@@ -331,7 +338,7 @@ export const make: () => Effect.Effect<
    * this module, so a dependency the other way round would be a cycle in the
    * layer graph and `Auth.layer` would not build.
    *
-   * A rewrite goes back through {@link revalidate} rather than straight to the
+   * A rewrite goes back through {@link rewritten} rather than straight to the
    * store, for the reasons given there.
    *
    * It opens no transaction: the caller's is what makes a refusal, or a failing
@@ -343,17 +350,26 @@ export const make: () => Effect.Effect<
       providerId: identity.providerId,
       info: userInfoOf(identity)
     }
-    const candidate = yield* insertRow(UserModel.insert, {
-      name: identity.name ?? email,
-      email,
-      emailVerified: identity.emailVerified,
-      image: identity.image ?? null
-    })
+    // Built from the base fields — they are all this module knows — and then
+    // completed by the model, *before* the hook is consulted rather than after
+    // it: a policy installed through `hooksOf` is promised a candidate carrying
+    // the deployment's own columns, and one built here carries none of them
+    // until this runs. Without it the same policy would read `undefined` for
+    // every custom field on this source and the model's defaults on the
+    // password one.
+    const candidate = yield* model.completeInsert(
+      yield* insertRow(UserModel.insert, {
+        name: identity.name ?? email,
+        email,
+        emailVerified: identity.emailVerified,
+        image: identity.image ?? null
+      })
+    )
 
     const before = hooks.beforeUserCreate
     const row = before === undefined
       ? candidate
-      : yield* revalidate(yield* before({ candidate, source }))
+      : yield* rewritten(yield* before({ candidate, source }))
     const user = yield* users.create(row)
 
     const after = hooks.afterUserCreate

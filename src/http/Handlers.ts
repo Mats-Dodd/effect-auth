@@ -845,9 +845,11 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               // was deleted.
               Effect.catchTag(
                 "PolicyRefused",
-                // No callback URL survives a refusal: the one the person asked
-                // for travels in the token payload, which the very call that
-                // refused has already claimed.
+                // `baseUrl`, and deliberately: the only URL this link carries is
+                // where to land once the account is *gone*, and sending somebody
+                // whose deletion was refused to "your account has been deleted"
+                // would be a lie. Unlike a magic link, this payload has no error
+                // URL to honour.
                 (refused) => Effect.succeed(redirectTo(policyRefusedTarget(config, null, refused.code)))
               )
             ))

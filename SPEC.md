@@ -867,7 +867,8 @@ cannot be edited into one that lands somewhere else. Each is validated against `
 the link is minted and **dropped rather than refused** if it does not survive that: a bad URL in a
 sign-in request is a caller's bug, and failing the request would make the endpoint distinguish
 requests it must answer identically. `verify` redirects on failure too, to the link's own
-`errorCallbackURL` carrying `?error=invalid_token` or `?error=sign_up_disabled`, else to `baseUrl`.
+`errorCallbackURL` carrying `?error=invalid_token`, `?error=sign_up_disabled` or
+`?error=policy_refused&code=<the hook's code>` (§13.3), else to `baseUrl`.
 A link that created the account lands on `newUserCallbackURL ?? callbackURL`.
 
 #### 10.2 The unproven-account rule
@@ -1206,12 +1207,29 @@ is pinned by a test:
 
 #### 13.2 The choke point, and why there are three copies of it
 
-`UsersService.provision({ candidate, source })` is the sequence: `beforeUserCreate` (rewrite or
-refuse) → re-validate a rewrite through `model.insert` → `userStore.create` → `afterUserCreate`. It
-**opens no transaction of its own** and it **publishes no `UserCreated`** — both stay with the
-caller, so a refusal or a failing `afterUserCreate` aborts whatever transaction the caller holds,
-and the event is still published after the commit as `Events.ts` requires. A rewrite going back
-through `insertRow(model.insert, …)` is what stops a hook smuggling a row the schema would reject.
+`UsersService.provision({ candidate, source })` is the sequence: complete the candidate through
+`model.completeInsert` → `beforeUserCreate` (rewrite or refuse) → re-validate a rewrite through
+`model.insert` → `userStore.create` → `afterUserCreate`. It **opens no transaction of its own** and
+it **publishes no `UserCreated`** — both stay with the caller, so a refusal or a failing
+`afterUserCreate` aborts whatever transaction the caller holds, and the event is still published
+after the commit as `Events.ts` requires. A rewrite going back through the *deployment's own*
+`insert` variant is what stops a hook smuggling a row the schema would reject — the base model
+alone would check half of it and wave the deployment's own columns through, leaving `UserStore`, a
+seam somebody else may implement, as the only thing that could catch a `plan` outside its union.
+
+**The candidate is completed before the hook, not after it.** `Passwords` builds its row with
+`model.makeInsert`, but `Accounts` and the magic-link plugin are base-typed on purpose and build
+theirs from the base fields alone; filling the deployment's columns in from the model's declared
+defaults *first* is what makes `hooksOf`'s promise true on every source. Without it the same typed
+policy would read `candidate.plan` as `"free"` on a sign-up and `undefined` on an OAuth or
+magic-link sign-up, and derive whatever it derives from that. `test/fields/Hooks.test.ts`'s
+`every source` block is the pin.
+
+**A rewritten address is re-normalized.** `email` is a plain `Schema.String` and the stored column
+is normalized by the discipline of every caller that writes it, so a hook answering with
+`User@Example.com` would otherwise store a row that `findByEmail(normalizeEmail(…))` — which is
+every read of a user by address — could never find again, while a second sign-up for the same
+mailbox passed both the duplicate pre-check and the unique index.
 
 `magic-link` calls `Users.provision`. `Passwords` and `Accounts` **reimplement the same sequence**,
 in `provision` helpers of their own, and this is the one deviation from hooks.md worth recording:
@@ -1237,9 +1255,13 @@ answer for a broken policy. Handlers never `serverFault` it: it is a caller erro
   encode it as `?error=policy_refused&code=<the hook's code>`, because the browser arrived by a
   top-level navigation and has to leave by one. One helper builds that URL for all three:
   `OriginCheck.policyRefusedTarget(config, errorURL, code)`, beside `withErrorCode`, so the shape
-  cannot drift between them. The OAuth callback passes the flow's own `errorCallbackURL`; the two
-  link-shaped completions pass `null` and therefore land on `baseUrl`, because the URL the person
-  asked for travels in a token payload that the very call which refused has already claimed.
+  cannot drift between them. The OAuth callback passes the flow's own `errorCallbackURL`, and so
+  does magic-link `verify`: the payload is claimed before either hook is consulted, so
+  `MagicLink.complete` still has that URL in hand and resolves a refusal into it exactly as it
+  resolves `invalid_token` — `PolicyRefused` is a member of `VerifyError` and `errorCode` answers
+  `policy_refused` for it, mirroring the OAuth flow's `CallbackError`. `deleteUserCallback` is the
+  one that lands on `baseUrl`, and deliberately: the only URL that link carries is where to land
+  once the account is *gone*, which is not a page to send somebody whose deletion was refused.
 - **Sign-up's auto-session is the one refusal that does not undo anything.** The account and its
   credential are committed before `beforeSessionCreate` is asked, and `beforeUserCreate` has already
   said this person may have an account, so a refusal there answers exactly as `autoSignIn: false`
@@ -1301,6 +1323,8 @@ appended set, three sources, one trace. `test/oauth/Hooks.test.ts` and
 `test/magic-link/Hooks.test.ts` — the redirect encodings and the typed twin. `test/http/Users.test.ts`
 — change-email and delete vetoes at the HTTP layer, and a refused delete link that is still burnt.
 `test/fields/Hooks.test.ts` — a typed set installed through `hooksOf(model)` reading `plan` and
-writing `role` and `apiSecret`. `test/fields/Fields.types.ts` and `test/client/AuthClient.types.ts`
+writing `role` and `apiSecret`, the same set reading the same columns on the OAuth and magic-link
+sources (the `every source` block), and a base-typed set answering with a `plan` outside the union,
+refused on both sources with nothing stored. `test/fields/Fields.types.ts` and `test/client/AuthClient.types.ts`
 — the candidate is `UserInsertOf<F>`, base and typed sets are interchangeable, and `PolicyRefused`
 is in the client unions it should be in and no others.

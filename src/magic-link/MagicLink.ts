@@ -55,7 +55,7 @@ import { AccountStore, isUniqueViolation, SessionStore, UserStore, WithAuthTrans
 import { Users } from "../domain/Users.js"
 import type { Claimed, TokenPurpose } from "../domain/Verifications.js"
 import { purpose, userSubjectPurposes, Verifications } from "../domain/Verifications.js"
-import { resolveUrl, validateUrl, withErrorCode } from "../http/OriginCheck.js"
+import { policyRefusedTarget, resolveUrl, validateUrl, withErrorCode } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { withDefaults } from "../internal/records.js"
 import { magicLinkPrefix, SignUpDisabled } from "./Api.js"
@@ -367,15 +367,16 @@ export interface VerifyResult {
  *
  * **Gotchas**
  *
- * `PolicyRefused` is deliberately not a member. Its code is written by the
- * deployment rather than chosen from {@link errorCode}'s closed set, so the two
- * travel differently: this type is what a failed link is *reported* as, and a
- * refusal is reported as itself — see {@link MagicLinkService.verify}.
+ * `PolicyRefused` is a member, exactly as it is of the OAuth flow's
+ * `CallbackError`: {@link errorCode} answers `policy_refused` for it and the
+ * deployment's own code rides beside that as `&code=`, so a refusal leaves by
+ * the same door — and the same error URL — as every other failure of the link
+ * it refused.
  *
  * @category models
  * @since 1.0.0
  */
-export type VerifyError = InvalidToken | SignUpDisabled
+export type VerifyError = InvalidToken | SignUpDisabled | PolicyRefused
 
 /**
  * The outcome of {@link MagicLinkService.complete}: always somewhere to send the
@@ -400,21 +401,30 @@ export type VerifyOutcome =
  *
  * **Details**
  *
- * A closed set of two, chosen by this library. Nothing a caller supplied is ever
- * echoed, and neither code says whether the address has an account:
+ * A closed set of three, chosen by this library. Nothing a caller supplied is
+ * ever echoed, and none of the codes says whether the address has an account:
  * `invalid_token` covers a link that was never minted, one already spent and one
  * that expired alike.
  *
- * A deployment's own refusal is *not* in this set — its code was written by the
- * deployment rather than chosen here — and it leaves by the handler's
- * `?error=policy_refused&code=…` redirect instead. See
- * {@link MagicLinkService.complete}.
+ * `policy_refused` is the classification of a deployment's own refusal — this
+ * library's word for it, not the deployment's. The code the *hook* wrote is not
+ * in this set and never joins it: it travels beside this one as `&code=`, which
+ * {@link MagicLinkService.complete} appends through the same helper the OAuth
+ * callback uses.
  *
  * @category combinators
  * @since 1.0.0
  */
-export const errorCode = (error: VerifyError): string =>
-  error._tag === "SignUpDisabled" ? "sign_up_disabled" : "invalid_token"
+export const errorCode = (error: VerifyError): string => {
+  switch (error._tag) {
+    case "SignUpDisabled":
+      return "sign_up_disabled"
+    case "PolicyRefused":
+      return "policy_refused"
+    case "InvalidToken":
+      return "invalid_token"
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Service
@@ -462,7 +472,7 @@ export interface MagicLinkService {
    */
   readonly verify: (
     options: VerifyOptions
-  ) => Effect.Effect<VerifyResult, VerifyError | PolicyRefused | PersistenceError>
+  ) => Effect.Effect<VerifyResult, VerifyError | PersistenceError>
 
   /**
    * {@link MagicLinkService.verify}, resolved into somewhere to send a browser.
@@ -476,13 +486,14 @@ export interface MagicLinkService {
    *
    * **Gotchas**
    *
-   * A `PolicyRefused` is *not* resolved here. Its code is the deployment's own
-   * rather than one of {@link errorCode}'s two, and where a refused browser
-   * lands is a decision this library makes in one place for every one of its
-   * redirect-shaped completions — so it stays a typed failure and the handler
-   * turns it into that redirect.
+   * A deployment's own refusal is resolved here too, exactly as the OAuth
+   * callback resolves one: `?error=policy_refused` names the classification and
+   * `&code=` carries the code the hook wrote, on the link's own
+   * `errorCallbackURL`. The payload is read before either hook is consulted, so
+   * that URL is in hand when the refusal arrives and a refused person lands on
+   * the same page every other failure of that link would have sent them to.
    */
-  readonly complete: (options: VerifyOptions) => Effect.Effect<VerifyOutcome, PolicyRefused | PersistenceError>
+  readonly complete: (options: VerifyOptions) => Effect.Effect<VerifyOutcome, PersistenceError>
 }
 
 /**
@@ -613,9 +624,11 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      *
      * The row is built from the base user fields alone, exactly as the OAuth
      * flow builds one, and handed to the base-typed `Users.provision`. A
-     * deployment's own columns are filled in from the model's declared
+     * deployment's own columns are filled in there from the model's declared
      * defaults — which the provisionability rule on `makeUserModel` guarantees
-     * is always possible — so this plugin never has to know what they are.
+     * is always possible — before `beforeUserCreate` is consulted, so this
+     * plugin never has to know what they are and a policy typed by the model
+     * still sees them.
      *
      * `Users.provision` rather than `UserStore.create`: that is where
      * `beforeUserCreate` and `afterUserCreate` are consulted, and going through
@@ -833,7 +846,14 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       return {
         _tag: "Failure",
         error,
-        redirectTo: withErrorCode(resolveUrl(config, errorURL), code),
+        // A refusal carries the deployment's own classification beside this
+        // library's, in the one shape every redirect-shaped completion answers
+        // with — the same helper the OAuth callback uses. `?error=` is
+        // unchanged by that: `errorCode` already answers `policy_refused` for
+        // this case, and it stays the closed set it was.
+        redirectTo: error._tag === "PolicyRefused"
+          ? policyRefusedTarget(config, errorURL, error.code)
+          : withErrorCode(resolveUrl(config, errorURL), code),
         code
       }
     }
@@ -849,15 +869,16 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
         }
         const finished = yield* Effect.result(spend(claimed.success, options))
         if (finished._tag === "Failure") {
-          // Neither of these two is one of the closed set of codes this plugin
-          // reports in a redirect: a fault is a `500` and a refusal is the
-          // deployment's own, carrying a code it wrote — see
-          // {@link MagicLinkService.complete}.
-          if (finished.failure._tag === "PersistenceError" || finished.failure._tag === "PolicyRefused") {
+          // A fault is the one failure this endpoint cannot answer with a
+          // redirect: it is a `500`, not a place to send somebody.
+          if (finished.failure._tag === "PersistenceError") {
             return yield* Effect.fail(finished.failure)
           }
           // The error URL comes out of the claimed payload, which is the one
-          // thing this path needs that `verify` does not.
+          // thing this path needs that `verify` does not — and it is in hand
+          // for a refusal as much as for an expired token, so a deployment's
+          // own policy sends a person to the link's own error page rather than
+          // to the site root.
           return failure(finished.failure, claimed.success.payload.errorCallbackURL)
         }
         return { _tag: "Success", ...finished.success } satisfies VerifyOutcome

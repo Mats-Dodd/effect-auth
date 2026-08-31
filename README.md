@@ -688,7 +688,12 @@ Every member is optional and absent means "allow, unchanged", so installing noth
 and costs nothing. `source` tells `beforeUserCreate` which door the person came through —
 `EmailPassword`, `OAuth` (carrying the verified profile, so one hook covers every provider),
 `MagicLink`, or a plugin naming itself — which is what lets one policy cover every flow you serve.
-A rewrite is re-validated through the user model, so a hook cannot store a row the schema rejects.
+The candidate always arrives complete: your own columns are filled in from the model's declared
+defaults before the hook is asked, on every source, so a policy reads the same row whichever door
+the person came through. A rewrite is re-validated through the user model, so a hook cannot store a
+row the schema rejects, and an address a hook rewrote is normalized on the way in — every lookup in
+this library reads a user by the normalized address, so one stored otherwise would be a row nothing
+could find again.
 
 A plugin installs hooks by **appending**, never replacing, because it cannot know what else you
 installed:
@@ -722,8 +727,9 @@ How a refusal reaches the caller depends on the shape of what it refused. `signU
 `signInEmail`, `signInSocial`, `linkSocial`, `changeEmail`, `deleteUser` and the magic link's
 `exchange` answer the typed `403`. The completions a browser arrives at by a top-level navigation —
 the OAuth callback, a magic link, the delete-account link — have nowhere to put an error, so they
-redirect carrying `?error=policy_refused&code=<yours>`; a link is spent either way, because the hook
-is asked after the token has been claimed. And one case is neither: refusing the session a **sign-up**
+redirect carrying `?error=policy_refused&code=<yours>`, to the same error URL every other failure of
+that flow lands on when the flow has one in hand; a link is spent either way, because the hook is
+asked after the token has been claimed. And one case is neither: refusing the session a **sign-up**
 would have started leaves the account in place and answers `200` with `session: null`, exactly as
 `autoSignIn: false` does — the person was accepted, they simply cannot start a session.
 

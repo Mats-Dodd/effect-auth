@@ -550,15 +550,43 @@ export const make: <F extends UserFields>(
 
   // ---------------------------------------------------------------------------
 
+  /**
+   * Puts what a `beforeUserCreate` answered with back through the schema.
+   *
+   * **Gotchas**
+   *
+   * The address is re-normalized on the way out. Every read of a user by e-mail
+   * in this library looks the address up as `normalizeEmail(…)` — the stored
+   * column is normalized by the discipline of every caller that writes it, not
+   * by the schema — so a hook that rewrote `email` to `User@Example.com` would
+   * store a row that no sign-in, no reset and no link could ever find again,
+   * and that the duplicate pre-check would not see either. Normalizing costs a
+   * rewrite nothing and is the one invariant a rewrite could otherwise break
+   * silently.
+   */
+  const rewritten = Effect.fnUntraced(function*(answer: UserInsertOf<{}>) {
+    const validated = yield* insertRow(model.insert, answer)
+    return Object.assign(validated, { email: normalizeEmail(validated.email) })
+  })
+
   const provision = Effect.fnUntraced(function*(options: ProvisionOptions<F>) {
+    // The deployment's own columns are filled in *before* the hook is asked, not
+    // after it. A base-typed caller — the magic-link plugin, a plugin of
+    // somebody's own — builds its candidate out of the base fields alone, and a
+    // policy installed through `hooksOf` is promised a row that really does
+    // carry the extra columns: without this it would read `undefined` for every
+    // one of them and derive whatever it derives from that. A candidate that
+    // already carries them is handed straight back.
+    const completed = yield* model.completeInsert(options.candidate)
+
     const before = hooks.beforeUserCreate
     // A rewrite goes back through the model's own `insert` variant: what a hook
     // hands back is an ordinary object, and nothing else would stop it storing
     // a row the schema rejects. The unrewritten path is already validated — the
     // caller built it with `insertRow` — so it is not paid for twice.
     const candidate = before === undefined
-      ? options.candidate
-      : yield* insertRow(model.insert, yield* before({ candidate: options.candidate, source: options.source }))
+      ? completed
+      : yield* rewritten(yield* before({ candidate: completed, source: options.source }))
 
     const user = yield* users.create(candidate)
 
