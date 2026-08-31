@@ -58,6 +58,33 @@ describe.sequential("magic-link/MagicLink", () => {
         assert.strictEqual(url.searchParams.get("token"), Redacted.value(sent[0]!.token))
       }))
 
+    // A nested variant is the documented way to vary the plugin's settings under
+    // one database. Its outbox must be its own: `MagicLinkTest.layerEmails` is a
+    // module-level constant that vitest memoises across the block, and without
+    // `Layer.fresh` in `layerMagicLink` the variant's mail would be recorded in
+    // the parent's outbox and never be visible here.
+    it.layer(MagicLinkTest.layer({ magicLink: { ttl: Duration.minutes(10) } }))(
+      "a nested variant records its mail in its own outbox",
+      (it) => {
+        it.effect("mails the link where this deployment's tests can read it", () =>
+          Effect.gen(function*() {
+            const email = uniqueEmail("nested")
+            const emails = yield* TestEmails.TestEmails
+            const magic = yield* MagicLink
+
+            yield* magic.request({ email })
+
+            const sent = yield* emails.to(email)
+            assert.strictEqual(sent.length, 1)
+            assert.strictEqual(sent[0]?.kind, MagicLinkTest.magicLinkKind)
+            // And the token it carries is claimable against this deployment.
+            const token = yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email)
+            const verified = yield* magic.verify({ token })
+            assert.strictEqual(verified.user.email, email)
+          }))
+      }
+    )
+
     it.effect("creates the account when the link is followed, already verified", () =>
       Effect.gen(function*() {
         const email = uniqueEmail("new-person")

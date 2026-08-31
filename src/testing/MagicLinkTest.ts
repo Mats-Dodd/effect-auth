@@ -102,9 +102,14 @@ export interface Options extends AuthTest.Settings {
  *
  * **Gotchas**
  *
- * `Layer.fresh` is not needed here and would be wrong: the deployment beneath is
- * `AuthTest.layer`'s, which already freshens everything above the database, and a
- * nested `it.layer` varying `magicLink` builds this whole expression again.
+ * {@link layerEmails} goes in under `Layer.fresh`, and that is load-bearing.
+ * `@effect/vitest` memoises layers by object identity across a block and its
+ * nested `it.layer` variants; `layerEmails` is a module-level constant, so
+ * without `fresh` a nested variant would reuse the *parent's* build of it —
+ * bound to the parent's `TestEmails` outbox — while `AuthTest.layer` hands the
+ * variant a new outbox of its own. Every magic-link mail in the variant would
+ * then land in the wrong outbox and its assertions would fail confusingly.
+ * `magicLinkLayer(options)` is a fresh value per call and needs no such care.
  *
  * @category layers
  * @since 1.0.0
@@ -112,7 +117,7 @@ export interface Options extends AuthTest.Settings {
 export const layerMagicLink = (
   options?: MagicLinkOptions
 ): Layer.Layer<MagicLink, never, Exclude<Requirements, MagicLinkEmails> | TestEmails> =>
-  magicLinkLayer(options).pipe(Layer.provide(layerEmails))
+  magicLinkLayer(options).pipe(Layer.provide(Layer.fresh(layerEmails)))
 
 /**
  * A whole test deployment with the magic link plugin on top of it.
