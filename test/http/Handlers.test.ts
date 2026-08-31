@@ -1,6 +1,7 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { Cause, DateTime, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { TestClock } from "effect/testing"
+import { PolicyRefused } from "../../src/domain/Hooks.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
@@ -644,6 +645,68 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
 
         const location = new URL(response.headers["location"] ?? "")
         assert.strictEqual(location.pathname, "/auth/callback/..%2F..%2Fevil")
+      }))
+  })
+
+  // ---------------------------------------------------------------------------
+  // A deployment's own policy, over HTTP
+  // ---------------------------------------------------------------------------
+
+  it.layer(AuthTest.layerHttp({
+    hooks: {
+      beforeUserCreate: ({ candidate }) =>
+        candidate.email.includes("policy-veto")
+          ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed" }))
+          : Effect.succeed(candidate),
+      beforeSessionCreate: ({ user }) =>
+        user.email.includes("policy-banned")
+          ? Effect.fail(new PolicyRefused({ code: "banned" }))
+          : Effect.void
+    }
+  }))("when a deployment installed hooks", (it) => {
+    it.effect("answers 403 PolicyRefused, carrying the code the hook chose", () =>
+      Effect.gen(function*() {
+        const { client } = yield* makeClient()
+
+        const refused = yield* Effect.flip(client.auth.signUpEmail({
+          payload: { name: testName, email: uniqueEmail("policy-veto"), password: testPassword }
+        }))
+
+        assert.strictEqual(refused._tag, "PolicyRefused")
+        if (refused._tag === "PolicyRefused") {
+          // The deployment's own classification, over the wire verbatim: it is
+          // what a client branches on, and it is why a hook must never build
+          // one out of a secret.
+          assert.strictEqual(refused.code, "domain_not_allowed")
+        }
+      }))
+
+    it.effect("registers the account but writes no cookie when only the session was refused", () =>
+      Effect.gen(function*() {
+        const email = uniqueEmail("policy-banned")
+        const { client, cookies } = yield* makeClient()
+
+        const [registered, response] = yield* client.auth.signUpEmail({
+          payload: { name: testName, email, password: testPassword },
+          responseMode: "decoded-and-response"
+        })
+
+        // A success, not a refusal: the account exists, and `session: null` is
+        // the shape this response already has for a deployment that withholds
+        // one. What must not happen is a cookie for a session nobody minted.
+        assert.strictEqual(response.status, 200)
+        assert.strictEqual(registered.user.email, email)
+        assert.isNull(registered.session)
+        assert.isTrue(Option.isNone(TestHttpClient.responseCookie(response)))
+        assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCookie(cookies)))
+
+        // And signing in is refused outright, because there the session is the
+        // whole of what was asked for.
+        const refused = yield* Effect.flip(client.auth.signInEmail({
+          payload: { email, password: testPassword }
+        }))
+        assert.strictEqual(refused._tag, "PolicyRefused")
+        if (refused._tag === "PolicyRefused") assert.strictEqual(refused.code, "banned")
       }))
   })
 })

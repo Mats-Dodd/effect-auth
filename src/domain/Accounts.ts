@@ -21,10 +21,14 @@
 import { Context, Effect, Layer, Option } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { insertRow } from "../internal/effects.js"
+import { pickKeys } from "../internal/records.js"
+import type { OAuthUserInfo } from "../oauth/Provider.js"
 import { AccountAlreadyLinked, CannotUnlinkLastAccount, NotFound, UserNotFound } from "./Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "./Events.js"
-import type { AccountId, User, UserId } from "./Schema.js"
-import { Account, normalizeEmail, User as UserModel } from "./Schema.js"
+import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
+import { AuthHooks } from "./Hooks.js"
+import type { AccountId, User, UserId, UserInsertOf } from "./Schema.js"
+import { Account, normalizeEmail, User as UserModel, UserModelRef } from "./Schema.js"
 import type { AccountTokens, PersistenceError } from "./Stores.js"
 import { AccountStore, isUniqueViolation, UserStore, WithAuthTransaction } from "./Stores.js"
 
@@ -103,6 +107,28 @@ export interface LinkResult {
   readonly accountCreated: boolean
 }
 
+/**
+ * The provider profile a hook is shown, recovered from the identity the flow
+ * built out of it.
+ *
+ * **Details**
+ *
+ * `Accounts` is handed an {@link OAuthIdentity} rather than the raw
+ * `OAuthUserInfo`, because by this point the flow has already resolved the two
+ * questions only it can answer — which issuer this identity belongs under, and
+ * which claim is the provider's stable subject. This puts those answers back
+ * into the shape hooks are written against, so one `beforeUserCreate` covers
+ * every provider a deployment serves.
+ */
+const userInfoOf = (identity: OAuthIdentity): OAuthUserInfo => ({
+  id: identity.accountId,
+  email: identity.email,
+  emailVerified: identity.emailVerified,
+  name: identity.name,
+  image: identity.image,
+  issuer: identity.issuer
+})
+
 // -----------------------------------------------------------------------------
 // The linking gate
 // -----------------------------------------------------------------------------
@@ -159,10 +185,18 @@ export interface AccountsService {
    *    it, otherwise the call fails `AccountAlreadyLinked`.
    * 3. Neither: a user and an account are created together in one transaction,
    *    with `emailVerified` taken from the provider's claim.
+   *
+   * **Gotchas**
+   *
+   * Step 2 consults `beforeAccountLink` — an identity is about to be attached
+   * to somebody who already exists — and step 3 consults `beforeUserCreate` and
+   * `afterUserCreate` instead, because a first provisioning is not a link.
+   * Either refusal is a `PolicyRefused`, and in step 3 it aborts the
+   * transaction the user and the account would have committed in.
    */
   readonly linkOAuth: (
     identity: OAuthIdentity
-  ) => Effect.Effect<LinkResult, AccountAlreadyLinked | UserNotFound | PersistenceError>
+  ) => Effect.Effect<LinkResult, AccountAlreadyLinked | PolicyRefused | UserNotFound | PersistenceError>
 
   /**
    * Attaches a provider identity to a user who is already signed in — the
@@ -174,11 +208,14 @@ export interface AccountsService {
    * control both sides. The one refusal is an identity that already belongs to
    * somebody else, which fails `AccountAlreadyLinked`. Re-linking an identity
    * the user already holds is a no-op that refreshes the tokens.
+   *
+   * `beforeAccountLink` is consulted before a *new* row is written, and not on
+   * that no-op: nothing is being attached that was not attached already.
    */
   readonly linkToUser: (
     userId: UserId,
     identity: OAuthIdentity
-  ) => Effect.Effect<LinkResult, AccountAlreadyLinked | UserNotFound | PersistenceError>
+  ) => Effect.Effect<LinkResult, AccountAlreadyLinked | PolicyRefused | UserNotFound | PersistenceError>
 
   /**
    * Removes one sign-in method.
@@ -234,6 +271,15 @@ export const make: () => Effect.Effect<
   const accounts = yield* AccountStore
   const transaction = yield* WithAuthTransaction
   const events = yield* AuthEvents
+  // A `Context.Reference` with a no-op default, so a deployment that installs
+  // nothing provides nothing — and, being read here, the set is fixed when the
+  // layer is built rather than looked up on every request.
+  const hooks = yield* AuthHooks
+  // The deployment's own model, behind a reference whose default is the base
+  // one. This module is base-typed on purpose — an identity carries base fields
+  // and nothing else — but a hook may not be, so the model is what says which
+  // of the columns on a rewritten row are the deployment's.
+  const model = yield* UserModelRef
 
   const insertAccount = Effect.fnUntraced(function*(userId: UserId, identity: OAuthIdentity) {
     const tokens = identity.tokens
@@ -257,6 +303,64 @@ export const make: () => Effect.Effect<
     if (identity.tokens === undefined) return account
     const updated = yield* accounts.updateTokens(account.id, identity.tokens)
     return Option.getOrElse(updated, () => account)
+  })
+
+  /**
+   * Puts what a `beforeUserCreate` answered with back through the schema.
+   *
+   * The base half is checked by the base user model, which is the only one this
+   * module can name — so a hook cannot store a row the base schema would have
+   * rejected. The deployment's own columns ride across by name, because
+   * `User.insert` does not know them and would drop the very rewrite a hook
+   * installed through `hooksOf` was written to make; `completeInsert` then fills
+   * in whichever of them the hook left out.
+   */
+  const revalidate = Effect.fnUntraced(function*(rewritten: UserInsertOf<{}>) {
+    const validated = yield* insertRow(UserModel.insert, rewritten)
+    return yield* model.completeInsert(Object.assign(validated, pickKeys(rewritten, model.extraKeys)))
+  })
+
+  /**
+   * Writes the user row a first sign-in through a provider creates, asking the
+   * deployment's policy on the way in and on the way out.
+   *
+   * **Gotchas**
+   *
+   * This is `Users.provision`'s sequence rather than a call to it, and the two
+   * have to stay in step. `Users` reads `Passwords`, which is layered above
+   * this module, so a dependency the other way round would be a cycle in the
+   * layer graph and `Auth.layer` would not build.
+   *
+   * A rewrite goes back through {@link revalidate} rather than straight to the
+   * store, for the reasons given there.
+   *
+   * It opens no transaction: the caller's is what makes a refusal, or a failing
+   * `afterUserCreate`, take the account row down with the user.
+   */
+  const provision = Effect.fnUntraced(function*(identity: OAuthIdentity, email: string) {
+    const source: ProvisionSource = {
+      _tag: "OAuth",
+      providerId: identity.providerId,
+      info: userInfoOf(identity)
+    }
+    const candidate = yield* insertRow(UserModel.insert, {
+      name: identity.name ?? email,
+      email,
+      emailVerified: identity.emailVerified,
+      image: identity.image ?? null
+    })
+
+    const before = hooks.beforeUserCreate
+    const row = before === undefined
+      ? candidate
+      : yield* revalidate(yield* before({ candidate, source }))
+    const user = yield* users.create(row)
+
+    const after = hooks.afterUserCreate
+    if (after !== undefined) {
+      yield* after({ user, source })
+    }
+    return user
   })
 
   const linked = (userId: UserId, account: Account) =>
@@ -294,6 +398,15 @@ export const make: () => Effect.Effect<
       if (!allowed) {
         return yield* Effect.fail(new AccountAlreadyLinked({ providerId: identity.providerId }))
       }
+      // A row is about to be attached to somebody who already exists, which is
+      // the one thing `beforeAccountLink` is for. It is asked after the gate
+      // above rather than before it, so a policy cannot stand in for the
+      // account-takeover rule that decides whether this link is permissible at
+      // all.
+      const beforeLink = hooks.beforeAccountLink
+      if (beforeLink !== undefined) {
+        yield* beforeLink({ user, providerId: identity.providerId, info: userInfoOf(identity) })
+      }
       const account = yield* insertAccount(user.id, identity)
       yield* linked(user.id, account)
       return { user, account, userCreated: false, accountCreated: true } satisfies LinkResult
@@ -301,13 +414,7 @@ export const make: () => Effect.Effect<
 
     // 3. A new person. The user and their first sign-in method commit together.
     const result = yield* transaction.run(Effect.gen(function*() {
-      const row = yield* insertRow(UserModel.insert, {
-        name: identity.name ?? email,
-        email,
-        emailVerified: identity.emailVerified,
-        image: identity.image ?? null
-      })
-      const user = yield* users.create(row)
+      const user = yield* provision(identity, email)
       const account = yield* insertAccount(user.id, identity)
       return { user, account }
     }))
@@ -348,6 +455,14 @@ export const make: () => Effect.Effect<
       }
       const account = yield* refreshTokens(existing.value, identity)
       return { user: owner, account, userCreated: false, accountCreated: false } satisfies LinkResult
+    }
+
+    // The `linkSocial` half of `beforeAccountLink`: a deliberate link onto an
+    // account that already exists. The branch above is not one — it refreshes
+    // the tokens of an identity this user already holds, and attaches nothing.
+    const beforeLink = hooks.beforeAccountLink
+    if (beforeLink !== undefined) {
+      yield* beforeLink({ user: owner, providerId: identity.providerId, info: userInfoOf(identity) })
     }
 
     const account = yield* insertAccount(userId, identity)

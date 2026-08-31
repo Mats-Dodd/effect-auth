@@ -18,14 +18,24 @@ const contract = [
     method: "POST",
     path: "/auth/sign-up/email",
     authenticated: false,
-    errors: ["effect-auth/UserAlreadyExists", "effect-auth/PasswordPolicyViolation", "effect-auth/RateLimited"]
+    errors: [
+      "effect-auth/UserAlreadyExists",
+      "effect-auth/PasswordPolicyViolation",
+      "effect-auth/PolicyRefused",
+      "effect-auth/RateLimited"
+    ]
   },
   {
     identifier: "signInEmail",
     method: "POST",
     path: "/auth/sign-in/email",
     authenticated: false,
-    errors: ["effect-auth/InvalidCredentials", "effect-auth/EmailNotVerified", "effect-auth/RateLimited"]
+    errors: [
+      "effect-auth/InvalidCredentials",
+      "effect-auth/EmailNotVerified",
+      "effect-auth/PolicyRefused",
+      "effect-auth/RateLimited"
+    ]
   },
   { identifier: "signOut", method: "POST", path: "/auth/sign-out", authenticated: true, errors: [] },
   { identifier: "getSession", method: "GET", path: "/auth/session", authenticated: true, errors: [] },
@@ -88,7 +98,7 @@ const contract = [
     // Beyond the SPEC table: the endpoint is unauthenticated and writes a state
     // row per call, so it carries the credential endpoints' limit — see the
     // amendment note in SPEC.md.
-    errors: ["effect-auth/OAuthProviderError", "effect-auth/RateLimited"]
+    errors: ["effect-auth/OAuthProviderError", "effect-auth/PolicyRefused", "effect-auth/RateLimited"]
   },
   {
     identifier: "oauthCallback",
@@ -103,7 +113,7 @@ const contract = [
     method: "POST",
     path: "/auth/link-social",
     authenticated: true,
-    errors: ["effect-auth/OAuthProviderError"]
+    errors: ["effect-auth/OAuthProviderError", "effect-auth/PolicyRefused"]
   },
   {
     identifier: "unlinkAccount",

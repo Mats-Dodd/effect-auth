@@ -19,14 +19,17 @@
  */
 import { assert, describe, it, layer } from "@effect/vitest"
 import { Context, Effect, Layer, Option } from "effect"
+import type { OAuthIdentity } from "../../src/domain/Accounts.js"
+import { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthHooksService, ProvisionSource } from "../../src/domain/Hooks.js"
 import { append, AuthHooks, combine, hooksOf, layer as hooksLayer, PolicyRefused } from "../../src/domain/Hooks.js"
+import { Passwords } from "../../src/domain/Passwords.js"
 import type { UserInsertOf } from "../../src/domain/Schema.js"
-import { baseUserModel } from "../../src/domain/Schema.js"
-import { UserStore } from "../../src/domain/Stores.js"
+import { baseUserModel, oauthIssuer } from "../../src/domain/Schema.js"
+import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { Users } from "../../src/domain/Users.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, testName, uniqueEmail } from "../fixtures.js"
+import { expectSome, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** The source every test here provisions with, unless it is testing the source. */
 const testSource: ProvisionSource = { _tag: "Plugin", plugin: "test" }
@@ -303,4 +306,229 @@ layer(AuthTest.layer())("domain/Hooks — provision", (it) => {
         assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
       }))
   })
+})
+
+// -----------------------------------------------------------------------------
+// The password source
+// -----------------------------------------------------------------------------
+
+/**
+ * A hook set the password flows are exercised against, keyed off the label a
+ * test built its address with.
+ *
+ * **Gotchas**
+ *
+ * One set rather than one per case: the deployment is built once per `it.layer`
+ * block and shared by every test inside it, so a hook that answered differently
+ * per test would have to be mutable — and then the tests could not run beside
+ * each other. Branching on the address is what keeps them independent.
+ */
+const passwordHooks: AuthHooksService = {
+  beforeUserCreate: ({ candidate, source }) =>
+    candidate.email.includes("veto")
+      ? Effect.fail(new PolicyRefused({ code: "not_welcome", detail: source._tag }))
+      : Effect.succeed({ ...candidate, name: `${candidate.name} (${source._tag})` }),
+  afterUserCreate: ({ user }) =>
+    user.email.includes("after-fails")
+      ? Effect.fail(new PolicyRefused({ code: "related_row_refused" }))
+      : Effect.void,
+  beforeSessionCreate: ({ user }) =>
+    user.email.includes("banned")
+      ? Effect.fail(new PolicyRefused({ code: "banned" }))
+      : Effect.void
+}
+
+layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password source", (it) => {
+  it.effect("rewrites the row a sign-up creates, and says where it came from", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const store = yield* UserStore
+      const email = uniqueEmail("hooks-password-rewrite")
+
+      const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+
+      // The source a password sign-up reports, seen by the hook and written
+      // into the row it answered with.
+      assert.strictEqual(user.name, `${testName} (EmailPassword)`)
+      const stored = yield* expectSome(yield* store.findByEmail(email), "the registered row")
+      assert.strictEqual(stored.name, `${testName} (EmailPassword)`)
+    }))
+
+  it.effect("refuses a sign-up the policy rejects, leaving no user and no credential", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const store = yield* UserStore
+      const email = uniqueEmail("hooks-password-veto")
+
+      const refused = yield* Effect.flip(
+        passwords.signUp({ name: testName, email, password: testPassword })
+      )
+      assert.strictEqual(refused._tag, "PolicyRefused")
+      if (refused._tag === "PolicyRefused") {
+        assert.strictEqual(refused.code, "not_welcome")
+        assert.strictEqual(refused.detail, "EmailPassword")
+      }
+
+      // Nothing was written: the hook runs inside the sign-up's transaction,
+      // ahead of the row it would have created.
+      assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
+    }))
+
+  it.effect("leaves no user row behind when afterUserCreate fails", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const store = yield* UserStore
+      const email = uniqueEmail("hooks-password-after-fails")
+
+      const refused = yield* Effect.flip(
+        passwords.signUp({ name: testName, email, password: testPassword })
+      )
+      assert.strictEqual(refused._tag, "PolicyRefused")
+
+      // The row existed when the hook ran — that is the whole point of
+      // `afterUserCreate` — and the transaction took it away again. A
+      // half-provisioned account, a user with no credential to sign in with,
+      // is what this is here to rule out.
+      assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
+    }))
+
+  it.effect("succeeds with no session when the policy refuses the auto sign-in", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const store = yield* UserStore
+      const email = uniqueEmail("hooks-password-banned")
+
+      const result = yield* passwords.signUp({ name: testName, email, password: testPassword })
+
+      // Pinned semantics: the account was accepted and committed before the
+      // session was asked about, so a refusal answers the shape a deployment
+      // that withholds a session already answers — not a failed registration.
+      assert.isTrue(Option.isNone(result.session))
+      assert.strictEqual(result.user.email, email)
+      assert.isTrue(Option.isSome(yield* store.findByEmail(email)))
+    }))
+})
+
+// The counter belongs to the hashing layer and the layer is built once for the
+// block, so this must not run beside anything else that hashes.
+describe.sequential("domain/Hooks — beforeSessionCreate (timing defence)", () => {
+  const hasher = AuthTest.countingHasher()
+
+  it.layer(AuthTest.layer({ hasher: hasher.layer, hooks: passwordHooks }))((it) => {
+    it.effect("refuses a banned user only after verifying their password once", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const email = uniqueEmail("banned")
+        yield* passwords.signUp({ name: testName, email, password: testPassword })
+
+        const before = hasher.state.verifies
+        const refused = yield* Effect.flip(passwords.signIn({ email, password: testPassword }))
+        assert.strictEqual(refused._tag, "PolicyRefused")
+        if (refused._tag === "PolicyRefused") assert.strictEqual(refused.code, "banned")
+        // Exactly one, and it happened: the hook is consulted after the
+        // constant-cost verification rather than in place of it, so a suspended
+        // account costs what an ordinary one costs and a wrong password against
+        // a suspended account is still `InvalidCredentials`.
+        assert.strictEqual(hasher.state.verifies - before, 1)
+
+        const wrong = hasher.state.verifies
+        const invalid = yield* Effect.flip(passwords.signIn({ email, password: newPassword }))
+        assert.strictEqual(invalid._tag, "InvalidCredentials")
+        assert.strictEqual(hasher.state.verifies - wrong, 1)
+      }))
+  })
+})
+
+// -----------------------------------------------------------------------------
+// The OAuth source
+// -----------------------------------------------------------------------------
+
+/** What a provider hands back, with a subject no other test will claim. */
+const oauthIdentity = (email: string): OAuthIdentity => ({
+  providerId: "github",
+  issuer: oauthIssuer("github"),
+  accountId: `gh-${globalThis.crypto.randomUUID()}`,
+  email,
+  emailVerified: true,
+  name: testName
+})
+
+/** A hook set the OAuth flows are exercised against. */
+const oauthHooks: AuthHooksService = {
+  beforeUserCreate: ({ candidate, source }) =>
+    Effect.succeed({
+      ...candidate,
+      // The whole point of the tagged source: one hook, every provider, and the
+      // verified profile to read a role or a plan off.
+      name: source._tag === "OAuth" ? `${source.providerId}:${source.info.id}` : candidate.name
+    }),
+  beforeAccountLink: ({ info, providerId, user }) =>
+    user.email.includes("no-link")
+      ? Effect.fail(new PolicyRefused({ code: "linking_disabled", detail: `${providerId}:${info.id}` }))
+      : Effect.void
+}
+
+layer(AuthTest.layer({ hooks: oauthHooks, trustedProviders: ["github"] }))("domain/Hooks — OAuth source", (it) => {
+  it.effect("provisions a first-time identity through the hook, which sees the profile", () =>
+    Effect.gen(function*() {
+      const accounts = yield* Accounts
+      const identity = oauthIdentity(uniqueEmail("hooks-oauth-new"))
+
+      const result = yield* accounts.linkOAuth(identity)
+
+      assert.isTrue(result.userCreated)
+      assert.strictEqual(result.user.name, `github:${identity.accountId}`)
+    }))
+
+  it.effect("refuses to attach an identity to an existing user when the policy says not to", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const accounts = yield* Accounts
+      const store = yield* AccountStore
+      const email = uniqueEmail("hooks-oauth-no-link")
+      const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+
+      const identity = oauthIdentity(email)
+      const refused = yield* Effect.flip(accounts.linkOAuth(identity))
+
+      assert.strictEqual(refused._tag, "PolicyRefused")
+      if (refused._tag === "PolicyRefused") {
+        assert.strictEqual(refused.code, "linking_disabled")
+        assert.strictEqual(refused.detail, `github:${identity.accountId}`)
+      }
+      // The refusal is the reason there is no second sign-in method: only the
+      // credential the sign-up wrote.
+      const held = yield* store.listByUserId(user.id)
+      assert.deepStrictEqual(held.map((account) => account.providerId), ["credential"])
+    }))
+
+  it.effect("refuses the same link asked for deliberately, and allows one it does not object to", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords
+      const accounts = yield* Accounts
+      const refusedEmail = uniqueEmail("hooks-oauth-no-link")
+      const { user: refusedUser } = yield* passwords.signUp({
+        name: testName,
+        email: refusedEmail,
+        password: testPassword
+      })
+
+      // `linkSocial`: the person proved they hold both sides, and the policy
+      // still gets to say no.
+      const refused = yield* Effect.flip(
+        accounts.linkToUser(refusedUser.id, oauthIdentity(uniqueEmail("hooks-oauth-other")))
+      )
+      assert.strictEqual(refused._tag, "PolicyRefused")
+
+      const allowedEmail = uniqueEmail("hooks-oauth-link-ok")
+      const { user } = yield* passwords.signUp({ name: testName, email: allowedEmail, password: testPassword })
+      const identity = oauthIdentity(uniqueEmail("hooks-oauth-other"))
+      const linked = yield* accounts.linkToUser(user.id, identity)
+      assert.isTrue(linked.accountCreated)
+
+      // Re-presenting an identity the user already holds attaches nothing, so
+      // the hook has nothing to be asked about — it only refreshes the tokens.
+      const again = yield* accounts.linkToUser(user.id, identity)
+      assert.isFalse(again.accountCreated)
+    }))
 })

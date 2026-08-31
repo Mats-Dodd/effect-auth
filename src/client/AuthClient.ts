@@ -435,13 +435,13 @@ export interface AuthClient<F extends UserFields = {}> {
   readonly signUp: Atom.AtomResultFn<
     SignUpEmailOf<F>,
     SignUpResponseOf<F>,
-    UserAlreadyExists | PasswordPolicyViolation | RateLimited
+    UserAlreadyExists | PasswordPolicyViolation | PolicyRefused | RateLimited
   >
   /** Signs in with an e-mail address and password. Invalidates {@link sessionKey}. */
   readonly signIn: Atom.AtomResultFn<
     SignInEmail,
     SessionWithUserOf<F>,
-    InvalidCredentials | EmailNotVerified | RateLimited
+    InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited
   >
   /** Revokes the current session. Invalidates {@link sessionKey} and {@link sessionsKey}. */
   readonly signOut: Atom.AtomResultFn<void, Ok, Unauthorized>
@@ -470,9 +470,9 @@ export interface AuthClient<F extends UserFields = {}> {
   /** Consumes a verification token. `emailVerified` changes, so this invalidates {@link sessionKey}. */
   readonly verifyEmail: Atom.AtomResultFn<VerifyEmail, Ok, InvalidToken>
   /** Begins an OAuth sign-in; succeeds with the URL to navigate to. See {@link AuthClient.signInSocialUrl}. */
-  readonly signInSocial: Atom.AtomResultFn<SignInSocial, OAuthRedirect, OAuthProviderError | RateLimited>
+  readonly signInSocial: Atom.AtomResultFn<SignInSocial, OAuthRedirect, OAuthProviderError | PolicyRefused | RateLimited>
   /** Begins linking a provider to the signed-in account. */
-  readonly linkSocial: Atom.AtomResultFn<LinkSocial, OAuthRedirect, OAuthProviderError | Unauthorized>
+  readonly linkSocial: Atom.AtomResultFn<LinkSocial, OAuthRedirect, OAuthProviderError | PolicyRefused | Unauthorized>
   /** Removes one of the caller's sign-in methods. Invalidates {@link accountsKey}. */
   readonly unlinkAccount: Atom.AtomResultFn<
     UnlinkAccount,
@@ -550,14 +550,14 @@ export interface AuthClient<F extends UserFields = {}> {
    */
   readonly signInSocialUrl: (
     payload: SignInSocial
-  ) => Effect.Effect<string, OAuthProviderError | RateLimited, AtomRegistry.AtomRegistry>
+  ) => Effect.Effect<string, OAuthProviderError | PolicyRefused | RateLimited, AtomRegistry.AtomRegistry>
   /**
    * Starts an account link and answers the authorization URL to send the
    * browser to.
    */
   readonly linkSocialUrl: (
     payload: LinkSocial
-  ) => Effect.Effect<string, OAuthProviderError | Unauthorized, AtomRegistry.AtomRegistry>
+  ) => Effect.Effect<string, OAuthProviderError | PolicyRefused | Unauthorized, AtomRegistry.AtomRegistry>
 }
 
 const serviceId = "effect-auth/AuthClient"

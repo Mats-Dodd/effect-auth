@@ -43,12 +43,15 @@ import {
   UserAlreadyExists
 } from "./Errors.js"
 import { AuthEvents, passwordMethod, publishSafely } from "./Events.js"
+import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
+import { AuthHooks } from "./Hooks.js"
 import type {
   Session,
   SessionId,
   UserExtras,
   UserFields,
   UserId,
+  UserInsertOf,
   UserModel,
   UserOf
 } from "./Schema.js"
@@ -118,6 +121,13 @@ export const dummyPassword = "effect-auth::timing-defence::not-a-real-password"
  * @since 1.0.0
  */
 export const absentUserId = "00000000-0000-0000-0000-000000000000" as UserId
+
+/**
+ * What every user this module provisions, and every session it mints, came
+ * from. One value rather than a literal per call site: a hook branching on the
+ * source must see the same tag from the sign-up as from the sign-in.
+ */
+const passwordSource: ProvisionSource = { _tag: "EmailPassword" }
 
 // -----------------------------------------------------------------------------
 // Policy
@@ -289,12 +299,24 @@ export interface PasswordsService<F extends UserFields = {}> {
    * Registers a user and their `local:credential` account in one transaction,
    * then — outside it — emits `UserCreated`, sends the verification mail if the
    * configuration asks for one, and establishes a session if it allows one.
+   *
+   * **Gotchas**
+   *
+   * `PolicyRefused` here is `beforeUserCreate` or `afterUserCreate` declining
+   * the registration, and nothing was written: both run inside the transaction
+   * the user and the credential commit in.
+   *
+   * A `beforeSessionCreate` that refuses is *not* a failed sign-up. The row is
+   * committed before that hook is asked, so the answer is a success carrying
+   * `session: None` — the same shape a deployment that requires e-mail
+   * verification already produces. An account that exists and cannot yet start
+   * a session is a state this response has always been able to describe.
    */
   readonly signUp: (
     options: SignUpOptions<F>
   ) => Effect.Effect<
     SignUpResult<F>,
-    UserAlreadyExists | PasswordPolicyViolation | PasswordHashError | PersistenceError
+    UserAlreadyExists | PasswordPolicyViolation | PasswordHashError | PolicyRefused | PersistenceError
   >
 
   /**
@@ -314,10 +336,18 @@ export interface PasswordsService<F extends UserFields = {}> {
    * over-long password early would refuse a credential that was valid under an
    * earlier policy. The key-derivation cost does not depend on the input's
    * length; bounding the request body is the HTTP layer's job.
+   *
+   * `beforeSessionCreate` is consulted last of all, after the verification and
+   * after the e-mail gate, so a `PolicyRefused` is only ever seen by somebody
+   * who presented the right password: a suspension cannot be probed for, and
+   * the one constant-cost verification is never skipped on the way to it.
    */
   readonly signIn: (
     options: SignInOptions
-  ) => Effect.Effect<SignInResult<F>, InvalidCredentials | EmailNotVerified | PasswordHashError | PersistenceError>
+  ) => Effect.Effect<
+    SignInResult<F>,
+    InvalidCredentials | EmailNotVerified | PasswordHashError | PolicyRefused | PersistenceError
+  >
 
   /**
    * Mints a password reset token and hands it to the `AuthEmails` seam.
@@ -511,6 +541,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   const emails = yield* AuthEmails
   const sessions = yield* Sessions
   const events = yield* AuthEvents
+  // A `Context.Reference` with a no-op default, so a deployment that installs
+  // nothing provides nothing — and, being read here, the set is fixed when the
+  // layer is built rather than looked up on every request.
+  const hooks = yield* AuthHooks
 
   const dummyHash = yield* Effect.orDie(hasher.hash(Redacted.make(dummyPassword)))
 
@@ -531,6 +565,40 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       emails.sendVerification({ user, token: issued.token, url }),
       { log: "Warn", message: "verification e-mail delivery failed" }
     ))
+  })
+
+  /**
+   * Writes the user row a sign-up creates, asking the deployment's policy on
+   * the way in and on the way out.
+   *
+   * **Gotchas**
+   *
+   * This is `Users.provision`'s sequence rather than a call to it, and the two
+   * have to stay in step. `Users` reads `Passwords` — it re-authenticates a
+   * caller before deleting their account — so a dependency the other way round
+   * would be a cycle in the layer graph, and `Auth.layer` would not build.
+   *
+   * It opens no transaction of its own: the caller is already inside one, which
+   * is what makes a refusal or a failing `afterUserCreate` abort the whole
+   * sign-up rather than leave a user with no credential.
+   */
+  const provision = Effect.fnUntraced(function*(candidate: UserInsertOf<F>) {
+    const before = hooks.beforeUserCreate
+    // A rewrite goes back through the model's own `insert` variant: what a hook
+    // hands back is an ordinary object, and nothing else would stop it storing
+    // a row the schema rejects. The unrewritten path came out of the caller's
+    // own `makeInsert`, so it is not validated twice.
+    const row = before === undefined
+      ? candidate
+      : yield* insertRow(model.insert, yield* before({ candidate, source: passwordSource }))
+
+    const user = yield* users.create(row)
+
+    const after = hooks.afterUserCreate
+    if (after !== undefined) {
+      yield* after({ user, source: passwordSource })
+    }
+    return user
   })
 
   const credentialAccountFor = (userId: UserId) => accounts.findByIssuerAccountId(CredentialIssuer, userId)
@@ -576,7 +644,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
         image: options.image ?? null,
         ...pickKeys(options, model.extraKeys)
       })
-      const created = yield* users.create(row)
+      const created = yield* provision(row)
       yield* createCredentialAccount(created.id, passwordHash)
       return created
     })).pipe(
@@ -604,6 +672,27 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     if (!config.emailPassword.autoSignIn) {
       return { user, session: Option.none() } satisfies SignUpResult<F>
+    }
+
+    // The last thing asked, and the only hook whose refusal does not undo the
+    // registration: the user row and its credential committed before this ran,
+    // and `beforeUserCreate` — the hook that decides whether somebody may have
+    // an account at all — already said yes. So a refusal here answers the way
+    // `autoSignIn: false` already does, with an account that exists and no
+    // session, rather than deleting somebody who was accepted a moment ago.
+    const beforeSession = hooks.beforeSessionCreate
+    if (beforeSession !== undefined) {
+      const decided = yield* Effect.result(beforeSession({ user, source: passwordSource }))
+      if (decided._tag === "Failure") {
+        // The refusal does not reach the caller, so it is written down: an
+        // operator asking why a registration produced no session should not
+        // have to guess between this and the two configuration switches above.
+        // `code` is deployment-authored and documented as carrying no secret.
+        yield* annotateAuthLogs(
+          Effect.logDebug("a policy refused the session a sign-up would have started", decided.failure)
+        )
+        return { user, session: Option.none() } satisfies SignUpResult<F>
+      }
     }
 
     const created = yield* sessions.create({
@@ -647,6 +736,16 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     if (config.emailPassword.requireEmailVerification && !user.emailVerified) {
       return yield* Effect.fail(new EmailNotVerified())
+    }
+
+    // After the verification above, deliberately. Only somebody who presented
+    // the right password ever reaches this line, so a refusal tells them
+    // nothing they had not already proved they knew — and, because the one
+    // constant-cost verify is behind us rather than in front of us, a suspended
+    // account still costs exactly what an ordinary one does.
+    const beforeSession = hooks.beforeSessionCreate
+    if (beforeSession !== undefined) {
+      yield* beforeSession({ user, source: passwordSource })
     }
 
     const created = yield* sessions.create({

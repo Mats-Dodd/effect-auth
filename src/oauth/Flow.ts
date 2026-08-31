@@ -53,6 +53,7 @@ import { Accounts } from "../domain/Accounts.js"
 import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../domain/Errors.js"
 import { NotFound, OAuthStateMismatch, TokenRefreshFailed } from "../domain/Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "../domain/Events.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
 import type { Account, AccountId, Session, User, UserId } from "../domain/Schema.js"
 import { scopesOf } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
@@ -475,7 +476,12 @@ export interface CallbackResult {
  * @category models
  * @since 1.0.0
  */
-export type CallbackError = OAuthStateMismatch | OAuthProviderError | AccountAlreadyLinked | UserNotFound
+export type CallbackError =
+  | OAuthStateMismatch
+  | OAuthProviderError
+  | AccountAlreadyLinked
+  | PolicyRefused
+  | UserNotFound
 
 /**
  * The outcome of a callback that always resolves to somewhere to send the
@@ -513,6 +519,11 @@ export const errorCode = (error: CallbackError): string => {
       return "state_mismatch"
     case "AccountAlreadyLinked":
       return "account_already_linked"
+    // A deployment's own hook declining the provisioning, the link or the
+    // session. The hook's own `code` names which rule it was; this is only the
+    // classification, and it is this library's, exactly as the others are.
+    case "PolicyRefused":
+      return "policy_refused"
     case "UserNotFound":
       return "user_not_found"
     case "OAuthProviderError":

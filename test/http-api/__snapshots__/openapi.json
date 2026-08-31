@@ -133,6 +133,16 @@
               }
             }
           },
+          "403": {
+            "description": "A deployment policy refused the operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_PolicyRefusedEncoded"
+                }
+              }
+            }
+          },
           "409": {
             "description": "An account already exists for that e-mail address",
             "content": {
@@ -164,7 +174,7 @@
             }
           }
         },
-        "description": "Sets the session cookie and answers a session, unless the configuration withholds one (email verification required, or autoSignIn off), in which case session is null. Sends a verification mail when one is configured.",
+        "description": "Sets the session cookie and answers a session, unless the configuration withholds one (email verification required, or autoSignIn off), in which case session is null. Sends a verification mail when one is configured. PolicyRefused is a deployment's own hook declining the registration, and nothing was written when it is returned; a hook that instead declines only the session answers 200 with session null, because the account does exist.",
         "summary": "Create an account with an e-mail address and password",
         "requestBody": {
           "content": {
@@ -357,11 +367,18 @@
             }
           },
           "403": {
-            "description": "The account's e-mail address has not been verified",
+            "description": "The account's e-mail address has not been verified | A deployment policy refused the operation",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/effect-auth_EmailNotVerifiedEncoded"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect-auth_EmailNotVerifiedEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/effect-auth_PolicyRefusedEncoded"
+                    }
+                  ]
                 }
               }
             }
@@ -377,7 +394,7 @@
             }
           }
         },
-        "description": "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it.",
+        "description": "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it. PolicyRefused is a deployment's own hook declining the session — a suspension, say — and is raised only after the password has been verified, so it is never an answer somebody guessing an address can obtain.",
         "summary": "Sign in with an e-mail address and password",
         "requestBody": {
           "content": {
@@ -1334,6 +1351,16 @@
               }
             }
           },
+          "403": {
+            "description": "A deployment policy refused the operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_PolicyRefusedEncoded"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Too many requests",
             "content": {
@@ -1355,7 +1382,7 @@
             }
           }
         },
-        "description": "Mints single-use state and a PKCE S256 challenge, then returns the authorization URL. Unauthenticated and it writes a row per call, so it is rate limited on the same policy as the credential endpoints.",
+        "description": "Mints single-use state and a PKCE S256 challenge, then returns the authorization URL. Unauthenticated and it writes a row per call, so it is rate limited on the same policy as the credential endpoints. PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the account it provisions or the session it mints is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one.",
         "summary": "Begin an OAuth sign-in",
         "requestBody": {
           "content": {
@@ -1810,6 +1837,16 @@
               }
             }
           },
+          "403": {
+            "description": "A deployment policy refused the operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_PolicyRefusedEncoded"
+                }
+              }
+            }
+          },
           "502": {
             "description": "The OAuth provider exchange failed",
             "content": {
@@ -1821,6 +1858,7 @@
             }
           }
         },
+        "description": "PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the link is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one.",
         "summary": "Begin linking an OAuth provider to the signed-in account",
         "requestBody": {
           "content": {
@@ -2981,6 +3019,35 @@
         ],
         "additionalProperties": false
       },
+      "effect-auth_PolicyRefusedEncoded": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "PolicyRefused"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "_tag",
+          "code"
+        ],
+        "additionalProperties": false
+      },
       "effect-auth_RateLimitedEncoded": {
         "type": "object",
         "properties": {
@@ -3183,35 +3250,6 @@
         },
         "required": [
           "_tag"
-        ],
-        "additionalProperties": false
-      },
-      "effect-auth_PolicyRefusedEncoded": {
-        "type": "object",
-        "properties": {
-          "_tag": {
-            "type": "string",
-            "enum": [
-              "PolicyRefused"
-            ]
-          },
-          "code": {
-            "type": "string"
-          },
-          "detail": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "_tag",
-          "code"
         ],
         "additionalProperties": false
       },

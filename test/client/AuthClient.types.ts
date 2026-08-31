@@ -32,7 +32,7 @@ eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "signOut">>>, E.Unaut
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "signUpEmail">>>,
-    E.UserAlreadyExists | E.PasswordPolicyViolation | E.RateLimited
+    E.UserAlreadyExists | E.PasswordPolicyViolation | Hooks.PolicyRefused | E.RateLimited
   >
 >(true)
 eq<
@@ -51,13 +51,13 @@ eq<Exact<Atom.Failure<ReturnType<typeof S.query<"auth", "getSession">>>, E.Unaut
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "signInSocial">>>,
-    E.OAuthProviderError | E.RateLimited
+    E.OAuthProviderError | Hooks.PolicyRefused | E.RateLimited
   >
 >(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "linkSocial">>>,
-    E.OAuthProviderError | E.Unauthorized
+    E.OAuthProviderError | Hooks.PolicyRefused | E.Unauthorized
   >
 >(true)
 eq<

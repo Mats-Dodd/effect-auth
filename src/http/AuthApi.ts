@@ -627,20 +627,20 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("signUpEmail", "/sign-up/email", {
         payload: makeSignUpEmailPayload(model),
         success: makeSignUpResponse(model),
-        error: [UserAlreadyExists, PasswordPolicyViolation, RateLimited]
+        error: [UserAlreadyExists, PasswordPolicyViolation, PolicyRefused, RateLimited]
       }).annotateMerge(OpenApi.annotations({
         summary: "Create an account with an e-mail address and password",
         description:
-          "Sets the session cookie and answers a session, unless the configuration withholds one (email verification required, or autoSignIn off), in which case session is null. Sends a verification mail when one is configured."
+          "Sets the session cookie and answers a session, unless the configuration withholds one (email verification required, or autoSignIn off), in which case session is null. Sends a verification mail when one is configured. PolicyRefused is a deployment's own hook declining the registration, and nothing was written when it is returned; a hook that instead declines only the session answers 200 with session null, because the account does exist."
       })),
       HttpApiEndpoint.post("signInEmail", "/sign-in/email", {
         payload: SignInEmailPayload,
         success: makeSessionWithUser(model),
-        error: [InvalidCredentials, EmailNotVerified, RateLimited]
+        error: [InvalidCredentials, EmailNotVerified, PolicyRefused, RateLimited]
       }).annotateMerge(OpenApi.annotations({
         summary: "Sign in with an e-mail address and password",
         description:
-          "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it."
+          "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it. PolicyRefused is a deployment's own hook declining the session — a suspension, say — and is raised only after the password has been verified, so it is never an answer somebody guessing an address can obtain."
       })),
       HttpApiEndpoint.post("signOut", "/sign-out", {
         success: Ok
@@ -737,11 +737,11 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("signInSocial", "/sign-in/social", {
         payload: SignInSocialPayload,
         success: OAuthRedirect,
-        error: [OAuthProviderError, RateLimited]
+        error: [OAuthProviderError, PolicyRefused, RateLimited]
       }).annotateMerge(OpenApi.annotations({
         summary: "Begin an OAuth sign-in",
         description:
-          "Mints single-use state and a PKCE S256 challenge, then returns the authorization URL. Unauthenticated and it writes a row per call, so it is rate limited on the same policy as the credential endpoints."
+          "Mints single-use state and a PKCE S256 challenge, then returns the authorization URL. Unauthenticated and it writes a row per call, so it is rate limited on the same policy as the credential endpoints. PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the account it provisions or the session it mints is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one."
       })),
       HttpApiEndpoint.get("oauthCallback", "/callback/:providerId", {
         params: OAuthCallbackParams,
@@ -763,11 +763,13 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("linkSocial", "/link-social", {
         payload: LinkSocialPayload,
         success: OAuthRedirect,
-        error: OAuthProviderError
+        error: [OAuthProviderError, PolicyRefused]
       })
         .middleware(Authenticated)
         .annotateMerge(OpenApi.annotations({
-          summary: "Begin linking an OAuth provider to the signed-in account"
+          summary: "Begin linking an OAuth provider to the signed-in account",
+          description:
+            "PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the link is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one."
         })),
       HttpApiEndpoint.post("unlinkAccount", "/unlink-account", {
         payload: UnlinkAccountPayload,
