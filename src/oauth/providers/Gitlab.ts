@@ -21,6 +21,7 @@
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
 import { optionalConfig } from "../../internal/config.js"
+import { trimTrailingSlashes } from "../../internal/url.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
 import { fetchJson, providerError } from "../Provider.js"
 import { lenient, StringFromNumeric, Truthy } from "../internal/claims.js"
@@ -68,18 +69,11 @@ export interface Endpoints {
 /**
  * Where one GitLab instance's endpoints live.
  *
- * **Gotchas**
- *
- * Trailing slashes are trimmed in a loop rather than with a `/\/+$/` regex: a
- * regex of that shape is a polynomial-backtracking hazard on hostile input, and
- * a configured base URL is configuration, not a constant.
- *
  * @category combinators
  * @since 1.0.0
  */
 export const endpointsOf = (baseUrl?: string | undefined): Endpoints => {
-  let host = baseUrl ?? defaultBaseUrl
-  while (host.endsWith("/")) host = host.slice(0, -1)
+  const host = trimTrailingSlashes(baseUrl ?? defaultBaseUrl)
   return {
     authorizationUrl: `${host}/oauth/authorize`,
     tokenUrl: `${host}/oauth/token`,

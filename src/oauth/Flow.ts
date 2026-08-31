@@ -43,7 +43,7 @@
  *
  * @since 1.0.0
  */
-import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema, String } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -60,7 +60,8 @@ import { scopesOf } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { AccountTokens, PersistenceError } from "../domain/Stores.js"
 import { AccountStore, VerificationStore } from "../domain/Stores.js"
-import { policyRefusedTarget, resolveUrl, withErrorCode } from "../http/OriginCheck.js"
+import { redirectFailure, resolveUrl } from "../http/OriginCheck.js"
+import { trimTrailingSlashes } from "../internal/url.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
 import { isRedirectResponse, Jwks, layerJwks, verify as verifyIdToken } from "./IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
@@ -79,6 +80,7 @@ import {
 import type { IssueOptions, StatePayload } from "./State.js"
 import { codeChallengeMethod, consume as consumeState, issue as issueState } from "./State.js"
 import { lenient, Seconds } from "./internal/claims.js"
+import { jsonWithin } from "./internal/http.js"
 
 // -----------------------------------------------------------------------------
 // Refusing redirects
@@ -146,16 +148,14 @@ export const refuseRedirects = (client: HttpClient.HttpClient): HttpClient.HttpC
  */
 export const layerSafeClient: Layer.Layer<HttpClient.HttpClient, never, HttpClient.HttpClient> = Layer.effect(
   HttpClient.HttpClient,
-  Effect.gen(function*() {
-    return refuseRedirects(yield* HttpClient.HttpClient)
-  })
+  HttpClient.HttpClient.useSync(refuseRedirects)
 )
 
 // -----------------------------------------------------------------------------
 // URLs
 // -----------------------------------------------------------------------------
 
-const joinUrl = (baseUrl: string, path: string): string => `${baseUrl.replace(/\/+$/, "")}${path}`
+const joinUrl = (baseUrl: string, path: string): string => `${trimTrailingSlashes(baseUrl)}${path}`
 
 /**
  * The redirect URI this deployment serves for a provider:
@@ -532,11 +532,9 @@ export const errorCode = (error: CallbackError): string => {
     case "UserNotFound":
       return "user_not_found"
     case "OAuthProviderError":
-      return snakeCase(error.reason)
+      return String.snakeCase(error.reason)
   }
 }
-
-const snakeCase = (value: string): string => value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
 
 // -----------------------------------------------------------------------------
 // Service
@@ -776,7 +774,7 @@ export const make: () => Effect.Effect<
     // retries for a connection that never got made.
     const response = yield* Effect.mapError(resilient(client.execute(request)), failures.unavailable)
     if (response.status >= 400) return yield* Effect.fail(failures.rejected())
-    const body = yield* Effect.mapError(Effect.timeout(response.json, providerRequestTimeout), failures.rejected)
+    const body = yield* Effect.mapError(jsonWithin(response, providerRequestTimeout), failures.rejected)
     const tokens = decodeTokens(body, yield* DateTime.now)
     if (tokens === null) return yield* Effect.fail(failures.rejected())
     return tokens
@@ -967,21 +965,7 @@ export const make: () => Effect.Effect<
       Effect.withSpan(effect, "OAuthFlow.callback", { attributes: { providerId: options.providerId } })
   )
 
-  const failure = (error: CallbackError, errorURL: string | null): CallbackOutcome => {
-    const code = errorCode(error)
-    return {
-      _tag: "Failure",
-      error,
-      // A refusal carries the deployment's own classification beside this
-      // library's, in the one shape every redirect-shaped completion answers
-      // with. `?error=` is unchanged by that: `errorCode` above already answers
-      // `policy_refused` for this case, and it stays the closed set it was.
-      redirectTo: error._tag === "PolicyRefused"
-        ? policyRefusedTarget(config, errorURL, error.code)
-        : withErrorCode(resolveUrl(config, errorURL), code),
-      code
-    }
-  }
+  const failure = redirectFailure(config, errorCode)
 
   const complete = Effect.fnUntraced(function*(options: CallbackOptions) {
     const begun = yield* Effect.result(begin(options))

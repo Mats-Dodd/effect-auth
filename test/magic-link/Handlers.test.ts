@@ -1,15 +1,18 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Layer, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
-import { AuthTest, MagicLinkTest, TestEmails, TestHttpClient } from "../../src/testing/index.js"
+import { AuthTest, MagicLinkTest, TestHttpClient } from "../../src/testing/index.js"
 import { testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
+import { maxAgeSeconds } from "../http/helpers.js"
 
 /**
- * A deployment with a `TestClock` of its own, which a test may move.
+ * {@link MagicLinkTest.layerHttp} on a `TestClock` of its own, which a test may
+ * move.
  *
- * `AuthTest.freshClock` is the wrong tool over HTTP: `HttpApiBuilder` captures a
- * handler's services when the *layer* is built, so a clock provided inside a test
- * body governs the client and nothing behind the router.
+ * The hand-built twin of `AuthTest.layerHttpMovingClock`, which serves this
+ * library's own API rather than the one the plugin's group is added to; its
+ * JSDoc carries the reason a clock has to be part of an HTTP deployment rather
+ * than provided inside a test body.
  */
 const layerMovingClock = (options?: MagicLinkTest.Options) =>
   MagicLinkTest.layerHttp(options).pipe(Layer.provideMerge(Layer.fresh(TestClock.layer())))
@@ -21,19 +24,9 @@ const makeClient = (options?: TestHttpClient.ClientOptions) =>
 /** The token out of the most recent link mailed to an address. */
 const linkToken = (email: string) =>
   Effect.flatMap(
-    TestEmails.TestEmails,
+    AuthTest.TestEmails,
     (emails) => Effect.map(emails.tokenFor(MagicLinkTest.magicLinkKind, email), Redacted.value)
   )
-
-/** The `Max-Age` a response's session cookie was written with, in seconds. */
-const maxAgeSeconds = (
-  response: Parameters<typeof TestHttpClient.responseCookie>[0]
-): number | undefined => {
-  const cookie = TestHttpClient.responseCookie(response)
-  if (Option.isNone(cookie)) return undefined
-  const maxAge = cookie.value.options?.maxAge
-  return maxAge === undefined ? undefined : Duration.toSeconds(Duration.fromInputUnsafe(maxAge))
-}
 
 describe.sequential("magic-link/Handlers", () => {
   layer(MagicLinkTest.layerHttp())("the endpoints", (it) => {

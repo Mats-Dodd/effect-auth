@@ -2,7 +2,6 @@ import { assert, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Encoding, Option, Redacted, Result } from "effect"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
 import * as HmacCrypto from "../../src/crypto/Hmac.js"
-import { Passwords } from "../../src/domain/Passwords.js"
 import { baseUserModel, Session, SessionId, UserId } from "../../src/domain/Schema.js"
 import { refreshDueAt } from "../../src/domain/Sessions.js"
 import {
@@ -13,22 +12,13 @@ import {
 } from "../../src/http/SessionCache.js"
 import { ambientCrypto, encodeUtf8 } from "../../src/internal/crypto.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
-
-/** A session and its user, straight from a sign-up. */
-const signedUp = (email: string) =>
-  Effect.gen(function*() {
-    const passwords = yield* Passwords
-    const result = yield* passwords.signUp({ name: testName, email, password: testPassword })
-    const created = yield* expectSome(result.session, "sign-up should establish a session")
-    return { user: result.user, session: created.session, token: created.token }
-  })
+import { expectSome, signUpUser, uniqueEmail } from "../fixtures.js"
 
 layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (it) => {
   it.effect("round-trips a snapshot through the signed cookie value", () =>
     Effect.gen(function*() {
       const cache = yield* SessionCache
-      const { session, user } = yield* signedUp(uniqueEmail("cache-roundtrip"))
+      const { session, user } = yield* signUpUser(uniqueEmail("cache-roundtrip"))
       const now = yield* DateTime.now
 
       const value = yield* cache.encode({
@@ -49,7 +39,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
   it.effect("refuses a payload that was edited, and a tag that was", () =>
     Effect.gen(function*() {
       const cache = yield* SessionCache
-      const { session, user } = yield* signedUp(uniqueEmail("cache-tamper"))
+      const { session, user } = yield* signUpUser(uniqueEmail("cache-tamper"))
       const now = yield* DateTime.now
 
       const value = yield* cache.encode({
@@ -78,7 +68,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
 
   it.effect("keeps the token hash out of the session half of a snapshot", () =>
     Effect.gen(function*() {
-      const { session } = yield* signedUp(uniqueEmail("cache-snapshot"))
+      const { session } = yield* signUpUser(uniqueEmail("cache-snapshot"))
       const snapshot = yield* sessionSnapshot(session)
 
       assert.isFalse("tokenHash" in snapshot)
@@ -88,7 +78,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
   it.effect("expires a snapshot at the first of the three bounds", () =>
     Effect.gen(function*() {
       const config = yield* AuthConfig
-      const { session } = yield* signedUp(uniqueEmail("cache-expiry"))
+      const { session } = yield* signUpUser(uniqueEmail("cache-expiry"))
       const now = yield* DateTime.now
 
       // A fresh seven-day session becomes refresh-due in a day, so the five
@@ -134,7 +124,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
   it.effect("refuses a snapshot another deployment's secret signed", () =>
     Effect.gen(function*() {
       const cache = yield* SessionCache
-      const { session, user } = yield* signedUp(uniqueEmail("cache-secret"))
+      const { session, user } = yield* signUpUser(uniqueEmail("cache-secret"))
       const now = yield* DateTime.now
       const payload = {
         version: "",
@@ -170,7 +160,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
     Effect.gen(function*() {
       const cache = yield* SessionCache
       const hmac = yield* HmacCrypto.Hmac
-      const { session, user } = yield* signedUp(uniqueEmail("cache-domain"))
+      const { session, user } = yield* signUpUser(uniqueEmail("cache-domain"))
       const now = yield* DateTime.now
 
       const value = yield* cache.encode({

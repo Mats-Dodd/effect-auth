@@ -42,7 +42,7 @@
  */
 import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
-import type { HttpApiEndpoint, HttpApiSecurity } from "effect/unstable/httpapi"
+import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -50,12 +50,7 @@ import { Unauthorized } from "../domain/Errors.js"
 import type { Session, UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import { Sessions, sessionsOf } from "../domain/Sessions.js"
-import {
-  expiredSessionCookieOptions,
-  insecureSessionCookieSecurity,
-  secureSessionCookieSecurity,
-  sessionCookieOptions
-} from "./Cookies.js"
+import { expiredSessionCookieOptions, sessionCookieOptions, sessionCookieSecurity } from "./Cookies.js"
 import type { CurrentUser } from "./Middleware.js"
 import { Authenticated, AuthoritativeSession, CurrentSession, currentUserOf } from "./Middleware.js"
 import { checkOrigin } from "./OriginCheck.js"
@@ -66,23 +61,6 @@ import { SessionCache, sessionCacheOf } from "./SessionCache.js"
 // -----------------------------------------------------------------------------
 
 /**
- * The security scheme whose key is the cookie name this configuration actually
- * writes.
- *
- * **Details**
- *
- * `HttpApiBuilder.securitySetCookie` takes the cookie name from the scheme it is
- * given, so writing the cookie goes through the same two declared schemes that
- * read it. Which of them applies is decided by `cookie.secure`, exactly as
- * `AuthConfig.cookieName` decides the `__Secure-` prefix.
- *
- * @category combinators
- * @since 1.0.0
- */
-export const sessionCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
-  config.cookie.secure ? secureSessionCookieSecurity : insecureSessionCookieSecurity
-
-/**
  * How long a session has left to live at the moment this is evaluated, floored
  * at zero.
  *
@@ -90,10 +68,7 @@ export const sessionCookieSecurity = (config: AuthConfigService): HttpApiSecurit
  * @since 1.0.0
  */
 export const remainingLifetime = (session: Session): Effect.Effect<Duration.Duration> =>
-  Effect.map(DateTime.now, (now) => {
-    const millis = DateTime.toEpochMillis(session.expiresAt) - DateTime.toEpochMillis(now)
-    return Duration.millis(millis > 0 ? millis : 0)
-  })
+  Effect.map(DateTime.now, (now) => Duration.max(Duration.zero, DateTime.distance(now, session.expiresAt)))
 
 /**
  * Attaches the session cookie to the response being built.

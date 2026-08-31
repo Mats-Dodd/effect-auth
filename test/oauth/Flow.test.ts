@@ -7,7 +7,7 @@ import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { decodeTokens, errorCode, OAuthFlow } from "../../src/oauth/Flow.js"
 import { withErrorCode } from "../../src/http/OriginCheck.js"
 import { AuthTest, MockProvider } from "../../src/testing/index.js"
-import { tagsOf, testName, uniqueEmail } from "../fixtures.js"
+import { testName, uniqueEmail } from "../fixtures.js"
 
 /** The origin this deployment is served from. */
 const appOrigin = "https://app.example.com"
@@ -373,7 +373,7 @@ describe.sequential("oauth/Flow", () => {
             })
           }))
 
-          assert.deepStrictEqual(tagsOf(events), ["UserCreated", "AccountLinked", "SignedIn"])
+          assert.deepStrictEqual(AuthTest.tagsOf(events), ["UserCreated", "AccountLinked", "SignedIn"])
           const signedIn = events.find((event) => event._tag === "SignedIn")
           assert.strictEqual(signedIn?._tag === "SignedIn" ? signedIn.method : "", "oauth:mock")
         }))

@@ -31,7 +31,7 @@ import { AuthConfig } from "../config/AuthConfig.js"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthEmails, resetPasswordUrl, verifyEmailUrl, withCallbackUrl } from "../config/AuthEmails.js"
 import { PasswordHasher } from "../crypto/PasswordHasher.js"
-import { annotateAuthLogs, insertRow } from "../internal/effects.js"
+import { annotateAuthLogs, deliverEmail, insertRow, revalidateRewrite } from "../internal/effects.js"
 import { pickKeys } from "../internal/records.js"
 import type { PasswordHashError } from "./Errors.js"
 import {
@@ -67,9 +67,10 @@ import {
   userStoreOf,
   WithAuthTransaction
 } from "./Stores.js"
-// The list of user-subject purposes is declared beside the flows that mint most
-// of them; nothing is read from it before a request runs.
-import { emailVerifyPurpose, passwordResetPurpose, userSubjectPurposes, Verifications } from "./Verifications.js"
+// The user-subject purposes, and the helper that retires them, are declared
+// beside the flows that mint most of them; nothing is read from that list
+// before a request runs.
+import { emailVerifyPurpose, passwordResetPurpose, retireUserSubjectTokens, Verifications } from "./Verifications.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -380,7 +381,7 @@ export interface PasswordsService<F extends UserFields = {}> {
    * session, so revocation is unconditional and runs in the same transaction as
    * the hash update. Every link outstanding for the same user is deleted in
    * that transaction too — not merely the other reset tokens, but the
-   * change-email and delete-account ones as well: any of them would otherwise
+   * change-email and delete-account ones as well — any of them would otherwise
    * let the account be taken straight back out of the hands of somebody who has
    * just re-secured it.
    */
@@ -559,23 +560,18 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       payload: null
     })
     const url = withCallbackUrl(config, verifyEmailUrl(config, issued.token), callbackURL)
-    // Delivery is the application's responsibility and its failure must not
-    // change what the caller observes; it is logged and dropped.
-    yield* annotateAuthLogs(Effect.ignore(
+    yield* deliverEmail(
       emails.sendVerification({ user, token: issued.token, url }),
-      { log: "Warn", message: "verification e-mail delivery failed" }
-    ))
+      "verification e-mail delivery failed"
+    )
   })
 
   /**
    * Puts what a `beforeUserCreate` answered with back through the schema, and
-   * re-normalizes the address it answered with. See `Users.provision`'s twin of
-   * this for why the address matters.
+   * re-normalizes the address it answered with. See `revalidateRewrite` for why
+   * the address matters.
    */
-  const rewritten = Effect.fnUntraced(function*(answer: UserInsertOf<{}>) {
-    const validated = yield* insertRow(model.insert, answer)
-    return Object.assign(validated, { email: normalizeEmail(validated.email) })
-  })
+  const rewritten = (answer: UserInsertOf<{}>) => revalidateRewrite(model.makeInsert, answer, normalizeEmail)
 
   /**
    * Writes the user row a sign-up creates, asking the deployment's policy on
@@ -800,10 +796,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       payload: null
     })
     const url = withCallbackUrl(config, resetPasswordUrl(config, issued.token), options.redirectTo)
-    yield* annotateAuthLogs(Effect.ignore(
+    yield* deliverEmail(
       emails.sendPasswordReset({ user, token: issued.token, url }),
-      { log: "Warn", message: "password reset e-mail delivery failed" }
-    ))
+      "password reset e-mail delivery failed"
+    )
     yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: user.id })
   })
 
@@ -836,9 +832,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // was never verified, one of those may well be outstanding: the flow
       // skips its first hop there, so whoever registered the address could
       // have aimed the account at a mailbox of their own.
-      for (const kind of userSubjectPurposes) {
-        yield* verifications.retire(kind, userId)
-      }
+      yield* retireUserSubjectTokens(verifications, userId)
       return yield* sessionStore.deleteByUserId(userId)
     }))
 
@@ -926,9 +920,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     // outstanding link whose subject is this user goes with it — a reset link
     // somebody asked for beforehand, and just as much a `change-email-verify`
     // link that would move the account to an address they chose.
-    for (const kind of userSubjectPurposes) {
-      yield* verifications.retire(kind, options.userId)
-    }
+    yield* retireUserSubjectTokens(verifications, options.userId)
 
     if (options.revokeOtherSessions !== false) {
       yield* options.currentSessionId === undefined

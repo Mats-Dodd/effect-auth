@@ -62,7 +62,7 @@ import {
   withCallbackUrl
 } from "../config/AuthEmails.js"
 import { resolveUrl, validateUrl } from "../http/OriginCheck.js"
-import { annotateAuthLogs, insertRow } from "../internal/effects.js"
+import { annotateAuthLogs, deliverEmail, revalidateRewrite } from "../internal/effects.js"
 import { omitUndefined, pickKeys } from "../internal/records.js"
 import type { SessionNotFresh } from "./Errors.js"
 import { EmailUnchanged, InvalidCredentials, InvalidToken, UserAlreadyExists, UserNotFound } from "./Errors.js"
@@ -81,7 +81,7 @@ import {
   changeEmailVerifyPurpose,
   deleteAccountPurpose,
   emailVerifyPurpose,
-  userSubjectPurposes,
+  retireUserSubjectTokens,
   Verifications
 } from "./Verifications.js"
 
@@ -406,6 +406,12 @@ export interface UsersService<F extends UserFields = {}> {
    * From an application's own administrative code. Sessions and accounts cascade
    * with the row, and this user's outstanding verification tokens are retired
    * with it. Emits `UserDeleted` after the row has gone.
+   *
+   * **Gotchas**
+   *
+   * Only a call that actually removed the row publishes. Handing the same user
+   * back a second time retires the tokens again — which changes nothing — and
+   * announces nothing, because there was no second deletion to act on.
    */
   readonly delete: (user: UserOf<F>) => Effect.Effect<void, PersistenceError>
 }
@@ -491,17 +497,6 @@ export const make: <F extends UserFields>(
   const passwords = yield* Passwords
 
   /**
-   * Hands a message to the seam and forgets whatever it says.
-   *
-   * Delivery is the application's responsibility and its failure must not change
-   * what the caller observes — least of all on the change-email path, where a
-   * distinguishable answer would be the enumeration oracle the whole flow is
-   * shaped to avoid.
-   */
-  const deliver = <E>(email: Effect.Effect<void, E>, message: string): Effect.Effect<void> =>
-    annotateAuthLogs(Effect.ignore(email, { log: "Warn", message }))
-
-  /**
    * The second hop: a token minted for the new address and mailed to it.
    *
    * Any hop-two token already outstanding for this user is retired first, so a
@@ -520,7 +515,7 @@ export const make: <F extends UserFields>(
       ttl: config.tokens.changeEmailTtl,
       payload: { newEmail }
     })
-    yield* deliver(
+    yield* deliverEmail(
       emails.sendChangeEmailVerification({
         user,
         newEmail,
@@ -537,37 +532,30 @@ export const make: <F extends UserFields>(
    * a live link to an account whose owner believes it is gone.
    */
   const deleteUser = Effect.fnUntraced(function*(user: UserOf<F>) {
-    yield* transaction.run(Effect.gen(function*() {
-      yield* users.delete(user.id)
-      for (const kind of userSubjectPurposes) {
-        yield* verifications.retire(kind, user.id)
-      }
+    const removed = yield* transaction.run(Effect.gen(function*() {
+      const deleted = yield* users.delete(user.id)
+      yield* retireUserSubjectTokens(verifications, user.id)
       // The one purpose keyed by the address rather than by the id.
       yield* verifications.retire(emailVerifyPurpose, normalizeEmail(user.email))
+      return deleted
     }))
+    // The row had already gone — the same user handed here twice, a deletion
+    // that raced this one. The retirements above are idempotent and stand, but
+    // the event says a user was deleted and this call deleted nobody: a second
+    // `UserDeleted` would have a subscriber act twice on one deletion.
+    if (!removed) return
     yield* publishSafely(events, { _tag: "UserDeleted", userId: user.id, email: user.email })
   })
 
   // ---------------------------------------------------------------------------
 
   /**
-   * Puts what a `beforeUserCreate` answered with back through the schema.
-   *
-   * **Gotchas**
-   *
-   * The address is re-normalized on the way out. Every read of a user by e-mail
-   * in this library looks the address up as `normalizeEmail(…)` — the stored
-   * column is normalized by the discipline of every caller that writes it, not
-   * by the schema — so a hook that rewrote `email` to `User@Example.com` would
-   * store a row that no sign-in, no reset and no link could ever find again,
-   * and that the duplicate pre-check would not see either. Normalizing costs a
-   * rewrite nothing and is the one invariant a rewrite could otherwise break
-   * silently.
+   * Puts what a `beforeUserCreate` answered with back through the schema, and
+   * re-normalizes the address it answered with. See `revalidateRewrite` for why
+   * the address matters — normalizing costs a rewrite nothing and is the one
+   * invariant a rewrite could otherwise break silently.
    */
-  const rewritten = Effect.fnUntraced(function*(answer: UserInsertOf<{}>) {
-    const validated = yield* insertRow(model.insert, answer)
-    return Object.assign(validated, { email: normalizeEmail(validated.email) })
-  })
+  const rewritten = (answer: UserInsertOf<{}>) => revalidateRewrite(model.makeInsert, answer, normalizeEmail)
 
   const provision = Effect.fnUntraced(function*(options: ProvisionOptions<F>) {
     // The deployment's own columns are filled in *before* the hook is asked, not
@@ -679,7 +667,7 @@ export const make: <F extends UserFields>(
       ttl: config.tokens.changeEmailTtl,
       payload: { newEmail }
     })
-    yield* deliver(
+    yield* deliverEmail(
       emails.sendChangeEmailConfirmation({
         user,
         newEmail,
@@ -803,7 +791,7 @@ export const make: <F extends UserFields>(
         ttl: config.tokens.deleteAccountTtl,
         payload: { callbackURL: Option.getOrNull(validateUrl(config, options.callbackURL)) }
       })
-      yield* deliver(
+      yield* deliverEmail(
         emails.sendDeleteAccountConfirmation({
           user: options.user,
           token: issued.token,

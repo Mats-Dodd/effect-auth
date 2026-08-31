@@ -218,14 +218,11 @@ export const cacheExpiry = (
   config: AuthConfigService,
   session: Session,
   now: DateTime.Utc
-): DateTime.Utc => {
-  const candidates = [
+): DateTime.Utc =>
+  DateTime.min(
     DateTime.addDuration(now, config.cookieCache.maxAge),
-    refreshDueAt(session, config),
-    session.expiresAt
-  ]
-  return candidates.reduce((earliest, candidate) => DateTime.isLessThan(candidate, earliest) ? candidate : earliest)
-}
+    DateTime.min(refreshDueAt(session, config), session.expiresAt)
+  )
 
 /**
  * The version string a snapshot of this session and user is written — and read —
@@ -485,10 +482,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     const now = yield* DateTime.now
     const expiresAt = cacheExpiry(config, session, now)
-    const maxAge = Duration.millis(DateTime.toEpochMillis(expiresAt) - DateTime.toEpochMillis(now))
+    const maxAge = DateTime.distance(now, expiresAt)
     // A session that is already due for a refresh, or already over, has nothing
     // worth snapshotting: the next request has to reach the database anyway.
-    if (Duration.toMillis(maxAge) <= 0) return
+    if (!Duration.isPositive(maxAge)) return
 
     const value = yield* encode({
       version: cacheVersion(config, session, user),
@@ -500,7 +497,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       user
     })
 
-    if (encodeUtf8(value).length > maxCookieBytes) {
+    if (value.length > maxCookieBytes) {
       yield* annotateAuthLogs(Effect.logDebug("session cache snapshot too large for a cookie; not written"))
       return
     }

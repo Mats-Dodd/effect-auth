@@ -33,7 +33,7 @@ import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, Redacted,
 import { Token } from "../crypto/Token.js"
 import { insertRow } from "../internal/effects.js"
 import { InvalidToken } from "./Errors.js"
-import type { Verification } from "./Schema.js"
+import type { UserId, Verification } from "./Schema.js"
 import { Verification as VerificationModel } from "./Schema.js"
 import type { PersistenceError } from "./Stores.js"
 import { VerificationStore } from "./Stores.js"
@@ -335,6 +335,26 @@ export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
   changeEmailVerifyPurpose,
   deleteAccountPurpose
 ]
+
+/**
+ * Retires every outstanding token whose subject is this user — one call for
+ * each of the {@link userSubjectPurposes}.
+ *
+ * **When to use**
+ *
+ * Wherever an account stops being the account those tokens were minted against:
+ * a deletion, a password reset, a magic-link takeover defence. See
+ * {@link userSubjectPurposes} for what each of those has to destroy, and for
+ * why `email-verify` is not among them.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const retireUserSubjectTokens = (
+  verifications: VerificationsService,
+  userId: UserId
+): Effect.Effect<void, PersistenceError> =>
+  Effect.forEach(userSubjectPurposes, (purpose) => verifications.retire(purpose, userId), { discard: true })
 
 // -----------------------------------------------------------------------------
 // Service

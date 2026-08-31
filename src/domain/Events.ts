@@ -572,9 +572,18 @@ export const layer = (options?: { readonly capacity?: number | undefined }): Lay
  *
  * **When to use**
  *
- * This is what the domain services call. It exists so that a single
- * `yield* emit(...)` after a commit can never turn a successful sign-in into a
- * failed request, whatever a future hub implementation does.
+ * In consumer code that has {@link AuthEvents} in its requirements and no
+ * resolved service to hand — a plugin, an application effect that publishes an
+ * event of this library's own. It is {@link publishSafely} with the lookup
+ * folded in, so a single `yield* emit(...)` after a commit can never turn a
+ * successful request into a failed one, whatever a future hub implementation
+ * does.
+ *
+ * **Gotchas**
+ *
+ * The domain services do not use this: each of them resolves `AuthEvents` when
+ * its layer is built and calls {@link publishSafely} directly, which is what
+ * keeps `AuthEvents` out of the requirements of every method.
  *
  * @category combinators
  * @since 1.0.0

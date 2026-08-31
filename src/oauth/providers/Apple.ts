@@ -32,9 +32,10 @@ import { Config, DateTime, Duration, Effect, Option, Redacted, Schema } from "ef
 import { importPKCS8, SignJWT } from "jose"
 import { optionalConfig } from "../../internal/config.js"
 import type { OAuthProviderError } from "../../domain/Errors.js"
-import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo, UserInfoOptions } from "../Provider.js"
+import type { OAuthProviderConfig, OAuthTokens, UserInfoOptions } from "../Provider.js"
 import { providerError } from "../Provider.js"
 import { lenient } from "../internal/claims.js"
+import { identityOf } from "../internal/userInfo.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -332,19 +333,13 @@ export const make = (options: Options): OAuthProviderConfig => {
     const claims = tokens.idTokenClaims
     // The whole identity is in the token: Apple has no user-info endpoint.
     if (claims === null) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
-    if (claims.email === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
 
-    return {
-      id: claims.subject,
-      email: claims.email,
-      // Apple spells this `true` or `"true"`; `verify` has already normalized
-      // both, and anything else reads as unverified.
-      emailVerified: claims.emailVerified,
-      // The first authorization is the only one that carries a name. Every
-      // later sign-in has none, and falls back to the address.
-      name: nameOf(info?.params?.user) ?? claims.name ?? claims.email,
-      image: claims.picture
-    } satisfies OAuthUserInfo
+    // The first authorization is the only one that carries a name. Every later
+    // sign-in has none, and falls back to what the token says. `emailVerified`
+    // is Apple's `true` or `"true"`, which `verify` has already normalized.
+    const identity = identityOf(claims, nameOf(info?.params?.user))
+    if (identity === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    return identity
   })
 
   const audience = options.audience ?? options.appBundleIdentifier ?? options.clientId

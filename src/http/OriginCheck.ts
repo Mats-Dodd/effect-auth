@@ -17,10 +17,12 @@
  *
  * @since 1.0.0
  */
-import { Array, Effect, Option, Schema } from "effect"
+import { Effect, Option } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import * as InternalOrigins from "../internal/origins.js"
 
 // -----------------------------------------------------------------------------
 // Origins
@@ -33,10 +35,7 @@ import { Unauthorized } from "../domain/Errors.js"
  * @category constructors
  * @since 1.0.0
  */
-export const webProtocols: ReadonlySet<string> = new Set(["http:", "https:"])
-
-/** `new URL(s)` as a total function: an unparseable string decodes to `None`. */
-const decodeUrl = Schema.decodeOption(Schema.URLFromString)
+export const webProtocols: ReadonlySet<string> = InternalOrigins.webProtocols
 
 /** `new URL(s, base)` as a total function — no base-relative schema exists. */
 const resolveAgainst = Option.liftThrowable(
@@ -61,11 +60,7 @@ const resolveAgainst = Option.liftThrowable(
  * @category combinators
  * @since 1.0.0
  */
-export const originOf = (url: string): Option.Option<string> =>
-  Option.flatMap(
-    decodeUrl(url),
-    (parsed) => webProtocols.has(parsed.protocol) ? Option.some(parsed.origin) : Option.none()
-  )
+export const originOf: (url: string) => Option.Option<string> = InternalOrigins.originOf
 
 /**
  * Builds the set of origins a configuration trusts: the one `baseUrl` is served
@@ -73,30 +68,27 @@ export const originOf = (url: string): Option.Option<string> =>
  *
  * **When to use**
  *
- * From `AuthConfig.make`, to compute the set once when the configuration is
- * built. {@link trustedOrigins} is the reader every request path goes through,
- * and it caches per configuration object, so calling this directly is only
- * needed where the set itself is wanted as a value.
+ * Where the set is wanted as a value for options that are not a resolved
+ * configuration. `AuthConfig.make` calls this once when the configuration is
+ * built, and {@link trustedOrigins} reads the result back — which is the path
+ * every request goes through.
  *
  * @category constructors
  * @since 1.0.0
  */
-export const trustedOriginSet = (options: {
+export const trustedOriginSet: (options: {
   readonly baseUrl: string
   readonly trustedOrigins: ReadonlyArray<string>
-}): ReadonlySet<string> => new Set(Array.getSomes([options.baseUrl, ...options.trustedOrigins].map(originOf)))
-
-/** Keyed by the configuration object, which is built once per layer. */
-const originSets = new WeakMap<AuthConfigService, ReadonlySet<string>>()
+}) => ReadonlySet<string> = InternalOrigins.trustedOriginSet
 
 /**
  * Every origin this deployment trusts.
  *
  * **Details**
  *
- * Computed once per configuration object and memoized: this is on the hot path
- * of every state-changing request and of every redirect target, and parsing the
- * same handful of URLs per request bought nothing.
+ * A field read: the set is parsed once, by `AuthConfig.make`, because this is
+ * on the hot path of every state-changing request and of every redirect target,
+ * and parsing the same handful of URLs per request bought nothing.
  *
  * **Gotchas**
  *
@@ -107,13 +99,7 @@ const originSets = new WeakMap<AuthConfigService, ReadonlySet<string>>()
  * @category combinators
  * @since 1.0.0
  */
-export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> => {
-  const cached = originSets.get(config)
-  if (cached !== undefined) return cached
-  const origins = trustedOriginSet(config)
-  originSets.set(config, origins)
-  return origins
-}
+export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> => config.trustedOriginSet
 
 /**
  * Whether an origin header value is one this deployment trusts.
@@ -276,6 +262,64 @@ export const policyRefusedTarget = (
   const url = new URL(withErrorCode(resolveUrl(config, errorURL), "policy_refused"))
   url.searchParams.set("code", code)
   return url.toString()
+}
+
+/**
+ * The failure half of a redirect-shaped outcome: the error, somewhere to send
+ * the browser, and the safe code that was appended to it.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface RedirectFailure<E> {
+  readonly _tag: "Failure"
+  readonly error: E
+  /**
+   * The validated error URL, carrying `?error=<code>` — and, when a
+   * deployment's own hook was what refused, `&code=<the hook's code>` beside it.
+   */
+  readonly redirectTo: string
+  /** The safe, closed-set error code that was appended. */
+  readonly code: string
+}
+
+/** A refusal among a flow's own errors, without naming the flow's union. */
+const isPolicyRefused = (error: { readonly _tag: string }): error is PolicyRefused => error._tag === "PolicyRefused"
+
+/**
+ * Builds the {@link RedirectFailure} a flow answers a failed completion with.
+ *
+ * **When to use**
+ *
+ * From a flow whose failures are reported by redirecting rather than by an
+ * error body — the OAuth callback, a magic link. `errorCode` is that flow's own
+ * closed-set classification, which is the only part of the shape that differs
+ * between them.
+ *
+ * **Details**
+ *
+ * A refusal carries the deployment's own classification beside this library's,
+ * in the one shape every redirect-shaped completion answers with. `?error=` is
+ * unchanged by that: a flow's `errorCode` already answers `policy_refused` for
+ * that case, and it stays the closed set it was.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const redirectFailure = <E extends { readonly _tag: string }>(
+  config: AuthConfigService,
+  errorCode: (error: E) => string
+): (error: E, errorURL: string | null | undefined) => RedirectFailure<E> =>
+(error, errorURL) => {
+  const code = errorCode(error)
+  return {
+    _tag: "Failure",
+    error,
+    redirectTo: isPolicyRefused(error)
+      ? policyRefusedTarget(config, errorURL, error.code)
+      : withErrorCode(resolveUrl(config, errorURL), code),
+    code
+  }
 }
 
 // -----------------------------------------------------------------------------

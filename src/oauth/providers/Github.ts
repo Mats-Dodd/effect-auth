@@ -19,6 +19,7 @@
 import type { Redacted } from "effect"
 import { Array, Config, Effect, Option, Schema } from "effect"
 import { optionalConfig } from "../../internal/config.js"
+import { trimTrailingSlashes } from "../../internal/url.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
 import { fetchJson, providerError } from "../Provider.js"
 import { lenient, StringFromNumeric } from "../internal/claims.js"
@@ -239,8 +240,8 @@ export interface Options {
  * @since 1.0.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
-  const webUrl = (options.webUrl ?? defaultWebUrl).replace(/\/+$/, "")
-  const apiUrl = (options.apiUrl ?? defaultApiUrl).replace(/\/+$/, "")
+  const webUrl = trimTrailingSlashes(options.webUrl ?? defaultWebUrl)
+  const apiUrl = trimTrailingSlashes(options.apiUrl ?? defaultApiUrl)
   const scopes = [...defaultScopes, ...(options.scopes ?? [])]
 
   const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {

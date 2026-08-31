@@ -510,7 +510,5 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
 export const safeHttpLayer = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.effect(
     HttpClient.HttpClient,
-    Effect.gen(function*() {
-      return refuseRedirects(yield* HttpClient.HttpClient)
-    })
+    HttpClient.HttpClient.useSync(refuseRedirects)
   ).pipe(Layer.provide(layerFetch(fetch)))

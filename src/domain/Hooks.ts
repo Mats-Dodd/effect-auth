@@ -52,6 +52,7 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Schema } from "effect"
+import { omitUndefined } from "../internal/records.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import type { UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 
@@ -336,12 +337,14 @@ export const combine = (first: AuthHooksService, second: AuthHooksService): Auth
   // named all six would turn "no hook here" into "a hook that does nothing",
   // which is observably different to a caller that branches on absence.
   return {
-    ...(beforeUserCreate === undefined ? {} : { beforeUserCreate }),
-    ...(afterUserCreate === undefined ? {} : { afterUserCreate }),
-    ...(beforeSessionCreate === undefined ? {} : { beforeSessionCreate }),
-    ...(beforeEmailChange === undefined ? {} : { beforeEmailChange }),
-    ...(beforeUserDelete === undefined ? {} : { beforeUserDelete }),
-    ...(beforeAccountLink === undefined ? {} : { beforeAccountLink })
+    ...omitUndefined({
+      beforeUserCreate,
+      afterUserCreate,
+      beforeSessionCreate,
+      beforeEmailChange,
+      beforeUserDelete,
+      beforeAccountLink
+    })
   }
 }
 

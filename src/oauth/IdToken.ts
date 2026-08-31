@@ -27,6 +27,7 @@ import type { JWTPayload, JWTVerifyGetKey } from "jose"
 import { createLocalJWKSet, jwtVerify } from "jose"
 import { OAuthProviderError as ProviderError } from "../domain/Errors.js"
 import { lenient, Truthy } from "./internal/claims.js"
+import { jsonWithin } from "./internal/http.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -347,7 +348,7 @@ export const makeJwks: (
       // Belt and braces: the client refuses redirects, and a redirect that
       // reached this far is still not a key set.
       if (isRedirectResponse(response) || response.status >= 400) return yield* Effect.fail(unavailable)
-      const body = yield* Effect.mapError(Effect.timeout(response.json, jwksRequestTimeout), () => unavailable)
+      const body = yield* Effect.mapError(jsonWithin(response, jwksRequestTimeout), () => unavailable)
       const keySet = yield* Effect.mapError(decodeKeySet(body), () => unavailable)
       return yield* Effect.try({ try: () => createLocalJWKSet(keySet), catch: () => unavailable })
     })
@@ -463,14 +464,18 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   // A fixed issuer is handed to jose, which checks it alongside the signature.
   // A derived one cannot be: it is a function of claims that are not yet
   // trustworthy, so the expectation is computed *after* the signature verifies
-  // and compared below. Either way, exactly one comparison decides it.
-  const fixedIssuer = typeof options.issuer === "string" ? options.issuer : undefined
+  // and compared below. Either way, exactly one comparison decides it. Both
+  // arms come out of the one `typeof`, which is the only place the configured
+  // shape is known.
+  const expectedIssuer = typeof options.issuer === "string"
+    ? { fixed: options.issuer, derive: undefined }
+    : { fixed: undefined, derive: options.issuer }
 
   const attempt = (keys: KeyResolver) =>
     Effect.tryPromise({
       try: () =>
         jwtVerify(Redacted.value(options.token), keys, {
-          ...(fixedIssuer === undefined ? {} : { issuer: fixedIssuer }),
+          ...(expectedIssuer.fixed === undefined ? {} : { issuer: expectedIssuer.fixed }),
           audience: typeof options.audience === "string" ? options.audience : [...options.audience],
           currentDate: DateTime.toDate(now),
           clockTolerance: options.clockToleranceSeconds ?? 0,
@@ -490,7 +495,7 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   // The derived case: what the deployment expects for *this* token, against what
   // the token says. A function that cannot name an issuer for these claims — an
   // unrecognised tenant — rejects, exactly as a mismatch does.
-  const issuer = fixedIssuer ?? (typeof options.issuer === "string" ? options.issuer : options.issuer(payload))
+  const issuer = expectedIssuer.derive === undefined ? expectedIssuer.fixed : expectedIssuer.derive(payload)
   if (issuer === null || issuer.length === 0 || payload.iss !== issuer) {
     return yield* Effect.fail(invalid)
   }

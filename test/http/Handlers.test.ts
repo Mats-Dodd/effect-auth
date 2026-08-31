@@ -1,77 +1,11 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { Cause, DateTime, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Cause, DateTime, Duration, Effect, Option, Redacted, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { PolicyRefused } from "../../src/domain/Hooks.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
-import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
-
-/**
- * A deployment with a `TestClock` of its own, which a test may move.
- *
- * **Gotchas**
- *
- * `AuthTest.freshClock` is the wrong tool over HTTP. `HttpApiBuilder` captures
- * each handler's services when the *layer* is built and re-provides them on
- * every request, so a clock provided inside a test body governs the client and
- * nothing behind the router — the handlers would go on reading the block's.
- * The clock has to be part of the deployment instead: provided to it, so the
- * handlers capture this one, and merged out of it, so the test that moves it is
- * moving the same one.
- */
-const layerMovingClock = (options?: AuthTest.Options) =>
-  AuthTest.layerHttp(options).pipe(Layer.provideMerge(Layer.fresh(TestClock.layer())))
-
-/**
- * A browser addressing this block's deployment, with a jar the test can read.
- */
-const makeClient = (options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.makeClient(AuthTest.TestApi, options)
-
-/**
- * Registers an account and returns the browser that is signed in as it.
- *
- * **Gotchas**
- *
- * `email` is required rather than defaulted: every test in the block writes to
- * one database, so two of them signing `ada@example.com` up would collide on
- * the unique index instead of testing anything.
- */
-const signedUp = (email: string, options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.signedUp({ ...options, email, name: testName, password: testPasswordText })
-
-/** The `Max-Age` a response's session cookie was written with, in seconds. */
-const maxAgeSeconds = (
-  response: Parameters<typeof TestHttpClient.responseCookie>[0]
-): number | undefined => {
-  const cookie = TestHttpClient.responseCookie(response)
-  if (Option.isNone(cookie)) return undefined
-  const maxAge = cookie.value.options?.maxAge
-  return maxAge === undefined ? undefined : Duration.toSeconds(Duration.fromInputUnsafe(maxAge))
-}
-
-/**
- * The status behind a request the generated client could not decode.
- *
- * **Details**
- *
- * An endpoint whose feature is switched off answers `404`, which is a status no
- * such endpoint declares — so the client reports an `HttpClientError` carrying
- * the response rather than one of the contract's own errors. Reading the status
- * off it is how a test says "not served" without asserting on the shape of a
- * decode failure. Anything the client *could* decode answers its own status.
- */
-const refusedStatus = <A, E>(request: Effect.Effect<A, E>): Effect.Effect<number> =>
-  Effect.match(request, {
-    onSuccess: () => 200,
-    onFailure: (error) =>
-      typeof error === "object" && error !== null && "reason" in error &&
-        typeof error.reason === "object" && error.reason !== null && "response" in error.reason &&
-        typeof error.reason.response === "object" && error.reason.response !== null &&
-        "status" in error.reason.response && typeof error.reason.response.status === "number"
-        ? error.reason.response.status
-        : 0
-  })
+import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { makeClient, maxAgeSeconds, signedUp } from "./helpers.js"
 
 const sevenDays = Duration.toSeconds(Duration.days(7))
 const oneDay = Duration.toSeconds(Duration.days(1))
@@ -462,7 +396,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
   // The four tests that move the clock, on a deployment whose clock they own.
   // They run in order and share that clock, which costs them nothing: each one
   // signs its own account up first and then measures from there.
-  it.layer(layerMovingClock())("as time passes", (it) => {
+  it.layer(AuthTest.layerHttpMovingClock())("as time passes", (it) => {
     describe.sequential("on the deployment's own clock", () => {
       it.effect("requires a fresh session to change a password", () =>
         Effect.gen(function*() {
@@ -550,12 +484,14 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         // that" means over HTTP rather than inventing an error the contract does
         // not mention.
         assert.strictEqual(
-          yield* refusedStatus(client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-new") } })),
+          yield* TestHttpClient.refusedStatus(
+            client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-new") } })
+          ),
           404
         )
-        assert.strictEqual(yield* refusedStatus(client.auth.deleteUser({ payload: {} })), 404)
+        assert.strictEqual(yield* TestHttpClient.refusedStatus(client.auth.deleteUser({ payload: {} })), 404)
         assert.strictEqual(
-          yield* refusedStatus(client.auth.confirmEmailChange({ query: { token: "irrelevant" } })),
+          yield* TestHttpClient.refusedStatus(client.auth.confirmEmailChange({ query: { token: "irrelevant" } })),
           404
         )
 

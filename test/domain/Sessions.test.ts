@@ -2,38 +2,10 @@ import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
-import type { AuthEvent } from "../../src/domain/Events.js"
-import { Passwords } from "../../src/domain/Passwords.js"
 import { grantedLifetime, isFreshAt, refreshDueAt, Sessions } from "../../src/domain/Sessions.js"
 import { SessionStore } from "../../src/domain/Stores.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
-
-/**
- * Registers a user and returns their first session.
- *
- * **Gotchas**
- *
- * Every test in the block writes to one database, so `email` must be a
- * {@link uniqueEmail}: two tests signing `ada@example.com` up would collide on
- * the unique index rather than testing anything.
- */
-const signUp = Effect.fnUntraced(function*(email: string) {
-  const passwords = yield* Passwords
-  const result = yield* passwords.signUp({ name: testName, email, password: testPassword })
-  const session = yield* expectSome(result.session, "sign-up should establish a session")
-  return { user: result.user, ...session }
-})
-
-/**
- * The events one user's flows published.
- *
- * The event hub belongs to the deployment, and the deployment is shared by
- * every test in the block, so an assertion on the whole recording would also be
- * an assertion about whatever the siblings happened to be doing.
- */
-const forUser = (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
-  events.filter((event) => event.userId === userId)
+import { forUser, signUpUser, uniqueEmail } from "../fixtures.js"
 
 layer(AuthTest.layer())("domain/Sessions", (it) => {
   describe("create", () => {
@@ -41,7 +13,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       Effect.gen(function*() {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("create"))
+        const { user } = yield* signUpUser(uniqueEmail("create"))
 
         const { session, token } = yield* sessions.create({
           userId: user.id,
@@ -68,7 +40,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       Effect.gen(function*() {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("remember-me"))
+        const { user } = yield* signUpUser(uniqueEmail("remember-me"))
 
         const { session } = yield* sessions.create({ userId: user.id, rememberMe: false })
 
@@ -95,7 +67,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       AuthTest.freshClock(Effect.gen(function*() {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("update-age"))
+        const { user } = yield* signUpUser(uniqueEmail("update-age"))
         const created = yield* sessions.create({ userId: user.id })
 
         // One millisecond before the refresh is due: read-only.
@@ -131,7 +103,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         const sessions = yield* Sessions
         const store = yield* SessionStore
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("expiry"))
+        const { user } = yield* signUpUser(uniqueEmail("expiry"))
         const created = yield* sessions.create({ userId: user.id })
 
         yield* TestClock.adjust(Duration.sum(config.session.expiresIn, Duration.millis(1)))
@@ -155,7 +127,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
           AuthTest.freshClock(Effect.gen(function*() {
             const sessions = yield* Sessions
             const config = yield* AuthConfig
-            const { user } = yield* signUp(uniqueEmail("short-refresh"))
+            const { user } = yield* signUpUser(uniqueEmail("short-refresh"))
             const created = yield* sessions.create({ userId: user.id, rememberMe: false })
 
             yield* TestClock.adjust(config.session.updateAge)
@@ -182,7 +154,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
             // due for refresh immediately and would silently gain the seven-day
             // lifetime its owner declined.
             const sessions = yield* Sessions
-            const { user } = yield* signUp(uniqueEmail("never-due"))
+            const { user } = yield* signUpUser(uniqueEmail("never-due"))
             const created = yield* sessions.create({ userId: user.id, rememberMe: false })
 
             assert.strictEqual((yield* sessions.verify(created.token)).refreshed, false)
@@ -196,7 +168,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       AuthTest.freshClock(Effect.gen(function*() {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("fresh"))
+        const { user } = yield* signUpUser(uniqueEmail("fresh"))
         const created = yield* sessions.create({ userId: user.id })
 
         assert.strictEqual(yield* sessions.isFresh(created.session), true)
@@ -219,7 +191,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         // not evidence that the account's owner is at the keyboard.
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("stale"))
+        const { user } = yield* signUpUser(uniqueEmail("stale"))
         const created = yield* sessions.create({ userId: user.id })
 
         yield* TestClock.adjust(Duration.sum(config.session.freshAge, Duration.millis(1)))
@@ -233,11 +205,11 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
     it.effect("revoke removes one session and only the owner's", () =>
       Effect.gen(function*() {
         const sessions = yield* Sessions
-        const ada = yield* signUp(uniqueEmail("ada"))
-        const bob = yield* signUp(uniqueEmail("bob"))
+        const ada = yield* signUpUser(uniqueEmail("ada"))
+        const bob = yield* signUpUser(uniqueEmail("bob"))
 
         const { events } = yield* AuthTest.recordingEvents(sessions.revoke(ada.session.id, ada.user.id))
-        assert.deepStrictEqual(tagsOf(forUser(events, ada.user.id)), ["SessionRevoked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, ada.user.id)), ["SessionRevoked"])
 
         assert.strictEqual((yield* Effect.flip(sessions.verify(ada.token)))._tag, "Unauthorized")
 
@@ -250,7 +222,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
     it.effect("revokeOthers keeps the current session, revokeAll keeps none", () =>
       Effect.gen(function*() {
         const sessions = yield* Sessions
-        const { user } = yield* signUp(uniqueEmail("devices"))
+        const { user } = yield* signUpUser(uniqueEmail("devices"))
         const laptop = yield* sessions.create({ userId: user.id })
         const phone = yield* sessions.create({ userId: user.id })
         const tablet = yield* sessions.create({ userId: user.id })
@@ -260,7 +232,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
 
         const others = yield* AuthTest.recordingEvents(sessions.revokeOthers(user.id, laptop.session.id))
         assert.strictEqual(others.result, 3)
-        assert.deepStrictEqual(tagsOf(forUser(others.events, user.id)), ["SessionRevoked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(others.events, user.id)), ["SessionRevoked"])
         assert.strictEqual((yield* Effect.flip(sessions.verify(phone.token)))._tag, "Unauthorized")
         assert.strictEqual((yield* Effect.flip(sessions.verify(tablet.token)))._tag, "Unauthorized")
         assert.strictEqual((yield* sessions.verify(laptop.token)).session.id, laptop.session.id)
@@ -273,7 +245,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       AuthTest.freshClock(Effect.gen(function*() {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("listing"))
+        const { user } = yield* signUpUser(uniqueEmail("listing"))
         yield* sessions.create({ userId: user.id, rememberMe: false })
 
         assert.strictEqual((yield* sessions.list(user.id)).length, 2)
@@ -290,7 +262,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       Effect.gen(function*() {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
-        const { user } = yield* signUp(uniqueEmail("arithmetic"))
+        const { user } = yield* signUpUser(uniqueEmail("arithmetic"))
         const { session } = yield* sessions.create({ userId: user.id })
 
         const expected = DateTime.addDuration(

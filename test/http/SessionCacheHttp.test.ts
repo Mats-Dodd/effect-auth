@@ -1,12 +1,13 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { Duration, Effect, Layer, Option, Redacted, Ref } from "effect"
+import { Duration, Effect, Option, Redacted, Ref } from "effect"
 import { TestClock } from "effect/testing"
 import type { HttpClientResponse } from "effect/unstable/http"
 import { Cookies } from "effect/unstable/http"
 import { insecureSessionCacheCookieName, secureSessionCacheCookieName } from "../../src/http/Cookies.js"
 import { SessionCache } from "../../src/http/SessionCache.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
-import { expectSome, newPassword, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
+import { expectSome, newPassword, testPassword, uniqueEmail } from "../fixtures.js"
+import { makeClient, maxAgeSeconds, signedUp } from "./helpers.js"
 
 /**
  * The counter every assertion in this file reads.
@@ -28,35 +29,19 @@ const cached = AuthTest.layerHttp({ cookieCache: { enabled: true }, sessionStore
  *
  * **Gotchas**
  *
- * The clock has to be part of the deployment: `HttpApiBuilder` captures each
- * handler's services when the layer is built, so a clock provided inside a test
- * body would govern the client and nothing behind the router.
- *
- * And it has to be a *new* deployment rather than {@link cached} with a clock
- * piped onto it: a nested `it.layer` inherits the enclosing block's memo map, so
+ * It has to be a *new* deployment rather than {@link cached} with a clock piped
+ * onto it: a nested `it.layer` inherits the enclosing block's memo map, so
  * re-using that layer value would resolve to the build the block above already
  * made — on the block's own clock, which the fresh one would then not be.
  */
-const movingClock = AuthTest
-  .layerHttp({ cookieCache: { enabled: true }, sessionStore: store.layer })
-  .pipe(Layer.provideMerge(Layer.fresh(TestClock.layer())))
-
-const makeClient = (options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.makeClient(AuthTest.TestApi, options)
-
-const signedUp = (email: string, options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.signedUp({ ...options, email, name: testName, password: testPasswordText })
+const movingClock = AuthTest.layerHttpMovingClock({
+  cookieCache: { enabled: true },
+  sessionStore: store.layer
+})
 
 /** The `Max-Age` a response's *cache* cookie was written with, in seconds. */
-const cacheMaxAgeSeconds = (
-  response: HttpClientResponse.HttpClientResponse,
-  name: string = insecureSessionCacheCookieName
-): number | undefined => {
-  const cookie = TestHttpClient.responseCacheCookie(response, name)
-  if (Option.isNone(cookie)) return undefined
-  const maxAge = cookie.value.options?.maxAge
-  return maxAge === undefined ? undefined : Duration.toSeconds(Duration.fromInputUnsafe(maxAge))
-}
+const cacheMaxAgeSeconds = (response: HttpClientResponse.HttpClientResponse): number | undefined =>
+  maxAgeSeconds(response, TestHttpClient.responseCacheCookie)
 
 /** The value of a cookie a response wrote, or `"<absent>"` when it wrote none. */
 const writtenValue = (cookie: Option.Option<Cookies.Cookie>): string =>

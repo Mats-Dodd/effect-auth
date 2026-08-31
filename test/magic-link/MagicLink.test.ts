@@ -1,14 +1,13 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
-import { Passwords } from "../../src/domain/Passwords.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
 import { passwordResetPurpose, Verifications } from "../../src/domain/Verifications.js"
 import { MagicLink, magicLinkPurpose } from "../../src/magic-link/MagicLink.js"
-import { AuthTest, MagicLinkTest, TestEmails } from "../../src/testing/index.js"
-import { tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { AuthTest, MagicLinkTest } from "../../src/testing/index.js"
+import { forUser, signUpUser, uniqueEmail } from "../fixtures.js"
 
 /**
  * Asks for a link and reads the token out of the outbox — which is exactly what
@@ -25,24 +24,17 @@ const linkFor = (options: {
 }) =>
   Effect.gen(function*() {
     const magic = yield* MagicLink
-    const emails = yield* TestEmails.TestEmails
+    const emails = yield* AuthTest.TestEmails
     yield* magic.request(options)
     return yield* emails.tokenFor(MagicLinkTest.magicLinkKind, options.email)
   })
-
-/** The events of one user, so a concurrent sibling's cannot be read as this test's. */
-const forUser = (
-  events: ReadonlyArray<{ readonly _tag: string }>,
-  userId: string
-): ReadonlyArray<{ readonly _tag: string }> =>
-  events.filter((event) => "userId" in event && (event as { readonly userId: unknown }).userId === userId)
 
 describe.sequential("magic-link/MagicLink", () => {
   layer(MagicLinkTest.layer())("a deployment that creates accounts from links", (it) => {
     it.effect("mails a link to an address with no account at all", () =>
       Effect.gen(function*() {
         const email = uniqueEmail("stranger")
-        const emails = yield* TestEmails.TestEmails
+        const emails = yield* AuthTest.TestEmails
         const magic = yield* MagicLink
 
         yield* magic.request({ email })
@@ -69,7 +61,7 @@ describe.sequential("magic-link/MagicLink", () => {
         it.effect("mails the link where this deployment's tests can read it", () =>
           Effect.gen(function*() {
             const email = uniqueEmail("nested")
-            const emails = yield* TestEmails.TestEmails
+            const emails = yield* AuthTest.TestEmails
             const magic = yield* MagicLink
 
             yield* magic.request({ email })
@@ -100,7 +92,7 @@ describe.sequential("magic-link/MagicLink", () => {
         // The token was delivered to the address and came back: that is the whole
         // of what verification ever proves.
         assert.isTrue(result.user.emailVerified)
-        assert.deepStrictEqual(tagsOf(forUser(events, result.user.id)), ["UserCreated", "SignedIn"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, result.user.id)), ["UserCreated", "SignedIn"])
         const created = events.find((event) => event._tag === "UserCreated")
         assert.strictEqual(created?._tag === "UserCreated" ? created.method : "", "magic-link")
 
@@ -142,8 +134,7 @@ describe.sequential("magic-link/MagicLink", () => {
       Effect.gen(function*() {
         // Somebody registers an address they do not own, and waits.
         const email = uniqueEmail("squatted")
-        const passwords = yield* Passwords
-        const registered = yield* passwords.signUp({ name: testName, email, password: testPassword })
+        const registered = yield* signUpUser(email)
         assert.isFalse(registered.user.emailVerified)
 
         const accounts = yield* AccountStore
@@ -163,7 +154,7 @@ describe.sequential("magic-link/MagicLink", () => {
         const live = yield* sessions.list(registered.user.id)
         assert.deepStrictEqual(live.map((session) => session.id), [result.session.id])
 
-        assert.deepStrictEqual(tagsOf(forUser(events, result.user.id)), [
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, result.user.id)), [
           "AccountUnlinked",
           "SessionRevoked",
           "PluginEvent",
@@ -179,8 +170,7 @@ describe.sequential("magic-link/MagicLink", () => {
         // current address is unverified, so that flow skips its first hop and
         // the second-hop token is already in *their* mailbox.
         const email = uniqueEmail("squatted-tokens")
-        const passwords = yield* Passwords
-        const registered = yield* passwords.signUp({ name: testName, email, password: testPassword })
+        const registered = yield* signUpUser(email)
         const verifications = yield* Verifications
 
         const move = yield* verifications.issue({
@@ -343,8 +333,7 @@ describe.sequential("magic-link/MagicLink", () => {
       it.effect("marks the address verified but keeps the credential", () =>
         Effect.gen(function*() {
           const email = uniqueEmail("kept")
-          const passwords = yield* Passwords
-          const registered = yield* passwords.signUp({ name: testName, email, password: testPassword })
+          const registered = yield* signUpUser(email)
 
           const token = yield* linkFor({ email })
           const magic = yield* MagicLink
@@ -368,7 +357,7 @@ describe.sequential("magic-link/MagicLink", () => {
         Effect.gen(function*() {
           const email = uniqueEmail("unknown")
           const magic = yield* MagicLink
-          const emails = yield* TestEmails.TestEmails
+          const emails = yield* AuthTest.TestEmails
 
           yield* magic.request({ email })
 
@@ -382,8 +371,7 @@ describe.sequential("magic-link/MagicLink", () => {
         Effect.gen(function*() {
           const email = uniqueEmail("known")
           const users = yield* UserStore
-          const passwords = yield* Passwords
-          yield* passwords.signUp({ name: testName, email, password: testPassword })
+          yield* signUpUser(email)
 
           const token = yield* linkFor({ email })
           const magic = yield* MagicLink

@@ -66,6 +66,17 @@ import * as SqlStores from "../sql/SqlStores.js"
 import type { EmailDelivery } from "./TestEmails.js"
 import { layerEmails, TestEmails } from "./TestEmails.js"
 
+/**
+ * The captured outbox, re-exported so that a test which reads a mailed token
+ * needs one import rather than two.
+ *
+ * `AuthTest.*` is the canonical path for these: every test in this repository
+ * reaches the deployment through `AuthTest`, and the outbox is part of the
+ * deployment. `TestEmails.*` is the same module under its own name, for a test
+ * that touches the mailer and nothing else.
+ *
+ * @since 1.0.0
+ */
 export type { EmailDelivery, EmailKind, SentEmail, TestEmailsService } from "./TestEmails.js"
 export {
   changeEmailConfirmationKind,
@@ -671,6 +682,59 @@ export function layerHttp(
   return extra === undefined ? layerHttpApi(TestApi, options) : layerHttpApi(TestApi, options, extra)
 }
 
+/**
+ * {@link layerHttp} on a `TestClock` of its own, which a test in the block may
+ * move.
+ *
+ * **When to use**
+ *
+ * For any HTTP test that adjusts virtual time — session expiry, the rolling
+ * refresh, a token TTL. {@link freshClock} is the wrong tool over HTTP:
+ * `HttpApiBuilder` captures each handler's services when the *layer* is built
+ * and re-provides them on every request, so a clock provided inside a test body
+ * governs the client and nothing behind the router — the handlers would go on
+ * reading the block's own clock. The clock has to be part of the deployment
+ * instead: provided to it, so the handlers capture this one, and merged out of
+ * it, so the test that moves it is moving the same one.
+ *
+ * **Example**
+ *
+ * ```ts skip-type-checking
+ * layer(AuthTest.layerHttpMovingClock())("as time passes", (it) => {
+ *   it.effect("expires the session", () =>
+ *     Effect.gen(function*() {
+ *       yield* TestClock.adjust(Duration.days(8))
+ *     }))
+ * })
+ * ```
+ *
+ * **Gotchas**
+ *
+ * `Layer.fresh`, so a nested `it.layer` gets a clock of its own rather than the
+ * enclosing block's: the memo map a nested block inherits would otherwise hand
+ * it the build its parent already made, on the parent's clock.
+ *
+ * The clock is shared by every test in the block it is built for, so a block
+ * that moves it has to run sequentially, or move it only in ways its siblings
+ * can survive.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export function layerHttpMovingClock(options?: Settings): HttpApiLayer<"test-app", TestClock.TestClock>
+export function layerHttpMovingClock<Extra>(
+  options: Settings | undefined,
+  extra: Layer.Layer<Extra, never, DeploymentServices>
+): HttpApiLayer<"test-app", Extra | TestClock.TestClock>
+export function layerHttpMovingClock(
+  options?: Settings,
+  extra?: Layer.Layer<never, never, DeploymentServices>
+): HttpApiLayer<"test-app", TestClock.TestClock> {
+  return (extra === undefined ? layerHttp(options) : layerHttp(options, extra)).pipe(
+    Layer.provideMerge(Layer.fresh(TestClock.layer()))
+  )
+}
+
 // -----------------------------------------------------------------------------
 // Seams
 // -----------------------------------------------------------------------------
@@ -869,10 +933,18 @@ export const recordingEvents = <A, E, R>(
   })
 
 /**
- * The tags of the events collected by {@link recordingEvents}, in order.
+ * The `_tag` of each value, in order — the tags of what {@link recordingEvents}
+ * collected, for asserting on a published sequence without naming every
+ * payload.
+ *
+ * **Gotchas**
+ *
+ * Generic over the tag carrier rather than fixed to `AuthEvent`, because a
+ * plugin publishes events of its own and a test that narrows a recording to one
+ * user usually holds `ReadonlyArray<{ readonly _tag: string }>` by then.
  *
  * @category combinators
  * @since 1.0.0
  */
-export const tagsOf = (events: ReadonlyArray<AuthEvent>): ReadonlyArray<string> =>
-  events.map((event) => event._tag)
+export const tagsOf = <A extends { readonly _tag: string }>(values: ReadonlyArray<A>): ReadonlyArray<string> =>
+  values.map((value) => value._tag)

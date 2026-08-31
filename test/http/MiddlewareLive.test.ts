@@ -1,21 +1,8 @@
 import { assert, layer } from "@effect/vitest"
 import { Effect, Option, Redacted } from "effect"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
-import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
-
-/**
- * A browser addressing this block's deployment, with a jar the test can read.
- */
-const makeClient = (options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.makeClient(AuthTest.TestApi, options)
-
-/**
- * Registers an account and returns the browser that is signed in as it.
- *
- * `email` is required: every test in the block writes to one database.
- */
-const signedUp = (email: string, options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.signedUp({ ...options, email, name: testName, password: testPasswordText })
+import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { makeClient, signedUp } from "./helpers.js"
 
 /**
  * `https://trusted.example.com` is a configured origin throughout, so the

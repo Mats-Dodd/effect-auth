@@ -1,5 +1,6 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { Duration, Effect, Layer, Option, Redacted } from "effect"
+import { TestClock } from "effect/testing"
 import { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
 import * as AuthConfig from "../../src/config/AuthConfig.js"
@@ -7,6 +8,7 @@ import { RateLimited } from "../../src/domain/Errors.js"
 import {
   clientAddress,
   consume,
+  consumeWith,
   credentials,
   email,
   keyFor,
@@ -16,6 +18,7 @@ import {
   retryAfterSeconds,
   sharedKey
 } from "../../src/http/RateLimits.js"
+import { makeStore } from "../../src/internal/rateLimiterStore.js"
 
 const baseUrl = "https://app.example.com"
 
@@ -89,6 +92,38 @@ const attempt = (bucket: typeof credentials, options?: Parameters<typeof request
   Effect.result(consume(bucket)).pipe(
     Effect.provideService(HttpServerRequest.HttpServerRequest, request(options))
   )
+
+/**
+ * A limiter over an evicting store the test can look inside, built on the
+ * clock the surrounding `it.effect` runs on — the sweep is a fiber, so virtual
+ * time is what makes it run.
+ */
+const evicting = (sweepInterval: Duration.Duration) =>
+  Effect.gen(function*() {
+    const store = yield* makeStore({ sweepInterval })
+    const limiter = yield* Effect.provideService(
+      RateLimiter.make,
+      RateLimiter.RateLimiterStore,
+      store.store
+    )
+    // Let the swept fiber reach its first sleep, so an adjustment below wakes
+    // it rather than racing it.
+    yield* Effect.yieldNow
+    return { limiter, store } as const
+  })
+
+/** One consumption by `address`, against a limiter the test holds. */
+const spendBy = (
+  limiter: RateLimiter.RateLimiter,
+  bucket: typeof credentials,
+  address: string
+) =>
+  Effect.result(consumeWith({
+    config: config(["x-forwarded-for"]),
+    limiter,
+    bucket,
+    request: request({ headers: { "x-forwarded-for": address } })
+  }))
 
 describe("http/RateLimits", () => {
   describe("client identity", () => {
@@ -262,4 +297,58 @@ layer(counting())("http/RateLimits/consume", (it) => {
         )
       }))
   })
+})
+
+// The store the default layer installs is the one under test here: its
+// counters are keyed by a client address the caller can forge, so what bounds
+// its size is the sweep, not the traffic.
+describe("http/RateLimits/eviction", () => {
+  it.effect("drops a window that has expired, the next time the sweep runs", () =>
+    Effect.gen(function*() {
+      const { limiter, store } = yield* evicting(Duration.minutes(1))
+
+      // Three spoofed addresses, and therefore three counters.
+      for (const address of ["203.0.113.1", "203.0.113.2", "203.0.113.3"]) {
+        const allowed = yield* spendBy(limiter, credentials, address)
+        assert.strictEqual(allowed._tag, "Success", address)
+      }
+      assert.strictEqual(yield* store.size, 3)
+
+      // A single attempt of three spends a third of the window, so all three
+      // are dead well before the minute — but nothing has collected them.
+      yield* TestClock.adjust(credentials.window)
+      assert.strictEqual(yield* store.size, 3)
+
+      // The sweep is what collects them.
+      yield* TestClock.adjust(Duration.minutes(1))
+      assert.strictEqual(yield* store.size, 0)
+    }).pipe(Effect.scoped))
+
+  it.effect("keeps counting correctly across an eviction", () =>
+    Effect.gen(function*() {
+      const { limiter, store } = yield* evicting(Duration.seconds(1))
+      const address = "203.0.113.4"
+
+      for (let i = 0; i < credentials.limit; i++) {
+        const allowed = yield* spendBy(limiter, credentials, address)
+        assert.strictEqual(allowed._tag, "Success", `attempt ${i + 1}`)
+      }
+      const refused = yield* spendBy(limiter, credentials, address)
+      assert.strictEqual(refused._tag, "Failure")
+
+      // A spent window is not swept: it is the thing refusing the caller, and
+      // it survives every sweep until the window itself is over.
+      yield* TestClock.adjust(Duration.seconds(1))
+      assert.strictEqual(yield* store.size, 1)
+      const stillRefused = yield* spendBy(limiter, credentials, address)
+      assert.strictEqual(stillRefused._tag, "Failure")
+
+      // Past the window the entry goes, and the caller's allowance is whole
+      // again — an evicted key and a key never seen are the same key.
+      yield* TestClock.adjust(credentials.window)
+      assert.strictEqual(yield* store.size, 0)
+      const allowedAgain = yield* spendBy(limiter, credentials, address)
+      assert.strictEqual(allowedAgain._tag, "Success")
+      assert.strictEqual(yield* store.size, 1)
+    }).pipe(Effect.scoped))
 })

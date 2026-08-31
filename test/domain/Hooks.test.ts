@@ -30,7 +30,7 @@ import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { Users } from "../../src/domain/Users.js"
 import { MagicLink } from "../../src/magic-link/MagicLink.js"
 import { OAuthFlow } from "../../src/oauth/Flow.js"
-import { AuthTest, MagicLinkTest, MockProvider, TestEmails } from "../../src/testing/index.js"
+import { AuthTest, MagicLinkTest, MockProvider } from "../../src/testing/index.js"
 import { expectSome, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** The source every test here provisions with, unless it is testing the source. */
@@ -666,7 +666,7 @@ const crossOAuthSignIn = Effect.fnUntraced(function*(email: string) {
 const crossMagicLinkSignIn = Effect.fnUntraced(function*(email: string) {
   const magic = yield* MagicLink
   yield* magic.request({ email, name: testName })
-  const emails = yield* TestEmails.TestEmails
+  const emails = yield* AuthTest.TestEmails
   return yield* magic.verify({ token: yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email) })
 })
 

@@ -20,7 +20,7 @@
  */
 import { Context, Effect, Layer, Option } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
-import { insertRow } from "../internal/effects.js"
+import { insertRow, revalidateRewrite } from "../internal/effects.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import { AccountAlreadyLinked, CannotUnlinkLastAccount, NotFound, UserNotFound } from "./Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "./Events.js"
@@ -320,12 +320,9 @@ export const make: () => Effect.Effect<
    * **Gotchas**
    *
    * The address is re-normalized on the way out, for the reason
-   * `Users.provision`'s twin of this gives.
+   * `revalidateRewrite` gives.
    */
-  const rewritten = Effect.fnUntraced(function*(answer: UserInsertOf<{}>) {
-    const validated = yield* model.makeInsert(answer)
-    return Object.assign(validated, { email: normalizeEmail(validated.email) })
-  })
+  const rewritten = (answer: UserInsertOf<{}>) => revalidateRewrite(model.makeInsert, answer, normalizeEmail)
 
   /**
    * Writes the user row a first sign-in through a provider creates, asking the

@@ -151,6 +151,46 @@ export const signedUp = Effect.fnUntraced(function*(options?: ClientOptions & {
 })
 
 /**
+ * The status behind a request the generated client could not decode.
+ *
+ * **When to use**
+ *
+ * For asserting that an endpoint is *not served*. A feature that a deployment
+ * has switched off answers `404`, which is a status no such endpoint declares —
+ * so the client reports an `HttpClientError` carrying the response rather than
+ * one of the contract's own errors, and the status is only reachable by reading
+ * it back off that error. This is how a test says "not served" without
+ * asserting on the shape of a decode failure.
+ *
+ * **Gotchas**
+ *
+ * Anything the client *could* decode answers its own status: a success is
+ * reported as `200` whatever it actually was, and a failure that carries no
+ * response at all — a decode error, one of the contract's own errors — is
+ * reported as `0`. So this is a probe for "which status refused me", not a
+ * general way to read a response code.
+ *
+ * The response is dug out structurally rather than by narrowing to a named
+ * error, because the client's error channel here is whatever `HttpApiClient`
+ * decided the endpoint could fail with, which does not include the status that
+ * is under test.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const refusedStatus = <A, E, R>(request: Effect.Effect<A, E, R>): Effect.Effect<number, never, R> =>
+  Effect.match(request, {
+    onSuccess: () => 200,
+    onFailure: (error) =>
+      typeof error === "object" && error !== null && "reason" in error &&
+        typeof error.reason === "object" && error.reason !== null && "response" in error.reason &&
+        typeof error.reason.response === "object" && error.reason.response !== null &&
+        "status" in error.reason.response && typeof error.reason.response.status === "number"
+        ? error.reason.response.status
+        : 0
+  })
+
+/**
  * The session cookie a single response wrote, if it wrote one.
  *
  * **When to use**

@@ -33,7 +33,7 @@ import { passwordsOf } from "../../src/domain/Passwords.js"
 import { oauthIssuer } from "../../src/domain/Schema.js"
 import { userStoreOf } from "../../src/domain/Stores.js"
 import { MagicLink } from "../../src/magic-link/MagicLink.js"
-import { AuthTest, MagicLinkTest, TestEmails } from "../../src/testing/index.js"
+import { AuthTest, MagicLinkTest } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
 import type { Fields } from "./model.js"
 import { model } from "./model.js"
@@ -209,7 +209,7 @@ describe.sequential("fields/Hooks — every source", () => {
       Effect.gen(function*() {
         const store = yield* users
         const magic = yield* MagicLink
-        const emails = yield* TestEmails.TestEmails
+        const emails = yield* AuthTest.TestEmails
         const email = uniqueEmail("hooks-fields-magic")
 
         yield* magic.request({ email, name: testName })

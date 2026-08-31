@@ -30,6 +30,7 @@ import type { OAuthProviderError } from "../domain/Errors.js"
 import { OAuthProviderError as ProviderError } from "../domain/Errors.js"
 import { oauthIssuer } from "../domain/Schema.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
+import { jsonWithin } from "./internal/http.js"
 
 // -----------------------------------------------------------------------------
 // Tokens
@@ -629,8 +630,6 @@ export const fetchJson = (options: {
       () => new ProviderError({ providerId: options.providerId, reason: "ProviderUnavailable" })
     )
     if (response.status >= 400) return { status: response.status, body: null }
-    // The body gets its own deadline: a provider that answers with headers and
-    // then trickles bytes forever would otherwise hold the callback open.
-    const body = yield* Effect.result(Effect.timeout(response.json, providerRequestTimeout))
+    const body = yield* Effect.result(jsonWithin(response, providerRequestTimeout))
     return { status: response.status, body: body._tag === "Success" ? body.success : null }
   })

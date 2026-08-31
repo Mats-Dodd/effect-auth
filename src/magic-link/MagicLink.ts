@@ -54,9 +54,9 @@ import type { PersistenceError } from "../domain/Stores.js"
 import { AccountStore, isUniqueViolation, SessionStore, UserStore, WithAuthTransaction } from "../domain/Stores.js"
 import { Users } from "../domain/Users.js"
 import type { Claimed, TokenPurpose } from "../domain/Verifications.js"
-import { purpose, userSubjectPurposes, Verifications } from "../domain/Verifications.js"
-import { policyRefusedTarget, resolveUrl, validateUrl, withErrorCode } from "../http/OriginCheck.js"
-import { annotateAuthLogs, insertRow } from "../internal/effects.js"
+import { purpose, retireUserSubjectTokens, Verifications } from "../domain/Verifications.js"
+import { redirectFailure, resolveUrl, validateUrl } from "../http/OriginCheck.js"
+import { deliverEmail, insertRow } from "../internal/effects.js"
 import { withDefaults } from "../internal/records.js"
 import { magicLinkPrefix, SignUpDisabled } from "./Api.js"
 
@@ -609,12 +609,10 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       })
 
       const url = tokenUrl(config, settings.path, issued.token)
-      // Delivery is the application's responsibility and its failure must not
-      // change what the caller observes; it is logged and dropped.
-      yield* annotateAuthLogs(Effect.ignore(
+      yield* deliverEmail(
         emails.sendMagicLink({ email, user: Option.getOrNull(found), token: issued.token, url }),
-        { log: "Warn", message: "magic link e-mail delivery failed" }
-      ))
+        "magic link e-mail delivery failed"
+      )
     })
 
     /**
@@ -683,9 +681,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
         // have a live link that moves the account to a mailbox of their own —
         // and following it after the reclaim would hand back everything this
         // transaction just took away.
-        for (const kind of userSubjectPurposes) {
-          yield* verifications.retire(kind, user.id)
-        }
+        yield* retireUserSubjectTokens(verifications, user.id)
         const updated = yield* users.update(user.id, { emailVerified: true })
         return { linked, revoked, updated }
       }))
@@ -841,22 +837,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       (effect) => Effect.withSpan(effect, "MagicLink.verify")
     )
 
-    const failure = (error: VerifyError, errorURL: string | null): VerifyOutcome => {
-      const code = errorCode(error)
-      return {
-        _tag: "Failure",
-        error,
-        // A refusal carries the deployment's own classification beside this
-        // library's, in the one shape every redirect-shaped completion answers
-        // with — the same helper the OAuth callback uses. `?error=` is
-        // unchanged by that: `errorCode` already answers `policy_refused` for
-        // this case, and it stays the closed set it was.
-        redirectTo: error._tag === "PolicyRefused"
-          ? policyRefusedTarget(config, errorURL, error.code)
-          : withErrorCode(resolveUrl(config, errorURL), code),
-        code
-      }
-    }
+    const failure = redirectFailure(config, errorCode)
 
     const complete = Effect.fnUntraced(
       function*(options: VerifyOptions) {

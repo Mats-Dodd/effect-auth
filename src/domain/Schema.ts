@@ -17,6 +17,7 @@
  */
 import { Context, Effect, Option, Schema, Struct } from "effect"
 import { Model, VariantSchema } from "effect/unstable/schema"
+import { insertRow } from "../internal/effects.js"
 import { camelToSnake, pickKeys } from "../internal/records.js"
 
 // -----------------------------------------------------------------------------
@@ -1027,7 +1028,7 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
   const decodeRow = Schema.decodeUnknownEffect(select)
   const encodeInsert = Schema.encodeUnknownEffect(insert)
 
-  const makeInsert = (input: UserInsertInput) => Effect.orDie(insert.makeEffect(input))
+  const makeInsert = (input: UserInsertInput) => insertRow(insert, input)
 
   const extraDefaults: Effect.Effect<UserRow> = extraKeys.length === 0
     ? Effect.succeed<UserRow>({})

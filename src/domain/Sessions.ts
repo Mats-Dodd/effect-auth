@@ -125,8 +125,8 @@ export interface VerifiedSession<F extends UserFields = {}> {
  * @since 1.0.0
  */
 export const grantedLifetime = (session: Session, config: AuthConfigService): Duration.Duration => {
-  const millis = DateTime.toEpochMillis(session.expiresAt) - DateTime.toEpochMillis(session.updatedAt)
-  return millis > 0 ? Duration.millis(millis) : config.session.expiresIn
+  const lifetime = DateTime.distance(session.updatedAt, session.expiresAt)
+  return Duration.isPositive(lifetime) ? lifetime : config.session.expiresIn
 }
 
 /**

@@ -11,7 +11,7 @@
 import type { Redacted } from "effect"
 import { Context, Duration, Layer } from "effect"
 import type { Session, User } from "../domain/Schema.js"
-import { trustedOrigins } from "../http/OriginCheck.js"
+import { trustedOriginSet } from "../internal/origins.js"
 import { withDefaults } from "../internal/records.js"
 
 /**
@@ -393,6 +393,19 @@ export interface AuthConfigService {
    */
   readonly trustedOrigins: ReadonlyArray<string>
   /**
+   * `baseUrl` and `trustedOrigins`, parsed: every origin this deployment
+   * trusts, as origins rather than as URLs.
+   *
+   * **Details**
+   *
+   * Computed once by {@link make}, because it is on the hot path of every
+   * state-changing request and of every redirect target. An entry that has no
+   * origin — anything that is not an absolute `http(s)` URL — is absent from
+   * it, so a misconfigured `data:` entry grants no trust. `OriginCheck` reads
+   * this field rather than re-parsing; see `OriginCheck.trustedOrigins`.
+   */
+  readonly trustedOriginSet: ReadonlySet<string>
+  /**
    * Provider ids whose verified e-mail claim is trusted enough to link a new
    * OAuth identity onto an existing local account automatically.
    */
@@ -632,11 +645,16 @@ export const cacheCookieName = (config: AuthConfigService): string =>
  * @since 1.0.0
  */
 export const make = (options: AuthConfigOptions): AuthConfigService => {
-  const config: AuthConfigService = {
+  const origins = options.trustedOrigins ?? []
+  return {
     baseUrl: options.baseUrl,
     basePath: options.basePath ?? "/auth",
     secret: options.secret,
-    trustedOrigins: options.trustedOrigins ?? [],
+    trustedOrigins: origins,
+    // The origin set is on the hot path of every state-changing request and of
+    // every redirect target, and it is a pure function of the two fields above
+    // — so it is parsed here, once, rather than on the first request to ask.
+    trustedOriginSet: trustedOriginSet({ baseUrl: options.baseUrl, trustedOrigins: origins }),
     trustedProviders: options.trustedProviders ?? [],
     session: withDefaults(defaultSession, options.session),
     emailPassword: withDefaults(defaultEmailPassword, options.emailPassword),
@@ -656,11 +674,6 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
       deleteUser: withDefaults(defaultDeleteUser, options.user?.deleteUser)
     }
   }
-  // The origin set is on the hot path of every state-changing request and every
-  // redirect target, and it is a pure function of the two fields above — so it
-  // is computed here, once, rather than on the first request that asks for it.
-  primeTrustedOrigins(config)
-  return config
 }
 
 /**
@@ -684,11 +697,3 @@ const defaultCookie = (baseUrl: string): CookieConfig => ({
   secure: isSecureUrl(baseUrl),
   domain: undefined
 })
-
-/**
- * Fills `OriginCheck`'s per-configuration memo the moment the configuration
- * exists, so no request pays for the parse.
- */
-const primeTrustedOrigins = (config: AuthConfigService): void => {
-  trustedOrigins(config)
-}

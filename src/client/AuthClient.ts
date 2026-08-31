@@ -644,7 +644,7 @@ export const make = <
   const signUpMutation = service.mutation("auth", "signUpEmail") as unknown as Atom.AtomResultFn<
     PayloadRequest<SignUpEmailOf<F>>,
     SignUpResponseOf<F>,
-    UserAlreadyExists | PasswordPolicyViolation | RateLimited
+    UserAlreadyExists | PasswordPolicyViolation | PolicyRefused | RateLimited
   >
 
   // The same cast, for the same reason, on the other endpoint whose *payload*

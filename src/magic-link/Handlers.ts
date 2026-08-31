@@ -85,14 +85,9 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
           // The mail bucket, not the credential one: this endpoint sends a
           // message to an address somebody else may own.
           yield* rateLimit(emailBucket, request)
-          yield* magicLink.request({
-            email: payload.email,
-            name: payload.name,
-            callbackURL: payload.callbackURL,
-            newUserCallbackURL: payload.newUserCallbackURL,
-            errorCallbackURL: payload.errorCallbackURL,
-            rememberMe: payload.rememberMe
-          }).pipe(AuthHandlers.serverFault)
+          // The payload's fields are the `RequestOptions` fields, name for name
+          // and type for type, so it is passed through rather than rebuilt.
+          yield* magicLink.request(payload).pipe(AuthHandlers.serverFault)
           // The same answer for a known address, an unknown one, and a message
           // that could not be delivered.
           return AuthHandlers.acknowledged

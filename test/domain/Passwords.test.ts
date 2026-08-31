@@ -3,7 +3,6 @@ import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { SqlClient } from "effect/unstable/sql"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
-import type { AuthEvent } from "../../src/domain/Events.js"
 import { Passwords } from "../../src/domain/Passwords.js"
 import type { AccountId, UserId } from "../../src/domain/Schema.js"
 import { CredentialIssuer } from "../../src/domain/Schema.js"
@@ -11,8 +10,8 @@ import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
 import { decodeSubjectToken, Verifications } from "../../src/domain/Verifications.js"
-import { AuthTest, TestEmails } from "../../src/testing/index.js"
-import { expectSome, newPassword, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { AuthTest } from "../../src/testing/index.js"
+import { expectSome, forUser, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * Registers a user.
@@ -27,16 +26,6 @@ const register = Effect.fnUntraced(function*(email: string) {
   const passwords = yield* Passwords
   return yield* passwords.signUp({ name: testName, email, password: testPassword })
 })
-
-/**
- * The events one user's flows published.
- *
- * The event hub belongs to the deployment, and the deployment is shared by
- * every test in the block, so an assertion on the whole recording would also be
- * an assertion about whatever the siblings happened to be doing.
- */
-const forUser = (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
-  events.filter((event) => event.userId === userId)
 
 /**
  * Removes a user's password credential, leaving them as an OAuth-only user
@@ -67,7 +56,7 @@ const clearPasswordHash = Effect.fnUntraced(function*(accountId: AccountId) {
 
 /** The most recent e-mail of a kind sent to one address. */
 const mailTo = Effect.fnUntraced(function*(kind: "verification" | "reset", address: string) {
-  const emails = yield* TestEmails.TestEmails
+  const emails = yield* AuthTest.TestEmails
   return yield* expectSome(yield* emails.last(kind, address), `expected a ${kind} e-mail for ${address}`)
 })
 
@@ -84,7 +73,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const email = uniqueEmail("signup")
 
         const { events, result } = yield* AuthTest.recordingEvents(register(email))
-        assert.deepStrictEqual(tagsOf(forUser(events, result.user.id)), ["UserCreated", "SignedIn"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, result.user.id)), ["UserCreated", "SignedIn"])
 
         assert.strictEqual(result.user.email, email)
         assert.strictEqual(result.user.emailVerified, false)
@@ -186,7 +175,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           passwords.signIn({ email, password: testPassword })
         )
         assert.strictEqual(result.user.id, user.id)
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["SignedIn"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SignedIn"])
 
         const wrong = yield* Effect.flip(
           passwords.signIn({ email, password: Redacted.make("wrong-password") })
@@ -207,7 +196,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
     it.effect("sendVerificationEmail is silent for an unknown or already-verified address", () =>
       Effect.gen(function*() {
         const passwords = yield* Passwords
-        const emails = yield* TestEmails.TestEmails
+        const emails = yield* AuthTest.TestEmails
         const users = yield* UserStore
         const email = uniqueEmail("resend")
         const stranger = uniqueEmail("stranger")
@@ -275,7 +264,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           const mail = yield* mailTo("verification", email)
 
           const { events } = yield* AuthTest.recordingEvents(passwords.verifyEmail(mail.token))
-          assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["EmailVerified"])
+          assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["EmailVerified"])
 
           // Replaying the link is refused: the row was deleted by the claim.
           const replay = yield* Effect.flip(passwords.verifyEmail(mail.token))
@@ -319,17 +308,17 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
     it.effect("requestReset says nothing about an unknown address", () =>
       Effect.gen(function*() {
         const passwords = yield* Passwords
-        const emails = yield* TestEmails.TestEmails
+        const emails = yield* AuthTest.TestEmails
         const email = uniqueEmail("reset-known")
         const stranger = uniqueEmail("reset-unknown")
         const { user } = yield* register(email)
 
         const unknown = yield* AuthTest.recordingEvents(passwords.requestReset({ email: stranger }))
-        assert.deepStrictEqual(tagsOf(forUser(unknown.events, user.id)), [])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(unknown.events, user.id)), [])
         assert.strictEqual((yield* emails.to(stranger)).length, 0)
 
         const known = yield* AuthTest.recordingEvents(passwords.requestReset({ email }))
-        assert.deepStrictEqual(tagsOf(forUser(known.events, user.id)), ["PasswordResetRequested"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(known.events, user.id)), ["PasswordResetRequested"])
         assert.strictEqual((yield* emails.to(email)).length, 1)
       }))
 
@@ -373,7 +362,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const { events } = yield* AuthTest.recordingEvents(
           passwords.resetPassword({ token: mail.token, newPassword })
         )
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["SessionRevoked", "PasswordChanged"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SessionRevoked", "PasswordChanged"])
 
         // Every device is signed out.
         assert.strictEqual((yield* sessions.list(user.id)).length, 0)
@@ -551,7 +540,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           // turn into an error that distinguishes a known address from an
           // unknown one.
           const passwords = yield* Passwords
-          const emails = yield* TestEmails.TestEmails
+          const emails = yield* AuthTest.TestEmails
           const email = uniqueEmail("bounced")
           yield* register(email)
 
@@ -589,7 +578,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           newPassword,
           currentSessionId: current.session.id
         }))
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["SessionRevoked", "PasswordChanged"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SessionRevoked", "PasswordChanged"])
 
         // The caller keeps their session; the other device does not.
         assert.strictEqual((yield* sessions.verify(current.token)).session.id, current.session.id)
@@ -681,7 +670,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const { events } = yield* AuthTest.recordingEvents(
           passwords.setPassword({ userId: user.id, newPassword })
         )
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["AccountLinked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["AccountLinked"])
         const linked = events.find((event) => event._tag === "AccountLinked")
         assert.strictEqual(linked?._tag === "AccountLinked" ? linked.providerId : null, "credential")
 

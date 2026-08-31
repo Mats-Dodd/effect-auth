@@ -34,6 +34,7 @@
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
 import { optionalConfig } from "../../internal/config.js"
+import { trimTrailingSlashes } from "../../internal/url.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
 import { providerError } from "../Provider.js"
 import { lenient, Truthy } from "../internal/claims.js"
@@ -126,9 +127,7 @@ export interface Endpoints {
  *
  * **Gotchas**
  *
- * Trailing slashes are trimmed in a loop rather than with a `/\/+$/` regex: a
- * regex of that shape is a polynomial-backtracking hazard, and a configured
- * authority is configuration, not a constant. Left in, one would make the
+ * Trailing slashes are trimmed off the authority: left in, one would make the
  * expected issuer `https://host//<tid>/v2.0` and refuse every token.
  *
  * @category combinators
@@ -138,8 +137,7 @@ export const endpointsOf = (options?: {
   readonly authority?: string | undefined
   readonly tenantId?: string | undefined
 }): Endpoints => {
-  let authority = options?.authority ?? defaultAuthority
-  while (authority.endsWith("/")) authority = authority.slice(0, -1)
+  const authority = trimTrailingSlashes(options?.authority ?? defaultAuthority)
   const tenantId = options?.tenantId ?? defaultTenantId
   return {
     authority,

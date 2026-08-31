@@ -19,9 +19,10 @@
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
 import { optionalConfig } from "../../internal/config.js"
-import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
-import { fetchJson, providerError } from "../Provider.js"
-import { lenient, Truthy } from "../internal/claims.js"
+import type { OAuthProviderConfig, OAuthTokens } from "../Provider.js"
+import { providerError } from "../Provider.js"
+import { lenient } from "../internal/claims.js"
+import { fetchIdentity, identityOf } from "../internal/userInfo.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -152,20 +153,6 @@ const HostedDomainClaim = Schema.Struct({ hd: lenient(Schema.NonEmptyString) })
 const readHostedDomain = Schema.decodeUnknownOption(HostedDomainClaim)
 
 /**
- * Google's OIDC userinfo body, consulted only when the token carries no
- * address. The address is required — without one there is no identity — and
- * everything else is advisory.
- */
-const UserInfoBody = Schema.Struct({
-  email: Schema.NonEmptyString,
-  email_verified: lenient(Truthy),
-  name: lenient(Schema.NonEmptyString),
-  picture: lenient(Schema.NonEmptyString)
-})
-
-const readUserInfo = Schema.decodeUnknownOption(UserInfoBody)
-
-/**
  * Builds the Google provider configuration.
  *
  * **Example**
@@ -209,29 +196,10 @@ export const make = (options: Options): OAuthProviderConfig => {
       }
     }
 
-    if (claims.email !== null) {
-      return {
-        id: claims.subject,
-        email: claims.email,
-        emailVerified: claims.emailVerified,
-        name: claims.name ?? claims.email,
-        image: claims.picture
-      } satisfies OAuthUserInfo
-    }
+    const identity = identityOf(claims)
+    if (identity !== null) return identity
 
-    const response = yield* fetchJson({ providerId: id, url: userInfoUrl, accessToken: tokens.accessToken })
-    const decoded = readUserInfo(response.body)
-    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
-    const body = decoded.value
-    // The subject still comes from the verified token, never from this body:
-    // the response is only bearer-authenticated, the token is signed.
-    return {
-      id: claims.subject,
-      email: body.email,
-      emailVerified: body.email_verified !== undefined,
-      name: claims.name ?? body.name ?? body.email,
-      image: claims.picture ?? body.picture ?? null
-    } satisfies OAuthUserInfo
+    return yield* fetchIdentity({ providerId: id, url: userInfoUrl, accessToken: tokens.accessToken, claims })
   })
 
   return {

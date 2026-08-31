@@ -52,10 +52,16 @@ export const secureSessionCookieName: string = `__Secure-${defaultCookieName}`
  * The name the session cookie is actually written under for a given
  * configuration.
  *
+ * **Details**
+ *
+ * `AuthConfig.cookieName` under the name this module uses: the `__Secure-` rule
+ * is stated once, where the cookie's configuration lives, and every reader in
+ * the HTTP layer goes through here.
+ *
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCookieName = (config: AuthConfigService): string => resolveCookieName(config)
+export const sessionCookieName: (config: AuthConfigService) => string = resolveCookieName
 
 /**
  * The session cache cookie name used when the deployment is not served over TLS.
@@ -75,12 +81,13 @@ export const secureSessionCacheCookieName: string = `__Secure-${defaultCacheCook
 
 /**
  * The name the session cache cookie is actually written under for a given
- * configuration.
+ * configuration — `AuthConfig.cacheCookieName`, as {@link sessionCookieName} is
+ * `AuthConfig.cookieName`.
  *
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCacheCookieName = (config: AuthConfigService): string => resolveCacheCookieName(config)
+export const sessionCacheCookieName: (config: AuthConfigService) => string = resolveCacheCookieName
 
 // -----------------------------------------------------------------------------
 // Attributes
@@ -170,6 +177,23 @@ export const insecureSessionCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecu
   key: insecureSessionCookieName,
   in: "cookie"
 })
+
+/**
+ * The security scheme whose key is the cookie name this configuration actually
+ * writes.
+ *
+ * **Details**
+ *
+ * `HttpApiBuilder.securitySetCookie` takes the cookie name from the scheme it is
+ * given, so writing the cookie goes through the same two declared schemes that
+ * read it. Which of them applies is decided by `cookie.secure`, exactly as
+ * {@link sessionCookieName} decides the `__Secure-` prefix.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const sessionCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
+  config.cookie.secure ? secureSessionCookieSecurity : insecureSessionCookieSecurity
 
 /**
  * The security scheme for non-browser clients, which present the same opaque

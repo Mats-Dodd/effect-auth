@@ -15,36 +15,18 @@
  * going unasserted.
  */
 import { assert, describe, layer } from "@effect/vitest"
-import { Duration, Effect, Layer, Redacted } from "effect"
+import { Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import type { AuthHooksService } from "../../src/domain/Hooks.js"
 import { PolicyRefused } from "../../src/domain/Hooks.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
-import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
+import { expectSome, testPassword, uniqueEmail } from "../fixtures.js"
+import { makeClient, signedUp } from "./helpers.js"
 
 /** The deployment these tests run against: both opt-in flows switched on. */
 const served: AuthTest.Options = {
   user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } }
 }
-
-/**
- * A deployment with a `TestClock` of its own, which a test may move.
- *
- * `AuthTest.freshClock` is the wrong tool over HTTP: `HttpApiBuilder` captures
- * each handler's services when the *layer* is built, so a clock provided inside
- * a test body would govern the client and nothing behind the router. The clock
- * has to be part of the deployment instead.
- */
-const layerMovingClock = (options?: AuthTest.Options) =>
-  AuthTest.layerHttp(options).pipe(Layer.provideMerge(Layer.fresh(TestClock.layer())))
-
-/** A browser addressing this block's deployment, with a jar the test can read. */
-const makeClient = (options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.makeClient(AuthTest.TestApi, options)
-
-/** Registers an account and returns the browser that is signed in as it. */
-const signedUp = (email: string, options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.signedUp({ ...options, email, name: testName, password: testPasswordText })
 
 /**
  * A policy that allows the first deletion it is asked about and refuses every
@@ -411,7 +393,7 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
   // Nested rather than a second top-level `layer()`: an `it.layer` forks this
   // block's memo map, so the deployment below reuses the PGlite the block above
   // already booted instead of standing up a second one for the file.
-  it.layer(layerMovingClock(served))("freshness and expiry", (it) => {
+  it.layer(AuthTest.layerHttpMovingClock(served))("freshness and expiry", (it) => {
     // The three of them share the deployment's clock, so they have to run in
     // order: a sibling's `adjust` would otherwise age this test's session out
     // from under it.

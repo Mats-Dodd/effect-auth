@@ -13,30 +13,14 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
-import type { AuthEvent } from "../../src/domain/Events.js"
 import { Passwords } from "../../src/domain/Passwords.js"
 import type { UserId } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { UserStore, VerificationStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose, Users } from "../../src/domain/Users.js"
 import { identifierOf, passwordResetPurpose } from "../../src/domain/Verifications.js"
-import { AuthTest, TestEmails } from "../../src/testing/index.js"
-import { expectSome, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
-
-/**
- * Registers a user and hands back the row and the session sign-up established.
- *
- * **Gotchas**
- *
- * Every test in the block writes to one database, so `email` must be a
- * {@link uniqueEmail}.
- */
-const register = Effect.fnUntraced(function*(email: string) {
-  const passwords = yield* Passwords
-  const result = yield* passwords.signUp({ name: testName, email, password: testPassword })
-  const created = yield* expectSome(result.session, "sign-up should establish a session")
-  return { user: result.user, session: created.session, token: created.token }
-})
+import { AuthTest } from "../../src/testing/index.js"
+import { expectSome, forUser, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * Registers a user whose address is already verified — the branch of
@@ -48,25 +32,21 @@ const register = Effect.fnUntraced(function*(email: string) {
  */
 const registerVerified = Effect.fnUntraced(function*(email: string) {
   const users = yield* UserStore
-  const registered = yield* register(email)
+  const registered = yield* signUpUser(email)
   const updated = yield* users.update(registered.user.id, { emailVerified: true })
   const user = yield* expectSome(updated, "the user should still be there")
   return { ...registered, user }
 })
 
-/** The events one user's flows published — the hub is shared by the block. */
-const forUser = (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
-  events.filter((event) => event.userId === userId)
-
 /** Every e-mail delivered to one address. */
 const mailTo = Effect.fnUntraced(function*(address: string) {
-  const emails = yield* TestEmails.TestEmails
+  const emails = yield* AuthTest.TestEmails
   return yield* emails.to(address)
 })
 
 /** The link of the most recent e-mail of a kind sent to one address. */
 const linkTo = Effect.fnUntraced(function*(kind: string, address: string) {
-  const emails = yield* TestEmails.TestEmails
+  const emails = yield* AuthTest.TestEmails
   const sent = yield* expectSome(yield* emails.last(kind, address), `expected a ${kind} e-mail for ${address}`)
   return { token: sent.token, url: Redacted.value(sent.url), user: sent.user }
 })
@@ -80,7 +60,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
     it.effect("patches what the caller names and reports what actually changed", () =>
       Effect.gen(function*() {
         const users = yield* Users
-        const { user } = yield* register(uniqueEmail("update"))
+        const { user } = yield* signUpUser(uniqueEmail("update"))
 
         const { events, result } = yield* AuthTest.recordingEvents(
           users.update({ userId: user.id, name: "Grace Hopper", image: "https://example.com/g.png" })
@@ -93,7 +73,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         assert.strictEqual(result.email, user.email)
 
         const published = forUser(events, user.id)
-        assert.deepStrictEqual(tagsOf(published), ["UserUpdated"])
+        assert.deepStrictEqual(AuthTest.tagsOf(published), ["UserUpdated"])
         const updated = published[0]
         if (updated?._tag !== "UserUpdated") return assert.fail("expected a UserUpdated event")
         assert.deepStrictEqual(updated.fields, ["name", "image"])
@@ -102,7 +82,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
     it.effect("leaves an unnamed column alone, and clears the image when told to", () =>
       Effect.gen(function*() {
         const users = yield* Users
-        const { user } = yield* register(uniqueEmail("update-null"))
+        const { user } = yield* signUpUser(uniqueEmail("update-null"))
         yield* users.update({ userId: user.id, name: "Ada", image: "https://example.com/a.png" })
 
         // An absent key is a column the statement does not touch …
@@ -118,13 +98,13 @@ layer(AuthTest.layer())("domain/Users", (it) => {
     it.effect("names no field when the values are the ones already stored", () =>
       Effect.gen(function*() {
         const users = yield* Users
-        const { user } = yield* register(uniqueEmail("update-noop"))
+        const { user } = yield* signUpUser(uniqueEmail("update-noop"))
 
         const { events } = yield* AuthTest.recordingEvents(
           users.update({ userId: user.id, name: testName, image: null })
         )
         const published = forUser(events, user.id)
-        assert.deepStrictEqual(tagsOf(published), ["UserUpdated"])
+        assert.deepStrictEqual(AuthTest.tagsOf(published), ["UserUpdated"])
         const updated = published[0]
         if (updated?._tag !== "UserUpdated") return assert.fail("expected a UserUpdated event")
         assert.deepStrictEqual(updated.fields, [])
@@ -175,7 +155,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const users = yield* Users
         const email = uniqueEmail("change-unverified")
         const newEmail = uniqueEmail("change-unverified-new")
-        const { user } = yield* register(email)
+        const { user } = yield* signUpUser(email)
 
         assert.strictEqual(yield* users.requestEmailChange({ user, newEmail }), "VerificationSent")
 
@@ -191,7 +171,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
       Effect.gen(function*() {
         const users = yield* Users
         const email = uniqueEmail("change-same")
-        const { user } = yield* register(email)
+        const { user } = yield* signUpUser(email)
 
         const failure = yield* Effect.flip(
           users.requestEmailChange({ user, newEmail: `  ${email.toUpperCase()} ` })
@@ -207,7 +187,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const occupied = uniqueEmail("change-occupant")
         const free = uniqueEmail("change-taken-free")
         const { user } = yield* registerVerified(email)
-        yield* register(occupied)
+        yield* signUpUser(occupied)
 
         // Same call shape, same success, no failure to distinguish — a signed-in
         // session must not be an oracle for who else is registered here.
@@ -248,8 +228,8 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const users = yield* Users
         const email = uniqueEmail("change-taken-unverified")
         const occupied = uniqueEmail("change-taken-occupant")
-        const { user } = yield* register(email)
-        yield* register(occupied)
+        const { user } = yield* signUpUser(email)
+        yield* signUpUser(occupied)
 
         // There is no first hop on this branch, and the second one goes to the
         // new address — never to the caller — so there is nothing for a taken
@@ -265,7 +245,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const email = uniqueEmail("change-twice")
         const first = uniqueEmail("change-twice-first")
         const second = uniqueEmail("change-twice-second")
-        const { user } = yield* register(email)
+        const { user } = yield* signUpUser(email)
 
         yield* users.requestEmailChange({ user, newEmail: first })
         yield* users.requestEmailChange({ user, newEmail: second })
@@ -288,7 +268,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const kept = uniqueEmail("change-cb-kept")
         const refused = uniqueEmail("change-cb-refused")
 
-        const first = yield* register(uniqueEmail("change-cb-a"))
+        const first = yield* signUpUser(uniqueEmail("change-cb-a"))
         yield* users.requestEmailChange({ user: first.user, newEmail: kept, callbackURL: "/welcome" })
         const keptLink = yield* linkTo(AuthTest.changeEmailVerificationKind, kept)
         assert.strictEqual(
@@ -296,7 +276,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
           "http://localhost:3000/welcome"
         )
 
-        const second = yield* register(uniqueEmail("change-cb-b"))
+        const second = yield* signUpUser(uniqueEmail("change-cb-b"))
         yield* users.requestEmailChange({
           user: second.user,
           newEmail: refused,
@@ -343,7 +323,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const email = uniqueEmail("hop-one-taken")
         const occupied = uniqueEmail("hop-one-occupant")
         const { user } = yield* registerVerified(email)
-        yield* register(occupied)
+        yield* signUpUser(occupied)
 
         // Hop one is mailed for a taken address exactly as for a free one, so
         // this is where the flow stops. Following it succeeds — a failure here
@@ -409,7 +389,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         assert.strictEqual(result.emailVerified, true)
 
         const published = forUser(events, user.id)
-        assert.deepStrictEqual(tagsOf(published), ["EmailChanged"])
+        assert.deepStrictEqual(AuthTest.tagsOf(published), ["EmailChanged"])
         const changed = published[0]
         if (changed?._tag !== "EmailChanged") return assert.fail("expected an EmailChanged event")
         assert.strictEqual(changed.previousEmail, email)
@@ -428,14 +408,14 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const store = yield* UserStore
         const email = uniqueEmail("hop-race")
         const contested = uniqueEmail("hop-race-contested")
-        const { user } = yield* register(email)
+        const { user } = yield* signUpUser(email)
 
         // Free when the change was asked for …
         yield* users.requestEmailChange({ user, newEmail: contested })
         const verification = yield* linkTo(AuthTest.changeEmailVerificationKind, contested)
         // … and taken by the time the link was followed. The unique index is
         // what settles it, so there is no check-then-act window to lose.
-        yield* register(contested)
+        yield* signUpUser(contested)
 
         const failure = yield* Effect.flip(users.verifyEmailChange(verification.token))
         assert.strictEqual(failure._tag, "UserAlreadyExists")
@@ -498,7 +478,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const verifications = yield* VerificationStore
         const passwords = yield* Passwords
         const email = uniqueEmail("delete-direct")
-        const { session, user } = yield* register(email)
+        const { session, user } = yield* signUpUser(email)
 
         // Something outstanding that must not outlive the row.
         yield* passwords.requestReset({ email })
@@ -516,7 +496,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         )
 
         const published = forUser(events, user.id)
-        assert.include(tagsOf(published), "UserDeleted")
+        assert.include(AuthTest.tagsOf(published), "UserDeleted")
         const deleted = published.find((event) => event._tag === "UserDeleted")
         assert.strictEqual(deleted?._tag === "UserDeleted" ? deleted.email : null, email)
       }))
@@ -526,7 +506,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const users = yield* Users
         const store = yield* UserStore
         const email = uniqueEmail("delete-stale")
-        const { session, user } = yield* register(email)
+        const { session, user } = yield* signUpUser(email)
 
         // `session.freshAge` is a day by default; the session is older than that
         // and a stolen cookie must not be enough to destroy an account.
@@ -541,7 +521,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
       Effect.gen(function*() {
         const users = yield* Users
         const store = yield* UserStore
-        const { session, user } = yield* register(uniqueEmail("delete-password"))
+        const { session, user } = yield* signUpUser(uniqueEmail("delete-password"))
 
         const wrong = yield* Effect.flip(
           users.requestDeletion({ user, session, password: Redacted.make("not the password") })
@@ -560,7 +540,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
       AuthTest.freshClock(Effect.gen(function*() {
         const users = yield* Users
         const store = yield* UserStore
-        const { session, user } = yield* register(uniqueEmail("delete-stale-probe"))
+        const { session, user } = yield* signUpUser(uniqueEmail("delete-stale-probe"))
         yield* TestClock.adjust(Duration.days(2))
 
         // A right and a wrong password must be indistinguishable from a stale
@@ -579,6 +559,33 @@ layer(AuthTest.layer())("domain/Users", (it) => {
   })
 
   // ---------------------------------------------------------------------------
+  // delete
+  // ---------------------------------------------------------------------------
+
+  describe("delete", () => {
+    it.effect("announces the deletion once, however often it is called", () =>
+      Effect.gen(function*() {
+        const users = yield* Users
+        const store = yield* UserStore
+        const { user } = yield* signUpUser(uniqueEmail("delete-repeated"))
+
+        const { events } = yield* AuthTest.recordingEvents(Effect.gen(function*() {
+          yield* users.delete(user)
+          // The same user handed back a second time — an administrative script
+          // run twice, a retried request. The row has already gone, so there is
+          // no second deletion for a subscriber to act on.
+          yield* users.delete(user)
+        }))
+
+        assert.isTrue(Option.isNone(yield* store.findById(user.id)))
+        assert.deepStrictEqual(
+          AuthTest.tagsOf(forUser(events, user.id)).filter((tag) => tag === "UserDeleted"),
+          ["UserDeleted"]
+        )
+      }))
+  })
+
+  // ---------------------------------------------------------------------------
   // requestDeletion, confirmed by mail
   // ---------------------------------------------------------------------------
 
@@ -590,7 +597,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
           const users = yield* Users
           const store = yield* UserStore
           const email = uniqueEmail("delete-confirm")
-          const { session, user } = yield* register(email)
+          const { session, user } = yield* signUpUser(email)
 
           const outcome = yield* users.requestDeletion({ user, session, callbackURL: "/farewell" })
           assert.strictEqual(outcome, "ConfirmationSent")
@@ -604,13 +611,13 @@ layer(AuthTest.layer())("domain/Users", (it) => {
           )
           assert.strictEqual(result.redirectTo, "http://localhost:3000/farewell")
           assert.isTrue(Option.isNone(yield* store.findById(user.id)))
-          assert.include(tagsOf(forUser(events, user.id)), "UserDeleted")
+          assert.include(AuthTest.tagsOf(forUser(events, user.id)), "UserDeleted")
         }))
 
       it.effect("does not consult the session's age: the mailbox is the second factor", () =>
         AuthTest.freshClock(Effect.gen(function*() {
           const users = yield* Users
-          const { session, user } = yield* register(uniqueEmail("delete-confirm-stale"))
+          const { session, user } = yield* signUpUser(uniqueEmail("delete-confirm-stale"))
 
           yield* TestClock.adjust(Duration.days(2))
           assert.strictEqual(yield* users.requestDeletion({ user, session }), "ConfirmationSent")
@@ -620,8 +627,8 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         Effect.gen(function*() {
           const users = yield* Users
           const store = yield* UserStore
-          const owner = yield* register(uniqueEmail("delete-owner"))
-          const stranger = yield* register(uniqueEmail("delete-stranger"))
+          const owner = yield* signUpUser(uniqueEmail("delete-owner"))
+          const stranger = yield* signUpUser(uniqueEmail("delete-stranger"))
 
           yield* users.requestDeletion({ user: owner.user, session: owner.session })
           const link = yield* linkTo(AuthTest.deleteAccountKind, owner.user.email)
@@ -647,7 +654,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         Effect.gen(function*() {
           const users = yield* Users
           const email = uniqueEmail("delete-twice")
-          const { session, user } = yield* register(email)
+          const { session, user } = yield* signUpUser(email)
 
           yield* users.requestDeletion({ user, session })
           yield* users.requestDeletion({ user, session })

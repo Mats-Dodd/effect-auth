@@ -1328,3 +1328,44 @@ sources (the `every source` block), and a base-typed set answering with a `plan`
 refused on both sources with nothing stored. `test/fields/Fields.types.ts` and `test/client/AuthClient.types.ts`
 — the candidate is `UserInsertOf<F>`, base and typed sets are interchangeable, and `PolicyRefused`
 is in the client unions it should be in and no others.
+
+### 14. Shared-shape pass: the four surface changes it makes
+
+A de-duplication pass over the modules above — one derivation, one builder, one home per shape —
+made four changes a reader of those sections would not predict. Everything else it touched is
+internal. Behavior is unchanged except where (3) says otherwise.
+
+1. **`AuthConfigService` gains `readonly trustedOriginSet: ReadonlySet<string>`.** The set of
+   origins a request may claim is derived once, by `AuthConfig.make` from `baseUrl` and
+   `trustedOrigins`, and stored on the config; `OriginCheck.trustedOrigins(config)` now reads that
+   field instead of recomputing the set per request. `OriginCheck.trustedOriginSet` remains the
+   exported derivation for a caller building the set from its own inputs. Same origins, same
+   comparison — the config is immutable, so the two could not disagree.
+
+2. **`sessionCookieSecurity` moved from `MiddlewareLive` to `Cookies`.** Its public path is now
+   `AuthCookies.sessionCookieSecurity(config)`, beside `sessionCookieOptions` and
+   `expiredSessionCookieOptions`, which is where the rest of the session cookie's attributes are
+   already decided; `MiddlewareLive` imports it. The `HttpApiSecurity.ApiKey` it builds is
+   unchanged, and so is every cookie the middleware sets or clears.
+
+3. **`RateLimits.layerStore(options?)` is the default `RateLimiterStore`, and it evicts.** The
+   store counts fixed windows in process-local memory exactly as `RateLimiter.layerStoreMemory`
+   does, and additionally deletes an expired window on a sweep that runs for as long as the layer's
+   scope (`options.sweepInterval`, one minute by default — no shorter than either bucket this
+   library configures). `RateLimits.layer` provides it in place of `RateLimiter.layerStoreMemory`.
+   This is the one **sanctioned behavior change** of the pass, and it is a security fix: a bucket
+   key embeds the client address, taken by default from a header the client can forge, and the
+   upstream store never deletes a key — so an unauthenticated caller with a fresh spoofed address
+   per request grows the map for the life of the process, unbounded. The sweep bounds the store's
+   *size*, never a live counter: a caller still spending its allowance keeps its window, so no
+   limit is loosened. A deployment wanting a shared store still swaps it —
+   `RateLimiter.layer.pipe(Layer.provide(myStore))`.
+
+4. **`OriginCheck.redirectFailure` / `RedirectFailure<E>` are the shared redirect-shaped failure.**
+   The OAuth callback and magic link both answer a failed completion by redirecting, and both built
+   the same `{ _tag: "Failure", error, redirectTo, code }` value from the same parts: the flow's
+   own closed-set `errorCode`, `resolveUrl` for an absent or untrusted `errorURL`, and the extra
+   `&code=` a `PolicyRefused` carries beside this library's classification (§13). That construction
+   now lives once, as `redirectFailure(config, errorCode)`, and each flow supplies only its
+   `errorCode`. Both flows' redirect targets and query strings are byte-identical to what they
+   were.

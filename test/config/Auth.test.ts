@@ -33,7 +33,7 @@ import type { HttpClient } from "effect/unstable/http"
 import { FetchHttpClient, Headers } from "effect/unstable/http"
 import { Auth, AuthConfig, AuthCookies, Github, OAuthFlow, Passwords, Sessions } from "../../src/index.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * A transport that refuses to be used. `start` mints a state row and builds a
@@ -76,7 +76,7 @@ layer(AuthTest.layer())("config/Auth assembly", (it) => {
       const sessions = yield* Sessions.Sessions
       const email = uniqueEmail("expiry")
 
-      yield* passwords.signUp({ name: testName, email, password: testPassword })
+      yield* signUpUser(email)
       const signedIn = yield* passwords.signIn({ email, password: testPassword })
 
       // Well inside the default seven days: still good, and refreshed on the way.
@@ -96,7 +96,7 @@ layer(AuthTest.layer())("config/Auth assembly", (it) => {
       const emails = yield* AuthTest.TestEmails
       const email = uniqueEmail("reset")
 
-      yield* passwords.signUp({ name: testName, email, password: testPassword })
+      yield* signUpUser(email)
       assert.strictEqual(Option.isNone(yield* emails.last("reset", email)), true)
 
       yield* passwords.requestReset({ email })
@@ -140,13 +140,11 @@ layer(AuthTest.layer())("config/Auth assembly", (it) => {
 
 it.effect("publishes events to `Auth.events`", () =>
   Effect.gen(function*() {
-    const passwords = yield* Passwords.Passwords
-
     // Subscribe before the traffic: the hub drops, it does not replay.
     const collected = yield* Effect.forkChild(Stream.runCollect(Stream.take(Auth.events, 2)))
     yield* Effect.yieldNow
 
-    yield* passwords.signUp({ name: testName, email: uniqueEmail("events"), password: testPassword })
+    yield* signUpUser(uniqueEmail("events"))
 
     const events = yield* Fiber.join(collected)
     assert.deepStrictEqual(events.map((event) => event._tag), ["UserCreated", "SignedIn"])
@@ -158,7 +156,7 @@ it.effect("cleanupExpired reaps what has expired and leaves what has not", () =>
     const sessions = yield* Sessions.Sessions
     const email = uniqueEmail("cleanup")
 
-    const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+    const { user } = yield* signUpUser(email)
     yield* passwords.requestReset({ email })
     // A second session that outlives the first, so the sweep has to be
     // selective rather than a truncate.

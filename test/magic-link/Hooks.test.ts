@@ -30,7 +30,7 @@ import { layer as hooksLayer, PolicyRefused } from "../../src/domain/Hooks.js"
 import { UserStore } from "../../src/domain/Stores.js"
 import { handlers as magicLinkHandlers } from "../../src/magic-link/Handlers.js"
 import { MagicLink } from "../../src/magic-link/MagicLink.js"
-import { AuthTest, MagicLinkTest, TestEmails, TestHttpClient } from "../../src/testing/index.js"
+import { AuthTest, MagicLinkTest, TestHttpClient } from "../../src/testing/index.js"
 import { testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** A deployment whose plugin and whose domain services see the same hooks. */
@@ -56,7 +56,7 @@ const makeClient = () => TestHttpClient.makeClient(MagicLinkTest.TestApi)
 /** The token out of the most recent link mailed to an address. */
 const linkToken = (email: string) =>
   Effect.flatMap(
-    TestEmails.TestEmails,
+    AuthTest.TestEmails,
     (emails) => emails.tokenFor(MagicLinkTest.magicLinkKind, email)
   )
 

@@ -5,7 +5,7 @@ import { Account, oauthIssuer, User } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { OAuthFlow } from "../../src/oauth/Flow.js"
 import { AuthTest, MockProvider } from "../../src/testing/index.js"
-import { expectSome, tagsOf, testName, uniqueEmail } from "../fixtures.js"
+import { expectSome, testName, uniqueEmail } from "../fixtures.js"
 
 /** The origin this deployment is served from. */
 const appOrigin = "https://app.example.com"
@@ -224,7 +224,7 @@ describe.sequential("oauth/Refresh", () => {
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 1)
 
           assert.deepStrictEqual(
-            tagsOf(events.filter((event) => event.userId === user.id)),
+            AuthTest.tagsOf(events.filter((event) => event.userId === user.id)),
             ["TokensRefreshed"]
           )
           const refreshed = events.find((event) => event._tag === "TokensRefreshed")

@@ -6,8 +6,8 @@ import { Accounts } from "../../src/domain/Accounts.js"
 import { Passwords } from "../../src/domain/Passwords.js"
 import { oauthIssuer } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
-import { AuthTest, TestEmails } from "../../src/testing/index.js"
-import { expectSome, newPassword, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { AuthTest } from "../../src/testing/index.js"
+import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * These three keep a deployment each.
@@ -21,7 +21,7 @@ describe("domain/lifecycle", () => {
     Effect.gen(function*() {
       const passwords = yield* Passwords
       const sessions = yield* Sessions
-      const emails = yield* TestEmails.TestEmails
+      const emails = yield* AuthTest.TestEmails
       const config = yield* AuthConfig
       const email = uniqueEmail("journey")
 
@@ -108,7 +108,7 @@ describe("domain/lifecycle", () => {
       })
 
       const { events } = yield* AuthTest.recordingEvents(journey)
-      assert.deepStrictEqual(tagsOf(events), [
+      assert.deepStrictEqual(AuthTest.tagsOf(events), [
         "UserCreated",
         "EmailVerified",
         "SignedIn",
@@ -124,10 +124,10 @@ describe("domain/lifecycle", () => {
       const passwords = yield* Passwords
       const accounts = yield* Accounts
       const sessions = yield* Sessions
-      const emails = yield* TestEmails.TestEmails
+      const emails = yield* AuthTest.TestEmails
       const email = uniqueEmail("linking")
 
-      const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+      const { user } = yield* signUpUser(email)
 
       // The provider's verified claim alone is not enough while the local
       // address is unproven.
@@ -175,16 +175,11 @@ describe("domain/lifecycle", () => {
     Effect.gen(function*() {
       const passwords = yield* Passwords
       const sessions = yield* Sessions
-      const emails = yield* TestEmails.TestEmails
+      const emails = yield* AuthTest.TestEmails
       const config = yield* AuthConfig
       const email = uniqueEmail("recovery")
 
-      const { session, user } = yield* passwords.signUp({
-        name: testName,
-        email,
-        password: testPassword
-      })
-      const laptop = yield* expectSome(session, "expected a session")
+      const { token: laptopToken, user } = yield* signUpUser(email)
       const phone = yield* sessions.create({ userId: user.id })
 
       // A day passes; the link is requested and used within its hour.
@@ -195,7 +190,7 @@ describe("domain/lifecycle", () => {
       yield* TestClock.adjust(Duration.subtract(config.tokens.passwordResetTtl, Duration.minutes(1)))
       yield* passwords.resetPassword({ token, newPassword })
 
-      assert.strictEqual((yield* Effect.flip(sessions.verify(laptop.token)))._tag, "Unauthorized")
+      assert.strictEqual((yield* Effect.flip(sessions.verify(laptopToken)))._tag, "Unauthorized")
       assert.strictEqual((yield* Effect.flip(sessions.verify(phone.token)))._tag, "Unauthorized")
 
       const recovered = yield* passwords.signIn({ email, password: newPassword })

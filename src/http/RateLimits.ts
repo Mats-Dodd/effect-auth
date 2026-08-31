@@ -10,10 +10,10 @@
  * **Details**
  *
  * Buckets are keyed by `(bucket, path, client ip)` and counted with the fixed-window
- * algorithm of `unstable/persistence`'s `RateLimiter`, whose default store is
- * process-local memory. A deployment running more than one process should
- * provide a shared `RateLimiterStore` instead; the layer below is
- * `Layer.provide`-able for exactly that reason.
+ * algorithm of `unstable/persistence`'s `RateLimiter`, over the process-local
+ * store {@link layerStore} builds. A deployment running more than one process
+ * should count in a shared `RateLimiterStore` instead — the store is a layer of
+ * its own for exactly that reason.
  *
  * @since 1.0.0
  */
@@ -24,6 +24,7 @@ import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { RateLimited } from "../domain/Errors.js"
 import { authLogAnnotations } from "../internal/effects.js"
+import { makeStore } from "../internal/rateLimiterStore.js"
 
 // -----------------------------------------------------------------------------
 // Buckets
@@ -266,18 +267,54 @@ export const limit = <A, E, R>(
 // -----------------------------------------------------------------------------
 
 /**
+ * The default store: counters held in process-local memory, with the expired
+ * ones deleted by a sweep that runs for as long as the layer's scope.
+ *
+ * **Details**
+ *
+ * `options.sweepInterval` is how often the sweep runs; it defaults to one
+ * minute, which is no shorter than either bucket above, so a window is dead by
+ * the time it is collected. Nothing else about the store's arithmetic differs
+ * from `RateLimiter.layerStoreMemory`.
+ *
+ * **Gotchas**
+ *
+ * The sweep bounds the store's *size*, not the count of any live window: a
+ * caller that keeps spending its allowance keeps its counter.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerStore = (
+  options?: { readonly sweepInterval?: Duration.Duration | undefined } | undefined
+): Layer.Layer<RateLimiter.RateLimiterStore> =>
+  Layer.effect(
+    RateLimiter.RateLimiterStore,
+    Effect.map(makeStore(options), (evicting) => evicting.store)
+  )
+
+/**
  * The default rate limiter: fixed windows counted in process-local memory.
  *
  * **Gotchas**
  *
  * Process-local means per-instance. Behind a load balancer with four instances
- * the effective limit is four times what is configured. Provide
- * `RateLimiter.layer` over a shared `RateLimiterStore` to fix that; `Auth.layer`
- * merges this one only as a default.
+ * the effective limit is four times what is configured. Count in a shared store
+ * to fix that — `RateLimiter.layer.pipe(Layer.provide(myStore))` is this layer
+ * with {@link layerStore} swapped out, and `Auth.layer` merges this one only as
+ * a default.
+ *
+ * The store deletes an expired window rather than holding it, which
+ * `RateLimiter.layerStoreMemory` does not: it resets an expired counter the
+ * next time its key is used, and never deletes it. A key embeds the client
+ * address — taken by default from a header the client itself can forge — so
+ * that store keeps one entry per unauthenticated request made with a fresh
+ * spoofed address, for the life of the process, and nothing bounds how many.
+ * That is why this layer does not install it.
  *
  * @category layers
  * @since 1.0.0
  */
 export const layer: Layer.Layer<RateLimiter.RateLimiter> = RateLimiter.layer.pipe(
-  Layer.provide(RateLimiter.layerStoreMemory)
+  Layer.provide(layerStore())
 )

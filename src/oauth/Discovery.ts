@@ -33,11 +33,14 @@
 import { Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { DiscoveryError } from "../domain/Errors.js"
+import { trimTrailingSlashes } from "../internal/url.js"
 import { refuseRedirects } from "./Flow.js"
 import { isRedirectResponse } from "./IdToken.js"
-import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "./Provider.js"
-import { fetchJson, providerError, providerRequestTimeout, resilient } from "./Provider.js"
+import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
+import { providerError, providerRequestTimeout, resilient } from "./Provider.js"
 import { lenient } from "./internal/claims.js"
+import { jsonWithin } from "./internal/http.js"
+import { fetchIdentity, identityOf } from "./internal/userInfo.js"
 
 // -----------------------------------------------------------------------------
 // The document
@@ -92,17 +95,12 @@ const readDocument = Schema.decodeUnknownOption(DiscoveryDocument)
  * The path is appended to the issuer, it does not replace the issuer's own path:
  * an issuer of `https://host/realms/acme` publishes at
  * `https://host/realms/acme/.well-known/openid-configuration`, which is what
- * Keycloak and Zitadel do. Trailing slashes are trimmed in a loop rather than
- * with a regex — that shape backtracks polynomially on hostile input.
+ * Keycloak and Zitadel do.
  *
  * @category combinators
  * @since 1.0.0
  */
-export const discoveryUrlOf = (issuer: string): string => {
-  let host = issuer
-  while (host.endsWith("/")) host = host.slice(0, -1)
-  return `${host}${wellKnownPath}`
-}
+export const discoveryUrlOf = (issuer: string): string => `${trimTrailingSlashes(issuer)}${wellKnownPath}`
 
 /**
  * The signature algorithms a discovered provider will accept an `id_token`
@@ -220,23 +218,6 @@ export interface Options {
 export const defaultScopes: ReadonlyArray<string> = ["openid", "email", "profile"]
 
 // -----------------------------------------------------------------------------
-// Reading a userinfo endpoint
-// -----------------------------------------------------------------------------
-
-/**
- * A userinfo body, as far as the default `userInfo` believes one. The address is
- * required — without one there is no identity — and everything else is advisory.
- */
-const UserInfoBody = Schema.Struct({
-  email: Schema.NonEmptyString,
-  email_verified: lenient(Schema.Union([Schema.Literal(true), Schema.Literal("true")])),
-  name: lenient(Schema.NonEmptyString),
-  picture: lenient(Schema.NonEmptyString)
-})
-
-const readUserInfo = Schema.decodeUnknownOption(UserInfoBody)
-
-// -----------------------------------------------------------------------------
 // Discovery
 // -----------------------------------------------------------------------------
 
@@ -292,10 +273,8 @@ export const make: (
       return yield* Effect.fail(failure(options.id, "Unreachable"))
     }
 
-    // The body gets its own deadline: an endpoint that answers with headers and
-    // then trickles bytes forever would otherwise hold the build open.
     const body = yield* Effect.mapError(
-      Effect.timeout(response.json, providerRequestTimeout),
+      jsonWithin(response, providerRequestTimeout),
       () => failure(options.id, "Malformed")
     )
     const decoded = readDocument(body)
@@ -332,36 +311,19 @@ export const make: (
       // before calling this. A null here would mean the OIDC path was skipped.
       if (claims === null) return yield* Effect.fail(providerError(options.id, "IdTokenInvalid"))
 
-      if (claims.email !== null) {
-        return {
-          id: claims.subject,
-          email: claims.email,
-          emailVerified: claims.emailVerified,
-          name: claims.name ?? claims.email,
-          image: claims.picture
-        } satisfies OAuthUserInfo
-      }
+      const identity = identityOf(claims)
+      if (identity !== null) return identity
 
+      // No address in the token, and nowhere to ask for one.
       if (userInfoUrl === undefined) {
         return yield* Effect.fail(providerError(options.id, "UserInfoFailed"))
       }
-      const answered = yield* fetchJson({
+      return yield* fetchIdentity({
         providerId: options.id,
         url: userInfoUrl,
-        accessToken: tokens.accessToken
+        accessToken: tokens.accessToken,
+        claims
       })
-      const read = readUserInfo(answered.body)
-      if (Option.isNone(read)) return yield* Effect.fail(providerError(options.id, "UserInfoFailed"))
-      const profile = read.value
-      return {
-        // The subject stays the one the signature covered: the userinfo body is
-        // only bearer-authenticated, the token is signed.
-        id: claims.subject,
-        email: profile.email,
-        emailVerified: profile.email_verified !== undefined,
-        name: claims.name ?? profile.name ?? profile.email,
-        image: claims.picture ?? profile.picture ?? null
-      } satisfies OAuthUserInfo
     })
 
     return {

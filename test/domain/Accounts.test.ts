@@ -2,13 +2,11 @@ import { assert, describe, it, layer } from "@effect/vitest"
 import { DateTime, Effect } from "effect"
 import { Accounts, canLinkImplicitly } from "../../src/domain/Accounts.js"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
-import type { AuthEvent } from "../../src/domain/Events.js"
-import { Passwords } from "../../src/domain/Passwords.js"
 import { CredentialIssuer, oauthIssuer } from "../../src/domain/Schema.js"
 import type { UserId } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, tagsOf, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { expectSome, forUser, signUpUser, testName, uniqueEmail } from "../fixtures.js"
 
 /**
  * A provider subject no other test will claim.
@@ -36,22 +34,11 @@ const identity = (overrides?: Partial<OAuthIdentity>): OAuthIdentity => ({
 
 /** Registers a local email/password user, optionally with a verified address. */
 const localUser = Effect.fnUntraced(function*(email: string, emailVerified: boolean) {
-  const passwords = yield* Passwords
   const users = yield* UserStore
-  const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+  const { user } = yield* signUpUser(email)
   if (!emailVerified) return user
   return yield* expectSome(yield* users.update(user.id, { emailVerified: true }), "expected the updated user")
 })
-
-/**
- * The events one user's flows published.
- *
- * The event hub belongs to the deployment, and the deployment is shared by
- * every test in the block, so an assertion on the whole recording would also be
- * an assertion about whatever the siblings happened to be doing.
- */
-const forUser = (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
-  events.filter((event) => event.userId === userId)
 
 // -----------------------------------------------------------------------------
 // The gate, in isolation
@@ -120,7 +107,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
         assert.strictEqual(result.account.id, first.account.id)
         assert.strictEqual(result.account.accessToken, "at-2")
         // An ordinary sign-in is not a linking event.
-        assert.deepStrictEqual(tagsOf(forUser(events, first.user.id)), [])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, first.user.id)), [])
 
         // The local identity is untouched by what the provider now reports.
         assert.strictEqual(result.user.email, email)
@@ -143,7 +130,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
         assert.strictEqual(result.userCreated, false)
         assert.strictEqual(result.accountCreated, true)
         assert.strictEqual(result.user.id, user.id)
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["AccountLinked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["AccountLinked"])
 
         // The user now has two ways in.
         const held = yield* accounts.listForUser(user.id)
@@ -223,7 +210,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
         assert.strictEqual(result.accountCreated, true)
         assert.strictEqual(result.user.emailVerified, true)
         assert.strictEqual(result.user.name, testName)
-        assert.deepStrictEqual(tagsOf(forUser(events, result.user.id)), ["UserCreated", "AccountLinked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, result.user.id)), ["UserCreated", "AccountLinked"])
 
         assert.strictEqual(
           (yield* expectSome(yield* users.findByEmail(email), "expected the user")).id,
@@ -261,7 +248,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
         )
         assert.strictEqual(result.accountCreated, true)
         assert.strictEqual(result.user.id, user.id)
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["AccountLinked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["AccountLinked"])
         assert.strictEqual((yield* accounts.listForUser(user.id)).length, 2)
       }))
 
@@ -320,7 +307,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
         assert.strictEqual(linked.user.id, user.id)
 
         const { events } = yield* AuthTest.recordingEvents(accounts.unlink(linked.account.id, user.id))
-        assert.deepStrictEqual(tagsOf(forUser(events, user.id)), ["AccountUnlinked"])
+        assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["AccountUnlinked"])
 
         const held = yield* accounts.listForUser(user.id)
         assert.strictEqual(held.length, 1)
@@ -394,7 +381,7 @@ describe("domain/Accounts/linkOAuth (provisioning race)", () => {
         [first.success.userCreated, second.success.userCreated].filter(Boolean).length,
         1
       )
-      assert.deepStrictEqual(tagsOf(events), ["UserCreated", "AccountLinked"])
+      assert.deepStrictEqual(AuthTest.tagsOf(events), ["UserCreated", "AccountLinked"])
 
       // And one user, one account, in the database.
       const users = yield* UserStore
