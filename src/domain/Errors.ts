@@ -18,6 +18,7 @@
  */
 import { Schema } from "effect"
 import { HttpApiError } from "effect/unstable/httpapi"
+import type { PolicyRefused } from "./Hooks.js"
 import { AccountId } from "./Schema.js"
 import type { PersistenceError } from "./Stores.js"
 
@@ -597,6 +598,9 @@ export class PasswordHashError
  * union. They are members here because a program that calls the domain services
  * directly — without the HTTP layer — can observe them.
  *
+ * `PolicyRefused` is declared in `domain/Hooks.ts`, beside the hooks that are
+ * the only thing able to raise it, and joins the union here.
+ *
  * @category errors
  * @since 1.0.0
  */
@@ -620,6 +624,7 @@ export type AuthError =
   | DiscoveryError
   | AccountAlreadyLinked
   | CannotUnlinkLastAccount
+  | PolicyRefused
   | RateLimited
   | EmailDeliveryError
   | PasswordHashError

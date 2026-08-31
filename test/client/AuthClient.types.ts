@@ -17,6 +17,7 @@ import type { Atom } from "effect/unstable/reactivity"
 import { AtomHttpApi } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
 import type * as E from "../../src/domain/Errors.js"
+import type * as Hooks from "../../src/domain/Hooks.js"
 import { AuthApi, type AuthApiGroup } from "../../src/http/AuthApi.js"
 
 const S = AtomHttpApi.Service()("x", {
@@ -80,7 +81,7 @@ eq<
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "changeEmail">>>,
-    E.EmailUnchanged | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+    E.EmailUnchanged | Hooks.PolicyRefused | E.SessionNotFresh | E.RateLimited | E.Unauthorized
   >
 >(true)
 eq<
@@ -92,7 +93,7 @@ eq<
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "deleteUser">>>,
-    E.InvalidCredentials | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+    E.InvalidCredentials | Hooks.PolicyRefused | E.SessionNotFresh | E.RateLimited | E.Unauthorized
   >
 >(true)
 eq<

@@ -62,14 +62,16 @@ import {
   withCallbackUrl
 } from "../config/AuthEmails.js"
 import { resolveUrl, validateUrl } from "../http/OriginCheck.js"
-import { annotateAuthLogs } from "../internal/effects.js"
+import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { omitUndefined, pickKeys } from "../internal/records.js"
 import type { SessionNotFresh } from "./Errors.js"
 import { EmailUnchanged, InvalidCredentials, InvalidToken, UserAlreadyExists, UserNotFound } from "./Errors.js"
 import type { UpdatedUserField } from "./Events.js"
 import { AuthEvents, publishSafely } from "./Events.js"
+import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
+import { AuthHooks } from "./Hooks.js"
 import { Passwords } from "./Passwords.js"
-import type { Session, UserExtras, UserFields, UserId, UserModel, UserOf } from "./Schema.js"
+import type { Session, UserExtras, UserFields, UserId, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 import { baseUserModel, normalizeEmail } from "./Schema.js"
 import { Sessions } from "./Sessions.js"
 import type { PersistenceError } from "./Stores.js"
@@ -131,6 +133,27 @@ export interface BaseUpdateOptions {
  * @since 1.0.0
  */
 export type UpdateOptions<F extends UserFields = {}> = BaseUpdateOptions & UserExtras<F, "jsonUpdate">
+
+/**
+ * What {@link UsersService.provision} takes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface ProvisionOptions<F extends UserFields = {}> {
+  /**
+   * The row the calling flow built, id and timestamps included.
+   *
+   * **Details**
+   *
+   * It is already an insert row rather than a bag of fields: the id is
+   * application-generated, so the flow that is about to write related rows knows
+   * it before this is called.
+   */
+  readonly candidate: UserInsertOf<F>
+  /** What created this person, for whatever the hooks decide with it. */
+  readonly source: ProvisionSource
+}
 
 /**
  * What {@link UsersService.requestEmailChange} takes.
@@ -263,6 +286,35 @@ export interface DeletionResult {
  */
 export interface UsersService<F extends UserFields = {}> {
   /**
+   * Writes a new user row — the one place in this library that does.
+   *
+   * **When to use**
+   *
+   * From any flow that creates a person: the password sign-up, the OAuth
+   * resolution, a plugin. Going through here rather than through
+   * `UserStore.create` is what makes `beforeUserCreate` and `afterUserCreate` a
+   * choke point rather than three of them.
+   *
+   * **Details**
+   *
+   * `beforeUserCreate` may rewrite the candidate or refuse it; a rewrite is
+   * re-validated through the model's own `insert` variant, so a hook cannot
+   * store a row the schema would have rejected. `afterUserCreate` then runs with
+   * the stored row, which is where a related row with a foreign key onto it
+   * belongs.
+   *
+   * **Gotchas**
+   *
+   * It opens no transaction and publishes no event. Both are the caller's: the
+   * hooks run inside whatever transaction the sign-up already holds, so a
+   * refusal aborts the whole of it, and `UserCreated` stays where it is —
+   * published after the commit, as `Events.ts` requires.
+   */
+  readonly provision: (
+    options: ProvisionOptions<F>
+  ) => Effect.Effect<UserOf<F>, PolicyRefused | PersistenceError>
+
+  /**
    * Applies a profile update and answers the stored row.
    *
    * **Details**
@@ -284,10 +336,13 @@ export interface UsersService<F extends UserFields = {}> {
    * Fails `EmailUnchanged` when the address is the one the account already has,
    * which is the only refusal this step makes out loud — the caller already
    * knows their own address, so saying so leaks nothing.
+   *
+   * `beforeEmailChange` is consulted before the address is even looked up, so a
+   * deployment's policy cannot become an oracle for who else is registered.
    */
   readonly requestEmailChange: (
     options: RequestEmailChangeOptions<F>
-  ) => Effect.Effect<EmailChangeOutcome, EmailUnchanged | PersistenceError>
+  ) => Effect.Effect<EmailChangeOutcome, EmailUnchanged | PolicyRefused | PersistenceError>
 
   /**
    * Claims a first-hop token and mails the second hop to the new address.
@@ -322,18 +377,26 @@ export interface UsersService<F extends UserFields = {}> {
    * With `confirmByEmail` off this requires a fresh session and deletes
    * immediately; with it on it mints a `delete-account` token and mails it, and
    * the session's age does not matter because the mailbox is the second factor.
+   *
+   * `beforeUserDelete` is consulted once the caller has proved who they are, so
+   * a deployment's policy never stands in for the credential checks.
    */
   readonly requestDeletion: (
     options: RequestDeletionOptions<F>
-  ) => Effect.Effect<DeletionOutcome, InvalidCredentials | SessionNotFresh | PersistenceError>
+  ) => Effect.Effect<DeletionOutcome, InvalidCredentials | SessionNotFresh | PolicyRefused | PersistenceError>
 
   /**
    * Claims a deletion token presented by a signed-in caller and deletes the
    * account.
+   *
+   * **Gotchas**
+   *
+   * `beforeUserDelete` is consulted *after* the token has been claimed, so a
+   * link a policy refuses is spent rather than left replayable.
    */
   readonly confirmDeletion: (
     options: ConfirmDeletionOptions
-  ) => Effect.Effect<DeletionResult, InvalidToken | PersistenceError>
+  ) => Effect.Effect<DeletionResult, InvalidToken | PolicyRefused | PersistenceError>
 
   /**
    * Deletes a user outright — no token, no freshness check.
@@ -417,6 +480,10 @@ export const make: <F extends UserFields>(
   const config = yield* AuthConfig
   const emails = yield* AuthEmails
   const events = yield* AuthEvents
+  // A `Context.Reference` with a no-op default, so a deployment that installs
+  // nothing provides nothing — and, being read here, the set is fixed when the
+  // layer is built rather than looked up on every request.
+  const hooks = yield* AuthHooks
   const verifications = yield* Verifications
   const users = yield* userStoreOf(model)
   const transaction = yield* WithAuthTransaction
@@ -483,6 +550,28 @@ export const make: <F extends UserFields>(
 
   // ---------------------------------------------------------------------------
 
+  const provision = Effect.fnUntraced(function*(options: ProvisionOptions<F>) {
+    const before = hooks.beforeUserCreate
+    // A rewrite goes back through the model's own `insert` variant: what a hook
+    // hands back is an ordinary object, and nothing else would stop it storing
+    // a row the schema rejects. The unrewritten path is already validated — the
+    // caller built it with `insertRow` — so it is not paid for twice.
+    const candidate = before === undefined
+      ? options.candidate
+      : yield* insertRow(model.insert, yield* before({ candidate: options.candidate, source: options.source }))
+
+    const user = yield* users.create(candidate)
+
+    // Same transaction as the caller's, so a related row that cannot be written
+    // takes the user down with it rather than leaving a half-provisioned
+    // account behind.
+    const after = hooks.afterUserCreate
+    if (after !== undefined) {
+      yield* after({ user, source: options.source })
+    }
+    return user
+  })
+
   const update = Effect.fnUntraced(function*(options: UpdateOptions<F>) {
     const found = yield* users.findById(options.userId)
     const current = yield* Effect.fromOption(found, () => new UserNotFound())
@@ -516,6 +605,16 @@ export const make: <F extends UserFields>(
       // The one refusal this step makes out loud: the caller already knows
       // their own address, so saying so tells them nothing they did not have.
       return yield* Effect.fail(new EmailUnchanged())
+    }
+
+    // Before the lookup, and therefore before the taken/free fork: a policy that
+    // ran after it would have to answer differently for the two branches, or
+    // else pay for a lookup it does not use — and the whole shape of this flow
+    // is that neither the caller nor the clock can tell those branches apart.
+    // Nothing has been minted or mailed yet either, so a refusal leaves no state.
+    const beforeChange = hooks.beforeEmailChange
+    if (beforeChange !== undefined) {
+      yield* beforeChange({ user, newEmail })
     }
 
     const taken = Option.isSome(yield* users.findByEmail(newEmail))
@@ -656,6 +755,16 @@ export const make: <F extends UserFields>(
       }
     }
 
+    // After the freshness guard *and* after the password check, so a policy
+    // never stands in for either: the one verification the branch above runs is
+    // what makes "you have no password" and "that is the wrong password" cost
+    // the same, and a hook that short-circuited it would skip that defence. It
+    // is still before anything is minted or mailed.
+    const beforeDelete = hooks.beforeUserDelete
+    if (beforeDelete !== undefined) {
+      yield* beforeDelete({ user: options.user })
+    }
+
     if (config.user.deleteUser.confirmByEmail) {
       // The mailbox is the second factor here, so — unless a password was
       // offered, above — the session's age does not decide anything.
@@ -694,6 +803,15 @@ export const make: <F extends UserFields>(
 
     const found = yield* users.findById(options.userId)
     const user = yield* Effect.fromOption(found, () => new InvalidToken())
+
+    // After the claim, deliberately: the token is spent whichever way the
+    // policy answers, so a link a hook refuses cannot be parked and replayed
+    // against a policy that has since changed its mind.
+    const beforeDelete = hooks.beforeUserDelete
+    if (beforeDelete !== undefined) {
+      yield* beforeDelete({ user })
+    }
+
     yield* deleteUser(user)
 
     // Validated once when the token was minted and again here: the row is
@@ -702,6 +820,7 @@ export const make: <F extends UserFields>(
   })
 
   return usersOf(model).of({
+    provision,
     update,
     requestEmailChange,
     confirmEmailChange,

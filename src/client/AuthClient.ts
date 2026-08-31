@@ -64,6 +64,7 @@ import type {
   UserAlreadyExists,
   UserNotFound
 } from "../domain/Errors.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
 import type {
   AccountPublic,
   SessionPublic,
@@ -495,7 +496,7 @@ export interface AuthClient<F extends UserFields = {}> {
   readonly changeEmail: Atom.AtomResultFn<
     ChangeEmail,
     Ok,
-    EmailUnchanged | SessionNotFresh | RateLimited | Unauthorized
+    EmailUnchanged | PolicyRefused | SessionNotFresh | RateLimited | Unauthorized
   >
   /** Consumes the first-hop token, from the current address. */
   readonly confirmEmailChange: Atom.AtomResultFn<TokenArgument, Ok, InvalidToken>
@@ -509,7 +510,7 @@ export interface AuthClient<F extends UserFields = {}> {
   readonly deleteUser: Atom.AtomResultFn<
     DeleteUser,
     DeleteUserResponse,
-    InvalidCredentials | SessionNotFresh | RateLimited | Unauthorized
+    InvalidCredentials | PolicyRefused | SessionNotFresh | RateLimited | Unauthorized
   >
   /** Gives an account without one its first password. Invalidates {@link accountsKey}. */
   readonly setPassword: Atom.AtomResultFn<

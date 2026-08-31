@@ -17,6 +17,8 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Layer, Redacted } from "effect"
 import { TestClock } from "effect/testing"
+import type { AuthHooksService } from "../../src/domain/Hooks.js"
+import { PolicyRefused } from "../../src/domain/Hooks.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
 
@@ -43,6 +45,23 @@ const makeClient = (options?: TestHttpClient.ClientOptions) =>
 /** Registers an account and returns the browser that is signed in as it. */
 const signedUp = (email: string, options?: TestHttpClient.ClientOptions) =>
   TestHttpClient.signedUp({ ...options, email, name: testName, password: testPasswordText })
+
+/**
+ * A policy that allows the first deletion it is asked about and refuses every
+ * one after it — which, on the mail-confirmed flow, is "yes" when the link is
+ * asked for and "no" when it is followed.
+ *
+ * The counter is per-deployment, so the block built with it holds one test.
+ */
+const relentingHooks = (): AuthHooksService => {
+  let consulted = 0
+  return {
+    beforeUserDelete: () =>
+      Effect.suspend(() =>
+        ++consulted === 1 ? Effect.void : Effect.fail(new PolicyRefused({ code: "changed_my_mind" }))
+      )
+  }
+}
 
 /** The token of the most recent e-mail of a kind sent to one address. */
 const tokenFor = Effect.fnUntraced(function*(kind: string, address: string) {
@@ -283,6 +302,107 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
         }))
     }
   )
+
+  // ---------------------------------------------------------------------------
+  // The deployment's own policy hooks
+  // ---------------------------------------------------------------------------
+
+  it.layer(AuthTest.layerHttp({
+    ...served,
+    hooks: {
+      beforeEmailChange: ({ newEmail }) =>
+        Effect.fail(new PolicyRefused({ code: "address_frozen", detail: newEmail.length.toString() })),
+      beforeUserDelete: () => Effect.fail(new PolicyRefused({ code: "under_contract" }))
+    }
+  }))("with a policy that refuses both flows", (it) => {
+    it.effect("answers a refused change of address with 403 and the hook's code", () =>
+      Effect.gen(function*() {
+        const email = uniqueEmail("veto-change")
+        const { client } = yield* signedUp(email)
+        const emails = yield* AuthTest.TestEmails
+
+        const refused = yield* Effect.flip(
+          client.auth.changeEmail({ payload: { newEmail: uniqueEmail("veto-change-new") } })
+        )
+        assert.strictEqual(refused._tag, "PolicyRefused")
+        if (refused._tag === "PolicyRefused") {
+          assert.strictEqual(refused.code, "address_frozen")
+        }
+
+        // The hook runs before anything is minted or mailed, so a refusal leaves
+        // the flow exactly where it was.
+        assert.deepStrictEqual(yield* emails.to(email), [])
+        assert.strictEqual((yield* client.auth.getSession()).user.email, email)
+      }))
+
+    it.effect("answers a refused deletion with 403, and the account is still there", () =>
+      Effect.gen(function*() {
+        const email = uniqueEmail("veto-delete")
+        const { client } = yield* signedUp(email)
+
+        const refused = yield* Effect.flip(client.auth.deleteUser({ payload: {} }))
+        assert.strictEqual(refused._tag, "PolicyRefused")
+        if (refused._tag === "PolicyRefused") {
+          assert.strictEqual(refused.code, "under_contract")
+        }
+
+        // Still signed in, still there — a refusal is a caller error, not a
+        // half-finished deletion.
+        assert.strictEqual((yield* client.auth.getSession()).user.email, email)
+      }))
+
+    it.effect("still refuses the address the account already has before consulting the hook", () =>
+      Effect.gen(function*() {
+        const email = uniqueEmail("veto-unchanged")
+        const { client } = yield* signedUp(email)
+
+        // `EmailUnchanged` is decided from the caller's own address and leaks
+        // nothing, so a policy does not get to reclassify it.
+        const refused = yield* Effect.flip(client.auth.changeEmail({ payload: { newEmail: email } }))
+        assert.strictEqual(refused._tag, "EmailUnchanged")
+      }))
+  })
+
+  // A hook that allows the request and refuses the confirmation, so the link is
+  // minted and then declined. It closes over a counter, so the block holds
+  // exactly one test: a sibling would move it.
+  it.layer(AuthTest.layerHttp({
+    user: { deleteUser: { enabled: true, confirmByEmail: true } },
+    hooks: relentingHooks()
+  }))("with a policy that changes its mind between the two hops", (it) => {
+    it.effect("redirects a refused link and burns it anyway", () =>
+      Effect.gen(function*() {
+        const email = uniqueEmail("veto-callback")
+        const { client, cookies } = yield* signedUp(email)
+
+        // Consultation one: allowed, so the link goes out.
+        const asked = yield* client.auth.deleteUser({ payload: { callbackURL: "/farewell" } })
+        assert.strictEqual(asked.status, "ConfirmationSent")
+        const token = yield* tokenFor(AuthTest.deleteAccountKind, email)
+
+        // Consultation two: refused. The browser arrived by a top-level
+        // navigation, so it leaves by one carrying the classification and the
+        // deployment's own code.
+        const [, response] = yield* client.auth.deleteUserCallback({
+          query: { token },
+          responseMode: "decoded-and-response"
+        })
+        assert.strictEqual(response.status, 302)
+        const location = response.headers["location"] ?? ""
+        assert.include(location, "error=policy_refused")
+        assert.include(location, "code=changed_my_mind")
+
+        // Nothing was deleted and nobody was signed out.
+        assert.notStrictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "")
+        assert.strictEqual((yield* client.auth.getSession()).user.email, email)
+
+        // The token was claimed before the hook was asked, so the refused link
+        // is spent: presenting it again is an unknown token, not a second
+        // refusal.
+        const spent = yield* Effect.flip(client.auth.deleteUserCallback({ query: { token } }))
+        assert.strictEqual(spent._tag, "InvalidToken")
+      }))
+  })
 
   // ---------------------------------------------------------------------------
   // The guards that need a clock of their own

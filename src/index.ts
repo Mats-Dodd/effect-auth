@@ -54,6 +54,7 @@ export * as Token from "./crypto/Token.js"
 
 export * as Accounts from "./domain/Accounts.js"
 export * as AuthEvents from "./domain/Events.js"
+export * as Hooks from "./domain/Hooks.js"
 export * as Ids from "./domain/Ids.js"
 export * as Passwords from "./domain/Passwords.js"
 export * as Sessions from "./domain/Sessions.js"

@@ -31,6 +31,7 @@ import {
   UserAlreadyExists,
   UserNotFound
 } from "../domain/Errors.js"
+import { PolicyRefused } from "../domain/Hooks.js"
 import type { UserExtras, UserExtrasEncoded, UserFields, UserModel } from "../domain/Schema.js"
 import {
   AccountId,
@@ -794,7 +795,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("changeEmail", "/change-email", {
         payload: ChangeEmailPayload,
         success: Ok,
-        error: [EmailUnchanged, SessionNotFresh, RateLimited]
+        error: [EmailUnchanged, PolicyRefused, SessionNotFresh, RateLimited]
       })
         .middleware(Authenticated)
         // The current address decides which hop is sent, and whether it is
@@ -803,7 +804,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         .annotateMerge(OpenApi.annotations({
           summary: "Start moving the account to another e-mail address",
           description:
-            "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns."
+            "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns. PolicyRefused is a deployment's own hook declining the change, and carries the code that hook chose."
         })),
       HttpApiEndpoint.get("confirmEmailChange", "/change-email/confirm", {
         query: TokenQuery,
@@ -826,7 +827,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("deleteUser", "/delete-user", {
         payload: DeleteUserPayload,
         success: DeleteUserResponse,
-        error: [InvalidCredentials, SessionNotFresh, RateLimited]
+        error: [InvalidCredentials, PolicyRefused, SessionNotFresh, RateLimited]
       })
         .middleware(Authenticated)
         // A password is verified against the stored hash, and the row is about
@@ -835,7 +836,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         .annotateMerge(OpenApi.annotations({
           summary: "Delete the caller's own account",
           description:
-            "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed."
+            "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed. PolicyRefused is a deployment's own hook declining the deletion, and is raised only once the caller has proved who they are."
         })),
       HttpApiEndpoint.get("deleteUserCallback", "/delete-user/callback", {
         query: TokenQuery,
@@ -847,7 +848,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         .annotateMerge(OpenApi.annotations({
           summary: "Complete an account deletion from the mailed link",
           description:
-            "The link has to be followed by the account's own signed-in browser: the token is claimed first and only then checked against the caller, so a link presented by anybody else is burnt as well as refused."
+            "The link has to be followed by the account's own signed-in browser: the token is claimed first and only then checked against the caller, so a link presented by anybody else is burnt as well as refused. A deployment hook that refuses the deletion is not an error here but a redirect carrying ?error=policy_refused&code=..., because the browser arrived by a top-level navigation and has to leave by one — and the link is spent either way."
         })),
       HttpApiEndpoint.post("setPassword", "/set-password", {
         payload: SetPasswordPayload,

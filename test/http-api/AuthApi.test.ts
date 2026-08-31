@@ -124,7 +124,12 @@ const contract = [
     method: "POST",
     path: "/auth/change-email",
     authenticated: true,
-    errors: ["effect-auth/EmailUnchanged", "effect-auth/SessionNotFresh", "effect-auth/RateLimited"]
+    errors: [
+      "effect-auth/EmailUnchanged",
+      "effect-auth/PolicyRefused",
+      "effect-auth/SessionNotFresh",
+      "effect-auth/RateLimited"
+    ]
   },
   {
     identifier: "confirmEmailChange",
@@ -145,7 +150,12 @@ const contract = [
     method: "POST",
     path: "/auth/delete-user",
     authenticated: true,
-    errors: ["effect-auth/InvalidCredentials", "effect-auth/SessionNotFresh", "effect-auth/RateLimited"]
+    errors: [
+      "effect-auth/InvalidCredentials",
+      "effect-auth/PolicyRefused",
+      "effect-auth/SessionNotFresh",
+      "effect-auth/RateLimited"
+    ]
   },
   {
     identifier: "deleteUserCallback",

@@ -51,6 +51,8 @@ import type { ScryptOptions } from "../crypto/PasswordHasher.js"
 import { layerScrypt, makeScrypt, PasswordHasher } from "../crypto/PasswordHasher.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents } from "../domain/Events.js"
+import type { AuthHooksService } from "../domain/Hooks.js"
+import * as Hooks from "../domain/Hooks.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import type { AuthStores, SessionStoreService } from "../domain/Stores.js"
@@ -165,6 +167,19 @@ export interface Settings {
    * then reports a delivery failure. Defaults to `"ok"`.
    */
   readonly emailDelivery?: EmailDelivery | undefined
+  /**
+   * The policy hooks the deployment is built with. Absent is `AuthHooks`'s own
+   * default — no hooks at all — which is what every test that is not about them
+   * gets.
+   *
+   * **Gotchas**
+   *
+   * They are provided *underneath* the deployment, so they are fixed when the
+   * block's layer is built. A test that needs the answer to change part-way
+   * through has to close over its own mutable state inside the hook, and then
+   * belongs in a `describe.sequential` or in a block of its own.
+   */
+  readonly hooks?: AuthHooksService | undefined
 }
 
 /**
@@ -232,6 +247,18 @@ const hasherOf = (options?: Settings): Layer.Layer<PasswordHasher, never, Crypto
   options?.hasher ?? layerScrypt(options?.scrypt ?? testScryptOptions)
 
 /**
+ * Installs `options.hooks`, or leaves the `AuthHooks` reference on its own
+ * default.
+ *
+ * `Layer.empty` rather than `Hooks.layer({})`: an empty *provided* set and no
+ * set at all are the same thing to every consumer, but leaving the reference
+ * untouched is what keeps the default path — the one 657 tests exercise — the
+ * one that actually runs.
+ */
+const hooksOf = (options?: Settings): Layer.Layer<never> =>
+  options?.hooks === undefined ? Layer.empty : Hooks.layer(options.hooks)
+
+/**
  * Everything above the database, built on a memo map of its own.
  *
  * `Layer.fresh` is what makes a nested `it.layer` variant mean anything.
@@ -253,7 +280,11 @@ const composed = <F extends UserFields>(options: Settings | undefined, model: Us
       // change-email and delete-account settings a test just asked for.
       user: { ...options?.user, model }
     }).pipe(
-      Layer.provideMerge(layerEmails(options?.emailDelivery))
+      Layer.provideMerge(layerEmails(options?.emailDelivery)),
+      // Underneath the deployment: `AuthHooks` is a reference the domain
+      // services read when they are built, so a set provided above them would
+      // never be seen.
+      Layer.provide(hooksOf(options))
     )
   )
 
@@ -489,7 +520,8 @@ const flowDeployment = <F extends UserFields>(
       user: { ...options.user, model }
     }).pipe(
       Layer.provideMerge(layerEmails(options.emailDelivery)),
-      Layer.provide(layerFetch(options.fetch))
+      Layer.provide(layerFetch(options.fetch)),
+      Layer.provide(hooksOf(options))
     )
   ).pipe(Layer.provideMerge(layerDatabaseFor(model)))
 

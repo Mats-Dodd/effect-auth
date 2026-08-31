@@ -42,6 +42,7 @@ import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
 import { NotFound, OAuthProviderError } from "../domain/Errors.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
 import { Passwords, passwordsOf } from "../domain/Passwords.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
@@ -257,6 +258,25 @@ export const callbackFormTarget = (
   for (const [key, value] of Object.entries(form)) {
     if (value !== undefined) url.searchParams.set(key, value)
   }
+  return url.toString()
+}
+
+/**
+ * Where a browser goes when a deployment's own hook refused what the link it
+ * followed was for.
+ *
+ * The classification is this library's — `policy_refused`, exactly as
+ * `invalid_token` and `unknown_provider` are — and `code` beside it is the
+ * deployment's, carried verbatim so the landing page can say which rule it was.
+ * A hook that puts a secret in a code has published it; that is the rule the
+ * `PolicyRefused` documentation states.
+ */
+const policyRefusedTarget = (config: AuthConfigService, error: PolicyRefused): string => {
+  // No callback URL survives a refusal: the one the person asked for travels in
+  // the token payload, which is claimed by the very call that refused. `baseUrl`
+  // is where a completion with nothing to go on already lands.
+  const url = new URL(withErrorCode(resolveUrl(config, null), "policy_refused"))
+  url.searchParams.set("code", error.code)
   return url.toString()
 }
 
@@ -837,7 +857,17 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               }).pipe(serverFault)
               yield* clearSessionCookies(config, cache)
               return redirectTo(deleted.redirectTo)
-            }))
+            }).pipe(
+              // A refusal is a caller-visible outcome, never a fault — but this
+              // endpoint is a top-level navigation, so it leaves by one too. The
+              // token was claimed before the hook was asked, so the link is
+              // spent whichever way this went, and no cookie is cleared: nothing
+              // was deleted.
+              Effect.catchTag(
+                "PolicyRefused",
+                (refused) => Effect.succeed(redirectTo(policyRefusedTarget(config, refused)))
+              )
+            ))
           .handle("setPassword", ({ payload, request }) =>
             Effect.gen(function*() {
               yield* rateLimit(credentials, request)
