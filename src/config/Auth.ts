@@ -18,11 +18,12 @@
  *
  * @since 1.0.0
  */
-import type { Crypto, Redacted } from "effect"
+import type { Context, Crypto, Redacted } from "effect"
 import { Config, Duration, Effect, Layer, Schedule, Stream } from "effect"
 import type { HttpClient } from "effect/unstable/http"
+import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
 import type { RateLimiter } from "effect/unstable/persistence"
-import type { SqlClient } from "effect/unstable/sql"
+import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
 import type { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { layerScrypt } from "../crypto/PasswordHasher.js"
 import type { Token } from "../crypto/Token.js"
@@ -30,19 +31,42 @@ import { layer as tokenLayer } from "../crypto/Token.js"
 import { Accounts, layer as accountsLayer } from "../domain/Accounts.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents, layer as eventsLayer } from "../domain/Events.js"
-import { layer as passwordsLayer, Passwords } from "../domain/Passwords.js"
-import { layer as sessionsLayer, Sessions } from "../domain/Sessions.js"
-import type { AccountStore, AuthStores, PersistenceError, UserStore } from "../domain/Stores.js"
-import { SessionStore, VerificationStore } from "../domain/Stores.js"
+import type { PasswordsService } from "../domain/Passwords.js"
+import { layerFor as passwordsLayerFor, Passwords, passwordsOf } from "../domain/Passwords.js"
+import type {
+  SessionWithUserSchema,
+  SignUpResponseSchema,
+  UserFields,
+  UserModel,
+  UserOf,
+  UserResponseSchema
+} from "../domain/Schema.js"
+import {
+  baseUserModel,
+  makeSessionWithUser,
+  makeSignUpResponse,
+  makeUserModel,
+  makeUserResponse,
+  UserModelRef
+} from "../domain/Schema.js"
+import type { SessionsService } from "../domain/Sessions.js"
+import { layerFor as sessionsLayerFor, Sessions, sessionsOf } from "../domain/Sessions.js"
+import type { AccountStore, AuthStores, PersistenceError, UserStore, UserStoreService } from "../domain/Stores.js"
+import { SessionStore, userStoreOf, VerificationStore } from "../domain/Stores.js"
+import type { AuthApiGroupOf } from "../http/AuthApi.js"
+import { makeAuthApi, makeAuthApiGroup } from "../http/AuthApi.js"
 import * as AuthCookies from "../http/Cookies.js"
-import type { Authenticated } from "../http/Middleware.js"
-import { layer as middlewareLayer } from "../http/MiddlewareLive.js"
+import * as AuthHandlers from "../http/Handlers.js"
+import type { Authenticated, CurrentUser } from "../http/Middleware.js"
+import { currentUserOf } from "../http/Middleware.js"
+import { layerFor as middlewareLayerFor } from "../http/MiddlewareLive.js"
 import * as RateLimits from "../http/RateLimits.js"
 import { optionalConfig } from "../internal/config.js"
 import { layerWebCrypto } from "../internal/crypto.js"
 import { layer as flowLayer, OAuthFlow } from "../oauth/Flow.js"
 import type { OAuthProviderConfig } from "../oauth/Provider.js"
 import { OAuthProviders } from "../oauth/Provider.js"
+import * as Migrations from "../sql/Migrations.js"
 import * as SqlStores from "../sql/SqlStores.js"
 import type {
   AuthConfigOptions,
@@ -122,21 +146,61 @@ export interface Extras {
 }
 
 /**
+ * The user model a deployment's stack is built for.
+ *
+ * **Details**
+ *
+ * Present on every entry point in this module. Leaving it out is the same as
+ * passing `baseUserModel`: the stack serves `User` as this library declares it.
+ * Passing one built with `makeUserModel` is what makes a deployment's own
+ * columns part of sign-up, of `GET /session` and of every user a store answers
+ * with — and it costs the layer's *type* nothing, which is what the four
+ * `Layer` signatures below are the proof of.
+ *
+ * **Gotchas**
+ *
+ * The same model value has to reach `makeAuthApi(model)`,
+ * `AuthHandlers.layer(api, model)` and `AuthClient.make({ api, model })`. The
+ * compiler enforces it — two models are two types even when their fields match —
+ * but the error lands at the API, not here.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserOptions<F extends UserFields> {
+  readonly model: UserModel<F>
+}
+
+/**
+ * Everything {@link layer} accepts except the user model — the settings a
+ * deployment that has already fixed its model still supplies. See
+ * {@link Definition}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface Settings extends AuthConfigOptions, Extras {}
+
+/**
  * Everything {@link layer} accepts.
  *
  * @category models
  * @since 1.0.0
  */
-export interface Options extends AuthConfigOptions, Extras {}
+export interface Options<F extends UserFields = {}> extends Settings {
+  /**
+   * The deployment's user model. See {@link UserOptions}.
+   */
+  readonly user?: UserOptions<F> | undefined
+}
 
 /**
- * Everything {@link layerWithOAuth} accepts: {@link Options} plus the providers
- * to serve.
+ * {@link Settings} plus the providers to serve.
  *
  * @category models
  * @since 1.0.0
  */
-export interface OAuthOptions extends Options {
+export interface OAuthSettings extends Settings {
   /**
    * The providers this deployment serves, as values.
    *
@@ -156,13 +220,22 @@ export interface OAuthOptions extends Options {
 }
 
 /**
- * Everything {@link layerConfig} accepts: the scalar settings as `Config`
- * values, the structured sections as plain objects.
+ * Everything {@link layerWithOAuth} accepts: {@link Options} plus the providers
+ * to serve.
  *
  * @category models
  * @since 1.0.0
  */
-export interface ConfigOptions extends Extras {
+export interface OAuthOptions<F extends UserFields = {}> extends Options<F>, OAuthSettings {}
+
+/**
+ * Everything {@link layerConfig} accepts except the user model: the scalar
+ * settings as `Config` values, the structured sections as plain objects.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface ConfigSettings extends Extras {
   readonly baseUrl: Config.Config<string>
   readonly secret: Config.Config<Redacted.Redacted<string>>
   readonly basePath?: Config.Config<string> | undefined
@@ -177,13 +250,26 @@ export interface ConfigOptions extends Extras {
 }
 
 /**
- * Everything {@link layerConfigWithOAuth} accepts: {@link ConfigOptions} plus
- * the providers, themselves read from the environment.
+ * Everything {@link layerConfig} accepts.
  *
  * @category models
  * @since 1.0.0
  */
-export interface OAuthConfigOptions extends ConfigOptions {
+export interface ConfigOptions<F extends UserFields = {}> extends ConfigSettings {
+  /**
+   * The deployment's user model. See {@link UserOptions}.
+   */
+  readonly user?: UserOptions<F> | undefined
+}
+
+/**
+ * {@link ConfigSettings} plus the providers, themselves read from the
+ * environment.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface OAuthConfigSettings extends ConfigSettings {
   /**
    * The providers this deployment serves, each as an effect that reads its
    * credentials.
@@ -204,6 +290,15 @@ export interface OAuthConfigOptions extends ConfigOptions {
    */
   readonly providers: ProviderConfigList
 }
+
+/**
+ * Everything {@link layerConfigWithOAuth} accepts: {@link ConfigOptions} plus
+ * the providers, themselves read from the environment.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface OAuthConfigOptions<F extends UserFields = {}> extends ConfigOptions<F>, OAuthConfigSettings {}
 
 // -----------------------------------------------------------------------------
 // Layer shape
@@ -293,13 +388,14 @@ const cryptoTier = (
  * Everything below the domain services: the resolved settings, the stores, the
  * event hub and the rate limiter.
  */
-const baseTier = (
+const baseTier = <F extends UserFields>(
   config: AuthConfigService,
-  options: Extras
+  options: Extras,
+  model: UserModel<F>
 ): Layer.Layer<AuthConfig | AuthStores | AuthEvents | RateLimiter.RateLimiter, never, SqlClient.SqlClient> =>
   Layer.mergeAll(
     Layer.succeed(AuthConfig)(config),
-    SqlStores.layer,
+    SqlStores.layerFor(model),
     // `capacity` is optional and `undefined`-able, so an absent
     // `eventCapacity` is simply an absent capacity — no ternary needed.
     eventsLayer({ capacity: options.eventCapacity }),
@@ -319,16 +415,21 @@ const baseTier = (
  * non-OAuth call needs no `HttpClient` because nothing in its `top` asks for
  * one.
  */
-const compose = <A, RIn>(
+const compose = <A, RIn, F extends UserFields>(
   config: AuthConfigService,
   options: Extras,
+  model: UserModel<F>,
   top: Layer.Layer<A, never, RIn>
 ) =>
-  middlewareLayer.pipe(
+  middlewareLayerFor(model).pipe(
     Layer.provideMerge(top),
-    Layer.provideMerge(Layer.mergeAll(sessionsLayer, accountsLayer)),
-    Layer.provideMerge(baseTier(config, options)),
+    Layer.provideMerge(Layer.mergeAll(sessionsLayerFor(model), accountsLayer)),
+    Layer.provideMerge(baseTier(config, options, model)),
     Layer.provide(cryptoTier(options.passwordHasher)),
+    // The model itself, for a plugin that provisions users and has no `F` of
+    // its own to be generic over. A `Context.Reference` has a default, so this
+    // layer provides `never` and merging it widens nothing.
+    Layer.provideMerge(Layer.succeed(UserModelRef)(model)),
     // Checklist item 11: the cookie and authorization headers must never reach
     // a log line in the clear. `provideMerge`, not `provide`: this is a
     // `Context.Reference`, so the names have to survive into the context the
@@ -346,7 +447,8 @@ const compose = <A, RIn>(
  * so `provide` rather than `provideMerge` — it never becomes part of the
  * stack's surface.
  */
-const oauthTop = (
+const oauthTop = <F extends UserFields>(
+  model: UserModel<F>,
   providers: ReadonlyArray<OAuthProviderConfig>
 ): Layer.Layer<
   Passwords | OAuthFlow,
@@ -360,7 +462,35 @@ const oauthTop = (
   | Token
   | PasswordHasher
   | HttpClient.HttpClient
-> => Layer.mergeAll(passwordsLayer, flowLayer.pipe(Layer.provide(OAuthProviders.layer(providers))))
+> => Layer.mergeAll(passwordsLayerFor(model), flowLayer.pipe(Layer.provide(OAuthProviders.layer(providers))))
+
+/**
+ * The whole non-OAuth stack for one model.
+ *
+ * **Details**
+ *
+ * The ternaries in the four entry points below are here rather than inside the
+ * tiers for one reason: `UserModel<F>` and `UserModel<{}>` are different types,
+ * so "the model, or the base one" is a choice that has to be made *before*
+ * anything is built with it. Everything downstream of that choice is generic in
+ * the single `F` it settled on, and — because the field-sensitive services are
+ * reached through typed views rather than through keys of their own — none of it
+ * reaches the result type.
+ */
+const stack = <F extends UserFields>(
+  config: AuthConfigService,
+  options: Extras,
+  model: UserModel<F>
+): Layer.Layer<Services, never, Requirements> => compose(config, options, model, passwordsLayerFor(model))
+
+/** {@link stack}, with the OAuth flow on top. */
+const oauthStack = <F extends UserFields>(
+  config: AuthConfigService,
+  options: Extras,
+  model: UserModel<F>,
+  providers: ReadonlyArray<OAuthProviderConfig>
+): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
+  compose(config, options, model, oauthTop(model, providers))
 
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface ScalarSettings {
@@ -371,8 +501,8 @@ interface ScalarSettings {
   readonly trustedProviders: ReadonlyArray<string> | undefined
 }
 
-const resolveConfig = (
-  options: ConfigOptions
+const resolveConfig = <F extends UserFields>(
+  options: ConfigOptions<F>
 ): Effect.Effect<AuthConfigService, Config.ConfigError> =>
   Effect.map(
     Config.unwrap<ScalarSettings>({
@@ -432,8 +562,12 @@ const resolveConfig = (
  * @category layers
  * @since 1.0.0
  */
-export const layer = (options: Options): Layer.Layer<Services, never, Requirements> =>
-  compose(makeAuthConfig(options), options, passwordsLayer)
+export const layer = <F extends UserFields = {}>(
+  options: Options<F>
+): Layer.Layer<Services, never, Requirements> =>
+  options.user === undefined
+    ? stack(makeAuthConfig(options), options, baseUserModel)
+    : stack(makeAuthConfig(options), options, options.user.model)
 
 /**
  * {@link layer}, serving the OAuth providers it is given.
@@ -473,10 +607,12 @@ export const layer = (options: Options): Layer.Layer<Services, never, Requiremen
  * @category layers
  * @since 1.0.0
  */
-export const layerWithOAuth = (
-  options: OAuthOptions
+export const layerWithOAuth = <F extends UserFields = {}>(
+  options: OAuthOptions<F>
 ): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
-  compose(makeAuthConfig(options), options, oauthTop(options.providers))
+  options.user === undefined
+    ? oauthStack(makeAuthConfig(options), options, baseUserModel, options.providers)
+    : oauthStack(makeAuthConfig(options), options, options.user.model, options.providers)
 
 /**
  * {@link layer}, with the scalar settings read from `Config`.
@@ -503,10 +639,13 @@ export const layerWithOAuth = (
  * @category layers
  * @since 1.0.0
  */
-export const layerConfig = (
-  options: ConfigOptions
+export const layerConfig = <F extends UserFields = {}>(
+  options: ConfigOptions<F>
 ): Layer.Layer<Services, Config.ConfigError, Requirements> =>
-  Layer.unwrap(Effect.map(resolveConfig(options), (config) => compose(config, options, passwordsLayer)))
+  Layer.unwrap(Effect.map(resolveConfig(options), (config) =>
+    options.user === undefined
+      ? stack(config, options, baseUserModel)
+      : stack(config, options, options.user.model)))
 
 /**
  * {@link layerWithOAuth}, with the settings *and* the provider credentials read
@@ -540,13 +679,16 @@ export const layerConfig = (
  * @category layers
  * @since 1.0.0
  */
-export const layerConfigWithOAuth = (
-  options: OAuthConfigOptions
+export const layerConfigWithOAuth = <F extends UserFields = {}>(
+  options: OAuthConfigOptions<F>
 ): Layer.Layer<OAuthServices, Config.ConfigError, OAuthRequirements> =>
   Layer.unwrap(
     Effect.map(
       Effect.all([resolveConfig(options), Effect.all(options.providers)]),
-      ([config, providers]) => compose(config, options, oauthTop(providers))
+      ([config, providers]) =>
+        options.user === undefined
+          ? oauthStack(config, options, baseUserModel, providers)
+          : oauthStack(config, options, options.user.model, providers)
     )
   )
 
@@ -559,6 +701,183 @@ export const layerConfigWithOAuth = (
  * @since 1.0.0
  */
 export const layerConfigOnly: (options: AuthConfigOptions) => Layer.Layer<AuthConfig> = authConfigLayer
+
+// -----------------------------------------------------------------------------
+// Definition
+// -----------------------------------------------------------------------------
+
+/**
+ * Everything a deployment that declared its own user fields needs, gathered
+ * around one model.
+ *
+ * **Details**
+ *
+ * Nothing here is a new capability: every member is what the corresponding
+ * per-module function returns for the same model, and a deployment that prefers
+ * to call those directly loses nothing. What it saves is the one mistake this
+ * design cannot catch cheaply — handing *different* models to the API, the
+ * handlers, the stack and the client. There is one model in a definition, so
+ * there is one everywhere.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface Definition<F extends UserFields> {
+  /** The model every other member is derived from. */
+  readonly model: UserModel<F>
+
+  /** The stored user: `User` with this deployment's fields. */
+  readonly User: UserModel<F>["select"]
+  /** The client-facing projection of {@link Definition.User}. */
+  readonly UserPublic: UserModel<F>["json"]
+  /** The body every endpoint that reads or establishes a session answers with. */
+  readonly SessionWithUser: SessionWithUserSchema<F>
+  /** The body sign-up answers with. */
+  readonly SignUpResponse: SignUpResponseSchema<F>
+  /** The body an endpoint that answers with a user and nothing else uses. */
+  readonly UserResponse: UserResponseSchema<F>
+
+  /** `CurrentUser`, seen through this model — how a handler reads a custom field. */
+  readonly CurrentUser: Context.Service<CurrentUser, UserOf<F>>
+  /** `UserStore`, seen through this model. */
+  readonly UserStore: Context.Service<UserStore, UserStoreService<F>>
+  /** `Sessions`, seen through this model. */
+  readonly Sessions: Context.Service<Sessions, SessionsService<F>>
+  /** `Passwords`, seen through this model. */
+  readonly Passwords: Context.Service<Passwords, PasswordsService<F>>
+
+  /** The `auth` group, declared with this model. */
+  readonly ApiGroup: AuthApiGroupOf<F>
+  /** The `auth` group as a standalone `HttpApi`, ready to be merged into an application's. */
+  readonly Api: HttpApi.HttpApi<"effect-auth", AuthApiGroupOf<F>>
+  /** Implements {@link Definition.ApiGroup} inside an API that contains it. */
+  readonly handlers: <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+    api:
+      & HttpApi.HttpApi<ApiId, Groups>
+      & { readonly groups: { readonly auth: AuthApiGroupOf<F> } }
+  ) => Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, AuthHandlers.HandlerServices>
+
+  /** {@link layer}, for this model. */
+  readonly layer: (options: Settings) => Layer.Layer<Services, never, Requirements>
+  /** {@link layerWithOAuth}, for this model. */
+  readonly layerWithOAuth: (options: OAuthSettings) => Layer.Layer<OAuthServices, never, OAuthRequirements>
+  /** {@link layerConfig}, for this model. */
+  readonly layerConfig: (options: ConfigSettings) => Layer.Layer<Services, Config.ConfigError, Requirements>
+  /** {@link layerConfigWithOAuth}, for this model. */
+  readonly layerConfigWithOAuth: (
+    options: OAuthConfigSettings
+  ) => Layer.Layer<OAuthServices, Config.ConfigError, OAuthRequirements>
+  /**
+   * `Migrations.layer` plus the columns this model's custom fields need.
+   *
+   * **Gotchas**
+   *
+   * A quickstart convenience, as `Migrations.layer` is: it runs on every build
+   * rather than being recorded, which is what keeps a field added after the
+   * first deployment from being silently skipped. A deployment that owns its
+   * migrator numbers `Migrations.forUserFields(model)` into its own record
+   * instead.
+   */
+  readonly layerMigrations: Layer.Layer<
+    never,
+    Migrator.MigrationError | SqlError.SqlError,
+    SqlClient.SqlClient
+  >
+}
+
+/**
+ * What {@link define} takes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface DefineOptions<F extends UserFields> {
+  readonly user: {
+    /**
+     * The fields to add to `User`, each declared with a `UserField` constructor.
+     *
+     * **Gotchas**
+     *
+     * Every one of them must be constructible without a value — see
+     * `makeUserModel`, which throws at start-up when one is not.
+     */
+    readonly fields: F
+  }
+}
+
+/**
+ * Declares a deployment's user fields once, and derives everything that depends
+ * on them.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Layer, Redacted, Schema } from "effect"
+ * import { HttpApi } from "effect/unstable/httpapi"
+ * import { Auth, UserField } from "effect-auth"
+ *
+ * const auth = Auth.define({
+ *   user: {
+ *     fields: {
+ *       plan: UserField.withDefault(Schema.Literals(["free", "pro"]), () => "free" as const)
+ *     }
+ *   }
+ * })
+ *
+ * const MyApi = HttpApi.make("app").addHttpApi(auth.Api)
+ *
+ * const AuthLive = auth.layer({
+ *   baseUrl: "http://localhost:3000",
+ *   secret: Redacted.make("a-32-byte-or-longer-random-string"),
+ *   emailPassword: { enabled: true }
+ * })
+ *
+ * const HandlersLive = auth.handlers(MyApi).pipe(Layer.provide(AuthLive))
+ * ```
+ *
+ * **Gotchas**
+ *
+ * Call it once, at module scope, and import the result. Two calls with the same
+ * fields build two models — the same shape, and *different types*, which the
+ * compiler will point out at the first call site that mixes them.
+ *
+ * The client is deliberately not part of the bundle: this module is not
+ * browser-safe. Pass the model to `AuthClient.make({ api, model })` instead.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const define = <const F extends UserFields>(options: DefineOptions<F>): Definition<F> => {
+  const model = makeUserModel(options.user.fields)
+  const ApiGroup = makeAuthApiGroup(model)
+  return {
+    model,
+    User: model.select,
+    UserPublic: model.json,
+    SessionWithUser: makeSessionWithUser(model),
+    SignUpResponse: makeSignUpResponse(model),
+    UserResponse: makeUserResponse(model),
+    CurrentUser: currentUserOf(model),
+    UserStore: userStoreOf(model),
+    Sessions: sessionsOf(model),
+    Passwords: passwordsOf(model),
+    ApiGroup,
+    Api: makeAuthApi(model),
+    handlers: (api) => AuthHandlers.layer(api, model),
+    layer: (settings) => stack(makeAuthConfig(settings), settings, model),
+    layerWithOAuth: (settings) => oauthStack(makeAuthConfig(settings), settings, model, settings.providers),
+    layerConfig: (settings) =>
+      Layer.unwrap(Effect.map(resolveConfig(settings), (config) => stack(config, settings, model))),
+    layerConfigWithOAuth: (settings) =>
+      Layer.unwrap(
+        Effect.map(
+          Effect.all([resolveConfig(settings), Effect.all(settings.providers)]),
+          ([config, providers]) => oauthStack(config, settings, model, providers)
+        )
+      ),
+    layerMigrations: Migrations.layerFor(model)
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Housekeeping

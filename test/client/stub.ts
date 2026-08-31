@@ -87,9 +87,19 @@ export interface Stub {
 
 /**
  * Builds a stub whose starting state is "signed out" unless told otherwise.
+ *
+ * `user` replaces the encoded user every route answers with — a deployment that
+ * declared custom fields has more of one, and the generated client decodes the
+ * response through its own model, so the stub has to answer with what that model
+ * declares.
  */
-export const make = (options?: { readonly signedIn?: boolean | undefined }): Stub => {
+export const make = (options?: {
+  readonly signedIn?: boolean | undefined
+  readonly user?: { readonly [key: string]: unknown } | undefined
+}): Stub => {
   const calls: Array<string> = []
+  const user = options?.user ?? userJson
+  const sessionWithUser = { user, session: sessionJson }
   let signedIn = options?.signedIn ?? false
   let credentialsValid = true
   let transportBroken = false
@@ -97,16 +107,16 @@ export const make = (options?: { readonly signedIn?: boolean | undefined }): Stu
 
   /** One entry per route the client tests reach; anything else is a 404. */
   const routes: Record<string, () => Response> = {
-    "GET /auth/session": () => signedIn ? json(200, sessionWithUserJson) : unauthorized(),
+    "GET /auth/session": () => signedIn ? json(200, sessionWithUser) : unauthorized(),
     "GET /auth/sessions": () => signedIn ? json(200, [sessionJson]) : unauthorized(),
     "POST /auth/sign-in/email": () => {
       if (!credentialsValid) return json(401, { _tag: "InvalidCredentials" })
       signedIn = true
-      return json(200, sessionWithUserJson)
+      return json(200, sessionWithUser)
     },
     "POST /auth/sign-up/email": () => {
       signedIn = true
-      return json(200, sessionWithUserJson)
+      return json(200, sessionWithUser)
     },
     "POST /auth/sign-out": () => {
       if (!signedIn) return unauthorized()

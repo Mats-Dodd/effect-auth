@@ -602,6 +602,76 @@ export interface UserModel<F extends UserFields> {
    * model, which knows the answer, states it.
    */
   readonly basePatch: (patch: BaseUserPatch) => BaseUserPatch & Partial<UserExtras<F, "update">>
+  /**
+   * The client-facing projection of a stored user: the fields of the `json`
+   * variant, and only those.
+   *
+   * **When to use**
+   *
+   * Wherever a stored user becomes a response body or a cached snapshot. A
+   * response schema drops what it does not declare when it encodes, so this is
+   * belt as well as braces — but it is the braces that are load-bearing, because
+   * it is also the only way generic code can *state* that the value it is
+   * handing over is the public projection: `UserOf<F>` and `UserPublicOf<F>` are
+   * two mapped types over an `F` the compiler cannot resolve, and neither is
+   * assignable to the other.
+   */
+  readonly toPublic: (user: UserOf<F>) => UserPublicOf<F>
+  /**
+   * The custom half of a decoded payload: the fields this model declared that
+   * the named JSON variant carries, and nothing else.
+   *
+   * **When to use**
+   *
+   * In an HTTP handler, to forward what a client stated about its own fields
+   * into `Passwords.signUp` or `Users.update` without naming a field this
+   * library cannot know. The handler holds the payload as the *base* type — an
+   * endpoint whose payload type mentions `F` has a request shape TypeScript
+   * cannot resolve — so this is also how the extras are recovered at the type
+   * level, from the model that knows what they are.
+   */
+  readonly extrasOf: <V extends UserPayloadVariant>(payload: object, variant: V) => UserExtras<F, V>
+  /**
+   * A payload schema: `base`'s fields with this model's custom ones, in the
+   * named JSON variant, laid alongside them.
+   *
+   * **When to use**
+   *
+   * To parameterize an HTTP payload by a deployment's own user fields — the
+   * sign-up body, a profile update. A field declared `readOnly` or `hidden` is
+   * absent from both JSON variants and therefore cannot be stated by a client.
+   *
+   * **Gotchas**
+   *
+   * The result is a `Schema.Codec` rather than a `Schema.Struct`: its `Type` has
+   * to be *stated* for the same reason the variants' are, so there is no field
+   * map on it to read back. The runtime value is a plain struct, so the document
+   * it publishes is the same one a hand-written struct would.
+   */
+  readonly withExtras: <Base extends UserPayloadBase, V extends UserPayloadVariant>(
+    base: Base,
+    variant: V
+  ) => Schema.Codec<Base["Type"] & UserExtras<F, V>, Base["Encoded"] & UserExtrasEncoded<F, V>>
+}
+
+/**
+ * The two variants a client may write through: the JSON payload of a creation
+ * and the JSON payload of a partial update.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserPayloadVariant = "jsonCreate" | "jsonUpdate"
+
+/**
+ * What {@link UserModel.withExtras} lays a model's custom fields alongside: any
+ * struct, read for its field map.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserPayloadBase extends Schema.Top {
+  readonly fields: Schema.Struct.Fields
 }
 
 /**
@@ -793,6 +863,14 @@ const provisioningSample: UserInsertInput = {
 interface UncheckedVariant extends Schema.Codec<UserRow, UserRow> {}
 
 /**
+ * A payload built out of an erased field map. Its codec services are `unknown`
+ * rather than `never` — an erased field map says nothing about what its fields
+ * need — which is the one thing that keeps it from being an
+ * {@link UncheckedVariant}.
+ */
+interface UncheckedPayload extends Schema.Codec<UserRow, UserRow, unknown, unknown> {}
+
+/**
  * The model as it is built, before `F` is put back on it. Every type here is
  * erased on purpose: `VariantSchema`'s field validation and variant extraction
  * cannot be proved for an `F` that is still a type parameter, so the
@@ -814,6 +892,9 @@ interface UncheckedUserModel {
   readonly makeInsert: (input: UserInsertInput) => Effect.Effect<UserRow>
   readonly completeInsert: (row: UserRow) => Effect.Effect<UserRow>
   readonly basePatch: (patch: BaseUserPatch) => BaseUserPatch
+  readonly toPublic: (user: UserRow) => UserRow
+  readonly extrasOf: (payload: object, variant: UserPayloadVariant) => UserRow
+  readonly withExtras: (base: UserPayloadBase, variant: UserPayloadVariant) => UncheckedPayload
   readonly decodeRow: (row: unknown) => Effect.Effect<UserRow, Schema.SchemaError>
   readonly extraDefaults: Effect.Effect<UserRow>
 }
@@ -843,15 +924,45 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
   // deployment added fields.
   const selectStruct = Model.extract(struct, "select")
   const updateStruct = Model.extract(struct, "update")
+  const jsonStruct = Model.extract(struct, "json")
+  const jsonCreateStruct = Model.extract(struct, "jsonCreate")
+  const jsonUpdateStruct = Model.extract(struct, "jsonUpdate")
   const selectFields: { readonly [key: string]: Schema.Top } = selectStruct.fields
   const select: UncheckedVariant = selectStruct.annotate(variantAnnotations("select"))
   const insert: UncheckedVariant = Model.extract(struct, "insert").annotate(variantAnnotations("insert"))
   const update: UncheckedVariant = updateStruct.annotate(variantAnnotations("update"))
-  const json: UncheckedVariant = Model.extract(struct, "json").annotate(variantAnnotations("json"))
-  const jsonCreate: UncheckedVariant = Model.extract(struct, "jsonCreate").annotate(variantAnnotations("jsonCreate"))
-  const jsonUpdate: UncheckedVariant = Model.extract(struct, "jsonUpdate").annotate(variantAnnotations("jsonUpdate"))
+  const json: UncheckedVariant = jsonStruct.annotate(variantAnnotations("json"))
+  const jsonCreate: UncheckedVariant = jsonCreateStruct.annotate(variantAnnotations("jsonCreate"))
+  const jsonUpdate: UncheckedVariant = jsonUpdateStruct.annotate(variantAnnotations("jsonUpdate"))
 
   const extraKeys = Object.keys(fields)
+  const jsonKeys = Object.keys(jsonStruct.fields)
+
+  /** The custom half of one JSON variant's field map, in declaration order. */
+  const extrasOf = (variantFields: { readonly [key: string]: Schema.Top }): Schema.Struct.Fields => {
+    const picked: Record<string, Schema.Top> = {}
+    for (const key of extraKeys) {
+      const field = variantFields[key]
+      if (field !== undefined) picked[key] = field
+    }
+    return picked
+  }
+
+  const jsonCreateExtras = extrasOf(jsonCreateStruct.fields)
+  const jsonUpdateExtras = extrasOf(jsonUpdateStruct.fields)
+  const jsonCreateExtraKeys = Object.keys(jsonCreateExtras)
+  const jsonUpdateExtraKeys = Object.keys(jsonUpdateExtras)
+
+  const toPublic = (user: UserRow): UserRow => pickKeys(user, jsonKeys)
+
+  const payloadExtras = (payload: object, variant: UserPayloadVariant): UserRow =>
+    pickKeys(payload, variant === "jsonCreate" ? jsonCreateExtraKeys : jsonUpdateExtraKeys)
+
+  const withExtras = (base: UserPayloadBase, variant: UserPayloadVariant): UncheckedPayload =>
+    Schema.Struct({
+      ...base.fields,
+      ...(variant === "jsonCreate" ? jsonCreateExtras : jsonUpdateExtras)
+    })
 
   if (extraKeys.length > 0 && Option.isNone(insert.makeOption(provisioningSample))) {
     throw new Error(
@@ -899,6 +1010,9 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
     makeInsert,
     completeInsert,
     basePatch,
+    toPublic,
+    extrasOf: payloadExtras,
+    withExtras,
     decodeRow,
     extraDefaults
   }

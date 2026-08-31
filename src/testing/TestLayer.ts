@@ -16,6 +16,11 @@
  * one PGlite per file instead of one per test. Building them inside a function
  * would defeat that.
  *
+ * A deployment with custom user fields needs a database with its columns, and
+ * therefore one per model rather than one for the library. {@link layerDatabaseFor}
+ * keeps the same guarantee by memoising on the model itself, so a fixture's model
+ * is what ties a file's blocks to one PGlite.
+ *
  * @since 1.0.0
  */
 import { PgliteClient } from "@effect/sql-pglite"
@@ -44,8 +49,10 @@ import type { ScryptOptions } from "../crypto/PasswordHasher.js"
 import { layerScrypt, makeScrypt, PasswordHasher } from "../crypto/PasswordHasher.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents } from "../domain/Events.js"
+import type { UserFields, UserModel } from "../domain/Schema.js"
+import { baseUserModel } from "../domain/Schema.js"
 import type { AuthStores } from "../domain/Stores.js"
-import type { AuthApiGroup } from "../http/AuthApi.js"
+import type { AuthApiGroupOf } from "../http/AuthApi.js"
 import { AuthApi } from "../http/AuthApi.js"
 import * as AuthHandlers from "../http/Handlers.js"
 import { webCrypto } from "../internal/crypto.js"
@@ -98,14 +105,14 @@ export const testScryptOptions: ScryptOptions = { N: 1024, r: 8, p: 1 }
 // -----------------------------------------------------------------------------
 
 /**
- * What a test may vary about the deployment under test. Everything is
- * optional; the defaults are a working e-mail/password deployment with the
- * rate limits switched off.
+ * What a test may vary about the deployment under test, apart from the user
+ * model. Everything is optional; the defaults are a working e-mail/password
+ * deployment with the rate limits switched off.
  *
  * @category models
  * @since 1.0.0
  */
-export interface Options {
+export interface Settings {
   readonly baseUrl?: string | undefined
   readonly secret?: Redacted.Redacted<string> | undefined
   readonly basePath?: string | undefined
@@ -119,7 +126,7 @@ export interface Options {
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
   /**
    * Scrypt cost overrides. Defaults to {@link testScryptOptions}, and is
-   * ignored when {@link Options.hasher} is given.
+   * ignored when {@link Settings.hasher} is given.
    */
   readonly scrypt?: ScryptOptions | undefined
   /**
@@ -132,6 +139,23 @@ export interface Options {
    * then reports a delivery failure. Defaults to `"ok"`.
    */
   readonly emailDelivery?: EmailDelivery | undefined
+}
+
+/**
+ * {@link Settings}, plus the user model the deployment is built for.
+ *
+ * **Details**
+ *
+ * Leaving `user` out is the same as passing `baseUserModel` — every existing
+ * test in this library does. A block that varies the model passes the one its
+ * fixture built, and gets a deployment whose stores, sign-up and middleware all
+ * carry it.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface Options<F extends UserFields = {}> extends Settings {
+  readonly user?: { readonly model: UserModel<F> } | undefined
 }
 
 /**
@@ -149,7 +173,7 @@ export interface Options {
  * @category constructors
  * @since 1.0.0
  */
-export const testConfig = (options?: Options): AuthConfigOptions => ({
+export const testConfig = (options?: Settings): AuthConfigOptions => ({
   baseUrl: options?.baseUrl ?? testBaseUrl,
   secret: options?.secret ?? testSecret,
   basePath: options?.basePath,
@@ -163,7 +187,7 @@ export const testConfig = (options?: Options): AuthConfigOptions => ({
   emailPaths: options?.emailPaths
 })
 
-const hasherOf = (options?: Options): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
+const hasherOf = (options?: Settings): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
   options?.hasher ?? layerScrypt(options?.scrypt ?? testScryptOptions)
 
 /**
@@ -177,9 +201,9 @@ const hasherOf = (options?: Options): Layer.Layer<PasswordHasher, never, Crypto.
  * built against the parent's configuration, and would silently test nothing.
  * The database stays *outside* this boundary, so it is still shared.
  */
-const composed = (options?: Options) =>
+const composed = <F extends UserFields>(options: Settings | undefined, model: UserModel<F>) =>
   Layer.fresh(
-    authLayer({ ...testConfig(options), passwordHasher: hasherOf(options) }).pipe(
+    authLayer({ ...testConfig(options), passwordHasher: hasherOf(options), user: { model } }).pipe(
       Layer.provideMerge(layerEmails(options?.emailDelivery))
     )
   )
@@ -187,6 +211,61 @@ const composed = (options?: Options) =>
 // -----------------------------------------------------------------------------
 // Layers
 // -----------------------------------------------------------------------------
+
+/**
+ * One PGlite per model, keyed by the model itself.
+ *
+ * `layer()` memoises by object identity, so handing the same layer *value* to
+ * every block in a file is what keeps them sharing one database. A model is the
+ * natural key: a file that declares custom fields has exactly one, and asking
+ * twice has to answer with the same layer or the second block boots a second,
+ * empty database.
+ */
+const databases = new WeakMap<
+  object,
+  Layer.Layer<SqlClient.SqlClient | PgliteClient.PgliteClient, Migrator.MigrationError | SqlError.SqlError>
+>()
+
+/**
+ * A fresh in-memory PGlite database with `effect-auth`'s migrations applied and
+ * `model`'s own user columns added.
+ *
+ * **Gotchas**
+ *
+ * Memoised on the model, so calling it twice with the same model hands back the
+ * same layer and therefore the same database — which is what a nested
+ * `it.layer` needs in order to inherit its parent block's rows. Building an
+ * equivalent layer yourself gets you a second, empty one.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerDatabaseFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<
+  SqlClient.SqlClient | PgliteClient.PgliteClient,
+  Migrator.MigrationError | SqlError.SqlError
+> => {
+  const existing = databases.get(model)
+  if (existing !== undefined) return existing
+  const created = Migrations.layerFor(model).pipe(Layer.provideMerge(PgliteClient.layer()))
+  databases.set(model, created)
+  return created
+}
+
+/**
+ * The four stores of `model` over {@link layerDatabaseFor} — the whole
+ * persistence tier, with nothing of the domain on top.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerStoresFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<
+  AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
+  Migrator.MigrationError | SqlError.SqlError
+> => SqlStores.layerFor(model).pipe(Layer.provideMerge(layerDatabaseFor(model)))
 
 /**
  * A fresh in-memory PGlite database with `effect-auth`'s migrations applied.
@@ -204,7 +283,7 @@ const composed = (options?: Options) =>
 export const layerDatabase: Layer.Layer<
   SqlClient.SqlClient | PgliteClient.PgliteClient,
   Migrator.MigrationError | SqlError.SqlError
-> = Migrations.layer.pipe(Layer.provideMerge(PgliteClient.layer()))
+> = layerDatabaseFor(baseUserModel)
 
 /**
  * The four stores over {@link layerDatabase} — the whole persistence tier, with
@@ -221,7 +300,7 @@ export const layerDatabase: Layer.Layer<
 export const layerStores: Layer.Layer<
   AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
   Migrator.MigrationError | SqlError.SqlError
-> = SqlStores.layer.pipe(Layer.provideMerge(layerDatabase))
+> = layerStoresFor(baseUserModel)
 
 /**
  * The whole test deployment: {@link layerDatabase}, the capturing mailer, and
@@ -263,15 +342,31 @@ export const layerStores: Layer.Layer<
  * everything above the database is rebuilt for it, and only the database is
  * inherited from the enclosing block.
  *
+ * `options.user.model` builds the deployment for a model with custom fields —
+ * over that model's own database, which {@link layerDatabaseFor} memoises, so a
+ * fixture's model is what ties a file's blocks to one PGlite.
+ *
  * @category layers
  * @since 1.0.0
  */
-export const layer = (
-  options?: Options
+export const layer = <F extends UserFields = {}>(
+  options?: Options<F>
 ): Layer.Layer<
   Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
-> => composed(options).pipe(Layer.provideMerge(layerDatabase))
+> =>
+  options?.user === undefined
+    ? deployment(options, baseUserModel)
+    : deployment(options, options.user.model)
+
+/** {@link layer}, once the model has been settled on. See `Auth.stack`. */
+const deployment = <F extends UserFields>(
+  options: Settings | undefined,
+  model: UserModel<F>
+): Layer.Layer<
+  Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Migrator.MigrationError | SqlError.SqlError
+> => composed(options, model).pipe(Layer.provideMerge(layerDatabaseFor(model)))
 
 /**
  * A transport backed by a `fetch` a test controls — `MockProvider.mockServer`'s,
@@ -284,12 +379,12 @@ export const layerFetch = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClie
   FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(fetch)))
 
 /**
- * What {@link layerFlow} needs on top of {@link Options}.
+ * What {@link layerFlow} needs on top of {@link Settings}.
  *
  * @category models
  * @since 1.0.0
  */
-export interface FlowOptions extends Options {
+export interface FlowSettings extends Settings {
   /**
    * The providers the deployment serves. Non-empty: a deployment with none uses
    * {@link layer}.
@@ -302,13 +397,33 @@ export interface FlowOptions extends Options {
 }
 
 /**
+ * What {@link layerFlow} needs on top of {@link Options}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface FlowOptions<F extends UserFields = {}> extends Options<F>, FlowSettings {}
+
+/**
  * {@link layer} with the OAuth flow in it, talking to a stubbed provider.
  *
  * @category layers
  * @since 1.0.0
  */
-export const layerFlow = (
-  options: FlowOptions
+export const layerFlow = <F extends UserFields = {}>(
+  options: FlowOptions<F>
+): Layer.Layer<
+  OAuthServices | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Migrator.MigrationError | SqlError.SqlError
+> =>
+  options.user === undefined
+    ? flowDeployment(options, baseUserModel)
+    : flowDeployment(options, options.user.model)
+
+/** {@link layerFlow}, once the model has been settled on. */
+const flowDeployment = <F extends UserFields>(
+  options: FlowSettings,
+  model: UserModel<F>
 ): Layer.Layer<
   OAuthServices | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
@@ -317,12 +432,13 @@ export const layerFlow = (
     authOAuthLayer({
       ...testConfig(options),
       passwordHasher: hasherOf(options),
-      providers: options.providers
+      providers: options.providers,
+      user: { model }
     }).pipe(
       Layer.provideMerge(layerEmails(options.emailDelivery)),
       Layer.provide(layerFetch(options.fetch))
     )
-  ).pipe(Layer.provideMerge(layerDatabase))
+  ).pipe(Layer.provideMerge(layerDatabaseFor(model)))
 
 /**
  * The platform services an `HttpApi` needs in order to encode a response.
@@ -352,12 +468,28 @@ export const TestApi = HttpApi.make("test-app").addHttpApi(AuthApi)
  * @category layers
  * @since 1.0.0
  */
-export const layerHttpApi = <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+export const layerHttpApi = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
   api:
     & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: typeof AuthApiGroup } },
-  options?: Options
-): Layer.Layer<
+    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  options?: Options<F>
+): HttpApiLayer<ApiId> =>
+  Layer.merge(
+    // `options.user.model` reaches both halves: the handlers, so sign-up accepts
+    // the deployment's own fields, and the deployment, so its stores write them.
+    // `AuthHandlers.layer` is what rejects an API and a model that disagree.
+    AuthHandlers.layer(api, options?.user?.model).pipe(Layer.provideMerge(layer(options))),
+    layerPlatform
+  )
+
+/**
+ * What {@link layerHttpApi} builds: the deployment, the handlers of the API's
+ * `auth` group, and the platform services a response is encoded with.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type HttpApiLayer<ApiId extends string> = Layer.Layer<
   | HttpApiGroup.Service<ApiId, "auth">
   | Services
   | SqlClient.SqlClient
@@ -368,7 +500,7 @@ export const layerHttpApi = <ApiId extends string, Groups extends HttpApiGroup.C
   | HttpPlatform.HttpPlatform
   | FileSystem.FileSystem,
   Migrator.MigrationError | SqlError.SqlError
-> => Layer.merge(AuthHandlers.layer(api).pipe(Layer.provideMerge(layer(options))), layerPlatform)
+>
 
 /**
  * {@link layerHttpApi} over {@link TestApi} — the whole server stack a test of
@@ -377,20 +509,7 @@ export const layerHttpApi = <ApiId extends string, Groups extends HttpApiGroup.C
  * @category layers
  * @since 1.0.0
  */
-export const layerHttp = (
-  options?: Options
-): Layer.Layer<
-  | HttpApiGroup.Service<"test-app", "auth">
-  | Services
-  | SqlClient.SqlClient
-  | PgliteClient.PgliteClient
-  | TestEmails
-  | Path.Path
-  | Etag.Generator
-  | HttpPlatform.HttpPlatform
-  | FileSystem.FileSystem,
-  Migrator.MigrationError | SqlError.SqlError
-> => layerHttpApi(TestApi, options)
+export const layerHttp = (options?: Settings): HttpApiLayer<"test-app"> => layerHttpApi(TestApi, options)
 
 // -----------------------------------------------------------------------------
 // Seams

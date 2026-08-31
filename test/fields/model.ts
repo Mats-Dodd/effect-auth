@@ -22,12 +22,14 @@
  * @since 1.0.0
  */
 import { PgliteClient } from "@effect/sql-pglite"
-import { Layer, Schema } from "effect"
+import { Schema } from "effect"
+import type { Layer } from "effect"
+import { HttpApi } from "effect/unstable/httpapi"
 import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
-import type { AuthStores } from "../../src/domain/Stores.js"
 import { makeUserModel, UserField } from "../../src/domain/Schema.js"
-import * as Migrations from "../../src/sql/Migrations.js"
-import * as SqlStores from "../../src/sql/SqlStores.js"
+import type { AuthStores } from "../../src/domain/Stores.js"
+import { makeAuthApi } from "../../src/http/AuthApi.js"
+import { AuthTest } from "../../src/testing/index.js"
 
 /**
  * The user model under test.
@@ -44,12 +46,22 @@ export const model = makeUserModel({
 export type Fields = typeof model.fields
 
 /**
+ * The API an application composes when it declares its own user fields — and
+ * therefore what `AuthHandlers.layer` and `AuthClient.make` are checked against
+ * here.
+ */
+export const FieldsApi = HttpApi.make("fields-app").addHttpApi(makeAuthApi(model))
+
+/**
  * A fresh in-memory PGlite with the base tables *and* {@link model}'s columns.
+ *
+ * Memoised on the model by `AuthTest`, so every block in this directory shares
+ * one database — including the ones that reach it through `AuthTest.layer`.
  */
 export const layerDatabase: Layer.Layer<
   SqlClient.SqlClient | PgliteClient.PgliteClient,
   Migrator.MigrationError | SqlError.SqlError
-> = Migrations.layerFor(model).pipe(Layer.provideMerge(PgliteClient.layer()))
+> = AuthTest.layerDatabaseFor(model)
 
 /**
  * The whole persistence tier of {@link model} over {@link layerDatabase}.
@@ -57,4 +69,4 @@ export const layerDatabase: Layer.Layer<
 export const layerStores: Layer.Layer<
   AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
   Migrator.MigrationError | SqlError.SqlError
-> = SqlStores.layerFor(model).pipe(Layer.provideMerge(layerDatabase))
+> = AuthTest.layerStoresFor(model)

@@ -36,13 +36,16 @@ import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
 import { OAuthProviderError, PasswordHashError } from "../domain/Errors.js"
-import { Passwords } from "../domain/Passwords.js"
-import { Sessions } from "../domain/Sessions.js"
+import { Passwords, passwordsOf } from "../domain/Passwords.js"
+import type { UserFields, UserModel } from "../domain/Schema.js"
+import { baseUserModel } from "../domain/Schema.js"
+import { Sessions, sessionsOf } from "../domain/Sessions.js"
 import { PersistenceError } from "../domain/Stores.js"
 import { OAuthFlow, withErrorCode } from "../oauth/Flow.js"
+import type { AuthApiGroupOf } from "./AuthApi.js"
 import { AuthApiGroup } from "./AuthApi.js"
 import type { Authenticated } from "./Middleware.js"
-import { CurrentSession, CurrentUser } from "./Middleware.js"
+import { CurrentSession, currentUserOf } from "./Middleware.js"
 import { clearSessionCookie, setSessionCookie } from "./MiddlewareLive.js"
 import { resolveUrl, validateUrl } from "./OriginCheck.js"
 import type { Bucket } from "./RateLimits.js"
@@ -171,41 +174,99 @@ export type HandlerServices =
  * const HandlersLive = AuthHandlers.layer(MyApi)
  * ```
  *
+ * **Example** (a deployment with its own user fields)
+ *
+ * ```ts
+ * import { HttpApi } from "effect/unstable/httpapi"
+ * import { AuthHandlers, makeAuthApi, makeUserModel } from "effect-auth"
+ *
+ * const model = makeUserModel({})
+ * const MyApi = HttpApi.make("app").addHttpApi(makeAuthApi(model))
+ * const HandlersLive = AuthHandlers.layer(MyApi, model)
+ * ```
+ *
+ * **Details**
+ *
+ * The second parameter is the model the API was declared with. It is what makes
+ * sign-up accept a deployment's own fields and the three user-bearing endpoints
+ * answer with them; the layer's *type* does not move, because the model reaches
+ * the services through typed views of the keys they already occupy.
+ *
  * **Gotchas**
  *
  * The API passed here must be the same value passed to `HttpApiBuilder.layer`.
  * The routes are read off the group *it* carries, so an API whose prefix was
  * changed after this call would serve the old paths.
  *
- * Its `auth` group must be {@link AuthApiGroup} itself. Any group set is
- * accepted around it — that is what the generic is for — but a group merely
- * *named* `auth`, or `AuthApiGroup` re-prefixed with `HttpApi.prefix` (which
+ * Its `auth` group must be this library's own — {@link AuthApiGroup} when no
+ * model is passed, `makeAuthApiGroup(model)`'s when one is. Any group set is
+ * accepted around it, but a group merely *named* `auth`, one built from a
+ * *different* model, or `AuthApiGroup` re-prefixed with `HttpApi.prefix` (which
  * rewrites the endpoint paths in the type), is rejected here rather than
  * mis-served at runtime.
  *
  * @category layers
  * @since 1.0.0
  */
-export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
+  // `NoInfer`, so that `F` comes from the model alone and the API is *checked*
+  // against the group that model declares. It is what makes both mistakes a
+  // compile error rather than a silent one: a parameterized API served by
+  // handlers built without its model (`F` falls back to `{}`, and the API's
+  // group is not `AuthApiGroupOf<{}>`), and the base API served with somebody's
+  // model. Without it the compiler would also read `F` off the group's own inner
+  // types, where it appears as `BaseUserFields & F`, and report the mismatch
+  // between two spellings of the same thing.
   api:
     & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: typeof AuthApiGroup } }
+    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  model?: UserModel<F>
 ): Layer.Layer<
   HttpApiGroup.Service<ApiId, "auth">,
   never,
   HandlerServices
 > =>
-  HttpApiBuilder.group(
+  // Two branches because `UserModel<F>` and `UserModel<{}>` are different types:
+  // "the model, or the base one" is a choice that has to be made before anything
+  // is built with it.
+  model === undefined ? build(api, baseUserModel) : build(api, model)
+
+const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
+  api: HttpApi.HttpApi<ApiId, Groups>,
+  model: UserModel<F>
+): Layer.Layer<
+  HttpApiGroup.Service<ApiId, "auth">,
+  never,
+  HandlerServices
+> => {
+  const CurrentUser = currentUserOf(model)
+  return HttpApiBuilder.group(
     // The only cast in this module, and the boundary the whole signature exists
     // to make safe. `HttpApi` is invariant in its group union, so a consumer's
     // composed API — `HttpApi.make("app").addHttpApi(AuthApi).add(TodosGroup)` —
     // is not assignable to `HttpApi<ApiId, typeof AuthApiGroup>`, even though it
-    // demonstrably contains that exact group: the parameter's intersection
-    // requires `groups.auth` to *be* `typeof AuthApiGroup`, checked by the
-    // compiler at every call site. `HttpApiBuilder.group` reads nothing but
-    // `api.groups["auth"]` (see its implementation), so narrowing the union it
-    // sees to the one group named here cannot change what runs, and the routes
-    // still come off the consumer's own group value.
+    // demonstrably contains that exact group: `layer`'s parameter requires
+    // `groups.auth` to *be* the group the model passed alongside it declares,
+    // checked by the compiler at every call site. `HttpApiBuilder.group` reads
+    // nothing but `api.groups["auth"]` (see its implementation), so narrowing
+    // the union it sees to the one group named here cannot change what runs, and
+    // the routes still come off the consumer's own group value.
+    //
+    // It narrows to the *base* group rather than to `AuthApiGroupOf<F>`, which
+    // is what lets the nineteen handlers below be type-checked once instead of
+    // once per deployment. An endpoint whose payload type mentions `F` has a
+    // request shape TypeScript cannot resolve — `HttpApiEndpoint`'s
+    // `RequestFromParts` branches on the payload type, and a conditional over an
+    // unresolved `F` stays deferred, so `payload` would have no readable
+    // properties at all. The difference between the two groups is confined to
+    // three endpoints, and in both directions it is a widening this module
+    // honours: sign-up *receives* a payload with the model's extra fields on it
+    // (recovered, typed, through `model.extrasOf`) and the three user-bearing
+    // endpoints *answer* with a user that has them (produced by
+    // `model.toPublic`). Encoding and decoding are done by the consumer's own
+    // group either way, so the extras are on the wire whatever this narrowing
+    // says.
+    //
     // (It goes via `unknown` because a one-step conversion is refused:
     // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
     // compiler's comparability check.)
@@ -214,8 +275,11 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
     (handlers) =>
       Effect.gen(function*() {
         const config = yield* AuthConfig
-        const sessions = yield* Sessions
-        const passwords = yield* Passwords
+        // The two services that answer with users are read through the model's
+        // typed view of their key: the same slot, a shape that carries the
+        // deployment's own fields.
+        const sessions = yield* sessionsOf(model)
+        const passwords = yield* passwordsOf(model)
         const accounts = yield* Accounts
         const limiter = yield* RateLimiter.RateLimiter
         // Resolved once, and optional: see `HandlerServices`.
@@ -236,24 +300,25 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
             Effect.gen(function*() {
               yield* rateLimit(credentials, request)
               if (!config.emailPassword.enabled) return notServed
+              // `payload` carries whatever custom fields the deployment's model
+              // declared — this handler is checked against the base group, so
+              // the model is what recovers them, at the type level as well as at
+              // run time. A deployment that declared none contributes `{}`.
               const result = yield* passwords.signUp({
-                name: payload.name,
-                email: payload.email,
-                password: payload.password,
-                image: payload.image,
+                ...payload,
+                ...model.extrasOf(payload, "jsonCreate"),
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL)),
-                rememberMe: payload.rememberMe,
                 ...clientMeta(config, request)
               }).pipe(serverFault)
 
               if (Option.isNone(result.session)) {
                 // Verification is required, or auto sign-in is off: the user
                 // exists but has no session, and no cookie is written.
-                return { user: result.user, session: null }
+                return { user: model.toPublic(result.user), session: null }
               }
               const { session, token } = result.session.value
               yield* setSessionCookie(config, session, token, { persistent: payload.rememberMe !== false })
-              return { user: result.user, session }
+              return { user: model.toPublic(result.user), session }
             }))
           .handle("signInEmail", ({ payload, request }) =>
             Effect.gen(function*() {
@@ -269,7 +334,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               yield* setSessionCookie(config, result.session, result.token, {
                 persistent: payload.rememberMe !== false
               })
-              return { user: result.user, session: result.session }
+              return { user: model.toPublic(result.user), session: result.session }
             }))
           .handle("signOut", () =>
             Effect.gen(function*() {
@@ -284,7 +349,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               // expiry moved — re-set the cookie.
               const user = yield* CurrentUser
               const session = yield* CurrentSession
-              return { user, session }
+              return { user: model.toPublic(user), session }
             }))
           .handle("listSessions", () =>
             Effect.gen(function*() {
@@ -451,3 +516,4 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
             }))
       })
   )
+}

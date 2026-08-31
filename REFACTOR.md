@@ -116,6 +116,21 @@ Rules:
    the way out. `UserModel<F>` is the statement of what that value is, and every consumer in the
    library is checked against the statement rather than against the construction. Added by the
    custom-user-fields wave; keep it to exactly one `as unknown as` in that module.
+4. `src/client/AuthClient.ts` — the `signUpEmail` mutation atom's *argument* type. `signUpEmail`
+   is the one endpoint whose payload type mentions `F`, and `HttpApiEndpoint.ClientRequest`
+   branches on the payload type to decide the request shape; a conditional over an `F` that is
+   still a type parameter stays deferred, so inside the generic `make` the argument type has no
+   writable form at all. At a call site, where `F` is a concrete field map, it resolves to exactly
+   what the cast states. Only the argument is named — the atom, the request it issues and the
+   schema it encodes through are `AtomHttpApi`'s own. Added by the custom-user-fields wave; keep
+   it to exactly two `as unknown as` in that module.
+
+   The same deferral is why `src/http/Handlers.ts` narrows to the *base* group rather than to
+   `AuthApiGroupOf<F>`: a handler built against a parameterized payload could not read
+   `payload.name`. It is a widening in both directions that the module honours — the extras of a
+   payload are recovered through `model.extrasOf`, and the extras of a response are produced by
+   `model.toPublic` — and it keeps the nineteen handlers type-checked once rather than once per
+   deployment. Cast count there is unchanged.
 
 ## 6. Definition of done (gates — the final reviewer runs all of these)
 

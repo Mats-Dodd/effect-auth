@@ -20,20 +20,34 @@
  * purpose so vitest does not collect an empty suite.
  */
 import type { Effect, Layer, Redacted } from "effect"
+import type { HttpApiGroup } from "effect/unstable/httpapi"
 import type { SqlClient } from "effect/unstable/sql"
+import { AuthClient } from "../../src/client/index.js"
+import * as Auth from "../../src/config/Auth.js"
 import type { PasswordsService, SignUpOptions } from "../../src/domain/Passwords.js"
 import * as Passwords from "../../src/domain/Passwords.js"
-import type { User, UserOf, UserPublicOf } from "../../src/domain/Schema.js"
+import type {
+  SessionWithUserOf,
+  SignUpResponseOf,
+  User,
+  UserOf,
+  UserPublicOf
+} from "../../src/domain/Schema.js"
 import { baseUserModel } from "../../src/domain/Schema.js"
-import type { AuthStores, SessionWithUser, UserPatch, UserStoreService } from "../../src/domain/Stores.js"
-import { UserStore, userStoreOf } from "../../src/domain/Stores.js"
 import type { SessionsService } from "../../src/domain/Sessions.js"
 import * as Sessions from "../../src/domain/Sessions.js"
+import type { AuthStores, SessionWithUser, UserPatch, UserStoreService } from "../../src/domain/Stores.js"
+import { UserStore, userStoreOf } from "../../src/domain/Stores.js"
+import type { SignUpEmailOf } from "../../src/http/AuthApi.js"
+import { AuthApi } from "../../src/http/AuthApi.js"
+import * as AuthHandlers from "../../src/http/Handlers.js"
 import type { CurrentUser } from "../../src/http/Middleware.js"
 import { currentUserOf } from "../../src/http/Middleware.js"
 import * as MiddlewareLive from "../../src/http/MiddlewareLive.js"
 import * as SqlStores from "../../src/sql/SqlStores.js"
+import { AuthTest } from "../../src/testing/index.js"
 import type { Fields } from "./model.js"
+import { FieldsApi, model } from "./model.js"
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
 const eq = <T extends true>(_: T): void => {}
@@ -142,6 +156,94 @@ eq<Exact<ReturnType<typeof MiddlewareLive.layerFor<Fields>>, typeof MiddlewareLi
 /** And the base model still builds the base instances. */
 eq<Exact<typeof baseUserModel.extraKeys, ReadonlyArray<never>>>(true)
 
+// ---------------------------------------------------------------------------
+// The HTTP surface carries `F`, and nothing around it does.
+// ---------------------------------------------------------------------------
+
+declare const settings: Auth.Settings
+
+const fieldsHandlers = AuthHandlers.layer(FieldsApi, model)
+const baseHandlers = AuthHandlers.layer(AuthApi)
+const fieldsStack = Auth.layer({ ...settings, user: { model } })
+const baseStack = Auth.layer(settings)
+
+/** The sign-up payload takes exactly what the `jsonCreate` variant does. */
+const httpStated: SignUpEmailOf<Fields> = { name: "Ada", email: "ada@example.com", password, plan: "pro" }
+const httpOmitted: SignUpEmailOf<Fields> = { name: "Ada", email: "ada@example.com", password }
+
+// @ts-expect-error `role` is `readOnly`: readable everywhere, settable nowhere
+const httpReadOnly: SignUpEmailOf<Fields> = { name: "Ada", email: "ada@example.com", password, role: "admin" }
+
+// @ts-expect-error `apiSecret` is `hidden`: it is in no JSON variant at all
+const httpHidden: SignUpEmailOf<Fields> = { name: "Ada", email: "ada@example.com", password, apiSecret: "x" }
+
+/** The three user-bearing endpoints answer with the model's public user. */
+eq<Exact<SessionWithUserOf<Fields>["user"], UserPublicOf<Fields>>>(true)
+eq<Exact<SignUpResponseOf<Fields>["user"], UserPublicOf<Fields>>>(true)
+
+/**
+ * The handlers of a parameterized API. This is the assertion the whole design
+ * exists for: the layer that serves a deployment's own fields has the type the
+ * base one has, character for character — no `F`, in any channel.
+ */
+eq<
+  Exact<
+    typeof fieldsHandlers,
+    Layer.Layer<HttpApiGroup.Service<"fields-app", "auth">, never, AuthHandlers.HandlerServices>
+  >
+>(true)
+/** The base API's own handlers differ only in the API id they are keyed by. */
+eq<
+  Exact<
+    typeof baseHandlers,
+    Layer.Layer<HttpApiGroup.Service<"effect-auth", "auth">, never, AuthHandlers.HandlerServices>
+  >
+>(true)
+
+/** And so does the stack, which is what "the parameterization does not infect" means. */
+eq<Exact<typeof fieldsStack, Layer.Layer<Auth.Services, never, Auth.Requirements>>>(true)
+eq<Exact<typeof fieldsStack, typeof baseStack>>(true)
+
+/** The `define` bundle's four entry points have those same types. */
+declare const defined: Auth.Definition<Fields>
+eq<Exact<ReturnType<typeof defined.layer>, Layer.Layer<Auth.Services, never, Auth.Requirements>>>(true)
+eq<
+  Exact<
+    ReturnType<typeof defined.layerWithOAuth>,
+    Layer.Layer<Auth.OAuthServices, never, Auth.OAuthRequirements>
+  >
+>(true)
+eq<Exact<RequirementsOf<typeof defined.CurrentUser>, CurrentUser>>(true)
+eq<Exact<SuccessOf<typeof defined.CurrentUser>, UserOf<Fields>>>(true)
+
+// @ts-expect-error a parameterized API served by handlers built without its
+// model would drop every custom field: `F` falls back to `{}`, and the API's
+// `auth` group is not that group.
+AuthHandlers.layer(FieldsApi)
+
+// @ts-expect-error and the base API cannot be served by handlers built *with* a
+// model — its endpoints do not carry the fields those handlers would answer with.
+AuthHandlers.layer(AuthTest.TestApi, model)
+
+// @ts-expect-error the same rule, one level up.
+AuthTest.layerHttpApi(FieldsApi)
+
+/** The client is typed by the model it was given. */
+const fieldsClient = AuthClient.make({ api: FieldsApi, model })
+eq<Exact<typeof fieldsClient, AuthClient.AuthClient<Fields>>>(true)
+eq<Exact<typeof AuthClient.make extends () => AuthClient.AuthClient<{}> ? true : false, true>>(true)
+
+declare const plan: "free" | "pro"
+declare const fieldsSession: SessionWithUserOf<Fields>
+const clientPlan: typeof plan = fieldsSession.user.plan
+
+// @ts-expect-error a hidden field is not a key of what the client decodes
+const clientSecret = fieldsSession.user.apiSecret
+
+// @ts-expect-error a fields API without its model: the model cannot be inferred
+// from the API's type, so the compiler reads the API as the base one.
+AuthClient.make({ api: FieldsApi })
+
 // The bindings above exist for their annotations; naming them here is what keeps
 // `noUnusedLocals` quiet without weakening the assertions.
 export type Assertions = [
@@ -150,5 +252,11 @@ export type Assertions = [
   typeof readOnly,
   typeof hidden,
   typeof patch,
-  typeof patchesId
+  typeof patchesId,
+  typeof httpStated,
+  typeof httpOmitted,
+  typeof httpReadOnly,
+  typeof httpHidden,
+  typeof clientPlan,
+  typeof clientSecret
 ]

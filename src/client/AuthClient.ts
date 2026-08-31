@@ -60,11 +60,17 @@ import type {
   Unauthorized,
   UserAlreadyExists
 } from "../domain/Errors.js"
-import type { AccountPublic, SessionPublic, SessionWithUser, SignUpResponse } from "../domain/Schema.js"
-import type { OAuthRedirect, Ok } from "../http/AuthApi.js"
+import type {
+  AccountPublic,
+  SessionPublic,
+  SessionWithUserOf,
+  SignUpResponseOf,
+  UserFields,
+  UserModel
+} from "../domain/Schema.js"
+import type { AuthApiGroupOf, OAuthRedirect, Ok, SignUpEmailOf } from "../http/AuthApi.js"
 import {
   AuthApi,
-  type AuthApiGroup,
   ChangePasswordPayload,
   LinkSocialPayload,
   RequestPasswordResetPayload,
@@ -133,6 +139,12 @@ export type ReactivityKeys =
 /**
  * The argument of {@link AuthClient.signUp}. `password` is a `Redacted<string>`
  * — wrap the plaintext with `Redacted.make` at the input boundary.
+ *
+ * **Details**
+ *
+ * The base half. A client built with a model carries
+ * `SignUpEmailOf<F>` instead — the same fields, plus whichever of the
+ * deployment's own a client may state.
  *
  * @category models
  * @since 1.0.0
@@ -231,7 +243,8 @@ export type UnlinkAccount = typeof UnlinkAccountPayload.Type
  */
 export interface Options<
   ApiId extends string = string,
-  Groups extends HttpApiGroup.Constraint = typeof AuthApiGroup
+  Groups extends HttpApiGroup.Constraint = AuthApiGroupOf<{}>,
+  F extends UserFields = {}
 > {
   /**
    * Where the server is. Omit it when the auth endpoints are served from the
@@ -259,9 +272,24 @@ export interface Options<
   readonly api?:
     | (
       & HttpApi.HttpApi<ApiId, Groups>
-      & { readonly groups: { readonly auth: typeof AuthApiGroup } }
+      & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } }
     )
     | undefined
+  /**
+   * The user model the API was declared with — `makeAuthApi(model)`'s.
+   *
+   * **When to use**
+   *
+   * Whenever {@link Options.api} was built from a model with custom user
+   * fields. It is what types `session.user`, `signUp` and `signIn` with them.
+   *
+   * **Gotchas**
+   *
+   * Required in that case, not optional: the model cannot be recovered from the
+   * API's type, so leaving it out makes the compiler read the API as the base
+   * one and reject it. Leaving *both* out is the ordinary base-model client.
+   */
+  readonly model?: UserModel<F> | undefined
   /**
    * The transport. Defaults to `fetch` with the {@link Options.credentials}
    * setting applied. Replace it in tests, or to add retries and tracing.
@@ -310,13 +338,13 @@ export interface Options<
  * @category models
  * @since 1.0.0
  */
-export interface AuthClient {
+export interface AuthClient<F extends UserFields = {}> {
   /**
    * The underlying `AtomHttpApi` service class. Use it to reach an endpoint
    * this interface does not wrap, or to build a query with a different
    * time-to-live: `client.service.query("auth", "listSessions", {...})`.
    */
-  readonly service: AtomHttpApi.AtomHttpApiClient<unknown, typeof serviceId, typeof AuthApiGroup>
+  readonly service: AtomHttpApi.AtomHttpApiClient<unknown, typeof serviceId, AuthApiGroupOf<F>>
   /**
    * The atom runtime the client's atoms run in.
    */
@@ -331,7 +359,7 @@ export interface AuthClient {
    * `AsyncResult.matchWithError`'s `onError` is where "show the sign-in form"
    * lives.
    */
-  readonly session: Atom.Atom<AsyncResult.AsyncResult<SessionWithUser, Unauthorized>>
+  readonly session: Atom.Atom<AsyncResult.AsyncResult<SessionWithUserOf<F>, Unauthorized>>
   /**
    * The caller's unexpired sessions, keyed on {@link sessionsKey}.
    */
@@ -343,14 +371,14 @@ export interface AuthClient {
 
   /** Creates an account. Invalidates {@link sessionKey}. */
   readonly signUp: Atom.AtomResultFn<
-    SignUpEmail,
-    SignUpResponse,
+    SignUpEmailOf<F>,
+    SignUpResponseOf<F>,
     UserAlreadyExists | PasswordPolicyViolation | RateLimited
   >
   /** Signs in with an e-mail address and password. Invalidates {@link sessionKey}. */
   readonly signIn: Atom.AtomResultFn<
     SignInEmail,
-    SessionWithUser,
+    SessionWithUserOf<F>,
     InvalidCredentials | EmailNotVerified | RateLimited
   >
   /** Revokes the current session. Invalidates {@link sessionKey} and {@link sessionsKey}. */
@@ -453,8 +481,9 @@ const serviceId = "effect-auth/AuthClient"
  */
 export const make = <
   ApiId extends string = string,
-  Groups extends HttpApiGroup.Constraint = typeof AuthApiGroup
->(options?: Options<ApiId, Groups> | undefined): AuthClient => {
+  Groups extends HttpApiGroup.Constraint = AuthApiGroupOf<{}>,
+  F extends UserFields = {}
+>(options?: Options<ApiId, Groups, F> | undefined): AuthClient<F> => {
   const getToken = options?.bearerToken
   const httpClient = options?.httpClient ?? layerFetch(options?.credentials ?? "include")
   const forClient = HttpApiMiddleware.layerClient(Authenticated, ({ next, request }) => {
@@ -478,7 +507,7 @@ export const make = <
     // (It goes via `unknown` because a one-step conversion is refused:
     // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
     // compiler's comparability check.)
-    api: (options?.api ?? AuthApi) as unknown as HttpApi.HttpApi<string, typeof AuthApiGroup>,
+    api: (options?.api ?? AuthApi) as unknown as HttpApi.HttpApi<string, AuthApiGroupOf<F>>,
     httpClient: Layer.merge(httpClient, forClient),
     baseUrl: options?.baseUrl,
     transformClient: options?.transformClient,
@@ -488,6 +517,23 @@ export const make = <
   const signInSocial = withPayload<SignInSocial>()(service.mutation("auth", "signInSocial"), undefined)
   const linkSocial = withPayload<LinkSocial>()(service.mutation("auth", "linkSocial"), undefined)
 
+  // The second cast in this module, and the only one the custom-field
+  // parameterization adds. `signUpEmail` is the one endpoint whose *payload*
+  // type mentions `F`, and `HttpApiEndpoint.ClientRequest` branches on the
+  // payload type to decide the request shape — a conditional over an `F` that is
+  // still a type parameter stays deferred, so inside this function the mutation
+  // atom's argument type has no writable form at all. At a call site, where `F`
+  // is a concrete field map, that same type resolves to exactly what is stated
+  // here; the success type needs no help, because it is a struct rather than a
+  // conditional. Only the *argument* is being named: the atom, the request it
+  // issues and the schema it encodes through are the ones `AtomHttpApi` built
+  // from the API that was passed in.
+  const signUpMutation = service.mutation("auth", "signUpEmail") as unknown as Atom.AtomResultFn<
+    PayloadRequest<SignUpEmailOf<F>>,
+    SignUpResponseOf<F>,
+    UserAlreadyExists | PasswordPolicyViolation | RateLimited
+  >
+
   return {
     service,
     runtime: service.runtime,
@@ -496,7 +542,7 @@ export const make = <
     sessions: service.query("auth", "listSessions", { reactivityKeys: [sessionKey, sessionsKey] }),
     accounts: service.query("auth", "listAccounts", { reactivityKeys: [sessionKey, accountsKey] }),
 
-    signUp: withPayload<SignUpEmail>()(service.mutation("auth", "signUpEmail"), [sessionKey]),
+    signUp: withPayload<SignUpEmailOf<F>>()(signUpMutation, [sessionKey]),
     signIn: withPayload<SignInEmail>()(service.mutation("auth", "signInEmail"), [sessionKey]),
     signOut: withoutPayload(service.mutation("auth", "signOut"), [sessionKey, sessionsKey]),
     revokeSession: withPayload<RevokeSession>()(service.mutation("auth", "revokeSession"), [sessionsKey]),
