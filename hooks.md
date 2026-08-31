@@ -1,6 +1,12 @@
 # Hooks: typed policy points for effect-auth
 
-Status: planned, not built. Prerequisite for the next plugin wave (email OTP, TOTP, passkeys).
+Status: BUILT 2026-08-31 (commits ca1b1da..b2b9efb, 705 tests). One deviation from the design
+below, discovered at build time and pinned by tests: `Users.provision` is called by magic-link
+only — `Users` reads `Passwords` (delete re-authentication), so Passwords/Accounts calling it
+would close a layer cycle. They instead carry literally-parallel copies of the same sequence
+(beforeUserCreate → re-validate+re-normalize → create → afterUserCreate), each commented, with
+cross-source suites in test/domain/Hooks.test.ts and test/fields/Hooks.test.ts failing if one
+drifts. Unblocks the next plugin wave (email OTP, TOTP, passkeys).
 
 ## Why
 
