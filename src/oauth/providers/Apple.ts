@@ -32,6 +32,7 @@ import { Config, DateTime, Duration, Effect, Option, Redacted, Schema } from "ef
 import { importPKCS8, SignJWT } from "jose"
 import { optionalConfig } from "../../internal/config.js"
 import type { OAuthProviderError } from "../../domain/Errors.js"
+import type { KeyResolver } from "../IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens, UserInfoOptions } from "../Provider.js"
 import { providerError } from "../Provider.js"
 import { lenient } from "../internal/claims.js"
@@ -290,8 +291,14 @@ export interface Options extends SecretOptions {
    *
    * Tests, which hand in a `jose` `createLocalJWKSet` so verification runs with
    * no network at all, and deployments that pin Apple's keys.
+   *
+   * **Gotchas**
+   *
+   * It replaces {@link jwksUrl} rather than joining it: the provider's key
+   * source is one or the other, and pinning a key set is a statement that
+   * nothing is to be fetched.
    */
-  readonly jwks?: OAuthProviderConfig["jwks"] | undefined
+  readonly jwks?: KeyResolver | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -352,11 +359,14 @@ export const make = (options: Options): OAuthProviderConfig => {
     authorizationUrl,
     tokenUrl,
     scopes: [...defaultScopes, ...(options.scopes ?? [])],
-    issuer,
-    jwksUrl,
-    idTokenAudience: audience,
-    ...(options.jwks === undefined ? {} : { jwks: options.jwks }),
-    ...(options.algorithms === undefined ? {} : { algorithms: options.algorithms }),
+    oidc: {
+      issuer,
+      keys: options.jwks === undefined ? { jwksUrl } : { jwks: options.jwks },
+      // Always stated, because Apple's is not always the client id: a token
+      // minted for the native application names the bundle identifier instead.
+      audience,
+      ...(options.algorithms === undefined ? {} : { algorithms: options.algorithms })
+    },
     ...(options.redirectUri === undefined ? {} : { redirectUri: options.redirectUri }),
     authorizationParams: {
       // Asking for `name` makes Apple post the callback cross-site instead of

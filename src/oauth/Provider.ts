@@ -198,52 +198,82 @@ export interface OAuthProviderConfig {
   /** The scopes always requested. A caller may add more, never remove these. */
   readonly scopes: ReadonlyArray<string>
   /**
-   * The provider's OIDC issuer URL.
+   * Everything that makes this provider an OIDC one, or nothing at all.
    *
    * **Details**
    *
-   * Presence of this field is what makes the provider an OIDC one: the flow
+   * Presence of this block is what makes the provider an OIDC one: the flow
    * then *requires* an `id_token`, verifies it fail-closed, and stores the
-   * account under this issuer. A plain OAuth2 provider leaves it undefined and
-   * is stored under the synthetic `local:oauth:<id>` issuer.
-   */
-  readonly issuer?: string | undefined
-  /**
-   * The issuer an `id_token` must claim, derived from the token's own claims.
+   * account under {@link OAuthProviderConfig.oidc}'s `issuer`. A plain OAuth2
+   * provider leaves the whole block undefined and is stored under the synthetic
+   * `local:oauth:<id>` issuer.
    *
-   * **When to use**
-   *
-   * Multi-tenant providers, where the expected `iss` is not one string but a
-   * function of the tenant the token names — Microsoft Entra derives it from
-   * `tid`. Returning `null` rejects the token.
+   * The fields travel together because they are only meaningful together, and
+   * `keys` is a union rather than two optional fields so that "an OIDC provider
+   * with no key source" cannot be written down at all — where the prose once
+   * said a JWKS URL was *required with* an issuer, the type now says it.
    *
    * **Gotchas**
    *
-   * It runs on the token's payload **before** the signature has been checked
-   * against that issuer, so it decides what to *expect*, never what to believe.
-   * A provider that accepts any tenant must still constrain the shape of the
-   * issuer it derives, or the check is not one; when it is absent,
-   * {@link OAuthProviderConfig.issuer} is the expected value, as it is for every
-   * single-tenant provider.
+   * There is no partial OIDC: adding this block turns the `id_token` from
+   * something the flow tolerates into something it demands.
    */
-  readonly issuerOf?: ((claims: Readonly<Record<string, unknown>>) => string | null) | undefined
-  /**
-   * The audience an `id_token` must carry, when it is not simply
-   * {@link OAuthProviderConfig.clientId}.
-   *
-   * **When to use**
-   *
-   * Where one deployment accepts tokens minted for more than one client — Apple,
-   * whose native applications receive tokens addressed to the app's bundle
-   * identifier rather than to the web Services ID.
-   *
-   * **Gotchas**
-   *
-   * A list is a list of *permitted* audiences, not a requirement that all be
-   * present. Keep it as short as the deployment genuinely needs: every entry is
-   * another client whose tokens are accepted here.
-   */
-  readonly idTokenAudience?: string | ReadonlyArray<string> | undefined
+  readonly oidc?: {
+    /** The provider's OIDC issuer URL, and the issuer its accounts are stored under. */
+    readonly issuer: string
+    /**
+     * The issuer an `id_token` must claim, derived from the token's own claims.
+     *
+     * **When to use**
+     *
+     * Multi-tenant providers, where the expected `iss` is not one string but a
+     * function of the tenant the token names — Microsoft Entra derives it from
+     * `tid`. Returning `null` rejects the token.
+     *
+     * **Gotchas**
+     *
+     * It runs on the token's payload **before** the signature has been checked
+     * against that issuer, so it decides what to *expect*, never what to
+     * believe. A provider that accepts any tenant must still constrain the
+     * shape of the issuer it derives, or the check is not one; when it is
+     * absent, the block's `issuer` is the expected value, as it is for every
+     * single-tenant provider.
+     */
+    readonly issuerOf?: ((claims: Readonly<Record<string, unknown>>) => string | null) | undefined
+    /**
+     * Where the signing keys come from: a JWKS URL to fetch, or a key set
+     * already resolved.
+     *
+     * **When to use**
+     *
+     * `jwksUrl` for every real provider. `jwks` for keys pinned into the
+     * application, and for tests, which hand in a `jose` `createLocalJWKSet`
+     * resolver so that verification runs with no network at all.
+     */
+    readonly keys: { readonly jwksUrl: string } | { readonly jwks: KeyResolver }
+    /**
+     * The audience an `id_token` must carry, when it is not simply
+     * {@link OAuthProviderConfig.clientId}.
+     *
+     * **When to use**
+     *
+     * Where one deployment accepts tokens minted for more than one client —
+     * Apple, whose native applications receive tokens addressed to the app's
+     * bundle identifier rather than to the web Services ID.
+     *
+     * **Gotchas**
+     *
+     * A list is a list of *permitted* audiences, not a requirement that all be
+     * present. Keep it as short as the deployment genuinely needs: every entry
+     * is another client whose tokens are accepted here.
+     */
+    readonly audience?: string | ReadonlyArray<string> | undefined
+    /**
+     * The JWS algorithms accepted on an `id_token`. Defaults to whatever the
+     * resolved key admits, which for a JWKS is always asymmetric.
+     */
+    readonly algorithms?: ReadonlyArray<string> | undefined
+  } | undefined
   /**
    * Whether, and how, this provider's stored tokens may be refreshed.
    *
@@ -264,23 +294,6 @@ export interface OAuthProviderConfig {
     readonly enabled?: boolean | undefined
     readonly params?: Readonly<Record<string, string>> | undefined
   } | undefined
-  /** Where the provider publishes its signing keys. Required with `issuer`. */
-  readonly jwksUrl?: string | undefined
-  /**
-   * A pre-resolved key set, used instead of fetching {@link jwksUrl}.
-   *
-   * **When to use**
-   *
-   * Pinning keys that are shipped with the application, and tests, which hand
-   * in a `jose` `createLocalJWKSet` resolver so that verification runs with no
-   * network at all.
-   */
-  readonly jwks?: KeyResolver | undefined
-  /**
-   * The JWS algorithms accepted on an `id_token`. Defaults to whatever the
-   * resolved key admits, which for a JWKS is always asymmetric.
-   */
-  readonly algorithms?: ReadonlyArray<string> | undefined
   /**
    * Overrides the redirect URI, which otherwise is
    * `<baseUrl><basePath>/callback/<id>`.
@@ -301,6 +314,38 @@ export interface OAuthProviderConfig {
    * see {@link reservedAuthorizationParams}.
    */
   readonly authorizationParams?: Readonly<Record<string, string>> | undefined
+  /**
+   * Takes over the authorization-code exchange, for the provider the generic
+   * token request cannot describe.
+   *
+   * **Details**
+   *
+   * Absent — the ordinary case — means the generic runner performs the exchange
+   * itself. Present means this function owns it: nothing else posts the code.
+   *
+   * It is handed the generic request as `fallback`, already built for these
+   * exact inputs, because most overrides only *decorate* the default. A
+   * provider that needs one extra header, or that has to post-process the
+   * tokens it gets back, wraps `fallback` rather than reimplementing the
+   * exchange — and so keeps secret resolution
+   * ({@link resolveClientSecret}, including the per-request minting an Apple
+   * client needs) and {@link reservedTokenParams} filtering, both of which stay
+   * private to the flow.
+   *
+   * **Gotchas**
+   *
+   * An implementation that ignores `fallback` and builds its own request owns
+   * everything the flow was doing for it, secret handling included. Reach for
+   * that only when the provider's exchange genuinely is not an OAuth2 token
+   * request.
+   */
+  readonly exchange?: ((options: {
+    readonly code: string
+    readonly codeVerifier: string
+    readonly redirectUri: string
+    /** The generic token request for these inputs, for overrides that only decorate it. */
+    readonly fallback: Effect.Effect<OAuthTokens, OAuthProviderError>
+  }) => Effect.Effect<OAuthTokens, OAuthProviderError, HttpClient.HttpClient>) | undefined
   /**
    * Resolves the tokens into an identity, calling the provider's user-info
    * endpoints where it needs to.
@@ -380,15 +425,22 @@ export const resolveClientSecret = (
 }
 
 /**
- * Whether the provider publishes an OIDC issuer, and therefore whether the flow
+ * Whether the provider carries an OIDC block, and therefore whether the flow
  * demands and verifies an `id_token`.
+ *
+ * **Details**
+ *
+ * The narrowed type has `oidc` as a **required** field, so a caller past this
+ * guard reads the issuer and the key source without a second check — which is
+ * the whole reason the OIDC settings live in one block.
  *
  * @category guards
  * @since 1.0.0
  */
 export const isOidc = (
   provider: OAuthProviderConfig
-): provider is OAuthProviderConfig & { readonly issuer: string } => provider.issuer !== undefined
+): provider is OAuthProviderConfig & { readonly oidc: NonNullable<OAuthProviderConfig["oidc"]> } =>
+  provider.oidc !== undefined
 
 /**
  * The issuer an account of this provider is stored under: the OIDC issuer URL,
@@ -397,7 +449,8 @@ export const isOidc = (
  * @category combinators
  * @since 1.0.0
  */
-export const providerIssuer = (provider: OAuthProviderConfig): string => provider.issuer ?? oauthIssuer(provider.id)
+export const providerIssuer = (provider: OAuthProviderConfig): string =>
+  provider.oidc?.issuer ?? oauthIssuer(provider.id)
 
 // -----------------------------------------------------------------------------
 // Registry
@@ -461,8 +514,12 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
  * and every read goes through `Object.hasOwn`: a request for the provider
  * `"__proto__"` must miss, not return a function.
  *
- * Two providers with the same id are a configuration mistake; the last one
- * registered wins.
+ * Two providers with the same id throw. A duplicate id is a deployment that
+ * cannot be served coherently — one of the two would silently never receive a
+ * callback — so it is a construction-time defect, not a last-one-wins merge.
+ * Building {@link OAuthProviders.layer} over such a list therefore fails loudly
+ * at start-up, rather than starting a deployment in which one provider quietly
+ * stopped working.
  *
  * @category constructors
  * @since 1.0.0
@@ -473,7 +530,10 @@ export const makeRegistry = (
   const byId = Object.create(null) as Record<string, OAuthProviderConfig>
   const ids: Array<string> = []
   for (const provider of providers) {
-    if (!Object.hasOwn(byId, provider.id)) ids.push(provider.id)
+    if (Object.hasOwn(byId, provider.id)) {
+      throw new Error(`effect-auth: duplicate OAuth provider id ${JSON.stringify(provider.id)}`)
+    }
+    ids.push(provider.id)
     byId[provider.id] = provider
   }
   const find = (id: string): Option.Option<OAuthProviderConfig> =>
@@ -519,6 +579,59 @@ export const revealToken = (token: Redacted.Redacted<string> | null): string | n
  * @since 1.0.0
  */
 export const providerRequestTimeout: Duration.Duration = Duration.seconds(10)
+
+/**
+ * How long one whole {@link OAuthProviderConfig.userInfo} invocation is given,
+ * however many requests it makes inside.
+ *
+ * **Details**
+ *
+ * The split is deliberate: the flow owns *policy*, the helpers own *mechanics*.
+ * {@link fetchJson} bounds a single request with
+ * {@link providerRequestTimeout} and retries transport failures, because that is
+ * what one request needs; this deadline sits above the provider's entire
+ * `userInfo` and answers a different question — how long a callback fiber may be
+ * held at all. GitHub asking two endpoints in sequence, each near its own
+ * timeout, is still bounded by this one.
+ *
+ * **Gotchas**
+ *
+ * It is enforced by the flow rather than by the helper on purpose. A provider
+ * implementation is free to bypass {@link fetchJson} and use the `HttpClient`
+ * directly, and one that does must still not be able to hang a callback — so
+ * the bound lives where it cannot be opted out of.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const userInfoDeadline: Duration.Duration = Duration.seconds(30)
+
+/**
+ * How long one whole code exchange is given, an
+ * {@link OAuthProviderConfig.exchange} override included.
+ *
+ * **Details**
+ *
+ * The same rule as {@link userInfoDeadline}, one step earlier in the callback.
+ * The generic exchange is a single {@link resilient} request and is bounded
+ * already; this deadline is for an override that ignores the `fallback` it is
+ * handed and drives the `HttpClient` itself, which nothing else bounds. A
+ * provider that accepts a connection and never answers must not be able to hold
+ * a callback fiber whichever side of the seam it does it from.
+ *
+ * **Gotchas**
+ *
+ * Enforced by the flow around the override and the default alike, for the
+ * reason {@link userInfoDeadline} is: a bound an implementation can opt out of
+ * is not a bound. A default exchange pushed to its full retry budget — three
+ * attempts and their back-off — can reach this deadline just before the
+ * provider's own answer; both report `ProviderUnavailable`, so which one wins
+ * that race is not observable.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const exchangeDeadline: Duration.Duration = Duration.seconds(30)
 
 /**
  * How many times a transport-level failure is tried again.

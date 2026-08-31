@@ -151,12 +151,15 @@ describe("oauth/Discovery", () => {
         const provider = result.success
 
         assert.strictEqual(provider.id, "acme")
-        assert.strictEqual(provider.issuer, MockProvider.providerOrigin)
+        assert.strictEqual(provider.oidc?.issuer, MockProvider.providerOrigin)
         assert.strictEqual(provider.authorizationUrl, MockProvider.authorizeUrl)
         assert.strictEqual(provider.tokenUrl, MockProvider.tokenUrl)
-        assert.strictEqual(provider.jwksUrl, MockProvider.jwksUrl)
+        assert.deepStrictEqual(provider.oidc?.keys, { jwksUrl: MockProvider.jwksUrl })
         assert.deepStrictEqual([...provider.scopes], ["openid", "email", "profile"])
-        assert.deepStrictEqual(provider.algorithms === undefined ? [] : [...provider.algorithms], ["RS256"])
+        assert.deepStrictEqual(
+          provider.oidc?.algorithms === undefined ? [] : [...provider.oidc.algorithms],
+          ["RS256"]
+        )
         // The document was read once, over the redirect-refusing transport.
         assert.strictEqual(server.requests.length, 1)
         assert.strictEqual(server.requests[0]?.redirect, "manual")
@@ -168,7 +171,7 @@ describe("oauth/Discovery", () => {
           tokenUrl: "https://gateway.acme.test/token",
           scopes: ["openid", "groups"],
           algorithms: ["ES256"],
-          idTokenAudience: ["mock-client-id", "com.example.app"]
+          audience: ["mock-client-id", "com.example.app"]
         })
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
@@ -178,9 +181,10 @@ describe("oauth/Discovery", () => {
         assert.strictEqual(result.success.authorizationUrl, MockProvider.authorizeUrl)
         assert.deepStrictEqual([...result.success.scopes], ["openid", "groups"])
         assert.deepStrictEqual(
-          result.success.algorithms === undefined ? [] : [...result.success.algorithms],
+          result.success.oidc?.algorithms === undefined ? [] : [...result.success.oidc.algorithms],
           ["ES256"]
         )
+        assert.deepStrictEqual(result.success.oidc?.audience, ["mock-client-id", "com.example.app"])
       }))
 
     it.effect("reads the document from a stated URL, and accepts a pinned key set", () =>
@@ -200,8 +204,13 @@ describe("oauth/Discovery", () => {
 
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
-        assert.isUndefined(result.success.jwksUrl)
-        assert.isDefined(result.success.jwks)
+        // The key source is a union, so a pinned key set does not leave an
+        // unused URL behind — the built provider carries the resolver and
+        // nothing else, and "issuer but no keys" is unwritable rather than
+        // merely refused.
+        const keys = result.success.oidc?.keys
+        assert.isDefined(keys)
+        assert.isTrue(keys !== undefined && "jwks" in keys)
         // A public PKCE client sends no secret at all.
         assert.isUndefined(result.success.clientSecret)
       }))

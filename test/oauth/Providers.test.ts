@@ -114,7 +114,7 @@ describe("oauth/providers/Github", () => {
   describe("configuration", () => {
     it("is a plain OAuth2 provider stored under a synthetic issuer", () => {
       assert.strictEqual(github.id, "github")
-      assert.isUndefined(github.issuer)
+      assert.isUndefined(github.oidc)
       assert.strictEqual(providerIssuer(github), "local:oauth:github")
       assert.strictEqual(github.authorizationUrl, "https://github.com/login/oauth/authorize")
       assert.strictEqual(github.tokenUrl, "https://github.com/login/oauth/access_token")
@@ -268,9 +268,10 @@ describe("oauth/providers/Google", () => {
 
   it("is an OIDC provider with an issuer, a key set and offline access", () => {
     assert.strictEqual(google.id, "google")
-    assert.strictEqual(google.issuer, "https://accounts.google.com")
+    assert.strictEqual(google.oidc?.issuer, "https://accounts.google.com")
     assert.strictEqual(providerIssuer(google), "https://accounts.google.com")
-    assert.strictEqual(google.jwksUrl, "https://www.googleapis.com/oauth2/v3/certs")
+    // The key source is a union, and Google's arm of it is a URL to fetch.
+    assert.deepStrictEqual(google.oidc?.keys, { jwksUrl: "https://www.googleapis.com/oauth2/v3/certs" })
     assert.strictEqual(google.authorizationUrl, "https://accounts.google.com/o/oauth2/v2/auth")
     assert.strictEqual(google.tokenUrl, "https://oauth2.googleapis.com/token")
     assert.deepStrictEqual([...google.scopes], ["openid", "email", "profile"])
@@ -379,7 +380,7 @@ describe("oauth/providers/Google", () => {
       assert.strictEqual(provider.id, "google")
       assert.strictEqual(provider.clientId, "0123.from-the-environment")
       assert.deepStrictEqual(yield* secretOf(provider), Option.some("google-secret-from-the-environment"))
-      assert.strictEqual(provider.issuer, "https://accounts.google.com")
+      assert.strictEqual(provider.oidc?.issuer, "https://accounts.google.com")
       assert.strictEqual(provider.authorizationParams?.hd, "acme.test")
     }).pipe(
       Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
@@ -420,7 +421,7 @@ describe("oauth/providers/Discord", () => {
 
   it("is a plain OAuth2 provider that asks for identify and email", () => {
     assert.strictEqual(discord.id, "discord")
-    assert.isUndefined(discord.issuer)
+    assert.isUndefined(discord.oidc)
     assert.strictEqual(providerIssuer(discord), "local:oauth:discord")
     assert.strictEqual(discord.authorizationUrl, "https://discord.com/api/oauth2/authorize")
     assert.strictEqual(discord.tokenUrl, "https://discord.com/api/oauth2/token")
@@ -601,7 +602,7 @@ describe("oauth/providers/Gitlab", () => {
 
   it("is a plain OAuth2 provider pointed at gitlab.com by default", () => {
     assert.strictEqual(gitlab.id, "gitlab")
-    assert.isUndefined(gitlab.issuer)
+    assert.isUndefined(gitlab.oidc)
     assert.strictEqual(providerIssuer(gitlab), "local:oauth:gitlab")
     assert.strictEqual(gitlab.authorizationUrl, "https://gitlab.com/oauth/authorize")
     assert.strictEqual(gitlab.tokenUrl, "https://gitlab.com/oauth/token")

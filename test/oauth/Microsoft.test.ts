@@ -39,8 +39,8 @@ const verifying = (
     return yield* Effect.result(verify({
       providerId: Microsoft.id,
       token,
-      issuer: provider.issuerOf ?? provider.issuer ?? "",
-      audience: provider.idTokenAudience ?? provider.clientId,
+      issuer: provider.oidc?.issuerOf ?? provider.oidc?.issuer ?? "",
+      audience: provider.oidc?.audience ?? provider.clientId,
       keys: signer.jwks,
       nonce: null,
       algorithms: ["RS256"]
@@ -78,8 +78,10 @@ describe("oauth/providers/Microsoft", () => {
       assert.strictEqual(provider.id, "microsoft")
       assert.strictEqual(provider.authorizationUrl, `${authority}/common/oauth2/v2.0/authorize`)
       assert.strictEqual(provider.tokenUrl, `${authority}/common/oauth2/v2.0/token`)
-      assert.strictEqual(provider.jwksUrl, `${authority}/common/discovery/v2.0/keys`)
-      assert.strictEqual(provider.issuer, `${authority}/common/v2.0`)
+      assert.deepStrictEqual(provider.oidc?.keys, { jwksUrl: `${authority}/common/discovery/v2.0/keys` })
+      // Inert for `common`: `issuerOf` is what a token is actually checked
+      // against. It is still the issuer accounts are stored under.
+      assert.strictEqual(provider.oidc?.issuer, `${authority}/common/v2.0`)
       assert.strictEqual(providerIssuer(provider), `${authority}/common/v2.0`)
       assert.deepStrictEqual([...provider.scopes], [
         "openid",
@@ -111,9 +113,9 @@ describe("oauth/providers/Microsoft", () => {
     })
 
     it("pins the issuer for a single tenant, and derives it for the three that are not one", () => {
-      assert.isUndefined(microsoft({ tenantId: workTenant }).issuerOf)
+      assert.isUndefined(microsoft({ tenantId: workTenant }).oidc?.issuerOf)
       for (const tenant of ["common", "organizations", "consumers"]) {
-        assert.isFunction(microsoft({ tenantId: tenant }).issuerOf)
+        assert.isFunction(microsoft({ tenantId: tenant }).oidc?.issuerOf)
       }
     })
   })
@@ -313,8 +315,8 @@ describe("oauth/providers/Microsoft", () => {
           yield* Effect.map(resolveClientSecret(provider), Option.map(Redacted.value)),
           Option.some("ms-secret-from-the-environment")
         )
-        assert.strictEqual(provider.issuer, issuerOfTenant(workTenant))
-        assert.isUndefined(provider.issuerOf)
+        assert.strictEqual(provider.oidc?.issuer, issuerOfTenant(workTenant))
+        assert.isUndefined(provider.oidc?.issuerOf)
       }).pipe(
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
           MS_CLIENT_ID: "ms-from-the-environment",

@@ -347,18 +347,34 @@ export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthPro
  * An OIDC provider: the identity comes from the verified `id_token` alone, so
  * no user-info request is made at all.
  *
+ * **Details**
+ *
+ * `keys` is either the key source itself — `{ jwksUrl }` for a test that serves
+ * a JWKS over {@link mockServer}, `{ jwks }` for one that pins a resolver — or,
+ * as a shorthand for the common case, the resolver on its own:
+ * `oidcProvider(signer.jwks)` is `oidcProvider({ jwks: signer.jwks })`.
+ *
+ * **Gotchas**
+ *
+ * The `oidc` block is what makes this provider an OIDC one, so `overrides` that
+ * carry one *replace* it whole — issuer, keys and algorithms together. There is
+ * no half-OIDC provider to write: a key source is part of the block, and an
+ * `oidc` block is what makes the flow demand an `id_token`.
+ *
  * @category constructors
  * @since 1.0.0
  */
 export const oidcProvider = (
-  keys: OAuthProviderConfig["jwks"],
+  keys: KeyResolver | NonNullable<OAuthProviderConfig["oidc"]>["keys"],
   overrides?: Partial<OAuthProviderConfig>
 ): OAuthProviderConfig => ({
   ...mockProvider(),
   id: "oidc",
-  issuer: providerOrigin,
-  jwks: keys,
-  algorithms: ["RS256"],
+  oidc: {
+    issuer: providerOrigin,
+    keys: typeof keys === "function" ? { jwks: keys } : keys,
+    algorithms: ["RS256"]
+  },
   userInfo: Effect.fnUntraced(function*(tokens: OAuthTokens) {
     const claims = tokens.idTokenClaims
     if (claims === null || claims.email === null) {
@@ -434,7 +450,8 @@ export interface SignOptions {
  */
 export interface IdTokenSignerService {
   /**
-   * The key set to hand a provider as its `jwks`.
+   * The key set to hand a provider as its `oidc.keys` — `{ jwks }`, or straight
+   * to {@link oidcProvider}, which wraps it.
    */
   readonly jwks: KeyResolver
   /**

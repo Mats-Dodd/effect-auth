@@ -6,7 +6,10 @@
  * claims that state atomically, exchanges the authorization code, verifies an
  * `id_token` when the provider is an OIDC one, resolves the identity through
  * `Accounts` and establishes a session. A provider module contributes
- * endpoints, scopes and a `userInfo` function, and nothing else.
+ * endpoints, scopes and a `userInfo` function, and nothing else — bar the rare
+ * provider whose code exchange is not an OAuth2 token request, which may take
+ * that one step over with `OAuthProviderConfig.exchange` and is handed the
+ * generic request to decorate.
  *
  * **Details**
  *
@@ -23,7 +26,11 @@
  *   the redirect is never followed and the exchange fails instead.
  * - Every outbound request carries a deadline, and only a connection that was
  *   never made is retried — see `Provider.resilient`. A provider that accepts a
- *   connection and never answers must not hold a callback fiber open.
+ *   connection and never answers must not hold a callback fiber open. The two
+ *   steps a provider can take over — its whole `userInfo`, and an `exchange`
+ *   override — carry a second, wider deadline of their own
+ *   (`Provider.userInfoDeadline`, `Provider.exchangeDeadline`), enforced here so
+ *   that an implementation which talks to the provider directly is bounded too.
  * - An OIDC provider *must* return an `id_token`, and it is verified
  *   fail-closed before any claim in it is read. Its signing keys are fetched
  *   over the same redirect-refusing client and cached by `IdToken.Jwks`.
@@ -66,6 +73,7 @@ import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
 import { isRedirectResponse, Jwks, layerJwks, verify as verifyIdToken } from "./IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
 import {
+  exchangeDeadline,
   isOidc,
   OAuthProviders,
   providerError,
@@ -75,7 +83,8 @@ import {
   reservedTokenParams,
   resilient,
   resolveClientSecret,
-  revealToken
+  revealToken,
+  userInfoDeadline
 } from "./Provider.js"
 import type { IssueOptions, StatePayload } from "./State.js"
 import { codeChallengeMethod, consume as consumeState, issue as issueState } from "./State.js"
@@ -780,17 +789,29 @@ export const make: () => Effect.Effect<
     return tokens
   })
 
-  const exchange = (
+  /**
+   * The generic authorization-code exchange: one token request, with the
+   * `grant_type` and the PKCE verifier this flow owns.
+   *
+   * **Gotchas**
+   *
+   * Secret resolution — including the per-request minting an Apple client needs
+   * — and {@link reservedTokenParams} filtering both happen inside
+   * {@link tokenRequest}, so they stay on this side of the provider seam. An
+   * override receives this effect already built and never sees either.
+   */
+  const defaultExchange = (
     provider: OAuthProviderConfig,
     code: string,
-    codeVerifier: string
+    codeVerifier: string,
+    redirectUri: string
   ): Effect.Effect<OAuthTokens, OAuthProviderError> =>
     tokenRequest({
       provider,
       params: {
         grant_type: "authorization_code",
         code,
-        redirect_uri: callbackUri(config, provider),
+        redirect_uri: redirectUri,
         code_verifier: codeVerifier
       },
       failures: {
@@ -800,37 +821,82 @@ export const make: () => Effect.Effect<
       }
     })
 
+  /**
+   * Exchanges the code, through the provider's own implementation where it has
+   * one.
+   *
+   * **Details**
+   *
+   * Absent {@link OAuthProviderConfig.exchange} — the ordinary case — runs
+   * {@link defaultExchange} directly. Present, it owns the exchange and is
+   * handed the default for these exact inputs as `fallback`, so an override that
+   * only decorates the request keeps everything the flow was doing for it. It
+   * runs against the flow's own redirect-refusing client, exactly as a
+   * provider's `userInfo` does.
+   *
+   * **Gotchas**
+   *
+   * Whichever branch runs, the whole step is bounded by
+   * {@link exchangeDeadline}, the same way the provider's whole `userInfo` is:
+   * an override that ignores `fallback` and drives the client itself is under no
+   * other bound, and a provider that accepts a connection and never answers must
+   * not be able to hold a callback fiber from either side of the seam. The
+   * timeout is reported as `ProviderUnavailable`, which is what an exchange that
+   * could not be made already reports.
+   */
+  const exchange = (
+    provider: OAuthProviderConfig,
+    code: string,
+    codeVerifier: string
+  ): Effect.Effect<OAuthTokens, OAuthProviderError> => {
+    const redirectUri = callbackUri(config, provider)
+    const fallback = defaultExchange(provider, code, codeVerifier, redirectUri)
+    const override = provider.exchange
+    const run = override === undefined
+      ? fallback
+      : Effect.provideService(
+        override({ code, codeVerifier, redirectUri, fallback }),
+        HttpClient.HttpClient,
+        client
+      )
+    return run.pipe(
+      Effect.timeout(exchangeDeadline),
+      Effect.catchTag("TimeoutError", () => Effect.fail(providerError(provider.id, "ProviderUnavailable")))
+    )
+  }
+
   const withIdToken = Effect.fnUntraced(function*(
     provider: OAuthProviderConfig,
     tokens: OAuthTokens,
     nonce: string | null
   ) {
     if (!isOidc(provider)) return tokens
+    const oidc = provider.oidc
     const invalid = providerError(provider.id, "IdTokenInvalid")
     if (tokens.idToken === null) return yield* Effect.fail(invalid)
-    // Fail closed, twice over: no key source at all is not "skip verification",
-    // and a `jwks_uri` that could not be read is not either.
-    const { jwks: pinned, jwksUrl } = provider
-    const keys: KeyResolver = pinned !== undefined
-      ? pinned
-      : jwksUrl === undefined
-      ? yield* Effect.fail(invalid)
-      : yield* Effect.mapError(keySets.keys(jwksUrl), () => invalid)
+    // Fail closed on a `jwks_uri` that could not be read: an unreachable key set
+    // is not "skip verification". The other half of the old check — a provider
+    // with an issuer and no key source at all — is gone because `oidc.keys` is a
+    // union: that configuration can no longer be written down.
+    const source = oidc.keys
+    const resolved: { readonly keys: KeyResolver; readonly jwksUrl: string | null } = "jwksUrl" in source
+      ? { keys: yield* Effect.mapError(keySets.keys(source.jwksUrl), () => invalid), jwksUrl: source.jwksUrl }
+      : { keys: source.jwks, jwksUrl: null }
     const claims: IdTokenClaims = yield* verifyIdToken({
       providerId: provider.id,
       token: tokens.idToken,
       // A multi-tenant provider derives the expected issuer from the token's own
       // claims; everyone else states one. See `VerifyOptions.issuer`.
-      issuer: provider.issuerOf ?? provider.issuer,
-      audience: provider.idTokenAudience ?? provider.clientId,
-      keys,
+      issuer: oidc.issuerOf ?? oidc.issuer,
+      audience: oidc.audience ?? provider.clientId,
+      keys: resolved.keys,
       nonce,
       // Key rotation: a fetched key set that does not hold the token's `kid`
       // is refetched once (rate-limited by Jwks). Pinned keys are pinned.
-      ...(pinned === undefined && jwksUrl !== undefined
-        ? { freshKeys: Effect.mapError(keySets.refresh(jwksUrl), () => invalid) }
-        : {}),
-      ...(provider.algorithms === undefined ? {} : { algorithms: provider.algorithms })
+      ...(resolved.jwksUrl === null
+        ? {}
+        : { freshKeys: Effect.mapError(keySets.refresh(resolved.jwksUrl), () => invalid) }),
+      ...(oidc.algorithms === undefined ? {} : { algorithms: oidc.algorithms })
     })
     return { ...tokens, idTokenClaims: claims } satisfies OAuthTokens
   })
@@ -877,6 +943,13 @@ export const make: () => Effect.Effect<
       provider.userInfo(tokens, { params: options.params ?? {} }),
       HttpClient.HttpClient,
       client
+    ).pipe(
+      // Policy here, mechanics in the helper: `Provider.fetchJson` bounds and
+      // retries one request, while this bounds the provider's whole `userInfo`
+      // — however many requests it makes inside, and even if it makes them
+      // without the helper. A callback fiber cannot be held past it.
+      Effect.timeout(userInfoDeadline),
+      Effect.catchTag("TimeoutError", () => Effect.fail(providerError(provider.id, "ProviderUnavailable")))
     )
     const subject = provider.accountId(info)
     if (subject.length === 0 || info.email.length === 0) {

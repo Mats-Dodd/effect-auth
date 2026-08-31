@@ -5,8 +5,8 @@
  * plain OAuth2 path: the `read_user` scope and `GET /api/v4/user` report the two
  * things an `id_token` does not — whether the account is `active` and whether it
  * is `locked` — and an identity is refused unless both say the account may sign
- * in. Accounts are therefore stored under the synthetic issuer
- * `local:oauth:gitlab`.
+ * in. It therefore declares no `oidc` block at all, and accounts are stored
+ * under the synthetic issuer `local:oauth:gitlab`.
  *
  * **Details**
  *

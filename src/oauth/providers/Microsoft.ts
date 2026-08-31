@@ -5,9 +5,9 @@
  * One configured provider serves every tenant a deployment admits, and the
  * issuer a token must claim is not a constant: it names the tenant the token
  * came from. So the expected issuer is *derived* from the token's own `tid`
- * claim ({@link OAuthProviderConfig.issuerOf}) and then compared with `iss`, and
- * the identity is stored under that per-tenant issuer rather than under one
- * shared string.
+ * claim — the OIDC block's `issuerOf`, see {@link OAuthProviderConfig.oidc} —
+ * and then compared with `iss`, and the identity is stored under that
+ * per-tenant issuer rather than under one shared string.
  *
  * **Details**
  *
@@ -35,6 +35,7 @@ import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
 import { optionalConfig } from "../../internal/config.js"
 import { trimTrailingSlashes } from "../../internal/url.js"
+import type { KeyResolver } from "../IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
 import { providerError } from "../Provider.js"
 import { lenient, Truthy } from "../internal/claims.js"
@@ -270,8 +271,14 @@ export interface Options {
    *
    * Tests, which hand in a `jose` `createLocalJWKSet` so verification runs with
    * no network at all.
+   *
+   * **Gotchas**
+   *
+   * It replaces {@link Endpoints.jwksUrl} rather than joining it: the
+   * provider's key source is one or the other, and pinning a key set is a
+   * statement that nothing is to be fetched.
    */
-  readonly jwks?: OAuthProviderConfig["jwks"] | undefined
+  readonly jwks?: KeyResolver | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -283,11 +290,14 @@ export interface Options {
  *
  * **Details**
  *
- * `issuer` is set to this tenant's own, which is what puts the flow on the OIDC
- * path — the `id_token` is required and verified fail-closed. For the three
- * multi-tenant endpoints that string is nobody's issuer, so `issuerOf` derives
- * the real expectation from the token's `tid` and the account is stored under
- * the issuer the *verified* token named.
+ * The OIDC block is what puts the flow on the OIDC path — the `id_token` is
+ * then required and verified fail-closed — and its `issuer` is this tenant's
+ * own. For the three multi-tenant endpoints that string is nobody's issuer:
+ * no token ever claims `.../common/v2.0`. It stays anyway, and it stays
+ * *inert*: the block has to name an issuer, this is the honest name of where
+ * the provider was pointed, and nothing believes it, because `issuerOf` derives
+ * the real expectation from the token's `tid` and `userInfo` reports the issuer
+ * the *verified* token named as the one the account is stored under.
  *
  * **Example**
  *
@@ -369,11 +379,15 @@ export const make = (options: Options): OAuthProviderConfig => {
     authorizationUrl: endpoints.authorizationUrl,
     tokenUrl: endpoints.tokenUrl,
     scopes,
-    issuer: endpoints.issuer,
-    ...(multiTenant ? { issuerOf } : {}),
-    jwksUrl: endpoints.jwksUrl,
-    ...(options.jwks === undefined ? {} : { jwks: options.jwks }),
-    ...(options.algorithms === undefined ? {} : { algorithms: options.algorithms }),
+    oidc: {
+      issuer: endpoints.issuer,
+      // Only where the configured "tenant" is not one: a pinned tenant's issuer
+      // is already the right expectation, and deriving it again from the token's
+      // own `tid` would let the token choose what it is checked against.
+      ...(multiTenant ? { issuerOf } : {}),
+      keys: options.jwks === undefined ? { jwksUrl: endpoints.jwksUrl } : { jwks: options.jwks },
+      ...(options.algorithms === undefined ? {} : { algorithms: options.algorithms })
+    },
     ...(options.redirectUri === undefined ? {} : { redirectUri: options.redirectUri }),
     ...(options.authorizationParams === undefined ? {} : { authorizationParams: options.authorizationParams }),
     // Entra wants the scopes repeated on a refresh; without them it answers with

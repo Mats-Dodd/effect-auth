@@ -19,6 +19,7 @@
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
 import { optionalConfig } from "../../internal/config.js"
+import type { KeyResolver } from "../IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "../Provider.js"
 import { providerError } from "../Provider.js"
 import { lenient } from "../internal/claims.js"
@@ -134,8 +135,14 @@ export interface Options {
    *
    * Tests, which hand in a `jose` `createLocalJWKSet` so verification runs with
    * no network at all, and deployments that pin Google's keys.
+   *
+   * **Gotchas**
+   *
+   * It replaces {@link jwksUrl} rather than joining it: the provider's key
+   * source is one or the other, and pinning a key set is a statement that
+   * nothing is to be fetched.
    */
-  readonly jwks?: OAuthProviderConfig["jwks"] | undefined
+  readonly jwks?: KeyResolver | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -209,9 +216,13 @@ export const make = (options: Options): OAuthProviderConfig => {
     authorizationUrl,
     tokenUrl,
     scopes: [...defaultScopes, ...(options.scopes ?? [])],
-    issuer,
-    jwksUrl,
-    ...(options.jwks === undefined ? {} : { jwks: options.jwks }),
+    // The OIDC block is what puts the flow on the OIDC path: an `id_token` is
+    // then required and verified against these keys before anything in it is
+    // read.
+    oidc: {
+      issuer,
+      keys: options.jwks === undefined ? { jwksUrl } : { jwks: options.jwks }
+    },
     ...(options.redirectUri === undefined ? {} : { redirectUri: options.redirectUri }),
     authorizationParams,
     userInfo,

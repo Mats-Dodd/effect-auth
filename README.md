@@ -479,6 +479,24 @@ Auth.layerWithOAuth({
 Every provider has a `makeConfig` twin reading each field from `Config`, for
 `Auth.layerConfigWithOAuth`.
 
+Two providers registered under one id throw where the list is composed: an id is the `providerId` of
+`POST /sign-in/social`, the last segment of the callback path and the `trustedProviders` entry all
+at once, so a duplicate is a deployment where one of the two would silently never receive a
+callback.
+
+An OIDC provider carries its settings in one `oidc` block — `{ issuer, keys, audience?,
+algorithms?, issuerOf? }` — whose `keys` is `{ jwksUrl }` or `{ jwks }` and is required. The
+presence of the block is what makes the flow demand and verify an `id_token`; a plain OAuth2
+provider has none and its accounts are stored under the synthetic issuer `local:oauth:<id>`.
+
+A provider whose code exchange is genuinely not an OAuth2 token request can declare `exchange`,
+which then owns it. It is handed the request the flow would have sent as `fallback`, so an override
+that only decorates the default wraps it rather than reimplementing the exchange — and so keeps the
+client-secret handling (including Apple's per-request minting) on the library's side of the seam,
+where an override never sees it. It runs against the flow's own redirect-refusing client and under
+the flow's own deadline, so an override that ignores `fallback` and drives the client itself still
+cannot hold a callback open — the same bound a provider's whole `userInfo` gets.
+
 ### The providers
 
 | provider | kind | identity | notes |
@@ -950,8 +968,11 @@ snapshot is signed but not encrypted, and which endpoints bypass it — is in
 
 **OAuth.** PKCE S256 always, no `plain` fallback. State is single-use with a ten-minute TTL and is
 stored hashed. Token and user-info fetches refuse redirects. `id_token` verification is fail-closed
-on issuer, audience, expiry, signature and nonce; a provider that declares an issuer but publishes
-no keys fails rather than skipping verification, and the JWKS fetch refuses redirects too.
+on issuer, audience, expiry, signature and nonce; a key set that cannot be read fails rather than
+skipping verification, a provider that declares OIDC settings and no key source cannot be written
+down at all, and the JWKS fetch refuses redirects too. A provider's whole `userInfo` is bounded by a
+thirty-second deadline the provider cannot opt out of, and two providers registered under one id
+refuse to build.
 
 **Rate limits.** Sign-in, sign-up and `POST /sign-in/social` are 3 per 10 seconds per (IP, path);
 password reset and verification mail are 3 per 60 seconds. The client IP comes from a configurable

@@ -332,6 +332,9 @@ interface OAuthProviderConfig {
 }
 ```
 
+*(Superseded — see Amendment 15: the OIDC settings are one `oidc` block whose `keys` is a required
+union, and an optional `exchange` override can take over the code exchange.)*
+
 **Flow.ts** — generic runner:
 - start: mint state nonce (Token.generateToken) + PKCE verifier; store StateData
   (`callbackURL`, `codeVerifier`, `link?: {userId}`, `expiresAt` now+10min) as a Verification row
@@ -1369,3 +1372,102 @@ internal. Behavior is unchanged except where (3) says otherwise.
    now lives once, as `redirectFailure(config, errorCode)`, and each flow supplies only its
    `errorCode`. Both flows' redirect targets and query strings are byte-identical to what they
    were.
+
+### 15. The provider seam: one OIDC block, one escape hatch
+
+`OAuthProviderConfig` is the one type every provider in this library and every provider a consumer
+writes is described by, and it had grown six optional top-level fields that were only meaningful
+together and one shape it could not describe at all. This amendment settles both, and supersedes the
+`OAuthProviderConfig` sketch in the OAuth section above.
+
+1. **The six OIDC fields became one `oidc` block, and its key source is a union.** `issuer`,
+   `issuerOf`, `jwks`, `jwksUrl`, `idTokenAudience` and `algorithms` are gone from the top level;
+   what replaces them is `oidc?: { issuer, issuerOf?, keys, audience?, algorithms? }`, where
+   `keys` is `{ jwksUrl: string } | { jwks: KeyResolver }`. `Provider.isOidc` is the guard, and it
+   narrows `oidc` to **required**, so a caller past it reads the issuer and the key source without a
+   second check. `providerIssuer(provider)` is unchanged: `oidc.issuer` when there is a block, the
+   synthetic `local:oauth:<id>` when there is not.
+
+   The presence of the block is what it always was — the thing that puts a provider on the OIDC path
+   and makes an `id_token` demanded rather than tolerated. What is new is that **the union is the
+   fail-closed rule**, not a runtime branch enforcing it. A hand-written provider with an issuer and
+   no key source at all used to be buildable, and `Flow.withIdToken` carried the arm that refused it
+   at callback time with `IdTokenInvalid`. That configuration is now unwritable — `keys` is
+   required, and there is no third arm of the union — so the arm is deleted and the guarantee is a
+   type rather than a test: the refusal moved from callback time to compile time. Nothing about
+   discovery changed; §11.2 (18)'s `KeysMissing` is a rule about a *document*, and `OidcDiscovery`
+   reported it at construction before this wave and reports it there still.
+
+   The other fail-closed behaviours are untouched: a missing `id_token`, an unreadable JWKS, a
+   wrong `iss`, `aud`, `exp` or `nonce` all still fail, and a JWKS that cannot be fetched is still
+   never "skip verification".
+
+   Two consequences worth stating. **A pinned key set is now an irreversible choice at construction
+   rather than a runtime preference** — the old flow read `jwks` first and fell back to `jwksUrl`,
+   so the precedence is unchanged, but the built provider no longer carries an unused URL, and key
+   rotation (`freshKeys`) applies only on the `jwksUrl` arm, because pinned keys are pinned. And
+   **`Microsoft`'s synthetic issuer for `common` / `organizations` / `consumers` stays**, as §11.2
+   (16) describes it: the block's `issuer` is a required `string`, so those three tenants still need
+   a name there, and `issuerOf` is still what a token is actually compared against. What the block
+   buys is that the string is now visibly inert rather than apparently believed. §11.2 (14)'s rule
+   is unchanged in substance and reads `Apple`'s `oidc.audience`.
+
+2. **`exchange` is the escape hatch for the exchange the generic runner cannot describe.** A
+   provider may declare
+   `exchange?: (options: { code, codeVerifier, redirectUri, fallback }) => Effect<OAuthTokens, OAuthProviderError, HttpClient>`.
+   Absent — the ordinary case, and every provider this library ships — the flow performs the
+   exchange itself, byte for byte as before. Present, it owns the exchange: nothing else posts the
+   code.
+
+   `fallback` is the point of the design. It is the generic token request **already built for these
+   exact inputs**, so an override that only decorates the default — one extra header, some
+   post-processing of the tokens — wraps it rather than reimplementing an OAuth2 token request. That
+   keeps two things the flow must not hand across the seam on the flow's side of it: client-secret
+   resolution, including the per-request ES256 minting an Apple client needs, and
+   `reservedTokenParams` filtering. An override sees a code, a verifier, a redirect URI and an
+   effect; it never sees the secret. **Decorate, don't reimplement** — an implementation that
+   ignores `fallback` and builds its own request owns everything the flow was doing for it, and that
+   is the price of the case where the provider's exchange genuinely is not an OAuth2 token request.
+
+   `fallback` has no `R`. The flow provides its own redirect-refusing `HttpClient` into it before
+   handing it over, and discharges the override's own `HttpClient` requirement the same way — the
+   same client `userInfo` gets, so an override cannot be talked into following a redirect to an
+   internal address.
+
+   An override that bypasses `fallback` and drives the `HttpClient` itself is not wrapped in
+   `resilient`, so nothing inside it bounds a provider that accepts a connection and never answers.
+   The flow bounds it from outside instead: `Provider.exchangeDeadline` (30 s) sits above the whole
+   exchange step — override and default alike — and reports a `TimeoutError` as
+   `OAuthProviderError("ProviderUnavailable")`, exactly as `userInfoDeadline` does one step later.
+   The two deadlines are the same rule applied to the two steps a provider can take over, and for
+   the same reason: a bound an implementation can opt out of is not a bound.
+
+3. **Two providers registered under one id is a construction defect.** `Provider.makeRegistry`
+   throws on a duplicate id rather than letting the last registration win. A duplicate is a
+   deployment that cannot be served coherently — one of the two would silently never receive a
+   callback, because an id is the `providerId` of `POST /auth/sign-in/social`, the last segment of
+   the callback path and the `trustedProviders` entry all at once — so it is refused loudly at
+   start-up instead of merged. `OAuthProviders.layer(providers)` is `Layer.succeed` over
+   `makeRegistry`, so the throw happens where the layer *value* is constructed, at the
+   `OAuthProviders.layer([...])` call site, rather than inside `Layer.build`. That is still a
+   start-up failure at the composition site; making it a true build-time defect would need
+   `Layer.sync`, and is not worth a behaviour change on its own.
+
+   The null-prototyped dictionary and `Object.hasOwn` lookup are unchanged: ids arrive from request
+   paths, so a request for the provider `"__proto__"` must miss rather than return a function.
+
+4. **Resilience doctrine: the flow owns policy, the helpers own mechanics.** This wave added
+   `Provider.userInfoDeadline` and `Provider.exchangeDeadline` (30 s each) and the flow enforces
+   them around the two steps a provider can take over — a provider's *entire* `userInfo`
+   invocation, and the whole exchange including an `exchange` override — mapping a `TimeoutError`
+   to the existing `OAuthProviderError("ProviderUnavailable")` — no new reason, so nothing new
+   reaches the browser through `errorCode`'s closed set.
+
+   The split is deliberate and is the rule for anything added here later. `Provider.fetchJson`
+   bounds *one* request with `providerRequestTimeout` and retries transport failures, because that
+   is what one request needs; the deadlines sit above the whole provider call and answer a
+   different question — how long a callback fiber may be held at all. GitHub asking two endpoints in
+   sequence, each within its own timeout, is still bounded by the one deadline. And a deadline
+   lives in the flow rather than in the helper precisely because a provider implementation is free
+   to bypass `fetchJson` and use the `HttpClient` directly: a bound a provider can opt out of is not
+   a bound. All the sleeps are on the Effect clock, so a test moves them with `TestClock`.

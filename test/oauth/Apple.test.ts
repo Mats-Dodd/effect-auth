@@ -79,11 +79,11 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
       Effect.gen(function*() {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         assert.strictEqual(provider.id, "apple")
-        assert.strictEqual(provider.issuer, "https://appleid.apple.com")
+        assert.strictEqual(provider.oidc?.issuer, "https://appleid.apple.com")
         assert.strictEqual(providerIssuer(provider), "https://appleid.apple.com")
         assert.strictEqual(provider.authorizationUrl, "https://appleid.apple.com/auth/authorize")
         assert.strictEqual(provider.tokenUrl, "https://appleid.apple.com/auth/token")
-        assert.strictEqual(provider.jwksUrl, "https://appleid.apple.com/auth/keys")
+        assert.deepStrictEqual(provider.oidc?.keys, { jwksUrl: "https://appleid.apple.com/auth/keys" })
         assert.deepStrictEqual([...provider.scopes], ["email", "name"])
         // Asking for `name` is what makes Apple post the callback instead of
         // redirecting to it. `response_type` stays `code`: the code is exchanged
@@ -95,11 +95,11 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
     it.effect("expects the audience the deployment actually receives tokens for", () =>
       Effect.gen(function*() {
         const keys = yield* AppleKeys
-        assert.strictEqual(Apple.make(secretOptions(keys)).idTokenAudience, clientId)
+        assert.strictEqual(Apple.make(secretOptions(keys)).oidc?.audience, clientId)
         // A native application's tokens carry its bundle identifier, not the
         // web Services ID.
         assert.strictEqual(
-          Apple.make(secretOptions(keys, { appBundleIdentifier: "com.example.app" })).idTokenAudience,
+          Apple.make(secretOptions(keys, { appBundleIdentifier: "com.example.app" })).oidc?.audience,
           "com.example.app"
         )
         // A deployment serving both states both, and nothing else is admitted.
@@ -107,7 +107,7 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
           Apple.make(secretOptions(keys, {
             appBundleIdentifier: "com.example.app",
             audience: [clientId, "com.example.app"]
-          })).idTokenAudience,
+          })).oidc?.audience,
           [clientId, "com.example.app"]
         )
       }))
@@ -199,7 +199,7 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
           })))
         )
         assert.strictEqual(provider.clientId, clientId)
-        assert.strictEqual(provider.idTokenAudience, "com.example.app")
+        assert.strictEqual(provider.oidc?.audience, "com.example.app")
         assert.isTrue(Option.isSome(yield* resolveClientSecret(provider)))
       }))
 

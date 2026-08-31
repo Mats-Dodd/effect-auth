@@ -24,7 +24,10 @@
  *   evidence about the issuer it is served for, and a mismatch is precisely what
  *   a hijacked discovery endpoint looks like;
  * - no `jwks_uri` and no pinned key set is `KeysMissing`, never "skip the
- *   `id_token` check".
+ *   `id_token` check". The provider type now says as much structurally — the
+ *   OIDC block's `keys` is a union with no empty case — but discovery is where
+ *   the shortfall is a *document's*, and so where it is worth a reason somebody
+ *   reading a boot log can act on rather than a type error nobody sees.
  *
  * Anything a caller states explicitly wins over what the document says.
  *
@@ -35,6 +38,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { DiscoveryError } from "../domain/Errors.js"
 import { trimTrailingSlashes } from "../internal/url.js"
 import { refuseRedirects } from "./Flow.js"
+import type { KeyResolver } from "./IdToken.js"
 import { isRedirectResponse } from "./IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
 import { providerError, providerRequestTimeout, resilient } from "./Provider.js"
@@ -132,6 +136,9 @@ export const asymmetricAlgorithms = (
 // Options
 // -----------------------------------------------------------------------------
 
+/** The OIDC block a discovered provider is assembled into. */
+type Oidc = NonNullable<OAuthProviderConfig["oidc"]>
+
 /**
  * What discovering a provider needs.
  *
@@ -140,6 +147,11 @@ export const asymmetricAlgorithms = (
  * Everything the document can supply may also be stated here, and stating it
  * wins: a deployment behind a gateway that rewrites one endpoint does not lose
  * discovery for the other four.
+ *
+ * The options stay flat where the built provider's OIDC settings are one block:
+ * a caller is answering "what did the document get wrong", one field at a time,
+ * and half of what it states — the endpoints, the scopes — is not OIDC at all.
+ * {@link make} is what folds the OIDC half into the block.
  *
  * @category models
  * @since 1.0.0
@@ -180,8 +192,16 @@ export interface Options {
   readonly jwksUrl?: string | undefined
   /** Overrides the document's `userinfo_endpoint`. */
   readonly userInfoUrl?: string | undefined
-  /** A pre-resolved key set, instead of fetching a `jwks_uri` at all. */
-  readonly jwks?: OAuthProviderConfig["jwks"]
+  /**
+   * A pre-resolved key set, instead of fetching a `jwks_uri` at all.
+   *
+   * **Gotchas**
+   *
+   * It wins outright: the built provider's `keys` is one or the other, and a
+   * pinned key set is a deliberate statement that no JWKS is to be fetched for
+   * this provider — including the one the document advertises.
+   */
+  readonly jwks?: KeyResolver | undefined
   /** Overrides the algorithms narrowed out of the document. */
   readonly algorithms?: ReadonlyArray<string> | undefined
   /** Overrides `<baseUrl><basePath>/callback/<id>`. */
@@ -189,9 +209,9 @@ export interface Options {
   /** Extra authorization-request parameters. */
   readonly authorizationParams?: Readonly<Record<string, string>> | undefined
   /** The audience an `id_token` must carry, when it is not `clientId`. */
-  readonly idTokenAudience?: string | ReadonlyArray<string> | undefined
+  readonly audience?: Oidc["audience"]
   /** The expected issuer derived from a token's own claims, for a multi-tenant provider. */
-  readonly issuerOf?: OAuthProviderConfig["issuerOf"]
+  readonly issuerOf?: Oidc["issuerOf"]
   /** Whether, and how, this provider's stored tokens may be refreshed. */
   readonly tokenRefresh?: OAuthProviderConfig["tokenRefresh"]
   /**
@@ -296,8 +316,15 @@ export const make: (
 
     const jwksUrl = options.jwksUrl ?? document.jwks_uri
     // Fail closed: "no keys" is not "skip the signature check". A pinned key set
-    // is the one way to have no `jwks_uri` and still be verifiable.
-    if (jwksUrl === undefined && options.jwks === undefined) {
+    // is the one way to have no `jwks_uri` and still be verifiable — and it is
+    // what the block's `keys` union is asking for, one of the two and never
+    // neither.
+    const keys: Oidc["keys"] | undefined = options.jwks !== undefined
+      ? { jwks: options.jwks }
+      : jwksUrl !== undefined
+      ? { jwksUrl }
+      : undefined
+    if (keys === undefined) {
       return yield* Effect.fail(failure(options.id, "KeysMissing"))
     }
 
@@ -307,7 +334,7 @@ export const make: (
 
     const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
       const claims = tokens.idTokenClaims
-      // The provider declares an issuer, so the flow verified an `id_token`
+      // The provider carries an OIDC block, so the flow verified an `id_token`
       // before calling this. A null here would mean the OIDC path was skipped.
       if (claims === null) return yield* Effect.fail(providerError(options.id, "IdTokenInvalid"))
 
@@ -333,14 +360,18 @@ export const make: (
       authorizationUrl,
       tokenUrl,
       scopes: options.scopes ?? defaultScopes,
-      issuer: document.issuer,
-      ...(jwksUrl === undefined ? {} : { jwksUrl }),
-      ...(options.jwks === undefined ? {} : { jwks: options.jwks }),
-      ...(algorithms === undefined ? {} : { algorithms }),
+      // Discovery only ever builds an OIDC provider: the document it read is an
+      // `openid-configuration`, and the issuer it declared has just been matched
+      // byte for byte against the configured one.
+      oidc: {
+        issuer: document.issuer,
+        ...(options.issuerOf === undefined ? {} : { issuerOf: options.issuerOf }),
+        keys,
+        ...(options.audience === undefined ? {} : { audience: options.audience }),
+        ...(algorithms === undefined ? {} : { algorithms })
+      },
       ...(options.redirectUri === undefined ? {} : { redirectUri: options.redirectUri }),
       ...(options.authorizationParams === undefined ? {} : { authorizationParams: options.authorizationParams }),
-      ...(options.idTokenAudience === undefined ? {} : { idTokenAudience: options.idTokenAudience }),
-      ...(options.issuerOf === undefined ? {} : { issuerOf: options.issuerOf }),
       ...(options.tokenRefresh === undefined ? {} : { tokenRefresh: options.tokenRefresh }),
       userInfo: options.userInfo ?? userInfo,
       accountId: options.accountId ?? ((info) => info.id)

@@ -14,8 +14,13 @@ import { testName, uniqueEmail } from "../fixtures.js"
 const server = MockProvider.mockServer()
 
 /**
- * The deployment: an OIDC provider whose key set is the block's signer, and a
- * second one that declares an issuer but publishes no keys at all.
+ * The deployment: one OIDC provider, whose key set is the block's signer.
+ *
+ * There is no second, keyless provider here any more. "Declares an issuer but
+ * publishes no keys" used to be a configuration this file had to prove failed
+ * closed at runtime; `oidc.keys` is now a required union, so it is a
+ * configuration that cannot be written down — the guarantee moved from a test
+ * to the type, and the runtime arm that enforced it is gone with it.
  *
  * `Layer.unwrap` because the provider list is data and the key set is a
  * service — the signer has to exist before the providers can be described, and
@@ -24,10 +29,7 @@ const server = MockProvider.mockServer()
 const oidcLayer = Layer.unwrap(Effect.gen(function*() {
   const signer = yield* MockProvider.IdTokenSigner
   return AuthTest.layerFlow({
-    providers: [
-      MockProvider.oidcProvider(signer.jwks),
-      MockProvider.oidcProvider(undefined, { id: "keyless" })
-    ],
+    providers: [MockProvider.oidcProvider(signer.jwks)],
     fetch: server.fetch,
     baseUrl: "https://app.example.com"
   })
@@ -164,12 +166,6 @@ describe.sequential("oauth/Flow (OIDC)", () => {
         const { result } = yield* runOidc({
           claims: (nonce, email) => ({ email, nonce })
         })
-        assertIdTokenInvalid(result)
-      }))
-
-    it.effect("fails closed when the provider declares an issuer but publishes no keys", () =>
-      Effect.gen(function*() {
-        const { result } = yield* runOidc({ providerId: "keyless" })
         assertIdTokenInvalid(result)
       }))
   })

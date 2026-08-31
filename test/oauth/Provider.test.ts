@@ -49,12 +49,17 @@ describe("oauth/Provider", () => {
         }
       }))
 
-    it("lets the last registration of an id win, and lists it once", () => {
+    it("refuses two registrations of one id, rather than letting one win", () => {
+      // A duplicate id is a deployment that cannot be served coherently: one of
+      // the two providers would silently never receive a callback. So it is a
+      // construction-time defect naming the id, not a last-one-wins merge.
       const other = { ...github, clientId: "second" }
-      const registry = makeRegistry([github, other])
-      assert.deepStrictEqual([...registry.ids], ["github"])
-      const found = registry.find("github")
-      assert.strictEqual(Option.isSome(found) ? found.value.clientId : "", "second")
+      assert.throws(() => makeRegistry([github, other]), /duplicate OAuth provider id "github"/)
+
+      // And it reaches a deployment where the provider list is written: building
+      // the layer over such a list throws at that call, rather than starting a
+      // deployment with one provider quietly out of service.
+      assert.throws(() => OAuthProviders.layer([github, other]), /duplicate OAuth provider id "github"/)
     })
 
     it.effect("is empty, not absent, when a deployment configures no providers", () =>
