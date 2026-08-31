@@ -18,7 +18,7 @@
  * test rather than a deployment.
  */
 import { assert, describe, it, layer } from "@effect/vitest"
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer, Option, Redacted } from "effect"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
 import { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthHooksService, ProvisionSource } from "../../src/domain/Hooks.js"
@@ -28,7 +28,9 @@ import type { UserInsertOf } from "../../src/domain/Schema.js"
 import { baseUserModel, oauthIssuer } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { Users } from "../../src/domain/Users.js"
-import { AuthTest } from "../../src/testing/index.js"
+import { MagicLink } from "../../src/magic-link/MagicLink.js"
+import { OAuthFlow } from "../../src/oauth/Flow.js"
+import { AuthTest, MagicLinkTest, MockProvider, TestEmails } from "../../src/testing/index.js"
 import { expectSome, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** The source every test here provisions with, unless it is testing the source. */
@@ -531,4 +533,199 @@ layer(AuthTest.layer({ hooks: oauthHooks, trustedProviders: ["github"] }))("doma
       const again = yield* accounts.linkToUser(user.id, identity)
       assert.isFalse(again.accountCreated)
     }))
+})
+
+// -----------------------------------------------------------------------------
+// One policy, every source
+// -----------------------------------------------------------------------------
+
+/**
+ * What the cross-source policy saw, in the order it saw it.
+ *
+ * Shared by every test in the block below and reset by each of them, which is
+ * why that block is `describe.sequential`: two tests writing into one array
+ * would read each other's entries.
+ */
+const crossTrace: Array<string> = []
+
+/**
+ * The single policy all three provisioning sources are held to.
+ *
+ * **Details**
+ *
+ * This is the claim the whole design rests on: a deployment writes *one* hook
+ * set and every way a person can come into existence passes through it, naming
+ * itself as it goes. The rewrite is deliberately keyed off `source._tag` rather
+ * than off anything a flow supplied, so a row that came out with the wrong
+ * suffix means a flow reported the wrong source — and a row with no suffix at
+ * all means a flow wrote a user without going through the provisioning
+ * sequence, which is the drift this file exists to catch: `Passwords` and
+ * `Accounts` reimplement `Users.provision` rather than calling it (`Users`
+ * reads `Passwords`, so the other direction would close a layer cycle), and
+ * three copies of one sequence are three chances to fall out of step.
+ *
+ * `afterUserCreate` refuses the addresses a test marked, which is how the same
+ * set covers atomicity: the row exists when the hook runs, so a refusal that
+ * leaves nothing behind can only be the enclosing transaction unwinding.
+ */
+const crossHooks: AuthHooksService = {
+  beforeUserCreate: ({ candidate, source }) =>
+    Effect.sync(() => {
+      crossTrace.push(`before:${source._tag}`)
+      return { ...candidate, name: `${candidate.name} via ${source._tag}` }
+    }),
+  afterUserCreate: ({ source, user }) =>
+    Effect.suspend(() => {
+      crossTrace.push(`after:${source._tag}`)
+      return user.email.includes("abort")
+        ? Effect.fail(new PolicyRefused({ code: "related_row_refused", detail: source._tag }))
+        : Effect.void
+    })
+}
+
+/** The provider the OAuth source signs in through, and the server behind it. */
+const crossServer = MockProvider.mockServer()
+const crossProvider = MockProvider.mockProvider()
+
+/**
+ * A deployment that serves all three sources under one installation of
+ * {@link crossHooks}.
+ *
+ * **Details**
+ *
+ * Installed the way a *plugin* installs, with {@link append} over whatever the
+ * deployment already had — which here is the reference's own default — and
+ * provided once, underneath the whole composition, so the plugin and the
+ * deployment it is layered over resolve the very same set. That is the
+ * composition a consumer writes, and it is what makes the assertions below
+ * about one policy rather than about three copies of one that happen to agree.
+ */
+const crossDeployment = MagicLinkTest.layerMagicLink().pipe(
+  Layer.provideMerge(AuthTest.layerFlow({ providers: [crossProvider], fetch: crossServer.fetch })),
+  Layer.provide(append(crossHooks))
+)
+
+/** Points the shared provider server at one subject, forgetting the last one. */
+const crossProviderReturns = (identity: { readonly sub: string; readonly email: string }) =>
+  Effect.sync(() => {
+    crossServer.clear()
+    crossServer.on(MockProvider.tokenUrl, () =>
+      MockProvider.json({ access_token: "provider-access-token", token_type: "bearer", expires_in: 3600 }))
+    crossServer.on(MockProvider.userInfoUrl, () =>
+      MockProvider.json({ sub: identity.sub, email: identity.email, email_verified: true, name: testName }))
+  })
+
+/** A whole OAuth round trip, as a browser makes it. */
+const crossOAuthSignIn = Effect.fnUntraced(function*(email: string) {
+  yield* crossProviderReturns({ sub: `sub-${globalThis.crypto.randomUUID()}`, email })
+  const flow = yield* OAuthFlow
+  const started = yield* flow.start({ providerId: crossProvider.id })
+  return yield* flow.complete({
+    providerId: crossProvider.id,
+    code: "authorization-code",
+    state: Redacted.value(started.state)
+  })
+})
+
+/** A whole magic-link round trip: ask for the link, then follow it. */
+const crossMagicLinkSignIn = Effect.fnUntraced(function*(email: string) {
+  const magic = yield* MagicLink
+  yield* magic.request({ email, name: testName })
+  const emails = yield* TestEmails.TestEmails
+  return yield* magic.verify({ token: yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email) })
+})
+
+// One policy, one trace, three sources: the tests share the array the hooks
+// write into, so they must not run beside each other.
+describe.sequential("domain/Hooks — one policy, every source", () => {
+  layer(crossDeployment)((it) => {
+    it.effect("is consulted by all three provisioning sources, each naming itself", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const store = yield* UserStore
+        crossTrace.length = 0
+
+        const password = uniqueEmail("cross-password")
+        const oauth = uniqueEmail("cross-oauth")
+        const magic = uniqueEmail("cross-magic")
+
+        const registered = yield* passwords.signUp({ name: testName, email: password, password: testPassword })
+        const outcome = yield* crossOAuthSignIn(oauth)
+        const linked = yield* crossMagicLinkSignIn(magic)
+
+        // Both hooks, once per source, in the order the flows ran — no source
+        // consulted twice, and none that skipped the choke point.
+        assert.deepStrictEqual(crossTrace, [
+          "before:EmailPassword",
+          "after:EmailPassword",
+          "before:OAuth",
+          "after:OAuth",
+          "before:MagicLink",
+          "after:MagicLink"
+        ])
+
+        assert.strictEqual(outcome._tag, "Success")
+        if (outcome._tag !== "Success") return
+        // The rewrite the one policy made, on the row each source wrote — read
+        // back from the store, so it was stored and not merely answered with.
+        assert.strictEqual(registered.user.name, `${testName} via EmailPassword`)
+        assert.strictEqual(outcome.user.name, `${testName} via OAuth`)
+        assert.strictEqual(linked.user.name, `${testName} via MagicLink`)
+        const rows: ReadonlyArray<readonly [string, string]> = [
+          [password, "EmailPassword"],
+          [oauth, "OAuth"],
+          [magic, "MagicLink"]
+        ]
+        for (const [email, source] of rows) {
+          const stored = yield* expectSome(yield* store.findByEmail(email), `the ${source} row`)
+          assert.strictEqual(stored.name, `${testName} via ${source}`)
+        }
+      }))
+
+    it.effect("aborts every source's provisioning when the same after-hook fails", () =>
+      Effect.gen(function*() {
+        const passwords = yield* Passwords
+        const store = yield* UserStore
+        crossTrace.length = 0
+
+        const password = uniqueEmail("cross-abort-password")
+        const oauth = uniqueEmail("cross-abort-oauth")
+        const magic = uniqueEmail("cross-abort-magic")
+
+        const refusedPassword = yield* Effect.flip(
+          passwords.signUp({ name: testName, email: password, password: testPassword })
+        )
+        const outcome = yield* crossOAuthSignIn(oauth)
+        const refusedMagic = yield* Effect.flip(crossMagicLinkSignIn(magic))
+
+        // The typed sources report the refusal itself; the callback, which is a
+        // top-level browser navigation, reports it as the redirect its shape
+        // demands. Same hook, same code, two ways of saying it.
+        assert.strictEqual(refusedPassword._tag, "PolicyRefused")
+        if (refusedPassword._tag === "PolicyRefused") assert.strictEqual(refusedPassword.detail, "EmailPassword")
+        assert.strictEqual(refusedMagic._tag, "PolicyRefused")
+        if (refusedMagic._tag === "PolicyRefused") assert.strictEqual(refusedMagic.detail, "MagicLink")
+        assert.strictEqual(outcome._tag, "Failure")
+        if (outcome._tag === "Failure") {
+          assert.strictEqual(outcome.code, "policy_refused")
+          assert.strictEqual(MockProvider.queryOf(outcome.redirectTo)["code"], "related_row_refused")
+        }
+
+        // The row existed when the hook ran — that is what `afterUserCreate` is
+        // for — and not one of the three survived. Whichever door a person came
+        // through, a policy that cannot write the rows beside a user leaves no
+        // half-provisioned account behind it.
+        assert.deepStrictEqual(crossTrace, [
+          "before:EmailPassword",
+          "after:EmailPassword",
+          "before:OAuth",
+          "after:OAuth",
+          "before:MagicLink",
+          "after:MagicLink"
+        ])
+        for (const email of [password, oauth, magic]) {
+          assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
+        }
+      }))
+  })
 })

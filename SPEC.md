@@ -1164,3 +1164,143 @@ revoked elsewhere answering until the snapshot expires, authoritative endpoints 
 nothing, sign-out / revoke-all / password-reset clearing both cookies, bearer untouched, the
 opt-out default writing nothing, the `__Secure-` twin); `test/fields/Cache.test.ts` (a deployment's
 own field in the snapshot, a hidden one absent from the cookie and defaulted on read).
+
+### 13. Policy hooks
+
+`src/domain/Hooks.ts` is a small set of **semantic** points at which core asks whoever installed
+hooks whether to proceed, and — at one of them — what the row should say. It exists because a
+deployment or a plugin needs to veto or enrich core operations ("no sign-ups outside this domain",
+"set `role` from the OAuth profile", "write the tenant row atomically with the user") and the only
+answer before it was decorating a service with `Layer.provideMerge`, which is whack-a-mole: users
+are created from three different flows, and a decorator only affects consumers above it.
+
+Deliberately **not** built: request-level `before`/`after` (an `HttpApiMiddleware` already does
+that), generic CRUD hooks on every store method (the store decorator seams do that — §12.7), an
+update hook (add `beforeUserUpdate` the day something needs it), and after-commit side effects
+(`Auth.events` does that, and stays fire-and-forget).
+
+#### 13.1 The six points, and exactly when each is consulted
+
+| hook | where | the moment |
+|---|---|---|
+| `beforeUserCreate` | `Users.provision`, and the same sequence in `Passwords`/`Accounts` (13.2) | after the candidate row is built and before it is written; may rewrite or refuse |
+| `afterUserCreate` | same three | after `userStore.create`, inside the same transaction |
+| `beforeSessionCreate` | `Passwords.signUp` (auto-session), `Passwords.signIn`, `oauth/Flow` callback, magic-link `verify` | immediately before `sessions.create`, **after** the credential has been verified |
+| `beforeEmailChange` | `Users.requestEmailChange` | after the `EmailUnchanged` guard, **before** the lookup that forks taken/free, and before any token is minted or mailed |
+| `beforeUserDelete` | `Users.requestDeletion`, `Users.confirmDeletion` | after the freshness guard *and* the password check; on the mail-confirmed shape again **after the token is claimed** |
+| `beforeAccountLink` | `Accounts.linkOAuth` (implicit linking) and `Accounts.linkToUser` (`linkSocial`) | before a provider identity is attached to a user that **already exists** — never on first provision, which is `beforeUserCreate`'s job |
+
+Every member is optional; absent means "allow, unchanged". Each ordering above is load-bearing and
+is pinned by a test:
+
+- `beforeSessionCreate` runs **after** verification so that the constant-cost `hasher.verify` of the
+  sign-in path is not skipped and a refusal reveals nothing a correct password would not have
+  revealed. `test/domain/Hooks.test.ts` proves exactly one verify with `countingHasher`.
+- `beforeEmailChange` runs **before** the taken/free fork so the enumeration posture of that flow is
+  unchanged: a policy that ran after it would answer differently per branch, or pay for a lookup it
+  does not use.
+- `beforeUserDelete` on `confirmDeletion` runs **after** the claim: a refused link is spent, not
+  parked and replayed against a policy that has since changed its mind.
+- `Sessions.create` itself stays hook-free — it is also test and plumbing surface; the four sign-in
+  paths call the hook, not the session service.
+
+#### 13.2 The choke point, and why there are three copies of it
+
+`UsersService.provision({ candidate, source })` is the sequence: `beforeUserCreate` (rewrite or
+refuse) → re-validate a rewrite through `model.insert` → `userStore.create` → `afterUserCreate`. It
+**opens no transaction of its own** and it **publishes no `UserCreated`** — both stay with the
+caller, so a refusal or a failing `afterUserCreate` aborts whatever transaction the caller holds,
+and the event is still published after the commit as `Events.ts` requires. A rewrite going back
+through `insertRow(model.insert, …)` is what stops a hook smuggling a row the schema would reject.
+
+`magic-link` calls `Users.provision`. `Passwords` and `Accounts` **reimplement the same sequence**,
+in `provision` helpers of their own, and this is the one deviation from hooks.md worth recording:
+`Users` reads `Passwords` (it re-authenticates a caller before deleting an account), so a dependency
+the other way would close a cycle in the layer graph and `Auth.layer` would not build. The three
+copies have to stay in step; each carries a comment saying so, and the cross-source suite in
+`test/domain/Hooks.test.ts` is what fails when one of them drifts — one hook set, one trace, all
+three sources.
+
+`ProvisionSource` is what a hook branches on: `EmailPassword`, `OAuth` (carrying `providerId` and
+the verified `OAuthUserInfo`, so one hook covers every provider), `MagicLink`, and
+`Plugin { plugin }` for a plugin that provisions users of its own.
+
+#### 13.3 Refusal, shaped by the endpoint
+
+`PolicyRefused { code, detail? }` is a `403` and the **only** typed failure a hook may raise.
+Anything else it throws or dies with is a defect and renders as an opaque `500`, which is the right
+answer for a broken policy. Handlers never `serverFault` it: it is a caller error.
+
+- **JSON endpoints** answer the typed error: `signUpEmail`, `signInEmail`, `signInSocial`,
+  `linkSocial`, `changeEmail`, `deleteUser`, magic-link `exchange`.
+- **Redirect-shaped completions** — the OAuth callback, magic-link `verify`, `deleteUserCallback` —
+  encode it as `?error=policy_refused&code=<the hook's code>`, because the browser arrived by a
+  top-level navigation and has to leave by one. One helper builds that URL for all three:
+  `OriginCheck.policyRefusedTarget(config, errorURL, code)`, beside `withErrorCode`, so the shape
+  cannot drift between them. The OAuth callback passes the flow's own `errorCallbackURL`; the two
+  link-shaped completions pass `null` and therefore land on `baseUrl`, because the URL the person
+  asked for travels in a token payload that the very call which refused has already claimed.
+- **Sign-up's auto-session is the one refusal that does not undo anything.** The account and its
+  credential are committed before `beforeSessionCreate` is asked, and `beforeUserCreate` has already
+  said this person may have an account, so a refusal there answers exactly as `autoSignIn: false`
+  already does: `200`, with `session: null`. It is logged at `Debug` so an operator is not left
+  guessing between this and the two configuration switches. Deleting somebody who was accepted a
+  moment earlier was rejected as the alternative.
+
+`code` is authored by the deployment and shown to the caller verbatim — in a response body and in a
+URL a browser is sent to. **It must carry no secret**, nothing derived from another person's data,
+and nothing about the internals of the policy; it is a short stable classification a client branches
+on (`"domain_not_allowed"`, `"banned"`). `detail` is under the same rule. This is stated in
+`PolicyRefused`'s own JSDoc, which is where a hook author reads it.
+
+#### 13.4 Breaking change: error channels
+
+This is the one breaking surface of the feature. `PolicyRefused` joins the `AuthError` union
+(`domain/Errors.ts`) and the error channel of every method that can now refuse — on
+`UsersService`, `PasswordsService`, `AccountsService`, `OAuthFlowService` and `MagicLinkService` —
+and the error array of the seven JSON endpoints above. A caller that exhaustively matched one of
+those unions gains a case. Nothing else moved: no migration, no new table, no configuration key,
+and `Auth.layer`'s type is character for character what it was (`test/fields/Fields.types.ts`).
+
+#### 13.5 Composition
+
+`AuthHooks` is a `Context.Reference<AuthHooksService>` whose default is `{}` — every hook absent —
+so `Auth.layer` needs nothing provided to it and a deployment that installs no policy pays nothing,
+in its layer graph or on any path. It is read when the services that consult it are **built**, so
+hooks are provided *underneath* `Auth.layer` and cannot be swapped per request.
+
+`combine(first, second)` is a monoid with `{}` as its identity: `beforeUserCreate` chains left to
+right with each hook seeing what the one before it answered, the rest sequence, and the first
+refusal short-circuits the remainder. A member neither side declared stays **absent** rather than
+becoming a no-op function — "nobody installed a hook" and "somebody installed one that does nothing"
+must not be the same value.
+
+- `Hooks.layer(hooks)` installs a set, replacing what was there. An **application** uses it.
+- `Hooks.append(hooks)` reads what is installed — the reference's default included — and combines
+  after it. A **plugin** uses it, because it cannot know what else the deployment installed: an
+  application's refusal short-circuits an appended plugin hook, and a plugin never silently disables
+  an application's policy.
+- `Hooks.hooksOf(model)` is the typed view: the same key string with `candidate`/`user` typed by the
+  deployment's model, exactly as `userStoreOf` and `currentUserOf` are, and sound for the same
+  reason — core reads the base-typed key and hands it a row that really does carry the extra
+  columns, and re-validates any rewrite through the model. It needs **no cast**: it is another
+  `Context.Reference` under the same key, so the cast list in REFACTOR §5 is unchanged at five.
+
+`AuthTest.Settings.hooks` is the harness seam, provided under the deployment. A plugin layered over
+a deployment is built separately, so a test that wants both halves to see one set provides it under
+the whole composition — `test/domain/Hooks.test.ts`'s cross-source block is the worked example.
+
+#### 13.6 Tests
+
+`test/domain/Hooks.test.ts` — the kernel (`combine` ordering, first-refusal-wins, `{}` identity,
+`append` over a consumer set and over the bare default, the `Layer.updateService`-over-a-default
+checkpoint, the typed view sharing a slot), the choke point itself, the password source (rewrite,
+veto, a failing `afterUserCreate` leaving no row, the `session: null` pin), the OAuth source through
+`Accounts`, the timing-defence block over `countingHasher`, and the cross-source block: one
+appended set, three sources, one trace. `test/oauth/Hooks.test.ts` and
+`test/magic-link/Hooks.test.ts` — the redirect encodings and the typed twin. `test/http/Users.test.ts`
+— change-email and delete vetoes at the HTTP layer, and a refused delete link that is still burnt.
+`test/fields/Hooks.test.ts` — a typed set installed through `hooksOf(model)` reading `plan` and
+writing `role` and `apiSecret`. `test/fields/Fields.types.ts` and `test/client/AuthClient.types.ts`
+— the candidate is `UserInsertOf<F>`, base and typed sets are interchangeable, and `PolicyRefused`
+is in the client unions it should be in and no others.

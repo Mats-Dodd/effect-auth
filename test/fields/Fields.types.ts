@@ -21,15 +21,24 @@
  */
 import type { Effect, Layer, Redacted } from "effect"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
+import type { Atom } from "effect/unstable/reactivity"
 import type { SqlClient } from "effect/unstable/sql"
 import { AuthClient } from "../../src/client/index.js"
 import * as Auth from "../../src/config/Auth.js"
+import type {
+  EmailNotVerified,
+  InvalidCredentials,
+  RateLimited
+} from "../../src/domain/Errors.js"
+import type { AuthHooksOf, AuthHooksService, PolicyRefused, ProvisionSource } from "../../src/domain/Hooks.js"
+import { hooksOf } from "../../src/domain/Hooks.js"
 import type { PasswordsService, SignUpOptions } from "../../src/domain/Passwords.js"
 import * as Passwords from "../../src/domain/Passwords.js"
 import type {
   SessionWithUserOf,
   SignUpResponseOf,
   User,
+  UserInsertOf,
   UserOf,
   UserPublicOf
 } from "../../src/domain/Schema.js"
@@ -116,11 +125,13 @@ eq<Exact<SessionWithUser["user"], User>>(true)
  */
 type RequirementsOf<T> = T extends Effect.Effect<infer _A, infer _E, infer R> ? R : never
 type SuccessOf<T> = T extends Effect.Effect<infer A, infer _E, infer _R> ? A : never
+type ErrorOf<T> = T extends Effect.Effect<infer _A, infer E, infer _R> ? E : never
 
 type UserStoreView = ReturnType<typeof userStoreOf<Fields>>
 type CurrentUserView = ReturnType<typeof currentUserOf<Fields>>
 type SessionsView = ReturnType<typeof Sessions.sessionsOf<Fields>>
 type PasswordsView = ReturnType<typeof Passwords.passwordsOf<Fields>>
+type HooksView = ReturnType<typeof hooksOf<Fields>>
 
 /** Each view asks the context for the plain key, never one of its own. */
 eq<Exact<RequirementsOf<UserStoreView>, UserStore>>(true)
@@ -141,6 +152,75 @@ eq<Exact<SuccessOf<ReturnType<SuccessOf<SessionsView>["verify"]>>["user"], UserO
 eq<Exact<SuccessOf<PasswordsView>, PasswordsService<Fields>>>(true)
 eq<Exact<SuccessOf<ReturnType<SuccessOf<PasswordsView>["signUp"]>>["user"], UserOf<Fields>>>(true)
 eq<Exact<SuccessOf<ReturnType<SuccessOf<PasswordsView>["verifyEmail"]>>, UserOf<Fields>>>(true)
+
+// ---------------------------------------------------------------------------
+// The policy hooks, seen through the model.
+// ---------------------------------------------------------------------------
+
+/**
+ * `hooksOf` is a typed view like the four above, with one difference that
+ * matters: `AuthHooks` is a `Context.Reference` and therefore asks the context
+ * for nothing. That is what keeps the whole feature free at the layer level —
+ * a deployment that installs no policy provides nothing, and the assertions
+ * further down (`Auth.layer`'s type, character for character) still hold.
+ */
+eq<Exact<RequirementsOf<HooksView>, never>>(true)
+eq<Exact<SuccessOf<HooksView>, AuthHooksOf<Fields>>>(true)
+
+type BeforeUserCreate = NonNullable<AuthHooksOf<Fields>["beforeUserCreate"]>
+
+/**
+ * The candidate a hook is handed, and the one it answers with, are the model's
+ * own insert row — so a policy reads and writes the deployment's columns with
+ * no cast, and `PolicyRefused` is the only failure it may raise.
+ */
+eq<Exact<Parameters<BeforeUserCreate>[0]["candidate"], UserInsertOf<Fields>>>(true)
+eq<Exact<SuccessOf<ReturnType<BeforeUserCreate>>, UserInsertOf<Fields>>>(true)
+eq<Exact<ErrorOf<ReturnType<BeforeUserCreate>>, PolicyRefused>>(true)
+
+/** And every hook that inspects a stored person sees the model's user. */
+eq<Exact<Parameters<NonNullable<AuthHooksOf<Fields>["afterUserCreate"]>>[0]["user"], UserOf<Fields>>>(true)
+eq<Exact<Parameters<NonNullable<AuthHooksOf<Fields>["beforeSessionCreate"]>>[0]["user"], UserOf<Fields>>>(true)
+
+/**
+ * The soundness condition of the view: the base-typed set core actually reads
+ * and the typed one a deployment writes are interchangeable, so the same slot
+ * holds either. Every member is optional and the extra columns are optional on
+ * the insert variant, which is what makes both directions true — and the
+ * `@ts-expect-error` below is what says the check still has teeth.
+ */
+declare const baseTyped: AuthHooksService
+const typedSlot: AuthHooksOf<Fields> = baseTyped
+declare const modelTyped: AuthHooksOf<Fields>
+const baseSlot: AuthHooksService = modelTyped
+
+declare const wrongAnswer: {
+  readonly beforeUserCreate?: (
+    options: { readonly candidate: UserInsertOf<{}>; readonly source: ProvisionSource }
+  ) => Effect.Effect<string, PolicyRefused>
+}
+// @ts-expect-error a hook must answer with a candidate, not with something else
+const notAHookSet: AuthHooksOf<Fields> = wrongAnswer
+
+/**
+ * The refusal reaches the client, in the union the endpoint derives — including
+ * `signIn`, whose sign-in path consults `beforeSessionCreate`. Carrying custom
+ * fields changes the *success* type of these atoms and nothing about their
+ * errors, which is the second assertion.
+ */
+eq<
+  Exact<
+    Atom.Failure<AuthClient.AuthClient<Fields>["signIn"]>,
+    InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<AuthClient.AuthClient<Fields>["signIn"]>,
+    Atom.Failure<AuthClient.AuthClient["signIn"]>
+  >
+>(true)
+eq<Exact<Atom.Success<AuthClient.AuthClient<Fields>["signIn"]>, SessionWithUserOf<Fields>>>(true)
 
 /**
  * The four `layerFor`s. Each of these is the assertion that carrying custom
@@ -200,7 +280,12 @@ eq<
   >
 >(true)
 
-/** And so does the stack, which is what "the parameterization does not infect" means. */
+/**
+ * And so does the stack, which is what "the parameterization does not infect"
+ * means — and, since the hooks went in, what says installing policy points cost
+ * a deployment nothing in its layer graph: `AuthHooks` is a `Context.Reference`
+ * with a default, so it is in neither channel of these two types.
+ */
 eq<Exact<typeof fieldsStack, Layer.Layer<Auth.Services, never, Auth.Requirements>>>(true)
 eq<Exact<typeof fieldsStack, typeof baseStack>>(true)
 
@@ -258,5 +343,8 @@ export type Assertions = [
   typeof httpReadOnly,
   typeof httpHidden,
   typeof clientPlan,
-  typeof clientSecret
+  typeof clientSecret,
+  typeof typedSlot,
+  typeof baseSlot,
+  typeof notAHookSet
 ]

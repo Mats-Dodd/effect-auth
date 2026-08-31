@@ -23,12 +23,10 @@
 import { Effect, Redacted } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
-import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
-import type { PolicyRefused } from "../domain/Hooks.js"
 import * as AuthHandlers from "../http/Handlers.js"
 import { setSessionCookie } from "../http/MiddlewareLive.js"
-import { resolveUrl, withErrorCode } from "../http/OriginCheck.js"
+import { policyRefusedTarget } from "../http/OriginCheck.js"
 import type { Bucket } from "../http/RateLimits.js"
 import { consumeWith, credentials, email as emailBucket } from "../http/RateLimits.js"
 import { MagicLinkApiGroup } from "./Api.js"
@@ -47,29 +45,6 @@ import { MagicLink } from "./MagicLink.js"
  * @since 1.0.0
  */
 export type HandlerServices = AuthConfig | MagicLink | RateLimiter.RateLimiter
-
-/**
- * Where a browser goes when a deployment's own hook refused what the link it
- * followed was for.
- *
- * The classification is this library's — `policy_refused`, exactly as
- * `invalid_token` and `sign_up_disabled` are — and `code` beside it is the
- * deployment's, carried verbatim so the landing page can say which rule it was.
- * A hook that puts a secret in a code has published it; that is the rule the
- * `PolicyRefused` documentation states.
- *
- * The same URL as `AuthHandlers`' own refusal target, deliberately: a person
- * refused by one policy should land in one place whichever link they followed.
- * A later change unifies the two copies.
- */
-const policyRefusedTarget = (config: AuthConfigService, error: PolicyRefused): string => {
-  // No callback URL survives a refusal: the one the person asked for travels in
-  // the token payload, which is claimed by the very call that refused. `baseUrl`
-  // is where a completion with nothing to go on already lands.
-  const url = new URL(withErrorCode(resolveUrl(config, null), "policy_refused"))
-  url.searchParams.set("code", error.code)
-  return url.toString()
-}
 
 /**
  * Implements the `magicLink` group of an `HttpApi` that contains it.
@@ -149,7 +124,10 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
           // whichever way this went, and no cookie is set: no session exists.
           Effect.catchTag(
             "PolicyRefused",
-            (refused) => Effect.succeed(AuthHandlers.redirectTo(policyRefusedTarget(config, refused)))
+            // No callback URL survives a refusal: the one the person asked
+            // for travels in the token payload, which the very call that
+            // refused has already claimed.
+            (refused) => Effect.succeed(AuthHandlers.redirectTo(policyRefusedTarget(config, null, refused.code)))
           )
         ))
       .handle("exchange", ({ payload, request }) =>

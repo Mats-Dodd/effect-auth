@@ -239,6 +239,45 @@ export const withErrorCode = (url: string, code: string): string => {
   return parsed.toString()
 }
 
+/**
+ * Where a browser goes when a deployment's own hook refused what the link it
+ * followed was for.
+ *
+ * **When to use**
+ *
+ * On every redirect-shaped completion a `PolicyRefused` can reach — the OAuth
+ * callback, a magic link, the delete-account link. They answer with one URL
+ * shape, from here, so a person refused by one policy lands in the same place
+ * whichever link they followed.
+ *
+ * **Details**
+ *
+ * `?error=` carries this library's own classification, `policy_refused`,
+ * exactly as `invalid_token` and `unknown_provider` do; `&code=` beside it
+ * carries the deployment's, verbatim, so the landing page can say *which* rule
+ * it was rather than only that some rule was.
+ *
+ * **Gotchas**
+ *
+ * `code` is published to whoever followed the link — a hook that puts a secret
+ * in one has published it, which is the rule `PolicyRefused` documents.
+ * `errorURL` is validated by {@link resolveUrl}, so a completion with nothing
+ * to go on — the usual case, because the URL the person asked for travels in a
+ * token payload the refusing call has already claimed — lands on `baseUrl`.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const policyRefusedTarget = (
+  config: AuthConfigService,
+  errorURL: string | null | undefined,
+  code: string
+): string => {
+  const url = new URL(withErrorCode(resolveUrl(config, errorURL), "policy_refused"))
+  url.searchParams.set("code", code)
+  return url.toString()
+}
+
 // -----------------------------------------------------------------------------
 // CSRF
 // -----------------------------------------------------------------------------

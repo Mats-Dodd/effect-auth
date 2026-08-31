@@ -60,7 +60,7 @@ import { scopesOf } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { AccountTokens, PersistenceError } from "../domain/Stores.js"
 import { AccountStore, VerificationStore } from "../domain/Stores.js"
-import { resolveUrl, withErrorCode } from "../http/OriginCheck.js"
+import { policyRefusedTarget, resolveUrl, withErrorCode } from "../http/OriginCheck.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
 import { isRedirectResponse, Jwks, layerJwks, verify as verifyIdToken } from "./IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
@@ -538,24 +538,6 @@ export const errorCode = (error: CallbackError): string => {
 
 const snakeCase = (value: string): string => value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
 
-/**
- * The deployment's own classification, beside this library's.
- *
- * `?error=` stays the closed set {@link errorCode} answers with, and the hook's
- * `code` travels next to it, so the page a refused browser lands on can say
- * which rule it was rather than only that some rule was. It is carried
- * verbatim: a hook that puts a secret in a code has published it, which is the
- * rule `PolicyRefused` documents.
- *
- * `src/http/Handlers.ts` builds this same shape for the delete-account link;
- * the two are deliberately identical, and are to be unified.
- */
-const withPolicyCode = (target: string, error: PolicyRefused): string => {
-  const url = new URL(target)
-  url.searchParams.set("code", error.code)
-  return url.toString()
-}
-
 // -----------------------------------------------------------------------------
 // Service
 // -----------------------------------------------------------------------------
@@ -987,11 +969,16 @@ export const make: () => Effect.Effect<
 
   const failure = (error: CallbackError, errorURL: string | null): CallbackOutcome => {
     const code = errorCode(error)
-    const target = withErrorCode(resolveUrl(config, errorURL), code)
     return {
       _tag: "Failure",
       error,
-      redirectTo: error._tag === "PolicyRefused" ? withPolicyCode(target, error) : target,
+      // A refusal carries the deployment's own classification beside this
+      // library's, in the one shape every redirect-shaped completion answers
+      // with. `?error=` is unchanged by that: `errorCode` above already answers
+      // `policy_refused` for this case, and it stays the closed set it was.
+      redirectTo: error._tag === "PolicyRefused"
+        ? policyRefusedTarget(config, errorURL, error.code)
+        : withErrorCode(resolveUrl(config, errorURL), code),
       code
     }
   }

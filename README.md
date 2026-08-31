@@ -655,6 +655,88 @@ const AuthLive = Auth.layer({ ..., sessionStore: Cached })
 `AuthTest.countingSessionStore()` is the same seam in the test harness, and is how this repository's
 own suite asserts that a cache hit performs zero reads.
 
+## Hooks
+
+Six moments at which this library asks *your* code whether to proceed — and, at one of them, what
+the row should say. They are how a deployment refuses a sign-up, derives a `role` from an OAuth
+profile, or writes a tenant row atomically with the user it belongs to.
+
+```ts
+import { Auth, Hooks } from "effect-auth"
+
+const Policy = Hooks.layer({
+  beforeUserCreate: ({ candidate, source }) =>
+    candidate.email.endsWith("@acme.com")
+      ? Effect.succeed(candidate)
+      : Effect.fail(new Hooks.PolicyRefused({ code: "domain_not_allowed" })),
+  afterUserCreate: ({ user }) => Memberships.create({ userId: user.id })  // same transaction
+})
+
+const AuthLive = Auth.layer(options).pipe(Layer.provide(Policy), Layer.provide(PgLive))
+```
+
+| Hook | Asked | May |
+|---|---|---|
+| `beforeUserCreate` | before any user row is written, whatever created it | rewrite the candidate, or refuse |
+| `afterUserCreate` | once the row exists, in the same transaction | write the rows that hang off it, or refuse |
+| `beforeSessionCreate` | before a session is minted, after the credential was verified | refuse |
+| `beforeEmailChange` | before an address change starts, ahead of any token | refuse |
+| `beforeUserDelete` | on both shapes of account deletion, after the caller proved who they are | refuse |
+| `beforeAccountLink` | before a provider identity is attached to a user that already exists | refuse |
+
+Every member is optional and absent means "allow, unchanged", so installing nothing is the default
+and costs nothing. `source` tells `beforeUserCreate` which door the person came through —
+`EmailPassword`, `OAuth` (carrying the verified profile, so one hook covers every provider),
+`MagicLink`, or a plugin naming itself — which is what lets one policy cover every flow you serve.
+A rewrite is re-validated through the user model, so a hook cannot store a row the schema rejects.
+
+A plugin installs hooks by **appending**, never replacing, because it cannot know what else you
+installed:
+
+```ts
+const PluginPolicy = Hooks.append({ beforeSessionCreate: refuseIfSuspended })
+```
+
+Whatever is already there runs first, each `beforeUserCreate` sees what the one before it answered,
+and the first refusal ends the chain — so your refusal short-circuits a plugin's hook, and a plugin
+never silently disables your policy.
+
+**Three rules.** They are the whole of what you need to hold in your head:
+
+1. **Hooks are short and local.** Every one of them runs inside the transaction the flow holds, so a
+   hook that makes a network call is holding a database transaction open across it. Anything slow,
+   retryable or merely interesting belongs on `Auth.events`, which is fire-and-forget and runs after
+   the commit.
+2. **`PolicyRefused` is the only failure you may raise.** Anything else your hook throws or dies with
+   is a defect and renders as an opaque `500` — which is the correct answer for a broken policy.
+3. **A ban enforced by `beforeSessionCreate` does not touch live sessions.** It refuses *new* ones.
+   Pair it with revocation, or with `cookieCache.version` keyed on a **public** field — never a
+   hidden one, for the reason the cookie-cache section gives.
+
+`code` is yours, and it is shown to the caller verbatim: in a `403` body, and in a URL a browser is
+redirected to. Make it a short stable classification a client can branch on — `"banned"`,
+`"domain_not_allowed"` — and never put a secret, another person's data, or the internals of the
+policy in it. `detail` is under the same rule.
+
+How a refusal reaches the caller depends on the shape of what it refused. `signUpEmail`,
+`signInEmail`, `signInSocial`, `linkSocial`, `changeEmail`, `deleteUser` and the magic link's
+`exchange` answer the typed `403`. The completions a browser arrives at by a top-level navigation —
+the OAuth callback, a magic link, the delete-account link — have nowhere to put an error, so they
+redirect carrying `?error=policy_refused&code=<yours>`; a link is spent either way, because the hook
+is asked after the token has been claimed. And one case is neither: refusing the session a **sign-up**
+would have started leaves the account in place and answers `200` with `session: null`, exactly as
+`autoSignIn: false` does — the person was accepted, they simply cannot start a session.
+
+If you declared custom user fields, `Hooks.hooksOf(model)` is the same slot with `candidate` and
+`user` typed by your model, so a hook reads and writes your own columns with no cast:
+
+```ts
+const Policy = Layer.succeed(Hooks.hooksOf(model))({
+  beforeUserCreate: ({ candidate }) =>
+    Effect.succeed({ ...candidate, role: candidate.plan === "pro" ? "admin" : "user" })
+})
+```
+
 ## Plugins
 
 A plugin is a module, not a registration. There is no plugin object, no `plugins: [...]` array and
@@ -710,9 +792,11 @@ The rest of the seams a plugin uses:
 - **Tables.** `Migrations.make({ table, migrations })` gives a plugin its own bookkeeping table and
   its own ids from `0001`. Never merge a plugin's migrations into this library's record: the migrator
   orders globally, so a lower id added later never runs.
-- **Users.** Provision through the base-typed `UserStore`. The deployment's own custom columns are
-  filled in from the model's declared defaults, which is what the provisionability rule on
-  `makeUserModel` guarantees.
+- **Users.** Provision through `Users.provision`, not `UserStore.create`: it is where the
+  deployment's `beforeUserCreate` / `afterUserCreate` hooks are consulted, and going through it is
+  what keeps them one choke point rather than one per flow. Build the row from the base user fields
+  alone — the deployment's own custom columns are filled in from the model's declared defaults,
+  which is what the provisionability rule on `makeUserModel` guarantees.
 - **Testing.** `AuthTest.layerHttpApi(api, options, extra)` provides your handler layer the *same*
   deployment build the auth handlers get, so both groups read one `Sessions` and one rate limiter.
   `TestEmails.record` is the seam your mailer's test layer implements over.
