@@ -9,12 +9,9 @@
  * not in the encoded payload, and therefore not in a cookie that leaves the
  * server signed but unencrypted.
  *
- * The second half of this file is the consequence the module header documents:
- * because a hidden field is not carried, a *cached* read sees the field's
- * declared default rather than its stored value. That is not a defect to be
- * fixed here — it is why an endpoint that reads one must be annotated
- * `AuthoritativeSession`, and it is pinned so that a change to the envelope
- * cannot make it silently untrue.
+ * Because a hidden field cannot be carried without disclosing it, the presence
+ * of one disables request-path cache reads for the model. The codec remains
+ * testable, but middleware will always resolve the authoritative database row.
  */
 import { assert, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Encoding, Result } from "effect"
@@ -39,6 +36,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true }, user: { model } }))("fiel
   it.effect("carries a deployment's own field, and never a hidden one", () =>
     Effect.gen(function*() {
       const service = yield* cache
+      assert.isFalse(service.enabled)
       const store = yield* users
       const email = uniqueEmail("cache-fields")
 
@@ -79,8 +77,8 @@ layer(AuthTest.layer({ cookieCache: { enabled: true }, user: { model } }))("fiel
       assert.strictEqual(read.user.plan, "pro")
       assert.strictEqual(read.user.role, "user")
       assert.strictEqual(read.user.email, email)
-      // The documented limitation, pinned: a cached read sees the declared
-      // default of a hidden field, not the value stored above.
+      // Decoding can only reconstruct the declared default, which is why the
+      // service is disabled for request-path reads above.
       assert.strictEqual(read.user.apiSecret, null)
     }))
 })

@@ -37,6 +37,7 @@ import {
   AccountId,
   AccountPublic,
   baseUserModel,
+  Email,
   makeSessionWithUser,
   makeSignUpResponse,
   makeUserResponse,
@@ -62,7 +63,20 @@ import { Authenticated, AuthoritativeSession } from "./Middleware.js"
  * @category models
  * @since 1.0.0
  */
-export const Secret = Schema.Redacted(Schema.String)
+const nonEmptyBounded = (maxLength: number) => Schema.String.pipe(Schema.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(maxLength)
+))
+
+/** Conservative wire limits applied before values reach crypto, storage, or a mailer. */
+export const Secret = Schema.Redacted(nonEmptyBounded(4096))
+export const InputName = nonEmptyBounded(256)
+export const InputUrl = nonEmptyBounded(2048)
+export const InputToken = nonEmptyBounded(4096)
+export const InputProviderId = nonEmptyBounded(128)
+export const InputScope = nonEmptyBounded(256)
+export const InputScopes = Schema.Array(InputScope).pipe(Schema.check(Schema.isMaxLength(64)))
+const ResponseSecret = Schema.Redacted(Schema.String)
 
 /**
  * The response of an endpoint whose only interesting outcome is "it worked".
@@ -150,12 +164,12 @@ export const Redirect = HttpApiSchema.WithHeaders(
  * @since 1.0.0
  */
 export const SignUpEmailPayload = Schema.Struct({
-  name: Schema.String,
-  email: Schema.String,
+  name: InputName,
+  email: Email,
   password: Secret,
-  image: Schema.optional(Schema.String),
+  image: Schema.optional(InputUrl),
   /** Where a verification e-mail should send the user. Validated against `trustedOrigins`. */
-  callbackURL: Schema.optional(Schema.String),
+  callbackURL: Schema.optional(InputUrl),
   rememberMe: Schema.optional(Schema.Boolean)
 })
 
@@ -206,11 +220,11 @@ export type SignUpEmailOf<F extends UserFields> = SignUpEmailPayloadSchema<F>["T
  * @since 1.0.0
  */
 export const SignInEmailPayload = Schema.Struct({
-  email: Schema.String,
+  email: Email,
   password: Secret,
   /** When `false` the session expires in a day rather than the configured `expiresIn`. */
   rememberMe: Schema.optional(Schema.Boolean),
-  callbackURL: Schema.optional(Schema.String)
+  callbackURL: Schema.optional(InputUrl)
 })
 
 /**
@@ -230,9 +244,9 @@ export const RevokeSessionPayload = Schema.Struct({
  * @since 1.0.0
  */
 export const RequestPasswordResetPayload = Schema.Struct({
-  email: Schema.String,
+  email: Email,
   /** Where the reset link should land. Validated against `trustedOrigins`. */
-  redirectTo: Schema.optional(Schema.String)
+  redirectTo: Schema.optional(InputUrl)
 })
 
 /**
@@ -266,8 +280,8 @@ export const ChangePasswordPayload = Schema.Struct({
  * @since 1.0.0
  */
 export const SendVerificationEmailPayload = Schema.Struct({
-  email: Schema.String,
-  callbackURL: Schema.optional(Schema.String)
+  email: Email,
+  callbackURL: Schema.optional(InputUrl)
 })
 
 /**
@@ -277,8 +291,8 @@ export const SendVerificationEmailPayload = Schema.Struct({
  * @since 1.0.0
  */
 export const VerifyEmailQuery = Schema.Struct({
-  token: Schema.String,
-  callbackURL: Schema.optional(Schema.String)
+  token: InputToken,
+  callbackURL: Schema.optional(InputUrl)
 })
 
 /**
@@ -295,7 +309,7 @@ export const VerifyEmailQuery = Schema.Struct({
  * @since 1.0.0
  */
 export const TokenQuery = Schema.Struct({
-  token: Schema.String
+  token: InputToken
 })
 
 /**
@@ -313,8 +327,8 @@ export const TokenQuery = Schema.Struct({
  * @since 1.0.0
  */
 export const UpdateUserPayload = Schema.Struct({
-  name: Schema.optional(Schema.String),
-  image: Schema.optional(Schema.NullOr(Schema.String))
+  name: Schema.optional(InputName),
+  image: Schema.optional(Schema.NullOr(InputUrl))
 })
 
 /**
@@ -363,9 +377,9 @@ export type UpdateUserOf<F extends UserFields> = UpdateUserPayloadSchema<F>["Typ
  */
 export const ChangeEmailPayload = Schema.Struct({
   /** The address to move the account to. */
-  newEmail: Schema.String,
+  newEmail: Email,
   /** Where the link should land once the change completes. Validated against `trustedOrigins`. */
-  callbackURL: Schema.optional(Schema.String)
+  callbackURL: Schema.optional(InputUrl)
 })
 
 /**
@@ -386,7 +400,7 @@ export const DeleteUserPayload = Schema.Struct({
    */
   password: Schema.optional(Secret),
   /** Where to send the browser once the account is gone. */
-  callbackURL: Schema.optional(Schema.String)
+  callbackURL: Schema.optional(InputUrl)
 })
 
 /**
@@ -446,9 +460,9 @@ export const AccountSelection = Schema.Struct({
  * @since 1.0.0
  */
 export const AccessTokenResponse = Schema.Struct({
-  accessToken: Secret,
+  accessToken: ResponseSecret,
   accessTokenExpiresAt: Schema.NullOr(Schema.DateTimeUtcFromString),
-  idToken: Schema.NullOr(Secret),
+  idToken: Schema.NullOr(ResponseSecret),
   /** The granted scopes, split out of the stored `scope` column. */
   scopes: Schema.Array(Schema.String),
   providerId: Schema.String,
@@ -478,7 +492,7 @@ export type AccessTokenResponse = typeof AccessTokenResponse.Type
  */
 export const RefreshTokenResponse = Schema.Struct({
   ...AccessTokenResponse.fields,
-  refreshToken: Secret,
+  refreshToken: ResponseSecret,
   refreshTokenExpiresAt: Schema.NullOr(Schema.DateTimeUtcFromString)
 })
 
@@ -497,13 +511,13 @@ export type RefreshTokenResponse = typeof RefreshTokenResponse.Type
  * @since 1.0.0
  */
 export const SignInSocialPayload = Schema.Struct({
-  providerId: Schema.String,
+  providerId: InputProviderId,
   /** Where to land after a successful callback. Validated against `trustedOrigins`. */
-  callbackURL: Schema.optional(Schema.String),
+  callbackURL: Schema.optional(InputUrl),
   /** Where to land when the flow fails. Validated against `trustedOrigins`. */
-  errorCallbackURL: Schema.optional(Schema.String),
+  errorCallbackURL: Schema.optional(InputUrl),
   /** Extra scopes to request on top of the provider's configured set. */
-  scopes: Schema.optional(Schema.Array(Schema.String)),
+  scopes: Schema.optional(InputScopes),
   rememberMe: Schema.optional(Schema.Boolean)
 })
 
@@ -514,7 +528,7 @@ export const SignInSocialPayload = Schema.Struct({
  * @since 1.0.0
  */
 export const OAuthCallbackParams = Schema.Struct({
-  providerId: Schema.String
+  providerId: InputProviderId
 })
 
 /**
@@ -530,10 +544,10 @@ export const OAuthCallbackParams = Schema.Struct({
  * @since 1.0.0
  */
 export const OAuthCallbackQuery = Schema.Struct({
-  code: Schema.optional(Schema.String),
-  state: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
-  error_description: Schema.optional(Schema.String),
+  code: Schema.optional(InputToken),
+  state: Schema.optional(InputToken),
+  error: Schema.optional(nonEmptyBounded(256)),
+  error_description: Schema.optional(nonEmptyBounded(1024)),
   /**
    * A provider-specific extra, forwarded to the provider's `userInfo`.
    *
@@ -543,7 +557,7 @@ export const OAuthCallbackQuery = Schema.Struct({
    * first authorization, and never again. Nothing signs it, so it is used for
    * display fields and never for an identity.
    */
-  user: Schema.optional(Schema.String)
+  user: Schema.optional(nonEmptyBounded(4096))
 })
 
 /**
@@ -561,11 +575,11 @@ export const OAuthCallbackQuery = Schema.Struct({
  * @since 1.0.0
  */
 export const OAuthCallbackForm = Schema.Struct({
-  code: Schema.optional(Schema.String),
-  state: Schema.optional(Schema.String),
-  error: Schema.optional(Schema.String),
-  error_description: Schema.optional(Schema.String),
-  user: Schema.optional(Schema.String)
+  code: Schema.optional(InputToken),
+  state: Schema.optional(InputToken),
+  error: Schema.optional(nonEmptyBounded(256)),
+  error_description: Schema.optional(nonEmptyBounded(1024)),
+  user: Schema.optional(nonEmptyBounded(4096))
 }).pipe(HttpApiSchema.asFormUrlEncoded())
 
 /**
@@ -575,10 +589,10 @@ export const OAuthCallbackForm = Schema.Struct({
  * @since 1.0.0
  */
 export const LinkSocialPayload = Schema.Struct({
-  providerId: Schema.String,
-  callbackURL: Schema.optional(Schema.String),
-  errorCallbackURL: Schema.optional(Schema.String),
-  scopes: Schema.optional(Schema.Array(Schema.String))
+  providerId: InputProviderId,
+  callbackURL: Schema.optional(InputUrl),
+  errorCallbackURL: Schema.optional(InputUrl),
+  scopes: Schema.optional(InputScopes)
 })
 
 /**

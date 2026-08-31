@@ -29,14 +29,14 @@ const configLayer = (rateLimit?: {
 }) =>
   AuthConfig.layer({
     baseUrl,
-    secret: Redacted.make("test-secret"),
+    secret: Redacted.make("test-secret-at-least-32-bytes-long"),
     rateLimit
   })
 
 const config = (ipHeaders: ReadonlyArray<string>): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl,
-    secret: Redacted.make("test-secret"),
+    secret: Redacted.make("test-secret-at-least-32-bytes-long"),
     rateLimit: { ipHeaders }
   })
 
@@ -92,6 +92,14 @@ const attempt = (bucket: typeof credentials, options?: Parameters<typeof request
   Effect.result(consume(bucket)).pipe(
     Effect.provideService(HttpServerRequest.HttpServerRequest, request(options))
   )
+
+it("does not trust forwarding headers by default", () => {
+  const resolved = AuthConfig.make({
+    baseUrl,
+    secret: Redacted.make("test-secret-at-least-32-bytes-long")
+  })
+  assert.deepStrictEqual(resolved.rateLimit.ipHeaders, [])
+})
 
 /**
  * A limiter over an evicting store the test can look inside, built on the
@@ -191,7 +199,7 @@ describe("http/RateLimits", () => {
 
 // The counters are shared by every test in the block, so each of these claims a
 // client address of its own — which is also what makes them concurrency-safe.
-layer(counting())("http/RateLimits/consume", (it) => {
+layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (it) => {
   it.effect("allows the configured number of attempts and then refuses", () =>
     Effect.gen(function*() {
       const headers = { "x-forwarded-for": "203.0.113.7" }

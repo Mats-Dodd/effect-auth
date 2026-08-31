@@ -629,8 +629,8 @@ UserField.hidden(schema, () => value)       // Model.Sensitive — in every DB v
 
 `hidden` is the one with a security consequence, and it is stated in three places because it holds
 in all three: a hidden column never reaches a response body, never reaches the generated client, and
-never reaches the cookie cache (§12.6). A cached read therefore sees a hidden field's *declared
-default*; an endpoint that reads one must be annotated `AuthoritativeSession`.
+never reaches the cookie cache (§12.6). A model containing one disables cache reads entirely;
+request authentication always resolves its authoritative database row.
 
 #### 8.3 The provisionability rule
 
@@ -1024,8 +1024,10 @@ Each of these is a considered difference, not an oversight.
     secret on the provider's own say-so. `issuer` is a required option and must equal the discovered
     one byte-for-byte; a document with no `jwks_uri` and no pinned key set is `KeysMissing` rather
     than a skipped signature check. The body read gets its own `providerRequestTimeout`.
-19. **Provider tokens are stored unencrypted at rest.** Recorded as a known gap, not a decision to
-    leave alone forever.
+19. **Provider tokens are encrypted at rest.** The SQL store uses AES-256-GCM under a key derived
+    from `AuthConfig.secret`; account id and token kind are authenticated as associated data. A
+    secret rotation therefore needs a re-encryption migration (or provider relinking), and legacy
+    plaintext rows are intentionally rejected.
 
 #### 11.3 Shape notes worth recording
 
@@ -1139,8 +1141,8 @@ Recorded here because switching this on is a security decision, not a performanc
 2. **Integrity, not confidentiality.** Anybody holding the cookie can read the payload. It is what
    the endpoint would have answered with, so that is not a leak — but nothing secret may be added to
    it, and a `UserField.hidden` column is deliberately absent.
-3. **A hidden field is not carried**, so a cached read sees its declared *default*. An endpoint that
-   reads one must be annotated `AuthoritativeSession`.
+3. **A hidden field is not carried**, and a model containing one disables cache reads entirely so
+   no authorization decision can see a fabricated default.
 4. **Binding.** `tokenHash` is inside the signed payload and is compared against the digest of the
    credential presented, so a snapshot cannot be replayed beside another session, and swapping the
    two cookies is a miss rather than a confusion.

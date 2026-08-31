@@ -35,6 +35,21 @@ import { Auth, AuthConfig, AuthCookies, Github, OAuthFlow, Passwords, Sessions }
 import { AuthTest } from "../../src/testing/index.js"
 import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
+it("rejects insecure configuration at startup", () => {
+  assert.throws(
+    () => AuthConfig.make({ baseUrl: "https://app.example.com", secret: Redacted.make("short") }),
+    /secret must contain at least 32/
+  )
+  assert.throws(
+    () => AuthConfig.make({
+      baseUrl: "https://app.example.com",
+      secret: Redacted.make("a-32-byte-or-longer-random-string"),
+      cookie: { secure: false }
+    }),
+    /cookie\.secure cannot be false/
+  )
+})
+
 /**
  * A transport that refuses to be used. `start` mints a state row and builds a
  * URL; it never talks to the provider, so a test of the assembly must not need
@@ -182,7 +197,7 @@ it.effect("layerConfig reads the scalar settings from a ConfigProvider", () =>
   Effect.gen(function*() {
     const config = yield* AuthConfig.AuthConfig
     assert.strictEqual(config.baseUrl, "https://app.example.com")
-    assert.strictEqual(Redacted.value(config.secret), "from-the-environment")
+    assert.strictEqual(Redacted.value(config.secret), "from-the-environment-at-least-32-bytes")
     // An https base URL implies a Secure cookie under the `__Secure-` prefix.
     assert.strictEqual(config.cookie.secure, true)
     assert.strictEqual(AuthConfig.cookieName(config), "__Secure-effect_auth.session")
@@ -202,7 +217,7 @@ it.effect("layerConfig reads the scalar settings from a ConfigProvider", () =>
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
               BASE_URL: "https://app.example.com",
-              AUTH_SECRET: "from-the-environment"
+              AUTH_SECRET: "from-the-environment-at-least-32-bytes"
             })
           )
         )
@@ -267,7 +282,7 @@ it.effect("layerConfigWithOAuth reads the provider credentials from a ConfigProv
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
               BASE_URL: "https://app.example.com",
-              AUTH_SECRET: "from-the-environment",
+              AUTH_SECRET: "from-the-environment-at-least-32-bytes",
               GITHUB_CLIENT_ID: "id-from-the-environment",
               GITHUB_CLIENT_SECRET: "secret-from-the-environment"
             })

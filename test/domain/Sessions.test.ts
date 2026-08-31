@@ -1,7 +1,7 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
-import { AuthConfig } from "../../src/config/AuthConfig.js"
+import { AuthConfig, make as makeAuthConfig } from "../../src/config/AuthConfig.js"
 import { grantedLifetime, isFreshAt, refreshDueAt, Sessions } from "../../src/domain/Sessions.js"
 import { SessionStore } from "../../src/domain/Stores.js"
 import { AuthTest } from "../../src/testing/index.js"
@@ -144,23 +144,15 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       }
     )
 
-    it.layer(AuthTest.layer({ session: { updateAge: Duration.days(3) } }))(
-      "with an updateAge longer than the short lifetime",
-      (it) => {
-        it.effect("a session shorter than updateAge is never refresh-due at birth", () =>
-          Effect.gen(function*() {
-            // Read as `expiresAt - expiresIn + updateAge <= now` with the
-            // *configured* expiresIn, a freshly created one-day session would be
-            // due for refresh immediately and would silently gain the seven-day
-            // lifetime its owner declined.
-            const sessions = yield* Sessions
-            const { user } = yield* signUpUser(uniqueEmail("never-due"))
-            const created = yield* sessions.create({ userId: user.id, rememberMe: false })
-
-            assert.strictEqual((yield* sessions.verify(created.token)).refreshed, false)
-          }))
-      }
-    )
+    it.effect("rejects an updateAge longer than the short session lifetime", () =>
+      Effect.sync(() => assert.throws(
+        () => makeAuthConfig({
+          baseUrl: AuthTest.testBaseUrl,
+          secret: AuthTest.testSecret,
+          session: { updateAge: Duration.days(3) }
+        }),
+        /updateAge must be shorter/
+      )))
   })
 
   describe("freshness", () => {

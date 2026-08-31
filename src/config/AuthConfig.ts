@@ -8,8 +8,7 @@
  *
  * @since 1.0.0
  */
-import type { Redacted } from "effect"
-import { Context, Duration, Layer } from "effect"
+import { Context, Duration, Layer, Redacted } from "effect"
 import type { Session, User } from "../domain/Schema.js"
 import { trustedOriginSet } from "../internal/origins.js"
 import { withDefaults } from "../internal/records.js"
@@ -315,11 +314,9 @@ export interface CookieCacheConfig {
    *
    * The function runs on the snapshot's own contents, so it can only read what
    * the cache carries. It must be pure and cheap: it is on the hot path of every
-   * cached request. Do not key it on a `UserField.hidden` column: a snapshot
-   * carries a hidden field's declared *default*, so the version computed at
-   * write time (from the stored value) never equals the one computed at read
-   * time, every read misses, and the cache is silently disabled. Key it on a
-   * public field or a session field instead.
+   * cached request. Key it on a public field or a session field. Models with
+   * hidden fields disable the cookie cache entirely because those values cannot
+   * safely be placed in a browser cookie.
    */
   readonly version: string | ((session: Session, user: User) => string)
 }
@@ -509,7 +506,9 @@ export const defaultTokens: TokenConfig = {
  */
 export const defaultRateLimit: RateLimitConfig = {
   enabled: true,
-  ipHeaders: ["x-forwarded-for"],
+  // Forwarding headers are attacker-controlled unless a trusted proxy
+  // overwrites them. Deployments behind such a proxy opt in explicitly.
+  ipHeaders: [],
   failClosed: false
 }
 
@@ -579,7 +578,13 @@ export const defaultCookieName = "effect_auth.session"
  * @category guards
  * @since 1.0.0
  */
-export const isSecureUrl = (url: string): boolean => url.startsWith("https:")
+export const isSecureUrl = (url: string): boolean => {
+  try {
+    return new URL(url).protocol === "https:"
+  } catch {
+    return false
+  }
+}
 
 /**
  * The name a session cookie is actually set under.
@@ -625,6 +630,75 @@ export const cacheCookieName = (config: AuthConfigService): string =>
 // Constructors
 // -----------------------------------------------------------------------------
 
+const configurationError = (message: string): never => {
+  throw new TypeError(`effect-auth: ${message}`)
+}
+
+const positiveDuration = (name: string, value: Duration.Duration): void => {
+  const millis = Duration.toMillis(value)
+  if (!Number.isFinite(millis) || millis <= 0) configurationError(`${name} must be positive`)
+}
+
+const absoluteWebUrl = (name: string, value: string): URL => {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return configurationError(`${name} must be an absolute http(s) URL`)
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "") {
+    return configurationError(`${name} must be an absolute http(s) URL without credentials`)
+  }
+  return parsed
+}
+
+/** Fails immediately when security-sensitive settings contradict each other. */
+const validate = (config: AuthConfigService): AuthConfigService => {
+  const base = absoluteWebUrl("baseUrl", config.baseUrl)
+  if (base.pathname !== "/" || base.search !== "" || base.hash !== "") {
+    configurationError("baseUrl must be an origin without a path, query, or fragment")
+  }
+  if (new TextEncoder().encode(Redacted.value(config.secret)).byteLength < 32) {
+    configurationError("secret must contain at least 32 UTF-8 bytes")
+  }
+  if (!config.basePath.startsWith("/") || config.basePath.startsWith("//") || config.basePath.includes("\\")) {
+    configurationError("basePath must be a path beginning with one forward slash")
+  }
+  if (base.protocol === "https:" && !config.cookie.secure) {
+    configurationError("cookie.secure cannot be false for an HTTPS baseUrl")
+  }
+  if (config.cookie.sameSite === "none" && !config.cookie.secure) {
+    configurationError('cookie.sameSite "none" requires cookie.secure')
+  }
+  if (!config.cookie.path.startsWith("/")) configurationError("cookie.path must begin with a forward slash")
+  if (!Number.isSafeInteger(config.emailPassword.minPasswordLength) || config.emailPassword.minPasswordLength < 8) {
+    configurationError("emailPassword.minPasswordLength must be an integer of at least 8")
+  }
+  if (!Number.isSafeInteger(config.emailPassword.maxPasswordLength) ||
+    config.emailPassword.maxPasswordLength < config.emailPassword.minPasswordLength) {
+    configurationError("emailPassword.maxPasswordLength must be an integer not smaller than minPasswordLength")
+  }
+
+  positiveDuration("session.expiresIn", config.session.expiresIn)
+  positiveDuration("session.updateAge", config.session.updateAge)
+  positiveDuration("session.freshAge", config.session.freshAge)
+  positiveDuration("session.rememberMeDisabledExpiresIn", config.session.rememberMeDisabledExpiresIn)
+  if (Duration.toMillis(config.session.updateAge) >= Duration.toMillis(config.session.expiresIn) ||
+    Duration.toMillis(config.session.updateAge) > Duration.toMillis(config.session.rememberMeDisabledExpiresIn)) {
+    configurationError("session.updateAge must be shorter than expiresIn and no longer than rememberMeDisabledExpiresIn")
+  }
+  for (const [name, value] of Object.entries(config.tokens)) positiveDuration(`tokens.${name}`, value)
+  positiveDuration("cookieCache.maxAge", config.cookieCache.maxAge)
+
+  for (const [index, origin] of config.trustedOrigins.entries()) absoluteWebUrl(`trustedOrigins[${index}]`, origin)
+  for (const [name, path] of Object.entries(config.emailPaths)) {
+    if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
+      configurationError(`emailPaths.${name} must be a path beginning with one forward slash`)
+    }
+  }
+  return config
+}
+
 /**
  * Resolves user options against the defaults.
  *
@@ -646,7 +720,7 @@ export const cacheCookieName = (config: AuthConfigService): string =>
  */
 export const make = (options: AuthConfigOptions): AuthConfigService => {
   const origins = options.trustedOrigins ?? []
-  return {
+  return validate({
     baseUrl: options.baseUrl,
     basePath: options.basePath ?? "/auth",
     secret: options.secret,
@@ -673,7 +747,7 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
       changeEmail: withDefaults(defaultChangeEmail, options.user?.changeEmail),
       deleteUser: withDefaults(defaultDeleteUser, options.user?.deleteUser)
     }
-  }
+  })
 }
 
 /**

@@ -117,7 +117,7 @@ describe("config/AuthConfig", () => {
   it("applies the documented defaults", () => {
     const config = AuthConfig.make({
       baseUrl: "https://app.example.com",
-      secret: Redacted.make("test-secret"),
+      secret: Redacted.make("test-secret-at-least-32-bytes-long"),
       emailPassword: { enabled: true }
     })
 
@@ -147,7 +147,7 @@ describe("config/AuthConfig", () => {
     // `confirmByEmail` alone must not silently switch `enabled` back off.
     const config = AuthConfig.make({
       baseUrl: "http://localhost:3000",
-      secret: Redacted.make("test-secret"),
+      secret: Redacted.make("test-secret-at-least-32-bytes-long"),
       user: { deleteUser: { confirmByEmail: true }, changeEmail: { enabled: true } }
     })
 
@@ -159,7 +159,7 @@ describe("config/AuthConfig", () => {
   it("leaves cookies insecure on a plain-http base url", () => {
     const config = AuthConfig.make({
       baseUrl: "http://localhost:3000",
-      secret: Redacted.make("test-secret")
+      secret: Redacted.make("test-secret-at-least-32-bytes-long")
     })
 
     assert.strictEqual(config.cookie.secure, false)
@@ -169,7 +169,7 @@ describe("config/AuthConfig", () => {
   it("ignores explicitly undefined overrides", () => {
     const config = AuthConfig.make({
       baseUrl: "http://localhost:3000",
-      secret: Redacted.make("test-secret"),
+      secret: Redacted.make("test-secret-at-least-32-bytes-long"),
       session: { expiresIn: undefined }
     })
 
@@ -181,7 +181,7 @@ describe("config/AuthEmails", () => {
   it("keeps the token redacted inside the link", () => {
     const config = AuthConfig.make({
       baseUrl: "https://app.example.com",
-      secret: Redacted.make("test-secret")
+      secret: Redacted.make("test-secret-at-least-32-bytes-long")
     })
     const url = verifyEmailUrl(config, Redacted.make("tok3n"))
 
@@ -195,7 +195,7 @@ describe("config/AuthEmails", () => {
   it("keeps the proposed address out of the change-email link", () => {
     const config = AuthConfig.make({
       baseUrl: "https://app.example.com",
-      secret: Redacted.make("test-secret")
+      secret: Redacted.make("test-secret-at-least-32-bytes-long")
     })
     const url = Redacted.value(changeEmailVerifyUrl(config, Redacted.make("tok3n")))
 

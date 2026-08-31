@@ -8,7 +8,7 @@ import * as AuthCookies from "../../src/http/Cookies.js"
 const secure = (cookie?: AuthConfig.AuthConfigOptions["cookie"]): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl: "https://app.example.com",
-    secret: Redacted.make("test-secret"),
+    secret: Redacted.make("test-secret-at-least-32-bytes-long"),
     cookie
   })
 
@@ -16,7 +16,7 @@ const secureConfig = secure()
 
 const devConfig = AuthConfig.make({
   baseUrl: "http://localhost:3000",
-  secret: Redacted.make("test-secret")
+  secret: Redacted.make("test-secret-at-least-32-bytes-long")
 })
 
 describe("http/Cookies", () => {

@@ -396,8 +396,8 @@ In practice: use `withDefault`, `readOnly` or `hidden`, or give the schema a con
 its own.
 
 Two consequences worth knowing. A `hidden` field is absent from the cookie cache as well as from
-every response, so a cached read sees its *default* — an endpoint that reads one must be annotated
-`AuthoritativeSession` ([Cookie cache](#cookie-cache)). And `Migrations.forUserFields(model)` emits
+every response, so a model containing one disables cache reads and always resolves the database
+row ([Cookie cache](#cookie-cache)). And `Migrations.forUserFields(model)` emits
 the `ALTER TABLE users ADD COLUMN` for each field (`auth.layerMigrations` runs it); a type it cannot
 map to a column is a `MigrationError` naming the field, and hand-written DDL is the escape hatch.
 
@@ -625,8 +625,8 @@ here ever re-signs or extends a session.
 - **Integrity, not confidentiality.** The payload is signed, not encrypted — anyone holding the
   cookie can read it. It contains only what the endpoint would have answered with, which is why a
   `UserField.hidden` column is absent from it and why nothing secret may ever be added.
-- **A hidden field is not carried.** A cached read sees a `UserField.hidden` field's declared
-  default, not its stored value. An endpoint that reads one must be annotated (below).
+- **A hidden field disables caching.** It cannot be carried without exposing it to the browser, so
+  a model containing one always resolves sessions and users from the authoritative store.
 - **It is not a defence.** Rotating `secret` invalidates every outstanding snapshot, but that is
   mass *cache* invalidation, not sign-out: the session tokens themselves are untouched.
 - **Bearer clients gain nothing.** The cache is written and read on the cookie transports only. A
@@ -972,12 +972,17 @@ on issuer, audience, expiry, signature and nonce; a key set that cannot be read 
 skipping verification, a provider that declares OIDC settings and no key source cannot be written
 down at all, and the JWKS fetch refuses redirects too. A provider's whole `userInfo` is bounded by a
 thirty-second deadline the provider cannot opt out of, and two providers registered under one id
-refuse to build.
+refuse to build. Provider access, refresh and ID tokens are encrypted at rest with AES-256-GCM; the
+key is derived from the deployment secret and ciphertext is bound to its account and token type.
+Rotating that secret therefore requires re-encrypting those columns first, or having affected users
+link their providers again; rows written by versions that stored plaintext are intentionally not
+accepted by the encrypted store.
 
 **Rate limits.** Sign-in, sign-up and `POST /sign-in/social` are 3 per 10 seconds per (IP, path);
 password reset and verification mail are 3 per 60 seconds. The client IP comes from a configurable
-header chain, which is only trustworthy behind a proxy you control — with `ipHeaders: []` every
-request shares one fail-closed bucket, which is the safe default behind no proxy. The default
+header chain, which is only trustworthy behind a proxy you control. The default `ipHeaders: []`
+trusts no forwarding header; configure one only when a proxy you control overwrites it. With none,
+requests that expose no remote address share one fail-closed bucket. The default
 limiter is process-local: behind four instances the effective limit is four times what is
 configured, so provide `RateLimiter.layer` over a shared store if that matters. When the limiter's
 *store* fails — as opposed to a limit being reached — the default is to log and let the request
@@ -1040,8 +1045,6 @@ Planned next:
   not good enough. The [`sessionStore` seam](#swapping-the-session-store) is what the first plugs
   into.
 - **JWT / JWKS issuance**, for handing a verified identity to a service that is not this one.
-- **Encryption at rest for provider tokens.** They are stored as the provider issued them today,
-  which is a known gap rather than a decision.
 - **Organizations / multi-tenancy**, most likely as a plugin over the same seams.
 - **Authorization**, as a separate package: a policy middleware that `require`s `CurrentUser` and
   `CurrentSession`, most likely Cedar-backed. Deliberately not in this one.

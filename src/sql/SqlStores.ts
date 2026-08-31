@@ -30,6 +30,9 @@
  *   the expiry, which is what makes password-reset tokens, e-mail verification
  *   links and OAuth state genuinely single-use: two concurrent callers cannot
  *   both be handed the row.
+ * - OAuth access, refresh and ID tokens are encrypted with AES-256-GCM before
+ *   they reach SQL. The account id and token kind are associated data, so a
+ *   ciphertext cannot be moved between rows or columns.
  *
  * **Gotchas**
  *
@@ -43,7 +46,10 @@
  */
 import { Array, DateTime, Effect, Layer, Option, Predicate, Schema, SchemaAST } from "effect"
 import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
+import { AuthConfig } from "../config/AuthConfig.js"
 import { camelToSnake, omitUndefined } from "../internal/records.js"
+import { make as makeProviderTokenCipher } from "../internal/providerTokenCipher.js"
+import type { ProviderTokenCipher, ProviderTokenField } from "../internal/providerTokenCipher.js"
 import type {
   AccountStoreService,
   AccountTokens,
@@ -516,10 +522,69 @@ const makeSessionStore: <F extends UserFields>(
 // AccountStore
 // -----------------------------------------------------------------------------
 
-const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClient.SqlClient> = Effect
+const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClient.SqlClient | AuthConfig> = Effect
   .fnUntraced(function*() {
     const sql = yield* SqlClient.SqlClient
+    const config = yield* AuthConfig
+    const cipher = yield* makeProviderTokenCipher(config.secret)
     const accountCols = sql.literal(accountColumns)
+
+    const providerFields = ["access_token", "refresh_token", "id_token"] as const
+    const modelField = (field: ProviderTokenField): "accessToken" | "refreshToken" | "idToken" => {
+      switch (field) {
+        case "access_token": return "accessToken"
+        case "refresh_token": return "refreshToken"
+        case "id_token": return "idToken"
+      }
+    }
+    const cryptoFailure = (operation: string) => (cause: unknown) =>
+      new PersistenceError({ operation, cause })
+    const protect = <A>(operation: string, effect: Effect.Effect<A>): Effect.Effect<A, PersistenceError> =>
+      effect.pipe(
+        Effect.catchDefect((cause) => Effect.fail(cryptoFailure(operation)(cause)))
+      )
+    const transformTokens = <A extends {
+      readonly id: string
+      readonly accessToken: string | null
+      readonly refreshToken: string | null
+      readonly idToken: string | null
+    }>(
+      account: A,
+      transform: ProviderTokenCipher["encrypt"] | ProviderTokenCipher["decrypt"]
+    ): Effect.Effect<A> => Effect.gen(function*() {
+        const patch: Partial<Record<"accessToken" | "refreshToken" | "idToken", string | null>> = {}
+        for (const field of providerFields) {
+          const property = modelField(field)
+          const value = account[property]
+          patch[property] = value === null ? null : yield* transform(account.id, field, value)
+        }
+        return { ...account, ...patch } as A
+      })
+    const encryptAccount = <A extends Parameters<typeof transformTokens>[0]>(account: A) =>
+      transformTokens(account, cipher.encrypt)
+    const decryptAccount = (account: Account) => transformTokens(account, cipher.decrypt)
+    const decryptOption = (operation: string, value: Option.Option<Account>) =>
+      Option.isNone(value)
+        ? Effect.succeedNone
+        : Effect.map(protect(operation, decryptAccount(value.value)), Option.some)
+    const decryptAll = (operation: string, values: ReadonlyArray<Account>) =>
+      protect(operation, Effect.forEach(values, decryptAccount))
+
+    const encryptPatch = (id: AccountId, tokens: AccountTokens) =>
+      protect("AccountStore.updateTokens", Effect.gen(function*() {
+        return {
+          ...tokens,
+          ...(tokens.accessToken === undefined || tokens.accessToken === null
+            ? {}
+            : { accessToken: yield* cipher.encrypt(id, "access_token", tokens.accessToken) }),
+          ...(tokens.refreshToken === undefined || tokens.refreshToken === null
+            ? {}
+            : { refreshToken: yield* cipher.encrypt(id, "refresh_token", tokens.refreshToken) }),
+          ...(tokens.idToken === undefined || tokens.idToken === null
+            ? {}
+            : { idToken: yield* cipher.encrypt(id, "id_token", tokens.idToken) })
+        } satisfies AccountTokens
+      }))
 
     const insertAccount = SqlSchema.findOne({
       Request: Account.insert,
@@ -592,41 +657,64 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
       }))
 
     return AccountStore.of({
-      create: (account) => persist("AccountStore.create")(insertAccount(account)),
+      create: (account) => Effect.gen(function*() {
+        const encrypted = yield* protect("AccountStore.create", encryptAccount(account))
+        const stored = yield* persist("AccountStore.create")(insertAccount(encrypted))
+        return yield* protect("AccountStore.create", decryptAccount(stored))
+      }),
 
       findByIssuerAccountId: (issuer, accountId) =>
-        persist("AccountStore.findByIssuerAccountId")(selectAccountByIssuer({ issuer, accountId })),
+        Effect.flatMap(
+          persist("AccountStore.findByIssuerAccountId")(selectAccountByIssuer({ issuer, accountId })),
+          (value) => decryptOption("AccountStore.findByIssuerAccountId", value)
+        ),
 
       findByIdAndUserId: (id, userId) =>
-        persist("AccountStore.findByIdAndUserId")(selectAccountByIdAndUser({ id, userId })),
+        Effect.flatMap(
+          persist("AccountStore.findByIdAndUserId")(selectAccountByIdAndUser({ id, userId })),
+          (value) => decryptOption("AccountStore.findByIdAndUserId", value)
+        ),
 
       findByUserIdAndProviderId: (userId, providerId) =>
-        persist("AccountStore.findByUserIdAndProviderId")(selectAccountByProvider({ userId, providerId })),
+        Effect.flatMap(
+          persist("AccountStore.findByUserIdAndProviderId")(selectAccountByProvider({ userId, providerId })),
+          (value) => decryptOption("AccountStore.findByUserIdAndProviderId", value)
+        ),
 
-      listByUserId: (userId) => persist("AccountStore.listByUserId")(listAccounts(userId)),
+      listByUserId: (userId) => Effect.flatMap(
+        persist("AccountStore.listByUserId")(listAccounts(userId)),
+        (values) => decryptAll("AccountStore.listByUserId", values)
+      ),
 
       listByUserIdForUpdate: (userId) =>
-        persist("AccountStore.listByUserIdForUpdate")(listAccountsForUpdate(userId)),
+        Effect.flatMap(
+          persist("AccountStore.listByUserIdForUpdate")(listAccountsForUpdate(userId)),
+          (values) => decryptAll("AccountStore.listByUserIdForUpdate", values)
+        ),
 
       updateTokens: (id, tokens: AccountTokens) =>
-        Effect.flatMap(DateTime.now, (now) =>
-          updateAccountRow(
+        Effect.gen(function*() {
+          const now = yield* DateTime.now
+          const encrypted = yield* encryptPatch(id, tokens)
+          const updated = yield* updateAccountRow(
             "AccountStore.updateTokens",
             id,
             omitUndefined({
-              access_token: tokens.accessToken,
-              refresh_token: tokens.refreshToken,
-              id_token: tokens.idToken,
-              access_token_expires_at: tokens.accessTokenExpiresAt === undefined
+              access_token: encrypted.accessToken,
+              refresh_token: encrypted.refreshToken,
+              id_token: encrypted.idToken,
+              access_token_expires_at: encrypted.accessTokenExpiresAt === undefined
                 ? undefined
-                : encodeExpiry(tokens.accessTokenExpiresAt),
-              refresh_token_expires_at: tokens.refreshTokenExpiresAt === undefined
+                : encodeExpiry(encrypted.accessTokenExpiresAt),
+              refresh_token_expires_at: encrypted.refreshTokenExpiresAt === undefined
                 ? undefined
-                : encodeExpiry(tokens.refreshTokenExpiresAt),
-              scope: tokens.scope,
+                : encodeExpiry(encrypted.refreshTokenExpiresAt),
+              scope: encrypted.scope,
               updated_at: DateTime.formatIso(now)
             })
-          )),
+          )
+          return yield* decryptOption("AccountStore.updateTokens", updated)
+        }),
 
       updatePasswordHash: (userId, passwordHash) =>
         persist("AccountStore.updatePasswordHash")(Effect.gen(function*() {
@@ -635,7 +723,8 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
           SET password_hash = ${passwordHash}, updated_at = ${DateTime.formatIso(now)}
           WHERE user_id = ${userId} AND issuer = ${CredentialIssuer}
           RETURNING ${accountCols}`
-          return yield* firstAccount(rows)
+          return yield* Effect.flatMap(firstAccount(rows), (value) =>
+            decryptOption("AccountStore.updatePasswordHash", value))
         })),
 
       deleteById: (id, userId) =>
@@ -792,7 +881,7 @@ const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, Sq
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
-): Layer.Layer<AuthStores, never, SqlClient.SqlClient> =>
+): Layer.Layer<AuthStores, never, SqlClient.SqlClient | AuthConfig> =>
   Layer.mergeAll(
     Layer.effect(userStoreOf(model), makeUserStore(model)),
     Layer.effect(sessionStoreOf(model), makeSessionStore(model)),
@@ -807,4 +896,4 @@ export const layerFor = <F extends UserFields>(
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient> = layerFor(baseUserModel)
+export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient | AuthConfig> = layerFor(baseUserModel)

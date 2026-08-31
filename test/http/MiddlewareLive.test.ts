@@ -217,7 +217,10 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
    * its own. The one test that is *about* the anonymous fail-closed bucket is
    * the only one that sends no forwarding header.
    */
-  it.layer(AuthTest.layerHttp({ trustedOrigins, rateLimit: { enabled: true } }))(
+  it.layer(AuthTest.layerHttp({
+    trustedOrigins,
+    rateLimit: { enabled: true, ipHeaders: ["x-forwarded-for"] }
+  }))(
     "with the rate limits switched on",
     (it) => {
       it.effect("refuses the fourth sign-in attempt in a window, and says how long to wait", () =>

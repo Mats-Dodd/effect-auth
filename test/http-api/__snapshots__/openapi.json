@@ -31,7 +31,10 @@
                           "type": "string"
                         },
                         "email": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320,
+                          "pattern": "^[^\\s@]+@[^\\s@]+$"
                         },
                         "emailVerified": {
                           "type": "boolean"
@@ -183,18 +186,27 @@
                 "type": "object",
                 "properties": {
                   "name": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
                   },
                   "email": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 320,
+                    "pattern": "^[^\\s@]+@[^\\s@]+$"
                   },
                   "password": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   },
                   "image": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -204,7 +216,9 @@
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -261,7 +275,10 @@
                           "type": "string"
                         },
                         "email": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320,
+                          "pattern": "^[^\\s@]+@[^\\s@]+$"
                         },
                         "emailVerified": {
                           "type": "boolean"
@@ -403,10 +420,15 @@
                 "type": "object",
                 "properties": {
                   "email": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 320,
+                    "pattern": "^[^\\s@]+@[^\\s@]+$"
                   },
                   "password": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   },
                   "rememberMe": {
                     "anyOf": [
@@ -421,7 +443,9 @@
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -529,7 +553,10 @@
                           "type": "string"
                         },
                         "email": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320,
+                          "pattern": "^[^\\s@]+@[^\\s@]+$"
                         },
                         "emailVerified": {
                           "type": "boolean"
@@ -967,12 +994,17 @@
                 "type": "object",
                 "properties": {
                   "email": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 320,
+                    "pattern": "^[^\\s@]+@[^\\s@]+$"
                   },
                   "redirectTo": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -1049,10 +1081,14 @@
                 "type": "object",
                 "properties": {
                   "token": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   },
                   "newPassword": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   }
                 },
                 "required": [
@@ -1152,10 +1188,14 @@
                 "type": "object",
                 "properties": {
                   "currentPassword": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   },
                   "newPassword": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   },
                   "revokeOtherSessions": {
                     "anyOf": [
@@ -1228,12 +1268,17 @@
                 "type": "object",
                 "properties": {
                   "email": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 320,
+                    "pattern": "^[^\\s@]+@[^\\s@]+$"
                   },
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -1263,7 +1308,9 @@
             "name": "token",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "required": true
           },
@@ -1273,7 +1320,9 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
                 },
                 {
                   "type": "null"
@@ -1391,12 +1440,16 @@
                 "type": "object",
                 "properties": {
                   "providerId": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
                   },
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -1406,7 +1459,9 @@
                   "errorCallbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -1418,8 +1473,11 @@
                       {
                         "type": "array",
                         "items": {
-                          "type": "string"
-                        }
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "maxItems": 64
                       },
                       {
                         "type": "null"
@@ -1459,7 +1517,9 @@
             "name": "providerId",
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             },
             "required": true
           },
@@ -1469,7 +1529,9 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
                 },
                 {
                   "type": "null"
@@ -1484,7 +1546,9 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
                 },
                 {
                   "type": "null"
@@ -1499,7 +1563,9 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
                 },
                 {
                   "type": "null"
@@ -1514,7 +1580,9 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
                 },
                 {
                   "type": "null"
@@ -1529,7 +1597,9 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
                 },
                 {
                   "type": "null"
@@ -1586,7 +1656,9 @@
             "name": "providerId",
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             },
             "required": true
           }
@@ -1616,7 +1688,9 @@
                   "code": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
                       },
                       {
                         "type": "null"
@@ -1626,7 +1700,9 @@
                   "state": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
                       },
                       {
                         "type": "null"
@@ -1636,7 +1712,9 @@
                   "error": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
                       },
                       {
                         "type": "null"
@@ -1646,7 +1724,9 @@
                   "error_description": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1024
                       },
                       {
                         "type": "null"
@@ -1656,7 +1736,9 @@
                   "user": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
                       },
                       {
                         "type": "null"
@@ -1867,12 +1949,16 @@
                 "type": "object",
                 "properties": {
                   "providerId": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
                   },
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -1882,7 +1968,9 @@
                   "errorCallbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -1894,8 +1982,11 @@
                       {
                         "type": "array",
                         "items": {
-                          "type": "string"
-                        }
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256
+                        },
+                        "maxItems": 64
                       },
                       {
                         "type": "null"
@@ -2052,7 +2143,10 @@
                           "type": "string"
                         },
                         "email": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 3,
+                          "maxLength": 320,
+                          "pattern": "^[^\\s@]+@[^\\s@]+$"
                         },
                         "emailVerified": {
                           "type": "boolean"
@@ -2127,7 +2221,9 @@
                   "name": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
                       },
                       {
                         "type": "null"
@@ -2139,7 +2235,9 @@
                       {
                         "anyOf": [
                           {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2048
                           },
                           {
                             "type": "null"
@@ -2255,12 +2353,17 @@
                 "type": "object",
                 "properties": {
                   "newEmail": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 320,
+                    "pattern": "^[^\\s@]+@[^\\s@]+$"
                   },
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -2290,7 +2393,9 @@
             "name": "token",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "required": true
           }
@@ -2342,7 +2447,9 @@
             "name": "token",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "required": true
           }
@@ -2495,7 +2602,9 @@
                   "password": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
                       },
                       {
                         "type": "null"
@@ -2505,7 +2614,9 @@
                   "callbackURL": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048
                       },
                       {
                         "type": "null"
@@ -2532,7 +2643,9 @@
             "name": "token",
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
             },
             "required": true
           }
@@ -2683,7 +2796,9 @@
                 "type": "object",
                 "properties": {
                   "newPassword": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
                   }
                 },
                 "required": [

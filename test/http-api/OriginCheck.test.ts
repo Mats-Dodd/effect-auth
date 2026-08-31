@@ -19,7 +19,7 @@ const baseUrl = "https://app.example.com"
 const config = (trusted: ReadonlyArray<string> = []): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl,
-    secret: Redacted.make("test-secret"),
+    secret: Redacted.make("test-secret-at-least-32-bytes-long"),
     trustedOrigins: trusted
   })
 
@@ -64,17 +64,14 @@ describe("http/OriginCheck", () => {
       assert.deepStrictEqual(originOf("file:///etc/passwd"), Option.none())
       assert.deepStrictEqual(originOf("null"), Option.none())
 
-      // And a deployment that misconfigures one of them into `trustedOrigins`
-      // gets no new trust out of it, in either direction.
-      const misconfigured = config(["data:text/html,evil"])
-      assert.deepStrictEqual([...trustedOrigins(misconfigured)], [baseUrl])
-      assert.isFalse(isTrustedOrigin(misconfigured, "null"))
-      assert.strictEqual(resolveUrl(misconfigured, "data:text/html,evil"), baseUrl)
+      // Configuration rejects an opaque trusted origin at startup.
+      assert.throws(() => config(["data:text/html,evil"]), /trustedOrigins\[0\]/)
     })
 
     it("always trusts the baseUrl origin, plus whatever is configured", () => {
-      const origins = trustedOrigins(config(["https://admin.example.com/console", "nonsense"]))
+      const origins = trustedOrigins(config(["https://admin.example.com/console"]))
       assert.deepStrictEqual([...origins].sort(), ["https://admin.example.com", "https://app.example.com"])
+      assert.throws(() => config(["nonsense"]), /trustedOrigins\[0\]/)
     })
 
     it("compares by origin, never by prefix", () => {

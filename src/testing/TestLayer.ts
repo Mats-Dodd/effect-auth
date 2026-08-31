@@ -47,6 +47,7 @@ import type {
   TokenConfig,
   UserConfigOptions
 } from "../config/AuthConfig.js"
+import { layer as authConfigLayer } from "../config/AuthConfig.js"
 import type { ScryptOptions } from "../crypto/PasswordHasher.js"
 import { layerScrypt, makeScrypt, PasswordHasher } from "../crypto/PasswordHasher.js"
 import type { AuthEvent } from "../domain/Events.js"
@@ -356,7 +357,10 @@ export const layerStoresFor = <F extends UserFields>(
 ): Layer.Layer<
   AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
   Migrator.MigrationError | SqlError.SqlError
-> => SqlStores.layerFor(model).pipe(Layer.provideMerge(layerDatabaseFor(model)))
+> => SqlStores.layerFor(model).pipe(
+  Layer.provide(authConfigLayer(testConfig())),
+  Layer.provideMerge(layerDatabaseFor(model))
+)
 
 /**
  * A fresh in-memory PGlite database with `effect-auth`'s migrations applied.

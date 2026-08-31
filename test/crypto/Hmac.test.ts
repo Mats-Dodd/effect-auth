@@ -1,15 +1,9 @@
 import { assert, it, layer } from "@effect/vitest"
 import { Effect, Encoding, Layer, Redacted } from "effect"
-import * as AuthConfig from "../../src/config/AuthConfig.js"
 import * as Hmac from "../../src/crypto/Hmac.js"
 
 const hmacLayer = (secret: string): Layer.Layer<Hmac.Hmac> =>
-  Hmac.layer.pipe(
-    Layer.provide(AuthConfig.layer({
-      baseUrl: "http://localhost:3000",
-      secret: Redacted.make(secret)
-    }))
-  )
+  Layer.effect(Hmac.Hmac, Hmac.make(globalThis.crypto, Redacted.make(secret)))
 
 const utf8 = new TextEncoder()
 const message = utf8.encode("hello")

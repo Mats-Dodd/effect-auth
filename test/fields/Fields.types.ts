@@ -25,6 +25,7 @@ import type { Atom } from "effect/unstable/reactivity"
 import type { SqlClient } from "effect/unstable/sql"
 import { AuthClient } from "../../src/client/index.js"
 import * as Auth from "../../src/config/Auth.js"
+import * as AuthConfig from "../../src/config/AuthConfig.js"
 import type {
   EmailNotVerified,
   InvalidCredentials,
@@ -227,7 +228,7 @@ eq<Exact<Atom.Success<AuthClient.AuthClient<Fields>["signIn"]>, SessionWithUserO
  * fields costs a deployment nothing in its layer graph: the types below are the
  * ones the base `layer` constants already have, character for character.
  */
-eq<Exact<ReturnType<typeof SqlStores.layerFor<Fields>>, Layer.Layer<AuthStores, never, SqlClient.SqlClient>>>(true)
+eq<Exact<ReturnType<typeof SqlStores.layerFor<Fields>>, Layer.Layer<AuthStores, never, SqlClient.SqlClient | AuthConfig.AuthConfig>>>(true)
 eq<Exact<ReturnType<typeof SqlStores.layerFor<Fields>>, typeof SqlStores.layer>>(true)
 eq<Exact<ReturnType<typeof Sessions.layerFor<Fields>>, typeof Sessions.layer>>(true)
 eq<Exact<ReturnType<typeof Passwords.layerFor<Fields>>, typeof Passwords.layer>>(true)

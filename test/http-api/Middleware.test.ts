@@ -16,7 +16,7 @@ import {
 const configWith = (freshAge: Duration.Duration): AuthConfig.AuthConfigService =>
   AuthConfig.make({
     baseUrl: "https://app.example.com",
-    secret: Redacted.make("test-secret"),
+    secret: Redacted.make("test-secret-at-least-32-bytes-long"),
     session: { freshAge }
   })
 

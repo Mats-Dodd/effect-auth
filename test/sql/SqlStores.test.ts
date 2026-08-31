@@ -1,6 +1,6 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Option } from "effect"
-import { SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlError } from "effect/unstable/sql"
 import { Account, CredentialIssuer, oauthIssuer, Session, User, Verification } from "../../src/domain/Schema.js"
 import type { UserId } from "../../src/domain/Schema.js"
 import {
@@ -221,7 +221,7 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         assert.strictEqual(credential.passwordHash, "scrypt$n=16384,r=16,p=1$c2FsdA$a2V5")
 
-        yield* accounts.create(
+        const oauth = yield* accounts.create(
           yield* Account.insert.makeEffect({
             issuer: oauthIssuer("github"),
             accountId,
@@ -236,6 +236,12 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
             passwordHash: null
           })
         )
+
+        const sql = yield* SqlClient.SqlClient
+        const raw = yield* sql<{ readonly access_token: string }>`SELECT access_token FROM accounts WHERE id = ${oauth.id}`
+        assert.strictEqual(raw.length, 1)
+        assert.notStrictEqual(raw[0]!.access_token, "gho_secret")
+        assert.isTrue(raw[0]!.access_token.startsWith("v1."))
 
         const byIssuer = yield* expectSome(
           yield* accounts.findByIssuerAccountId(oauthIssuer("github"), accountId),

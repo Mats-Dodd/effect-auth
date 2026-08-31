@@ -15,8 +15,8 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { InvalidToken, RateLimited } from "../domain/Errors.js"
 import { PolicyRefused } from "../domain/Hooks.js"
-import { SessionWithUser } from "../domain/Schema.js"
-import { Ok, Redirect, Secret } from "../http/AuthApi.js"
+import { Email, SessionWithUser } from "../domain/Schema.js"
+import { InputName, InputToken, InputUrl, Ok, Redirect, Secret } from "../http/AuthApi.js"
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -67,18 +67,18 @@ export class SignUpDisabled extends Schema.TaggedError<SignUpDisabled>("effect-a
  * @since 1.0.0
  */
 export const MagicLinkSignInPayload = Schema.Struct({
-  email: Schema.String,
+  email: Email,
   /**
    * The display name to give the account, if this link ends up creating one.
    * Ignored for an address that already has one.
    */
-  name: Schema.optional(Schema.String),
+  name: Schema.optional(InputName),
   /** Where to land after the link is followed. */
-  callbackURL: Schema.optional(Schema.String),
+  callbackURL: Schema.optional(InputUrl),
   /** Where to land instead when the link created the account. */
-  newUserCallbackURL: Schema.optional(Schema.String),
+  newUserCallbackURL: Schema.optional(InputUrl),
   /** Where to land when following the link fails. */
-  errorCallbackURL: Schema.optional(Schema.String),
+  errorCallbackURL: Schema.optional(InputUrl),
   /** When `false` the session the link establishes expires in a day. */
   rememberMe: Schema.optional(Schema.Boolean)
 })
@@ -104,7 +104,7 @@ export type MagicLinkSignInPayload = typeof MagicLinkSignInPayload.Type
  * @since 1.0.0
  */
 export const MagicLinkVerifyQuery = Schema.Struct({
-  token: Schema.String
+  token: InputToken
 })
 
 /**

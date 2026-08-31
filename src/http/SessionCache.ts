@@ -35,10 +35,10 @@
  * deployment that cannot accept the lag anywhere leaves the cache off, which is
  * the default.
  *
- * *A hidden field is not carried.* The snapshot is the model's `json`
- * projection, so a `UserField.hidden` column is not in it; a cached read fills
- * it with the field's declared default rather than its stored value. An endpoint
- * that reads one must be annotated `AuthoritativeSession`.
+ * *A hidden field disables the cache.* The snapshot is the model's `json`
+ * projection, so a `UserField.hidden` column cannot be carried without exposing
+ * it to the browser. A model containing one therefore takes the authoritative
+ * database path for every request.
  *
  * *Binding.* A snapshot is useless without the session token it was minted for:
  * `tokenHash` is inside the signed payload and is compared with the digest of
@@ -364,30 +364,27 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   const hmac = yield* Hmac
   const tokens = yield* Token
 
-  const enabled = config.cookieCache.enabled
   const cookieName = sessionCacheCookieName(config)
   const security = sessionCacheCookieSecurity(config)
-  // The declared defaults of every custom column, resolved once, here. On a
-  // hit they fill in whatever the snapshot does not carry — which is exactly
-  // the `UserField.hidden` columns, since the snapshot is the public projection
-  // and a public custom field arrives in it and overrides its default.
+  // Defaults are needed by the standalone codec to reconstruct the model. A
+  // model with hidden fields never serves that reconstruction on a request.
   const hiddenDefaults = yield* model.extraDefaults
   const encodeUser = Schema.encodeUnknownEffect(model.json)
 
   // Named for the warning below: the custom columns the public projection does
   // not carry, not every custom column.
   const hidden = model.extraKeys.filter((key) => !Object.hasOwn(model.json.fields, key))
-  if (enabled && hidden.length > 0) {
-    // Said once, when the stack is built, rather than left to whoever reads the
-    // module header: on a cache hit these columns carry their declared
-    // defaults, because a snapshot is the public projection and a hidden field
-    // is not in it. An endpoint that reads one has to be annotated
-    // `AuthoritativeSession`, and nothing but this line will tell a deployment
-    // so.
+  // A snapshot cannot faithfully reconstruct a hidden field without exposing
+  // it to the browser. Serving a made-up default is unsafe for fields used by
+  // authorization, so caching is disabled for the whole model instead.
+  const enabled = config.cookieCache.enabled && hidden.length === 0
+  if (config.cookieCache.enabled && hidden.length > 0) {
+    // Said once when the stack is built so a deployment knows why enabling the
+    // cache produced no cache hits for this model.
     yield* annotateAuthLogs(Effect.logWarning(
       `the session cookie cache is enabled and the user model hides ${
         hidden.join(", ")
-      }: a cached read sees the declared default of a hidden field, not the stored value. Annotate any endpoint that reads one AuthoritativeSession.`
+      }: the session cookie cache has been disabled because hidden fields cannot be reconstructed safely.`
     ))
   }
 

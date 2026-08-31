@@ -525,9 +525,10 @@ const baseTier = <F extends UserFields>(
   options: Extras,
   model: UserModel<F>
 ): Layer.Layer<AuthConfig | AuthStores | AuthEvents | RateLimiter.RateLimiter, never, SqlClient.SqlClient> => {
+  const sqlStores = SqlStores.layerFor(model).pipe(Layer.provide(Layer.succeed(AuthConfig)(config)))
   const stores = options.sessionStore === undefined
-    ? SqlStores.layerFor(model)
-    : options.sessionStore.pipe(Layer.provideMerge(SqlStores.layerFor(model)))
+    ? sqlStores
+    : options.sessionStore.pipe(Layer.provideMerge(sqlStores))
   return Layer.mergeAll(
     Layer.succeed(AuthConfig)(config),
     stores,

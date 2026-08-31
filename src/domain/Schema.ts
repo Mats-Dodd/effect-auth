@@ -100,7 +100,13 @@ export type VerificationId = typeof VerificationId.Type
  * @category models
  * @since 1.0.0
  */
-export const Email = Schema.String
+export const Email = Schema.String.pipe(Schema.check(
+  Schema.isMinLength(3),
+  Schema.isMaxLength(320),
+  // Deliberately pragmatic rather than an RFC-5322 parser: one visible local
+  // part, one visible domain, no whitespace. Delivery remains the final proof.
+  Schema.isPattern(/^[^\s@]+@[^\s@]+$/)
+))
 
 /**
  * Normalizes an e-mail address for storage and lookup: surrounding whitespace
@@ -874,7 +880,7 @@ export const UserField: UserFieldConstructors = {
  */
 const provisioningSample: UserInsertInput = {
   name: "",
-  email: "",
+  email: "provisioning-sample@example.invalid",
   emailVerified: false,
   image: null
 }

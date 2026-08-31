@@ -1,5 +1,5 @@
 import { assert, describe, expect, it } from "@effect/vitest"
-import { Context, Effect, Redacted, Schema } from "effect"
+import { Context, Effect, Option, Redacted, Schema } from "effect"
 import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { AuthApi, AuthApiGroup, SignInEmailPayload } from "../../src/http/AuthApi.js"
@@ -472,6 +472,16 @@ describe("http/AuthApi", () => {
         assert.strictEqual(Redacted.value(payload.password), testPasswordText)
         assert.strictEqual(String(payload.password), "<redacted>")
         assert.isFalse(JSON.stringify(payload).includes(testPasswordText))
+      }))
+
+    it.effect("rejects malformed and oversized public input before handlers run", () =>
+      Effect.gen(function*() {
+        const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(SignInEmailPayload))
+        assert.isTrue(Option.isNone(yield* Effect.option(decode({ email: "not-an-email", password: "valid" }))))
+        assert.isTrue(Option.isNone(yield* Effect.option(decode({
+          email: "ada@example.com",
+          password: "x".repeat(4097)
+        }))))
       }))
   })
 })

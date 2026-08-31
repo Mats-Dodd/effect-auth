@@ -445,7 +445,10 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
   // The counters
   // ---------------------------------------------------------------------------
 
-  it.layer(AuthTest.layerHttp({ ...served, rateLimit: { enabled: true } }))(
+  it.layer(AuthTest.layerHttp({
+    ...served,
+    rateLimit: { enabled: true, ipHeaders: ["x-forwarded-for"] }
+  }))(
     "with the rate limits switched on",
     (it) => {
       it.effect("refuses the fourth change-email attempt in a window", () =>
