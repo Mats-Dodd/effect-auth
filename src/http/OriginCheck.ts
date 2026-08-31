@@ -17,7 +17,7 @@
  *
  * @since 1.0.0
  */
-import { Effect, Option } from "effect"
+import { Array, Effect, Option, Schema } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
@@ -34,6 +34,14 @@ import { Unauthorized } from "../domain/Errors.js"
  * @since 1.0.0
  */
 export const webProtocols: ReadonlySet<string> = new Set(["http:", "https:"])
+
+/** `new URL(s)` as a total function: an unparseable string decodes to `None`. */
+const decodeUrl = Schema.decodeOption(Schema.URLFromString)
+
+/** `new URL(s, base)` as a total function — no base-relative schema exists. */
+const resolveAgainst = Option.liftThrowable(
+  (candidate: string, base: string) => new URL(candidate, base)
+)
 
 /**
  * The origin of a URL — scheme, host and port — or `None` when the string is
@@ -53,19 +61,42 @@ export const webProtocols: ReadonlySet<string> = new Set(["http:", "https:"])
  * @category combinators
  * @since 1.0.0
  */
-export const originOf = (url: string): Option.Option<string> => {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return Option.none()
-  }
-  return webProtocols.has(parsed.protocol) ? Option.some(parsed.origin) : Option.none()
-}
+export const originOf = (url: string): Option.Option<string> =>
+  Option.flatMap(
+    decodeUrl(url),
+    (parsed) => webProtocols.has(parsed.protocol) ? Option.some(parsed.origin) : Option.none()
+  )
 
 /**
- * Every origin this deployment trusts: the one `baseUrl` is served from, plus
- * whatever `trustedOrigins` adds.
+ * Builds the set of origins a configuration trusts: the one `baseUrl` is served
+ * from, plus whatever `trustedOrigins` adds.
+ *
+ * **When to use**
+ *
+ * From `AuthConfig.make`, to compute the set once when the configuration is
+ * built. {@link trustedOrigins} is the reader every request path goes through,
+ * and it caches per configuration object, so calling this directly is only
+ * needed where the set itself is wanted as a value.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const trustedOriginSet = (options: {
+  readonly baseUrl: string
+  readonly trustedOrigins: ReadonlyArray<string>
+}): ReadonlySet<string> => new Set(Array.getSomes([options.baseUrl, ...options.trustedOrigins].map(originOf)))
+
+/** Keyed by the configuration object, which is built once per layer. */
+const originSets = new WeakMap<AuthConfigService, ReadonlySet<string>>()
+
+/**
+ * Every origin this deployment trusts.
+ *
+ * **Details**
+ *
+ * Computed once per configuration object and memoized: this is on the hot path
+ * of every state-changing request and of every redirect target, and parsing the
+ * same handful of URLs per request bought nothing.
  *
  * **Gotchas**
  *
@@ -77,13 +108,10 @@ export const originOf = (url: string): Option.Option<string> => {
  * @since 1.0.0
  */
 export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> => {
-  const origins = new Set<string>()
-  const base = originOf(config.baseUrl)
-  if (Option.isSome(base)) origins.add(base.value)
-  for (const entry of config.trustedOrigins) {
-    const origin = originOf(entry)
-    if (Option.isSome(origin)) origins.add(origin.value)
-  }
+  const cached = originSets.get(config)
+  if (cached !== undefined) return cached
+  const origins = trustedOriginSet(config)
+  originSets.set(config, origins)
   return origins
 }
 
@@ -155,15 +183,12 @@ export const resolveUrl = (
 ): string => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return config.baseUrl
   if (isPathRelative(candidate)) {
-    let resolved: URL
-    try {
-      resolved = new URL(candidate, config.baseUrl)
-    } catch {
-      return config.baseUrl
-    }
+    const resolved = resolveAgainst(candidate, config.baseUrl)
     // Belt and braces: a relative-looking candidate that nonetheless parsed
     // onto another origin is a redirect off this deployment, whatever it was.
-    return trustedOrigins(config).has(resolved.origin) ? resolved.toString() : config.baseUrl
+    return Option.isSome(resolved) && trustedOrigins(config).has(resolved.value.origin)
+      ? resolved.value.toString()
+      : config.baseUrl
   }
   return isTrustedOrigin(config, candidate) ? candidate : config.baseUrl
 }

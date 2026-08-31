@@ -7,10 +7,11 @@
  * `Redacted<string>` that gets unwrapped one frame too early still typechecks.
  */
 import { assert, describe, it } from "@effect/vitest"
-import { Cause, Effect, Logger, Redacted } from "effect"
+import { Cause, Effect, Layer, Logger, Redacted } from "effect"
 import * as PasswordHasher from "../../src/crypto/PasswordHasher.js"
 import * as Token from "../../src/crypto/Token.js"
 import type { PasswordHashError } from "../../src/domain/Errors.js"
+import { layerWebCrypto } from "../../src/internal/crypto.js"
 
 const plaintext = "correct horse battery staple"
 
@@ -69,7 +70,7 @@ describe("crypto/redaction", () => {
       assert.strictEqual(lines.length, 1)
       assert.notInclude(lines[0]!, raw)
       assert.include(lines[0]!, "<redacted>")
-    }).pipe(Effect.provide(Token.layer)))
+    }).pipe(Effect.provide(Token.layer.pipe(Layer.provide(layerWebCrypto)))))
 
   it.effect("keeps the plaintext out of a rendered PasswordHashError", () =>
     Effect.gen(function*() {
@@ -93,7 +94,7 @@ describe("crypto/redaction", () => {
       const { lines } = yield* captureLogs(Effect.logError("hash failed", failure))
       assert.strictEqual(lines.length, 1)
       assert.notInclude(lines[0]!, plaintext)
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt())))
+    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto)))))
 
   it.effect("keeps the plaintext out of a hash it produced", () =>
     Effect.gen(function*() {
@@ -102,5 +103,5 @@ describe("crypto/redaction", () => {
 
       assert.notInclude(hash, plaintext)
       assert.notInclude(hash, "correct")
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt({ N: 1024, r: 8 }))))
+    }).pipe(Effect.provide(PasswordHasher.layerScrypt({ N: 1024, r: 8 }).pipe(Layer.provide(layerWebCrypto)))))
 })

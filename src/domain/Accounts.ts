@@ -20,6 +20,7 @@
  */
 import { Context, Effect, Layer, Option } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
+import { insertRow } from "../internal/effects.js"
 import { AccountAlreadyLinked, CannotUnlinkLastAccount, NotFound, UserNotFound } from "./Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "./Events.js"
 import type { AccountId, User, UserId } from "./Schema.js"
@@ -236,7 +237,7 @@ export const make: () => Effect.Effect<
 
   const insertAccount = Effect.fnUntraced(function*(userId: UserId, identity: OAuthIdentity) {
     const tokens = identity.tokens
-    const row = yield* Effect.orDie(Account.insert.makeEffect({
+    const row = yield* insertRow(Account.insert, {
       issuer: identity.issuer,
       accountId: identity.accountId,
       providerId: identity.providerId,
@@ -248,7 +249,7 @@ export const make: () => Effect.Effect<
       refreshTokenExpiresAt: tokens?.refreshTokenExpiresAt ?? null,
       scope: tokens?.scope ?? null,
       passwordHash: null
-    }))
+    })
     return yield* accounts.create(row)
   })
 
@@ -271,14 +272,12 @@ export const make: () => Effect.Effect<
     // 1. The provider identity is already known: an ordinary sign-in.
     const existing = yield* accounts.findByIssuerAccountId(identity.issuer, identity.accountId)
     if (Option.isSome(existing)) {
-      const owner = yield* users.findById(existing.value.userId)
-      if (Option.isNone(owner)) {
-        // The foreign key cascades, so this only happens on a store that does
-        // not enforce it. Refuse rather than provision a replacement user.
-        return yield* Effect.fail(new UserNotFound())
-      }
+      // The foreign key cascades, so a missing owner only happens on a store
+      // that does not enforce it. Refuse rather than provision a replacement.
+      const found = yield* users.findById(existing.value.userId)
+      const owner = yield* Effect.fromOption(found, () => new UserNotFound())
       const account = yield* refreshTokens(existing.value, identity)
-      return { user: owner.value, account, userCreated: false, accountCreated: false } satisfies LinkResult
+      return { user: owner, account, userCreated: false, accountCreated: false } satisfies LinkResult
     }
 
     // 2. Somebody already holds the address the provider reported.
@@ -302,12 +301,12 @@ export const make: () => Effect.Effect<
 
     // 3. A new person. The user and their first sign-in method commit together.
     const result = yield* transaction.run(Effect.gen(function*() {
-      const row = yield* Effect.orDie(UserModel.insert.makeEffect({
+      const row = yield* insertRow(UserModel.insert, {
         name: identity.name ?? email,
         email,
         emailVerified: identity.emailVerified,
         image: identity.image ?? null
-      }))
+      })
       const user = yield* users.create(row)
       const account = yield* insertAccount(user.id, identity)
       return { user, account }
@@ -333,21 +332,14 @@ export const make: () => Effect.Effect<
    * duplicate an event.
    */
   const linkOAuth = (identity: OAuthIdentity) =>
-    attemptLinkOAuth(identity).pipe(
-      Effect.catchTag(
-        "PersistenceError",
-        (
-          error
-        ): Effect.Effect<LinkResult, AccountAlreadyLinked | UserNotFound | PersistenceError> =>
-          isUniqueViolation(error) ? attemptLinkOAuth(identity) : Effect.fail(error)
-      )
-    )
+    Effect.retry(attemptLinkOAuth(identity), {
+      while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error),
+      times: 1
+    })
 
   const linkToUser = Effect.fnUntraced(function*(userId: UserId, identity: OAuthIdentity) {
-    const owner = yield* users.findById(userId)
-    if (Option.isNone(owner)) {
-      return yield* Effect.fail(new UserNotFound())
-    }
+    const found = yield* users.findById(userId)
+    const owner = yield* Effect.fromOption(found, () => new UserNotFound())
 
     const existing = yield* accounts.findByIssuerAccountId(identity.issuer, identity.accountId)
     if (Option.isSome(existing)) {
@@ -355,12 +347,12 @@ export const make: () => Effect.Effect<
         return yield* Effect.fail(new AccountAlreadyLinked({ providerId: identity.providerId }))
       }
       const account = yield* refreshTokens(existing.value, identity)
-      return { user: owner.value, account, userCreated: false, accountCreated: false } satisfies LinkResult
+      return { user: owner, account, userCreated: false, accountCreated: false } satisfies LinkResult
     }
 
     const account = yield* insertAccount(userId, identity)
     yield* linked(userId, account)
-    return { user: owner.value, account, userCreated: false, accountCreated: true } satisfies LinkResult
+    return { user: owner, account, userCreated: false, accountCreated: true } satisfies LinkResult
   })
 
   const unlink = Effect.fnUntraced(function*(accountId: AccountId, userId: UserId) {

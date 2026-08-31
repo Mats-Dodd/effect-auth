@@ -1,13 +1,16 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { Effect, Encoding, Redacted, Result, Schema } from "effect"
+import { Effect, Encoding, Layer, Redacted, Result, Schema } from "effect"
 import * as PasswordHasher from "../../src/crypto/PasswordHasher.js"
+import { layerWebCrypto } from "../../src/internal/crypto.js"
 import { testPassword } from "../fixtures.js"
 
 // Real cost parameters would make this file take minutes; the format, the
 // dispatch and the comparison are what is under test, and they are indifferent
 // to cost. The production defaults are asserted separately, from the constants.
-const scrypt = PasswordHasher.layerScrypt({ N: 1024, r: 8, p: 1 })
-const pbkdf2 = PasswordHasher.layerPbkdf2({ iterations: 1000 })
+// The hashing layers read their salt from the ambient `Crypto`; `Auth.layer`
+// provides the WebCrypto-backed default, and standalone use provides it here.
+const scrypt = PasswordHasher.layerScrypt({ N: 1024, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
+const pbkdf2 = PasswordHasher.layerPbkdf2({ iterations: 1000 }).pipe(Layer.provide(layerWebCrypto))
 
 const password = testPassword
 const wrong = Redacted.make("correct horse battery stapl3")
@@ -93,7 +96,7 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
     Effect.gen(function*() {
       const legacy = yield* Effect.provide(
         hasher.use((_) => _.hash(password)),
-        PasswordHasher.layerScrypt({ N: 512, r: 8, p: 1 })
+        PasswordHasher.layerScrypt({ N: 512, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
       )
 
       assert.strictEqual(legacy.split("$")[1], "n=512,r=8,p=1")
@@ -246,7 +249,7 @@ describe("crypto/PasswordHasher", () => {
       assert.strictEqual(hash.split("$")[1], "n=16384,r=16,p=1")
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt())))
+    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto)))))
 
   it.effect("keeps a parameter named __proto__ off Object.prototype", () =>
     Effect.gen(function*() {

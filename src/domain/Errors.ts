@@ -18,6 +18,7 @@
  */
 import { Schema } from "effect"
 import { HttpApiError } from "effect/unstable/httpapi"
+import type { PersistenceError } from "./Stores.js"
 
 // -----------------------------------------------------------------------------
 // Reused built-ins
@@ -419,7 +420,15 @@ export class PasswordHashError
 {}
 
 /**
- * Every error `effect-auth` can report to a caller.
+ * Every error `effect-auth` can raise.
+ *
+ * **Gotchas**
+ *
+ * Not every member reaches a caller. {@link PasswordHashError} and
+ * `PersistenceError` are server faults: the HTTP layer turns them into defects,
+ * so they render as an opaque `500` and appear in no endpoint's declared error
+ * union. They are members here because a program that calls the domain services
+ * directly — without the HTTP layer — can observe them.
  *
  * @category errors
  * @since 1.0.0
@@ -442,3 +451,5 @@ export type AuthError =
   | CannotUnlinkLastAccount
   | RateLimited
   | EmailDeliveryError
+  | PasswordHashError
+  | PersistenceError

@@ -16,11 +16,12 @@
  *
  * @since 1.0.0
  */
-import type { Config, Redacted } from "effect"
-import { Effect } from "effect"
+import type { Redacted } from "effect"
+import { Config, Effect, Option, Schema } from "effect"
+import { optionalConfig } from "../../internal/config.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
 import { fetchJson, providerError } from "../Provider.js"
-import { asRecord } from "../internal/claims.js"
+import { lenient, Truthy } from "../internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -140,21 +141,29 @@ export interface Options {
 // Constructors
 // -----------------------------------------------------------------------------
 
-// Google's `readString` accepts only strings: every claim it reads is a string
-// in Google's schema, and coercing here would be a semantic change. GitHub's
-// local reader differs — its user id is a JSON number — so only `asRecord` is
-// shared.
-const readString = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
-  if (!Object.hasOwn(record, key)) return null
-  const value = record[key]
-  return typeof value === "string" && value.length > 0 ? value : null
-}
+// Every claim Google is read for is a string in its schema — unlike GitHub,
+// whose user id is a JSON number — so nothing here coerces.
 
-const readVerified = (record: Readonly<Record<string, unknown>>): boolean => {
-  if (!Object.hasOwn(record, "email_verified")) return false
-  const value = record.email_verified
-  return value === true || value === "true"
-}
+/**
+ * The `hd` claim of a verified `id_token`, read out of the whole payload.
+ */
+const HostedDomainClaim = Schema.Struct({ hd: lenient(Schema.NonEmptyString) })
+
+const readHostedDomain = Schema.decodeUnknownOption(HostedDomainClaim)
+
+/**
+ * Google's OIDC userinfo body, consulted only when the token carries no
+ * address. The address is required — without one there is no identity — and
+ * everything else is advisory.
+ */
+const UserInfoBody = Schema.Struct({
+  email: Schema.NonEmptyString,
+  email_verified: lenient(Truthy),
+  name: lenient(Schema.NonEmptyString),
+  picture: lenient(Schema.NonEmptyString)
+})
+
+const readUserInfo = Schema.decodeUnknownOption(UserInfoBody)
 
 /**
  * Builds the Google provider configuration.
@@ -191,7 +200,10 @@ export const make = (options: Options): OAuthProviderConfig => {
     // pre-filters the account chooser and can be stripped from the URL; the
     // claim is part of what Google signed, and is checked after verification.
     if (options.hostedDomain !== undefined) {
-      const hd = readString(claims.raw, "hd")
+      const hd = Option.match(readHostedDomain(claims.raw), {
+        onNone: () => null,
+        onSome: (fields) => fields.hd ?? null
+      })
       if (hd !== options.hostedDomain) {
         return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
       }
@@ -208,17 +220,17 @@ export const make = (options: Options): OAuthProviderConfig => {
     }
 
     const response = yield* fetchJson({ providerId: id, url: userInfoUrl, accessToken: tokens.accessToken })
-    const body = asRecord(response.body)
-    const email = body === null ? null : readString(body, "email")
-    if (body === null || email === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    const decoded = readUserInfo(response.body)
+    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    const body = decoded.value
     // The subject still comes from the verified token, never from this body:
     // the response is only bearer-authenticated, the token is signed.
     return {
       id: claims.subject,
-      email,
-      emailVerified: readVerified(body),
-      name: claims.name ?? readString(body, "name") ?? email,
-      image: claims.picture ?? readString(body, "picture")
+      email: body.email,
+      emailVerified: body.email_verified !== undefined,
+      name: claims.name ?? body.name ?? body.email,
+      image: claims.picture ?? body.picture ?? null
     } satisfies OAuthUserInfo
   })
 
@@ -255,6 +267,17 @@ export interface ConfigOptions {
   readonly hostedDomain?: Config.Config<string> | undefined
 }
 
+/** The settings {@link ConfigOptions} reads from the environment. */
+interface Settings {
+  readonly clientId: string
+  readonly clientSecret: Redacted.Redacted<string>
+  readonly scopes: ReadonlyArray<string> | undefined
+  readonly redirectUri: string | undefined
+  readonly accessType: "online" | "offline" | undefined
+  readonly prompt: string | undefined
+  readonly hostedDomain: string | undefined
+}
+
 /**
  * Builds the Google provider configuration, reading its credentials from
  * `Config`.
@@ -268,18 +291,18 @@ export interface ConfigOptions {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig: (
+export const makeConfig = (
   options: ConfigOptions
-) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> = Effect.fnUntraced(
-  function*(options: ConfigOptions) {
-    return make({
-      clientId: yield* options.clientId,
-      clientSecret: yield* options.clientSecret,
-      scopes: options.scopes === undefined ? undefined : yield* options.scopes,
-      redirectUri: options.redirectUri === undefined ? undefined : yield* options.redirectUri,
-      accessType: options.accessType === undefined ? undefined : yield* options.accessType,
-      prompt: options.prompt === undefined ? undefined : yield* options.prompt,
-      hostedDomain: options.hostedDomain === undefined ? undefined : yield* options.hostedDomain
-    })
-  }
-)
+): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+  Effect.map(
+    Config.unwrap<Settings>({
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
+      scopes: optionalConfig(options.scopes),
+      redirectUri: optionalConfig(options.redirectUri),
+      accessType: optionalConfig(options.accessType),
+      prompt: optionalConfig(options.prompt),
+      hostedDomain: optionalConfig(options.hostedDomain)
+    }),
+    make
+  )

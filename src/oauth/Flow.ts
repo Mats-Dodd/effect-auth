@@ -21,8 +21,12 @@
  *   endpoint that answers `302` is an SSRF primitive — it can point a
  *   server-side request carrying the client secret at an internal address — so
  *   the redirect is never followed and the exchange fails instead.
+ * - Every outbound request carries a deadline, and only a connection that was
+ *   never made is retried — see `Provider.resilient`. A provider that accepts a
+ *   connection and never answers must not hold a callback fiber open.
  * - An OIDC provider *must* return an `id_token`, and it is verified
- *   fail-closed before any claim in it is read.
+ *   fail-closed before any claim in it is read. Its signing keys are fetched
+ *   over the same redirect-refusing client and cached by `IdToken.Jwks`.
  * - Every redirect target the flow will send a browser to is validated against
  *   `trustedOrigins` when the flow *starts*, not when it finishes.
  *
@@ -39,7 +43,7 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Duration, Effect, Layer, Redacted } from "effect"
+import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -55,19 +59,21 @@ import type { AccountTokens, PersistenceError } from "../domain/Stores.js"
 import { VerificationStore } from "../domain/Stores.js"
 import { resolveUrl } from "../http/OriginCheck.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
-import { isRedirectResponse, remoteKeys, verify as verifyIdToken } from "./IdToken.js"
+import { isRedirectResponse, Jwks, layerJwks, verify as verifyIdToken } from "./IdToken.js"
 import type { OAuthProviderConfig, OAuthTokens } from "./Provider.js"
 import {
   isOidc,
   OAuthProviders,
   providerError,
   providerIssuer,
+  providerRequestTimeout,
   reservedAuthorizationParams,
+  resilient,
   revealToken
 } from "./Provider.js"
 import type { IssueOptions, StatePayload } from "./State.js"
 import { codeChallengeMethod, consume as consumeState, issue as issueState } from "./State.js"
-import { asRecord } from "./internal/claims.js"
+import { lenient, Seconds } from "./internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Refusing redirects
@@ -121,6 +127,25 @@ export const refuseRedirects = (client: HttpClient.HttpClient): HttpClient.HttpC
       )
     ))
 
+/**
+ * {@link refuseRedirects} as a layer over the ambient `HttpClient`.
+ *
+ * **When to use**
+ *
+ * Providing anything that talks to a provider — the flow itself, and the
+ * {@link Jwks} key sets it verifies `id_token`s against. It is what makes a
+ * `jwks_uri` that answers `302` a failure rather than an SSRF primitive.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerSafeClient: Layer.Layer<HttpClient.HttpClient, never, HttpClient.HttpClient> = Layer.effect(
+  HttpClient.HttpClient,
+  Effect.gen(function*() {
+    return refuseRedirects(yield* HttpClient.HttpClient)
+  })
+)
+
 // -----------------------------------------------------------------------------
 // URLs
 // -----------------------------------------------------------------------------
@@ -153,16 +178,8 @@ export const callbackUri = (config: AuthConfigService, provider: OAuthProviderCo
 export const mergeScopes = (
   provider: OAuthProviderConfig,
   extra: ReadonlyArray<string> | undefined
-): ReadonlyArray<string> => {
-  const seen = new Set<string>()
-  const scopes: Array<string> = []
-  for (const scope of [...provider.scopes, ...(extra ?? [])]) {
-    if (scope.length === 0 || seen.has(scope)) continue
-    seen.add(scope)
-    scopes.push(scope)
-  }
-  return scopes
-}
+): ReadonlyArray<string> =>
+  Array.dedupe([...provider.scopes, ...(extra ?? [])].filter((scope) => scope.length > 0))
 
 /**
  * Builds the authorization URL the browser is sent to.
@@ -210,74 +227,58 @@ export const authorizationUrl = (options: {
 // -----------------------------------------------------------------------------
 
 /**
- * Reads a string field out of a provider's JSON body.
+ * What a token endpoint is believed to have said.
  *
  * **Gotchas**
  *
- * The keys are the provider's, so the lookup is `Object.hasOwn` on a value that
- * is never enumerated: a body carrying `__proto__` or `constructor` must read as
- * absent, not as a function.
+ * `access_token` is the only required field, and its absence is also how an
+ * OAuth error body (`{"error":"invalid_grant"}`) is detected. The provider's own
+ * message is deliberately not modelled: it routinely echoes the authorization
+ * code and, on some providers, the client secret.
  *
- * @category combinators
- * @since 1.0.0
+ * Every other field is advisory, so a provider that spells one badly loses that
+ * field rather than the sign-in. The keys are the provider's, and `Schema.Struct`
+ * reads own properties only: a body carrying `__proto__` or `constructor` reads
+ * as absent, not as a function.
  */
-export const stringField = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
-  if (!Object.hasOwn(record, key)) return null
-  const value = record[key]
-  return typeof value === "string" && value.length > 0 ? value : null
-}
+const TokenResponse = Schema.Struct({
+  access_token: Schema.NonEmptyString,
+  token_type: lenient(Schema.NonEmptyString),
+  refresh_token: lenient(Schema.NonEmptyString),
+  id_token: lenient(Schema.NonEmptyString),
+  expires_in: lenient(Seconds),
+  refresh_token_expires_in: lenient(Seconds),
+  scope: lenient(Schema.NonEmptyString)
+})
 
-/**
- * Reads a numeric field, accepting the string spelling providers often use for
- * `expires_in`.
- *
- * @category combinators
- * @since 1.0.0
- */
-export const numberField = (record: Readonly<Record<string, unknown>>, key: string): number | null => {
-  if (!Object.hasOwn(record, key)) return null
-  const value = record[key]
-  if (typeof value === "number") return Number.isFinite(value) ? value : null
-  if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  return null
-}
+const readTokenResponse = Schema.decodeUnknownOption(TokenResponse)
 
 /**
  * Normalizes a token endpoint's JSON body.
  *
  * **Details**
  *
- * Returns `null` when the body is not an object or carries no `access_token` —
- * which is also how an OAuth error body (`{"error":"invalid_grant"}`) is
- * detected. The provider's own message is deliberately not read: it routinely
- * echoes the authorization code and, on some providers, the client secret.
+ * Answers `null` when the body is not an object or carries no `access_token`.
  *
  * @category combinators
  * @since 1.0.0
  */
-export const decodeTokens = (body: unknown, now: DateTime.Utc): OAuthTokens | null => {
-  const record = asRecord(body)
-  if (record === null) return null
-  const accessToken = stringField(record, "access_token")
-  if (accessToken === null) return null
-  const expiresIn = numberField(record, "expires_in")
-  const refreshExpiresIn = numberField(record, "refresh_token_expires_in")
-  const refreshToken = stringField(record, "refresh_token")
-  const idToken = stringField(record, "id_token")
-  return {
-    accessToken: Redacted.make(accessToken),
-    tokenType: stringField(record, "token_type"),
-    refreshToken: refreshToken === null ? null : Redacted.make(refreshToken),
-    idToken: idToken === null ? null : Redacted.make(idToken),
-    idTokenClaims: null,
-    accessTokenExpiresAt: expiresIn === null ? null : addSeconds(now, expiresIn),
-    refreshTokenExpiresAt: refreshExpiresIn === null ? null : addSeconds(now, refreshExpiresIn),
-    scope: stringField(record, "scope")
-  }
-}
+export const decodeTokens = (body: unknown, now: DateTime.Utc): OAuthTokens | null =>
+  Option.match(readTokenResponse(body), {
+    onNone: () => null,
+    onSome: (fields) => ({
+      accessToken: Redacted.make(fields.access_token),
+      tokenType: fields.token_type ?? null,
+      refreshToken: fields.refresh_token === undefined ? null : Redacted.make(fields.refresh_token),
+      idToken: fields.id_token === undefined ? null : Redacted.make(fields.id_token),
+      idTokenClaims: null,
+      accessTokenExpiresAt: fields.expires_in === undefined ? null : addSeconds(now, fields.expires_in),
+      refreshTokenExpiresAt: fields.refresh_token_expires_in === undefined
+        ? null
+        : addSeconds(now, fields.refresh_token_expires_in),
+      scope: fields.scope ?? null
+    })
+  })
 
 const addSeconds = (now: DateTime.Utc, seconds: number): DateTime.Utc =>
   DateTime.addDuration(now, Duration.seconds(Math.max(0, Math.trunc(seconds))))
@@ -517,6 +518,7 @@ export const make: () => Effect.Effect<
   | Accounts
   | Sessions
   | AuthEvents
+  | Jwks
   | HttpClient.HttpClient
 > = Effect.fnUntraced(function*() {
   const config = yield* AuthConfig
@@ -524,6 +526,7 @@ export const make: () => Effect.Effect<
   const accounts = yield* Accounts
   const sessions = yield* Sessions
   const events = yield* AuthEvents
+  const keySets = yield* Jwks
   const client = refuseRedirects(yield* HttpClient.HttpClient)
 
   // `State` reads its services from the context. Capturing them once, when the
@@ -557,7 +560,7 @@ export const make: () => Effect.Effect<
       state: issued.state,
       expiresAt: issued.expiresAt
     } satisfies StartResult
-  })
+  }, (effect, options) => Effect.withSpan(effect, "OAuthFlow.start", { attributes: { providerId: options.providerId } }))
 
   const exchange = Effect.fnUntraced(function*(
     provider: OAuthProviderConfig,
@@ -579,12 +582,15 @@ export const make: () => Effect.Effect<
       })
     })
 
+    // The exchange is the one request that carries the client secret, and the
+    // one a provider outage can hang forever: it gets a deadline, and a couple
+    // of retries for a connection that never got made.
     const response = yield* Effect.mapError(
-      client.execute(request),
+      resilient(client.execute(request)),
       () => providerError(provider.id, "ProviderUnavailable")
     )
     if (response.status >= 400) return yield* Effect.fail(failed)
-    const body = yield* Effect.mapError(response.json, () => failed)
+    const body = yield* Effect.mapError(Effect.timeout(response.json, providerRequestTimeout), () => failed)
     const tokens = decodeTokens(body, yield* DateTime.now)
     if (tokens === null) return yield* Effect.fail(failed)
     return tokens
@@ -598,10 +604,14 @@ export const make: () => Effect.Effect<
     if (!isOidc(provider)) return tokens
     const invalid = providerError(provider.id, "IdTokenInvalid")
     if (tokens.idToken === null) return yield* Effect.fail(invalid)
-    const keys: KeyResolver | null = provider.jwks ??
-      (provider.jwksUrl === undefined ? null : remoteKeys(provider.jwksUrl))
-    // Fail closed: no key source is not "skip verification".
-    if (keys === null) return yield* Effect.fail(invalid)
+    // Fail closed, twice over: no key source at all is not "skip verification",
+    // and a `jwks_uri` that could not be read is not either.
+    const { jwks: pinned, jwksUrl } = provider
+    const keys: KeyResolver = pinned !== undefined
+      ? pinned
+      : jwksUrl === undefined
+      ? yield* Effect.fail(invalid)
+      : yield* Effect.mapError(keySets.keys(jwksUrl), () => invalid)
     const claims: IdTokenClaims = yield* verifyIdToken({
       providerId: provider.id,
       token: tokens.idToken,
@@ -717,10 +727,14 @@ export const make: () => Effect.Effect<
     } satisfies CallbackResult
   })
 
-  const callback = Effect.fnUntraced(function*(options: CallbackOptions) {
-    const { payload, provider } = yield* begin(options)
-    return yield* finish(provider, payload, options)
-  })
+  const callback = Effect.fnUntraced(
+    function*(options: CallbackOptions) {
+      const { payload, provider } = yield* begin(options)
+      return yield* finish(provider, payload, options)
+    },
+    (effect, options) =>
+      Effect.withSpan(effect, "OAuthFlow.callback", { attributes: { providerId: options.providerId } })
+  )
 
   const failure = (error: CallbackError, errorURL: string | null): CallbackOutcome => {
     const code = errorCode(error)
@@ -745,13 +759,21 @@ export const make: () => Effect.Effect<
       return failure(finished.failure, payload.errorURL)
     }
     return { _tag: "Success", ...finished.success } satisfies CallbackOutcome
-  })
+  }, (effect, options) =>
+    Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } }))
 
   return OAuthFlow.of({ start, callback, complete })
 })
 
 /**
  * Provides {@link OAuthFlow}.
+ *
+ * **Details**
+ *
+ * The JWKS cache is the flow's own: {@link Jwks} is provided here, over the
+ * redirect-refusing client, rather than asked of the application. One cache per
+ * deployment, built and discarded with this layer — nothing survives in a
+ * module-level variable between two `Auth` stacks in one process.
  *
  * @category layers
  * @since 1.0.0
@@ -767,4 +789,6 @@ export const layer: Layer.Layer<
   | Sessions
   | AuthEvents
   | HttpClient.HttpClient
-> = Layer.effect(OAuthFlow, make())
+> = Layer.effect(OAuthFlow, make()).pipe(
+  Layer.provide(layerJwks.pipe(Layer.provide(layerSafeClient)))
+)

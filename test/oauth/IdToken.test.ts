@@ -1,8 +1,9 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Redacted } from "effect"
+import { DateTime, Duration, Effect, Layer, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import type { JWTPayload } from "jose"
-import { isRedirectResponse, verify } from "../../src/oauth/IdToken.js"
+import { exportJWK, generateKeyPair, SignJWT } from "jose"
+import { isRedirectResponse, Jwks, layerJwks, verify } from "../../src/oauth/IdToken.js"
 import { AuthTest, MockProvider } from "../../src/testing/index.js"
 
 /**
@@ -182,6 +183,105 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
 
       assert.isFalse(isRedirectResponse({ status: 200, type: "basic" }))
       assert.isFalse(isRedirectResponse({ status: 404 }))
+    })
+  })
+
+  describe("Jwks", () => {
+    const jwksUrl = `${MockProvider.providerOrigin}/jwks`
+
+    /**
+     * A key pair, the JWKS a provider would publish it in, and a token signed
+     * with it. Separate from the block's signer on purpose: the point here is
+     * the *fetch*, so the keys have to arrive over the stubbed transport rather
+     * than be handed in as a resolver.
+     */
+    const published = Effect.promise(async () => {
+      const pair = await generateKeyPair("RS256", { extractable: true })
+      const jwk = await exportJWK(pair.publicKey)
+      const token = await new SignJWT({ sub: "remote-subject" })
+        .setProtectedHeader({ alg: "RS256", kid: "remote-k1" })
+        .setIssuer(issuer)
+        .setAudience(audience)
+        .setExpirationTime(expiresAt)
+        .sign(pair.privateKey)
+      return {
+        body: { keys: [{ ...jwk, kid: "remote-k1", alg: "RS256", use: "sig" }] },
+        token: Redacted.make(token)
+      }
+    })
+
+    /** The service over a stubbed transport, wrapped exactly as the flow wraps it. */
+    const over = (fetch: typeof globalThis.fetch) =>
+      layerJwks.pipe(Layer.provide(MockProvider.safeHttpLayer(fetch)))
+
+    it.effect("fetches the key set over the HttpClient, and fetches it once", () => {
+      const server = MockProvider.mockServer()
+      return Effect.gen(function*() {
+        const { body, token } = yield* published
+        server.on(jwksUrl, () => MockProvider.json(body))
+
+        const jwks = yield* Jwks
+        const keys = yield* jwks.keys(jwksUrl)
+        const result = yield* Effect.result(verify({
+          providerId: "remote",
+          token,
+          issuer,
+          audience,
+          keys,
+          nonce: null,
+          algorithms: ["RS256"]
+        }))
+        assert.strictEqual(result._tag, "Success")
+        if (result._tag === "Success") assert.strictEqual(result.success.subject, "remote-subject")
+
+        // The second provider callback of the day reuses the cached key set.
+        yield* jwks.keys(jwksUrl)
+        assert.strictEqual(server.to(jwksUrl).length, 1)
+        // And it went out with redirects refused, like every other OAuth call.
+        assert.strictEqual(server.to(jwksUrl)[0]?.redirect, "manual")
+      }).pipe(Effect.provide(over(server.fetch)))
+    })
+
+    it.effect("refuses a JWKS endpoint that answers with a redirect", () => {
+      const server = MockProvider.mockServer()
+      server.on(jwksUrl, () => MockProvider.redirect("http://169.254.169.254/latest/meta-data/"))
+      return Effect.gen(function*() {
+        const jwks = yield* Jwks
+        const result = yield* Effect.result(jwks.keys(jwksUrl))
+        assert.strictEqual(result._tag, "Failure")
+        if (result._tag === "Failure") assert.strictEqual(result.failure._tag, "JwksUnavailable")
+        // The hop was never taken.
+        assert.isUndefined(server.requests.find((request) => request.url.startsWith("http://169.254.169.254")))
+      }).pipe(Effect.provide(over(server.fetch)))
+    })
+
+    it.effect("caches a key set but never a failure", () => {
+      const server = MockProvider.mockServer()
+      server.on(jwksUrl, () => MockProvider.json({ message: "no" }, 503))
+      return Effect.gen(function*() {
+        const { body } = yield* published
+        const jwks = yield* Jwks
+
+        const down = yield* Effect.result(jwks.keys(jwksUrl))
+        assert.strictEqual(down._tag, "Failure")
+
+        // A provider that was unreachable once is asked again on the next
+        // callback rather than refused for the whole cache lifetime.
+        server.on(jwksUrl, () => MockProvider.json(body))
+        const recovered = yield* Effect.result(jwks.keys(jwksUrl))
+        assert.strictEqual(recovered._tag, "Success")
+        assert.strictEqual(server.to(jwksUrl).length, 2)
+      }).pipe(Effect.provide(over(server.fetch)))
+    })
+
+    it.effect("refuses a body that is not a key set", () => {
+      const server = MockProvider.mockServer()
+      server.on(jwksUrl, () => MockProvider.json({ keys: "not a list" }))
+      return Effect.gen(function*() {
+        const jwks = yield* Jwks
+        const result = yield* Effect.result(jwks.keys(jwksUrl))
+        assert.strictEqual(result._tag, "Failure")
+      }).pipe(Effect.provide(over(server.fetch)))
     })
   })
 })

@@ -22,8 +22,9 @@
  *
  * @since 1.0.0
  */
-import type { DateTime } from "effect"
-import { Context, Effect, Layer, Option, Redacted } from "effect"
+import type { Cause, DateTime } from "effect"
+import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
+import type { HttpClientError } from "effect/unstable/http"
 import { HttpClient, HttpClientRequest as Request } from "effect/unstable/http"
 import type { OAuthProviderError } from "../domain/Errors.js"
 import { OAuthProviderError as ProviderError } from "../domain/Errors.js"
@@ -347,6 +348,65 @@ export const revealToken = (token: Redacted.Redacted<string> | null): string | n
   token === null ? null : Redacted.value(token)
 
 // -----------------------------------------------------------------------------
+// Outbound resilience
+// -----------------------------------------------------------------------------
+
+/**
+ * How long any single request to a provider is given.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const providerRequestTimeout: Duration.Duration = Duration.seconds(10)
+
+/**
+ * How many times a request that never reached the provider is tried again.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const providerRetryCount = 2
+
+/**
+ * Gives an outbound provider request a deadline and a couple of retries.
+ *
+ * **Details**
+ *
+ * Two failure modes, treated differently. A request that hangs is bounded by
+ * {@link providerRequestTimeout} — without it a provider that accepts a
+ * connection and never answers holds a callback fiber open for as long as the
+ * runtime allows. A request that never got made at all — DNS, a refused
+ * connection, a dropped socket — is a `TransportError`, and those are worth
+ * repeating with an exponential back-off.
+ *
+ * **Gotchas**
+ *
+ * Only `TransportError` is retried. A `4xx`/`5xx` answer, and the
+ * `StatusCodeError` a refused redirect becomes, are the provider's considered
+ * reply: repeating them would turn one refused callback into three requests and
+ * one blocked redirect into three attempts at the same SSRF hop. A timeout is
+ * not retried either — three deadlines in a row is a minute of a browser
+ * waiting on a redirect.
+ *
+ * The back-off sleeps on the Effect clock, so a test that drives a transport
+ * failure under `TestClock` must advance it.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const resilient = <A, R>(
+  request: Effect.Effect<A, HttpClientError.HttpClientError, R>
+): Effect.Effect<A, HttpClientError.HttpClientError | Cause.TimeoutError, R> =>
+  request.pipe(
+    Effect.timeout(providerRequestTimeout),
+    Effect.retry({
+      schedule: Schedule.exponential(Duration.millis(100)),
+      while: (error) => error._tag === "HttpClientError" && error.reason._tag === "TransportError",
+      times: providerRetryCount
+    })
+  )
+
+// -----------------------------------------------------------------------------
 // Talking to a user-info endpoint
 // -----------------------------------------------------------------------------
 
@@ -364,8 +424,8 @@ export interface JsonResponse {
    *
    * **Gotchas**
    *
-   * Every key in here is chosen by the provider. Read it with an
-   * `Object.hasOwn`-guarded reader and never enumerate it.
+   * Every key in here is chosen by the provider. Read it with a `Schema`
+   * decoder and never enumerate it.
    */
   readonly body: unknown
 }
@@ -401,10 +461,12 @@ export const fetchJson = (options: {
       ...(options.headers === undefined ? {} : { headers: { ...options.headers } })
     }).pipe(Request.bearerToken(options.accessToken))
     const response = yield* Effect.mapError(
-      client.execute(request),
+      resilient(client.execute(request)),
       () => new ProviderError({ providerId: options.providerId, reason: "ProviderUnavailable" })
     )
     if (response.status >= 400) return { status: response.status, body: null }
-    const body = yield* Effect.result(response.json)
+    // The body gets its own deadline: a provider that answers with headers and
+    // then trickles bytes forever would otherwise hold the callback open.
+    const body = yield* Effect.result(Effect.timeout(response.json, providerRequestTimeout))
     return { status: response.status, body: body._tag === "Success" ? body.success : null }
   })

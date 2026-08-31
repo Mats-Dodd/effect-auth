@@ -17,8 +17,9 @@
  *
  * @since 1.0.0
  */
-import { Context, Effect, Encoding, Layer, Redacted, Result } from "effect"
+import { Context, Crypto, Effect, Encoding, Layer, Redacted, Result } from "effect"
 import { PasswordHashError } from "../domain/Errors.js"
+import { encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
 /**
  * The {@link PasswordHasher} service definition.
@@ -201,18 +202,6 @@ export const timingSafeEqualUint8 = (a: Uint8Array, b: Uint8Array): boolean => {
 // Hash format
 // -----------------------------------------------------------------------------
 
-const utf8 = new TextEncoder()
-
-/**
- * WebCrypto wants a buffer it owns. `TextEncoder` and Node's `Buffer` both hand
- * back views onto pooled memory, so copy before crossing the boundary.
- */
-const toArrayBuffer = (data: Uint8Array): ArrayBuffer => {
-  const buffer = new ArrayBuffer(data.byteLength)
-  new Uint8Array(buffer).set(data)
-  return buffer
-}
-
 const hashError = (reason: string, cause?: unknown): PasswordHashError => new PasswordHashError({ reason, cause })
 
 /**
@@ -337,14 +326,20 @@ const positiveIntParam = (
 // Primitives
 // -----------------------------------------------------------------------------
 
-let nodeCrypto: Promise<typeof import("node:crypto")> | undefined
-
 /**
- * `node:crypto` is loaded lazily so that this module stays importable — and
- * {@link layerPbkdf2} stays usable — on runtimes that have no such builtin.
+ * `node:crypto` is imported dynamically so that this module stays importable —
+ * and {@link layerPbkdf2} stays usable — on runtimes that have no such builtin.
+ *
+ * **Details**
+ *
+ * There is no memo around this: the runtime's own module registry already
+ * resolves a repeated `import("node:crypto")` from cache, and hoisting the
+ * import to layer construction would mean {@link layerScrypt} could *fail to
+ * build* where `node:crypto` is missing — which is exactly the case
+ * {@link layerPbkdf2} exists to keep working.
  */
 const loadNodeCrypto = Effect.tryPromise({
-  try: () => (nodeCrypto ??= import("node:crypto")),
+  try: () => import("node:crypto"),
   catch: (cause) => hashError("ScryptUnavailable", cause)
 })
 
@@ -367,42 +362,52 @@ const scryptDerive = (
   salt: Uint8Array,
   params: ScryptParams
 ): Effect.Effect<Uint8Array, PasswordHashError> =>
-  Effect.flatMap(loadNodeCrypto, (crypto) =>
-    Effect.tryPromise({
-      try: () =>
-        new Promise<Uint8Array>((resolve, reject) => {
-          crypto.scrypt(
-            password,
-            salt,
-            params.dkLen,
-            { N: params.N, r: params.r, p: params.p, maxmem: scryptMaxmem(params) },
-            (error, derived) => error === null ? resolve(new Uint8Array(derived)) : reject(error)
+  Effect.flatMap(loadNodeCrypto, (nodeCrypto) =>
+    Effect.callback<Uint8Array, PasswordHashError>((resume) => {
+      nodeCrypto.scrypt(
+        password,
+        salt,
+        params.dkLen,
+        { N: params.N, r: params.r, p: params.p, maxmem: scryptMaxmem(params) },
+        (error, derived) =>
+          resume(
+            error === null
+              ? Effect.succeed(new Uint8Array(derived))
+              : Effect.fail(hashError("ScryptFailed", error))
           )
-        }),
-      catch: (cause) => hashError("ScryptFailed", cause)
-    }))
+      )
+      // Node rejects some parameter combinations — a non-power-of-two `N`, for
+      // instance — by throwing before it ever reaches the callback. A stored
+      // hash is attacker-writable, so that has to stay a typed failure rather
+      // than become a defect.
+    }).pipe(Effect.catchDefect((cause) => Effect.fail(hashError("ScryptFailed", cause)))))
 
 interface Pbkdf2Params {
   readonly iterations: number
   readonly dkLen: number
 }
 
+/**
+ * PBKDF2 is a WebCrypto `subtle` operation, and `Crypto.Crypto` offers random
+ * bytes and message digests only — so this one reaches for `globalThis.crypto`
+ * directly. The salt, which *is* just random bytes, comes from the service.
+ */
 const pbkdf2Derive = (
-  crypto: Crypto,
   password: string,
   salt: Uint8Array,
   params: Pbkdf2Params
 ): Effect.Effect<Uint8Array, PasswordHashError> =>
   Effect.tryPromise({
     try: async () => {
-      const key = await crypto.subtle.importKey(
+      const subtle = globalThis.crypto.subtle
+      const key = await subtle.importKey(
         "raw",
-        toArrayBuffer(utf8.encode(password)),
+        toArrayBuffer(encodeUtf8(password)),
         "PBKDF2",
         false,
         ["deriveBits"]
       )
-      const bits = await crypto.subtle.deriveBits(
+      const bits = await subtle.deriveBits(
         { name: "PBKDF2", salt: toArrayBuffer(salt), iterations: params.iterations, hash: "SHA-512" },
         key,
         params.dkLen * 8
@@ -435,7 +440,6 @@ const pbkdf2Derive = (
  * @since 1.0.0
  */
 export const verifyHash = (
-  crypto: Crypto,
   password: Redacted.Redacted<string>,
   hash: string
 ): Effect.Effect<boolean, PasswordHashError> =>
@@ -451,7 +455,7 @@ export const verifyHash = (
       })
       : Effect.gen(function*() {
         const iterations = yield* positiveIntParam(parsed.params, "i", "MalformedPbkdf2Parameters")
-        const derived = yield* pbkdf2Derive(crypto, plaintext, parsed.salt, {
+        const derived = yield* pbkdf2Derive(plaintext, parsed.salt, {
           iterations,
           dkLen: parsed.key.length
         })
@@ -464,13 +468,13 @@ export const verifyHash = (
 // -----------------------------------------------------------------------------
 
 /**
- * Builds the scrypt implementation over an explicit WebCrypto instance (used
- * only for the salt) and `node:crypto` (used for the KDF).
+ * Builds the scrypt implementation over an explicit `Crypto` (used only for the
+ * salt) and `node:crypto` (used for the KDF).
  *
  * @category constructors
  * @since 1.0.0
  */
-export const makeScrypt = (crypto: Crypto, options?: ScryptOptions): PasswordHasherService => {
+export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): PasswordHasherService => {
   const params: ScryptParams = {
     N: options?.N ?? defaultScryptOptions.N,
     r: options?.r ?? defaultScryptOptions.r,
@@ -481,21 +485,22 @@ export const makeScrypt = (crypto: Crypto, options?: ScryptOptions): PasswordHas
 
   return PasswordHasher.of({
     hash: Effect.fnUntraced(function*(password: Redacted.Redacted<string>) {
-      const salt = crypto.getRandomValues(new Uint8Array(saltBytes))
+      const salt = yield* Effect.orDie(crypto.randomBytes(saltBytes))
       const key = yield* scryptDerive(Redacted.value(password), salt, params)
       return formatHash("scrypt", parameterSegment, salt, key)
     }),
-    verify: (password, hash) => verifyHash(crypto, password, hash)
+    verify: verifyHash
   })
 }
 
 /**
- * Builds the PBKDF2 implementation over an explicit WebCrypto instance.
+ * Builds the PBKDF2 implementation over an explicit `Crypto` (used only for the
+ * salt) and WebCrypto's `subtle` (used for the KDF).
  *
  * @category constructors
  * @since 1.0.0
  */
-export const makePbkdf2 = (crypto: Crypto, options?: Pbkdf2Options): PasswordHasherService => {
+export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): PasswordHasherService => {
   const params: Pbkdf2Params = {
     iterations: options?.iterations ?? defaultPbkdf2Options.iterations,
     dkLen: options?.dkLen ?? defaultPbkdf2Options.dkLen
@@ -504,11 +509,11 @@ export const makePbkdf2 = (crypto: Crypto, options?: Pbkdf2Options): PasswordHas
 
   return PasswordHasher.of({
     hash: Effect.fnUntraced(function*(password: Redacted.Redacted<string>) {
-      const salt = crypto.getRandomValues(new Uint8Array(saltBytes))
-      const key = yield* pbkdf2Derive(crypto, Redacted.value(password), salt, params)
+      const salt = yield* Effect.orDie(crypto.randomBytes(saltBytes))
+      const key = yield* pbkdf2Derive(Redacted.value(password), salt, params)
       return formatHash("pbkdf2", parameterSegment, salt, key)
     }),
-    verify: (password, hash) => verifyHash(crypto, password, hash)
+    verify: verifyHash
   })
 }
 
@@ -527,8 +532,10 @@ export const makePbkdf2 = (crypto: Crypto, options?: Pbkdf2Options): PasswordHas
  * @category layers
  * @since 1.0.0
  */
-export const layerScrypt = (options?: ScryptOptions): Layer.Layer<PasswordHasher> =>
-  Layer.sync(PasswordHasher, () => makeScrypt(globalThis.crypto, options))
+export const layerScrypt = (
+  options?: ScryptOptions
+): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
+  Layer.effect(PasswordHasher, Crypto.Crypto.useSync((crypto) => makeScrypt(crypto, options)))
 
 /**
  * The portable layer: PBKDF2-HMAC-SHA512 over WebCrypto, for runtimes without
@@ -543,5 +550,7 @@ export const layerScrypt = (options?: ScryptOptions): Layer.Layer<PasswordHasher
  * @category layers
  * @since 1.0.0
  */
-export const layerPbkdf2 = (options?: Pbkdf2Options): Layer.Layer<PasswordHasher> =>
-  Layer.sync(PasswordHasher, () => makePbkdf2(globalThis.crypto, options))
+export const layerPbkdf2 = (
+  options?: Pbkdf2Options
+): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
+  Layer.effect(PasswordHasher, Crypto.Crypto.useSync((crypto) => makePbkdf2(crypto, options)))

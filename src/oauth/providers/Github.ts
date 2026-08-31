@@ -16,11 +16,12 @@
  *
  * @since 1.0.0
  */
-import type { Config, Redacted } from "effect"
-import { Effect } from "effect"
+import type { Redacted } from "effect"
+import { Array, Config, Effect, Option, Schema } from "effect"
+import { optionalConfig } from "../../internal/config.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
 import { fetchJson, providerError } from "../Provider.js"
-import { asRecord } from "../internal/claims.js"
+import { lenient, StringFromNumeric } from "../internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -126,19 +127,40 @@ export const selectEmail = (
 // Reading GitHub's JSON
 // -----------------------------------------------------------------------------
 
-const readString = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
-  if (!Object.hasOwn(record, key)) return null
-  const value = record[key]
-  if (typeof value === "string" && value.length > 0) return value
-  // GitHub's user id is a JSON number; every other id we handle is a string.
-  if (typeof value === "number" && Number.isFinite(value)) return String(value)
-  return null
-}
+/**
+ * `GET /user`, as far as it is believed.
+ *
+ * **Gotchas**
+ *
+ * `id` arrives as a JSON *number*; every other subject this library handles is
+ * a string, so it is normalized to one here. Only `id` is required — a profile
+ * with no name, no address and no avatar is an ordinary GitHub account.
+ */
+const Profile = Schema.Struct({
+  id: StringFromNumeric,
+  email: lenient(Schema.NonEmptyString),
+  name: lenient(Schema.NonEmptyString),
+  login: lenient(Schema.NonEmptyString),
+  avatar_url: lenient(Schema.NonEmptyString)
+})
 
-const readBoolean = (record: Readonly<Record<string, unknown>>, key: string): boolean => {
-  if (!Object.hasOwn(record, key)) return false
-  return record[key] === true
-}
+const readProfile = Schema.decodeUnknownOption(Profile)
+
+/**
+ * One entry of `GET /user/emails`.
+ *
+ * `primary` and `verified` are believed only as a literal `true`: a truthy
+ * string is not GitHub stating it verified an address, and treating it as one
+ * would let anybody who can influence that list claim a local account.
+ */
+const EmailEntry = Schema.Struct({
+  email: Schema.NonEmptyString,
+  primary: lenient(Schema.Literal(true)),
+  verified: lenient(Schema.Literal(true))
+})
+
+const readEmailList = Schema.decodeUnknownOption(Schema.Array(Schema.Unknown))
+const readEmailEntry = Schema.decodeUnknownOption(EmailEntry)
 
 /**
  * Projects `GET /user/emails` into the entries {@link selectEmail} reads.
@@ -149,22 +171,17 @@ const readBoolean = (record: Readonly<Record<string, unknown>>, key: string): bo
  * @category combinators
  * @since 1.0.0
  */
-export const decodeEmails = (body: unknown): ReadonlyArray<GithubEmail> => {
-  if (!Array.isArray(body)) return []
-  const entries: Array<GithubEmail> = []
-  for (const item of body) {
-    const record = asRecord(item)
-    if (record === null) continue
-    const email = readString(record, "email")
-    if (email === null) continue
-    entries.push({
-      email,
-      primary: readBoolean(record, "primary"),
-      verified: readBoolean(record, "verified")
-    })
-  }
-  return entries
-}
+export const decodeEmails = (body: unknown): ReadonlyArray<GithubEmail> =>
+  Option.match(readEmailList(body), {
+    onNone: () => [],
+    onSome: (entries) =>
+      Array.getSomes(Array.map(entries, (entry) =>
+        Option.map(readEmailEntry(entry), (fields) => ({
+          email: fields.email,
+          primary: fields.primary !== undefined,
+          verified: fields.verified !== undefined
+        }))))
+  })
 
 // -----------------------------------------------------------------------------
 // Options
@@ -231,10 +248,9 @@ export const make = (options: Options): OAuthProviderConfig => {
     const headers = { "user-agent": "effect-auth" }
 
     const profileResponse = yield* fetchJson({ providerId: id, url: `${apiUrl}/user`, accessToken, headers })
-    const profile = asRecord(profileResponse.body)
-    if (profile === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
-    const subject = readString(profile, "id")
-    if (subject === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    const decoded = readProfile(profileResponse.body)
+    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    const profile = decoded.value
 
     // A refused `/user/emails` — the `user:email` scope was not granted — is not
     // fatal: the profile address may still be usable, just never as verified.
@@ -244,15 +260,15 @@ export const make = (options: Options): OAuthProviderConfig => {
       accessToken,
       headers
     })
-    const selected = selectEmail(readString(profile, "email"), decodeEmails(emailsResponse.body))
+    const selected = selectEmail(profile.email ?? null, decodeEmails(emailsResponse.body))
     if (selected === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
 
     return {
-      id: subject,
+      id: profile.id,
       email: selected.email,
       emailVerified: selected.emailVerified,
-      name: readString(profile, "name") ?? readString(profile, "login") ?? selected.email,
-      image: readString(profile, "avatar_url")
+      name: profile.name ?? profile.login ?? selected.email,
+      image: profile.avatar_url ?? null
     } satisfies OAuthUserInfo
   })
 
@@ -286,6 +302,16 @@ export interface ConfigOptions {
   readonly apiUrl?: Config.Config<string> | undefined
 }
 
+/** The settings {@link ConfigOptions} reads from the environment. */
+interface Settings {
+  readonly clientId: string
+  readonly clientSecret: Redacted.Redacted<string>
+  readonly scopes: ReadonlyArray<string> | undefined
+  readonly redirectUri: string | undefined
+  readonly webUrl: string | undefined
+  readonly apiUrl: string | undefined
+}
+
 /**
  * Builds the GitHub provider configuration, reading its credentials from
  * `Config`.
@@ -299,18 +325,17 @@ export interface ConfigOptions {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig: (
+export const makeConfig = (
   options: ConfigOptions
-) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> = Effect.fnUntraced(
-  function*(options: ConfigOptions) {
-    return make({
-      clientId: yield* options.clientId,
-      clientSecret: yield* options.clientSecret,
-      scopes: options.scopes === undefined ? undefined : yield* options.scopes,
-      redirectUri: options.redirectUri === undefined ? undefined : yield* options.redirectUri,
-      authorizationParams: options.authorizationParams,
-      webUrl: options.webUrl === undefined ? undefined : yield* options.webUrl,
-      apiUrl: options.apiUrl === undefined ? undefined : yield* options.apiUrl
-    })
-  }
-)
+): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+  Effect.map(
+    Config.unwrap<Settings>({
+      clientId: options.clientId,
+      clientSecret: options.clientSecret,
+      scopes: optionalConfig(options.scopes),
+      redirectUri: optionalConfig(options.redirectUri),
+      webUrl: optionalConfig(options.webUrl),
+      apiUrl: optionalConfig(options.apiUrl)
+    }),
+    (settings) => make({ ...settings, authorizationParams: options.authorizationParams })
+  )

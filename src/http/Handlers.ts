@@ -35,9 +35,10 @@ import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
-import { OAuthProviderError } from "../domain/Errors.js"
+import { OAuthProviderError, PasswordHashError } from "../domain/Errors.js"
 import { Passwords } from "../domain/Passwords.js"
 import { Sessions } from "../domain/Sessions.js"
+import { PersistenceError } from "../domain/Stores.js"
 import { OAuthFlow, withErrorCode } from "../oauth/Flow.js"
 import { AuthApiGroup } from "./AuthApi.js"
 import type { Authenticated } from "./Middleware.js"
@@ -50,6 +51,30 @@ import { clientAddress, consumeWith, credentials, email as emailBucket } from ".
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+/** Everything a caller is allowed to see — see {@link serverFault}. */
+const isCallerError = <E>(error: E): error is Exclude<E, PasswordHashError | PersistenceError> =>
+  !(error instanceof PasswordHashError) && !(error instanceof PersistenceError)
+
+/**
+ * Turns the two server-fault errors into defects.
+ *
+ * **Details**
+ *
+ * `PersistenceError` and `PasswordHashError` mean the deployment is broken, not
+ * that the caller did anything wrong: neither appears in an endpoint's declared
+ * error union, and both must render as an opaque `500` with the cause in the
+ * logs. Every handler that calls a domain service therefore ends in this, which
+ * is the one place that translation happens — and the return type is what makes
+ * the compiler agree that no endpoint declares them.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const serverFault = <A, E, R>(
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, Exclude<E, PasswordHashError | PersistenceError>, R> =>
+  Effect.catch(effect, (error) => isCallerError(error) ? Effect.fail(error) : Effect.die(error))
 
 /**
  * What the session row records about the client that created it.
@@ -219,7 +244,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL)),
                 rememberMe: payload.rememberMe,
                 ...clientMeta(config, request)
-              }).pipe(Effect.catchTag(["PasswordHashError", "PersistenceError"], Effect.die))
+              }).pipe(serverFault)
 
               if (Option.isNone(result.session)) {
                 // Verification is required, or auto sign-in is off: the user
@@ -239,7 +264,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
                 password: payload.password,
                 rememberMe: payload.rememberMe,
                 ...clientMeta(config, request)
-              }).pipe(Effect.catchTag(["PasswordHashError", "PersistenceError"], Effect.die))
+              }).pipe(serverFault)
 
               yield* setSessionCookie(config, result.session, result.token, {
                 persistent: payload.rememberMe !== false
@@ -249,7 +274,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
           .handle("signOut", () =>
             Effect.gen(function*() {
               const session = yield* CurrentSession
-              yield* sessions.signOut(session).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              yield* sessions.signOut(session).pipe(serverFault)
               yield* clearSessionCookie(config)
               return acknowledged
             }))
@@ -264,20 +289,18 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
           .handle("listSessions", () =>
             Effect.gen(function*() {
               const user = yield* CurrentUser
-              return yield* sessions.list(user.id).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              return yield* sessions.list(user.id).pipe(serverFault)
             }))
           .handle("revokeSession", ({ payload }) =>
             Effect.gen(function*() {
               const user = yield* CurrentUser
-              yield* sessions.revoke(payload.sessionId, user.id).pipe(
-                Effect.catchTag("PersistenceError", Effect.die)
-              )
+              yield* sessions.revoke(payload.sessionId, user.id).pipe(serverFault)
               return acknowledged
             }))
           .handle("revokeSessions", () =>
             Effect.gen(function*() {
               const user = yield* CurrentUser
-              yield* sessions.revokeAll(user.id).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              yield* sessions.revokeAll(user.id).pipe(serverFault)
               // This one revoked the caller's own session too.
               yield* clearSessionCookie(config)
               return acknowledged
@@ -286,9 +309,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
             Effect.gen(function*() {
               const user = yield* CurrentUser
               const session = yield* CurrentSession
-              yield* sessions.revokeOthers(user.id, session.id).pipe(
-                Effect.catchTag("PersistenceError", Effect.die)
-              )
+              yield* sessions.revokeOthers(user.id, session.id).pipe(serverFault)
               return acknowledged
             }))
           .handle("requestPasswordReset", ({ payload, request }) =>
@@ -299,7 +320,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               yield* passwords.requestReset({
                 email: payload.email,
                 redirectTo: Option.getOrUndefined(validateUrl(config, payload.redirectTo))
-              }).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              }).pipe(serverFault)
               return acknowledged
             }))
           .handle("resetPassword", ({ payload }) =>
@@ -308,7 +329,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               yield* passwords.resetPassword({
                 token: payload.token,
                 newPassword: payload.newPassword
-              }).pipe(Effect.catchTag(["PasswordHashError", "PersistenceError"], Effect.die))
+              }).pipe(serverFault)
               // Every session was revoked, this browser's included.
               yield* clearSessionCookie(config)
               return acknowledged
@@ -328,7 +349,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
                 newPassword: payload.newPassword,
                 revokeOtherSessions: payload.revokeOtherSessions,
                 currentSessionId: session.id
-              }).pipe(Effect.catchTag(["PasswordHashError", "PersistenceError"], Effect.die))
+              }).pipe(serverFault)
               return acknowledged
             }))
           .handle("sendVerificationEmail", ({ payload, request }) =>
@@ -338,7 +359,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               yield* passwords.sendVerificationEmail({
                 email: payload.email,
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL))
-              }).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              }).pipe(serverFault)
               return acknowledged
             }))
           .handle("verifyEmail", ({ query }) =>
@@ -349,9 +370,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               // before anything can log it. `query.callbackURL` is accepted and
               // ignored: the link an e-mail carries has one appended to it, and
               // this endpoint answers JSON rather than a redirect.
-              yield* passwords.verifyEmail(Redacted.make(query.token)).pipe(
-                Effect.catchTag("PersistenceError", Effect.die)
-              )
+              yield* passwords.verifyEmail(Redacted.make(query.token)).pipe(serverFault)
               return acknowledged
             }))
           .handle("signInSocial", ({ payload, request }) =>
@@ -371,7 +390,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
                 errorCallbackURL: payload.errorCallbackURL,
                 scopes: payload.scopes,
                 rememberMe: payload.rememberMe
-              }).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              }).pipe(serverFault)
               return { url: started.url, redirect: true }
             }))
           .handle("oauthCallback", ({ params, query, request }) =>
@@ -388,7 +407,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
                 state: query.state,
                 error: query.error,
                 ...clientMeta(config, request)
-              }).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              }).pipe(serverFault)
 
               if (outcome._tag === "Success" && outcome.session !== null && outcome.token !== null) {
                 // Null for a link flow: the person was already signed in, and a
@@ -405,9 +424,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
           .handle("listAccounts", () =>
             Effect.gen(function*() {
               const user = yield* CurrentUser
-              return yield* accounts.listForUser(user.id).pipe(
-                Effect.catchTag("PersistenceError", Effect.die)
-              )
+              return yield* accounts.listForUser(user.id).pipe(serverFault)
             }))
           .handle("linkSocial", ({ payload }) =>
             Effect.gen(function*() {
@@ -421,7 +438,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
                 errorCallbackURL: payload.errorCallbackURL,
                 scopes: payload.scopes,
                 linkUserId: user.id
-              }).pipe(Effect.catchTag("PersistenceError", Effect.die))
+              }).pipe(serverFault)
               return { url: started.url, redirect: true }
             }))
           .handle("unlinkAccount", ({ payload }) =>
@@ -429,9 +446,7 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
               const user = yield* CurrentUser
               const session = yield* CurrentSession
               yield* sessions.requireFresh(session)
-              yield* accounts.unlink(payload.accountId, user.id).pipe(
-                Effect.catchTag("PersistenceError", Effect.die)
-              )
+              yield* accounts.unlink(payload.accountId, user.id).pipe(serverFault)
               return acknowledged
             }))
       })

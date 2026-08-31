@@ -23,75 +23,25 @@
  *
  * @since 1.0.0
  */
-import { Effect } from "effect"
+import { Crypto, Effect } from "effect"
 import type { AccountId, SessionId, UserId } from "./Schema.js"
 
 /**
- * The largest timestamp a UUIDv7 can carry: 48 bits of milliseconds, which runs
- * out in the year 10889.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const maxTimestampMillis = 2 ** 48 - 1
-
-const byteToHex: ReadonlyArray<string> = Array.from(
-  { length: 256 },
-  (_, byte) => byte.toString(16).padStart(2, "0")
-)
-
-const format = (bytes: Uint8Array): string => {
-  let out = ""
-  for (let i = 0; i < 16; i++) {
-    out += byteToHex[bytes[i]!]
-    if (i === 3 || i === 5 || i === 7 || i === 9) out += "-"
-  }
-  return out
-}
-
-/**
- * Writes a UUIDv7 into `bytes`, which must hold 16 cryptographically random
- * bytes, and returns its canonical string form.
+ * A fresh UUIDv7, timestamped from the Effect `Clock` and filled from the
+ * ambient `Crypto` service's random source.
  *
  * **Details**
  *
- * The first six bytes become the big-endian millisecond timestamp, the high
- * nibble of byte 6 becomes the version (`0b0111`) and the top two bits of byte
- * 8 become the RFC 9562 variant. Every other bit is left random.
- *
- * **Gotchas**
- *
- * `bytes` is mutated in place. Timestamps outside `0 .. maxTimestampMillis` are
- * clamped rather than rejected, so a clock that has gone backwards still yields
- * a well-formed id.
+ * This is `Crypto.randomUUIDv7` — RFC 9562 layout, timestamp clamped into the
+ * 48 bits it has, every other bit random — with its `PlatformError` turned
+ * into a defect: a runtime that cannot produce random bytes is broken, not
+ * badly asked.
  *
  * @category constructors
  * @since 1.0.0
  */
-export const makeUnsafe = (timestampMillis: number, bytes: Uint8Array): string => {
-  const timestamp = Math.min(Math.max(0, Math.trunc(timestampMillis)), maxTimestampMillis)
-  bytes[0] = Math.floor(timestamp / 2 ** 40) & 0xff
-  bytes[1] = Math.floor(timestamp / 2 ** 32) & 0xff
-  bytes[2] = Math.floor(timestamp / 2 ** 24) & 0xff
-  bytes[3] = Math.floor(timestamp / 2 ** 16) & 0xff
-  bytes[4] = Math.floor(timestamp / 2 ** 8) & 0xff
-  bytes[5] = timestamp & 0xff
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80
-  return format(bytes)
-}
-
-/**
- * A fresh UUIDv7, timestamped from the Effect `Clock` and filled from the
- * runtime's cryptographic random source.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const uuidV7: Effect.Effect<string> = Effect.clockWith((clock) =>
-  Effect.sync(() =>
-    makeUnsafe(clock.currentTimeMillisUnsafe(), globalThis.crypto.getRandomValues(new Uint8Array(16)))
-  )
+export const uuidV7: Effect.Effect<string, never, Crypto.Crypto> = Effect.orDie(
+  Crypto.Crypto.use((crypto) => crypto.randomUUIDv7)
 )
 
 /**
@@ -124,7 +74,7 @@ export const isUuidV7 = (value: string): boolean => uuidV7Pattern.test(value)
  * @category constructors
  * @since 1.0.0
  */
-export const userId: Effect.Effect<UserId> = Effect.map(uuidV7, (id) => id as UserId)
+export const userId: Effect.Effect<UserId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => id as UserId)
 
 /**
  * A fresh {@link SessionId}.
@@ -132,7 +82,7 @@ export const userId: Effect.Effect<UserId> = Effect.map(uuidV7, (id) => id as Us
  * @category constructors
  * @since 1.0.0
  */
-export const sessionId: Effect.Effect<SessionId> = Effect.map(uuidV7, (id) => id as SessionId)
+export const sessionId: Effect.Effect<SessionId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => id as SessionId)
 
 /**
  * A fresh {@link AccountId}.
@@ -140,4 +90,4 @@ export const sessionId: Effect.Effect<SessionId> = Effect.map(uuidV7, (id) => id
  * @category constructors
  * @since 1.0.0
  */
-export const accountId: Effect.Effect<AccountId> = Effect.map(uuidV7, (id) => id as AccountId)
+export const accountId: Effect.Effect<AccountId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => id as AccountId)

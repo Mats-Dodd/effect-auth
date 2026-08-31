@@ -18,25 +18,28 @@
  *
  * @since 1.0.0
  */
-import type { Config, Redacted } from "effect"
-import { Duration, Effect, Layer, Schedule, Stream } from "effect"
+import type { Crypto, Redacted } from "effect"
+import { Config, Duration, Effect, Layer, Schedule, Stream } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import type { RateLimiter } from "effect/unstable/persistence"
 import type { SqlClient } from "effect/unstable/sql"
 import type { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { layerScrypt } from "../crypto/PasswordHasher.js"
+import type { Token } from "../crypto/Token.js"
 import { layer as tokenLayer } from "../crypto/Token.js"
 import { Accounts, layer as accountsLayer } from "../domain/Accounts.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents, layer as eventsLayer } from "../domain/Events.js"
 import { layer as passwordsLayer, Passwords } from "../domain/Passwords.js"
 import { layer as sessionsLayer, Sessions } from "../domain/Sessions.js"
-import type { AccountStore, PersistenceError, UserStore } from "../domain/Stores.js"
+import type { AccountStore, AuthStores, PersistenceError, UserStore } from "../domain/Stores.js"
 import { SessionStore, VerificationStore } from "../domain/Stores.js"
 import * as AuthCookies from "../http/Cookies.js"
 import type { Authenticated } from "../http/Middleware.js"
 import { layer as middlewareLayer } from "../http/MiddlewareLive.js"
 import * as RateLimits from "../http/RateLimits.js"
+import { optionalConfig } from "../internal/config.js"
+import { layerWebCrypto } from "../internal/crypto.js"
 import { layer as flowLayer, OAuthFlow } from "../oauth/Flow.js"
 import type { OAuthProviderConfig } from "../oauth/Provider.js"
 import { OAuthProviders } from "../oauth/Provider.js"
@@ -104,7 +107,7 @@ export interface Extras {
    * `layerScrypt({ N: 1024, r: 8, p: 1 })` in a test suite. A hash records the
    * cost it was written at, so lowering it never invalidates existing hashes.
    */
-  readonly passwordHasher?: Layer.Layer<PasswordHasher> | undefined
+  readonly passwordHasher?: Layer.Layer<PasswordHasher, never, Crypto.Crypto> | undefined
 
   /**
    * How many events the hub buffers before it starts dropping. Default 256.
@@ -269,24 +272,63 @@ export type OAuthRequirements = Requirements | HttpClient.HttpClient
 // Composition
 // -----------------------------------------------------------------------------
 
-const compose = (
+/**
+ * The two services that need random bytes and message digests, over the
+ * WebCrypto-backed `Crypto` default.
+ *
+ * **Details**
+ *
+ * `Crypto` is provided *into* this tier and never surfaces, so it stays a
+ * detail of this stack rather than something an application has to satisfy —
+ * see `Requirements`. A deployment that wants a platform implementation hands
+ * in a `passwordHasher` built over it, or provides `Crypto.Crypto` above these
+ * two layers itself.
+ */
+const cryptoTier = (
+  hasher: Layer.Layer<PasswordHasher, never, Crypto.Crypto> | undefined
+): Layer.Layer<Token | PasswordHasher> =>
+  Layer.mergeAll(tokenLayer, hasher ?? layerScrypt()).pipe(Layer.provide(layerWebCrypto))
+
+/**
+ * Everything below the domain services: the resolved settings, the stores, the
+ * event hub and the rate limiter.
+ */
+const baseTier = (
   config: AuthConfigService,
   options: Extras
-): Layer.Layer<Services, never, Requirements> =>
+): Layer.Layer<AuthConfig | AuthStores | AuthEvents | RateLimiter.RateLimiter, never, SqlClient.SqlClient> =>
+  Layer.mergeAll(
+    Layer.succeed(AuthConfig)(config),
+    SqlStores.layer,
+    // `capacity` is optional and `undefined`-able, so an absent
+    // `eventCapacity` is simply an absent capacity — no ternary needed.
+    eventsLayer({ capacity: options.eventCapacity }),
+    RateLimits.layer
+  )
+
+/**
+ * The whole stack, over whichever services sit on the top tier alongside the
+ * middleware.
+ *
+ * **Details**
+ *
+ * `top` is the one thing that differs between {@link layer} and
+ * {@link layerWithOAuth} — `Passwords` alone, or `Passwords` plus the OAuth
+ * flow. Everything else, down to the order the tiers are stacked in, is shared,
+ * and the result type is computed from `top` rather than restated: the
+ * non-OAuth call needs no `HttpClient` because nothing in its `top` asks for
+ * one.
+ */
+const compose = <A, RIn>(
+  config: AuthConfigService,
+  options: Extras,
+  top: Layer.Layer<A, never, RIn>
+) =>
   middlewareLayer.pipe(
-    Layer.provideMerge(passwordsLayer),
+    Layer.provideMerge(top),
     Layer.provideMerge(Layer.mergeAll(sessionsLayer, accountsLayer)),
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(AuthConfig)(config),
-        SqlStores.layer,
-        eventsLayer(
-          options.eventCapacity === undefined ? undefined : { capacity: options.eventCapacity }
-        ),
-        RateLimits.layer
-      )
-    ),
-    Layer.provide(Layer.mergeAll(tokenLayer, options.passwordHasher ?? layerScrypt())),
+    Layer.provideMerge(baseTier(config, options)),
+    Layer.provide(cryptoTier(options.passwordHasher)),
     // Checklist item 11: the cookie and authorization headers must never reach
     // a log line in the clear. `provideMerge`, not `provide`: this is a
     // `Context.Reference`, so the names have to survive into the context the
@@ -296,52 +338,61 @@ const compose = (
     Layer.provideMerge(AuthCookies.layerRedactedHeaders(options.redactedHeaders ?? []))
   )
 
-const composeWithOAuth = (
-  config: AuthConfigService,
-  options: Extras,
+/**
+ * The top tier {@link layerWithOAuth} composes over: the flow, with the
+ * registry provided *into* it.
+ *
+ * The registry is inert data behind a service key and only the flow reads it,
+ * so `provide` rather than `provideMerge` — it never becomes part of the
+ * stack's surface.
+ */
+const oauthTop = (
   providers: ReadonlyArray<OAuthProviderConfig>
-): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
-  middlewareLayer.pipe(
-    Layer.provideMerge(Layer.mergeAll(passwordsLayer, flowLayer)),
-    Layer.provideMerge(Layer.mergeAll(sessionsLayer, accountsLayer)),
-    // The registry is inert data behind a service key, and only the flow reads
-    // it: `provide`, so it never becomes part of this layer's surface.
-    Layer.provide(OAuthProviders.layer(providers)),
-    Layer.provideMerge(
-      Layer.mergeAll(
-        Layer.succeed(AuthConfig)(config),
-        SqlStores.layer,
-        eventsLayer(
-          options.eventCapacity === undefined ? undefined : { capacity: options.eventCapacity }
-        ),
-        RateLimits.layer
-      )
-    ),
-    Layer.provide(Layer.mergeAll(tokenLayer, options.passwordHasher ?? layerScrypt())),
-    // See `compose`: the redacted names are a `Context.Reference` and must be
-    // merged, not provided, or the application never sees them.
-    Layer.provideMerge(AuthCookies.layerRedactedHeaders(options.redactedHeaders ?? []))
-  )
+): Layer.Layer<
+  Passwords | OAuthFlow,
+  never,
+  | AuthConfig
+  | AuthStores
+  | AuthEvents
+  | AuthEmails
+  | Accounts
+  | Sessions
+  | Token
+  | PasswordHasher
+  | HttpClient.HttpClient
+> => Layer.mergeAll(passwordsLayer, flowLayer.pipe(Layer.provide(OAuthProviders.layer(providers))))
 
-const resolveConfig: (
+/** The settings {@link ConfigOptions} reads from the environment. */
+interface ScalarSettings {
+  readonly baseUrl: string
+  readonly secret: Redacted.Redacted<string>
+  readonly basePath: string | undefined
+  readonly trustedOrigins: ReadonlyArray<string> | undefined
+  readonly trustedProviders: ReadonlyArray<string> | undefined
+}
+
+const resolveConfig = (
   options: ConfigOptions
-) => Effect.Effect<AuthConfigService, Config.ConfigError> = Effect.fnUntraced(
-  function*(options: ConfigOptions) {
-    return makeAuthConfig({
-      baseUrl: yield* options.baseUrl,
-      secret: yield* options.secret,
-      basePath: options.basePath === undefined ? undefined : yield* options.basePath,
-      trustedOrigins: options.trustedOrigins === undefined ? undefined : yield* options.trustedOrigins,
-      trustedProviders: options.trustedProviders === undefined ? undefined : yield* options.trustedProviders,
-      session: options.session,
-      emailPassword: options.emailPassword,
-      cookie: options.cookie,
-      tokens: options.tokens,
-      rateLimit: options.rateLimit,
-      emailPaths: options.emailPaths
-    })
-  }
-)
+): Effect.Effect<AuthConfigService, Config.ConfigError> =>
+  Effect.map(
+    Config.unwrap<ScalarSettings>({
+      baseUrl: options.baseUrl,
+      secret: options.secret,
+      basePath: optionalConfig(options.basePath),
+      trustedOrigins: optionalConfig(options.trustedOrigins),
+      trustedProviders: optionalConfig(options.trustedProviders)
+    }),
+    (settings) =>
+      makeAuthConfig({
+        ...settings,
+        session: options.session,
+        emailPassword: options.emailPassword,
+        cookie: options.cookie,
+        tokens: options.tokens,
+        rateLimit: options.rateLimit,
+        emailPaths: options.emailPaths
+      })
+  )
 
 // -----------------------------------------------------------------------------
 // Layers
@@ -382,7 +433,7 @@ const resolveConfig: (
  * @since 1.0.0
  */
 export const layer = (options: Options): Layer.Layer<Services, never, Requirements> =>
-  compose(makeAuthConfig(options), options)
+  compose(makeAuthConfig(options), options, passwordsLayer)
 
 /**
  * {@link layer}, serving the OAuth providers it is given.
@@ -425,7 +476,7 @@ export const layer = (options: Options): Layer.Layer<Services, never, Requiremen
 export const layerWithOAuth = (
   options: OAuthOptions
 ): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
-  composeWithOAuth(makeAuthConfig(options), options, options.providers)
+  compose(makeAuthConfig(options), options, oauthTop(options.providers))
 
 /**
  * {@link layer}, with the scalar settings read from `Config`.
@@ -455,7 +506,7 @@ export const layerWithOAuth = (
 export const layerConfig = (
   options: ConfigOptions
 ): Layer.Layer<Services, Config.ConfigError, Requirements> =>
-  Layer.unwrap(Effect.map(resolveConfig(options), (config) => compose(config, options)))
+  Layer.unwrap(Effect.map(resolveConfig(options), (config) => compose(config, options, passwordsLayer)))
 
 /**
  * {@link layerWithOAuth}, with the settings *and* the provider credentials read
@@ -495,7 +546,7 @@ export const layerConfigWithOAuth = (
   Layer.unwrap(
     Effect.map(
       Effect.all([resolveConfig(options), Effect.all(options.providers)]),
-      ([config, providers]) => composeWithOAuth(config, options, providers)
+      ([config, providers]) => compose(config, options, oauthTop(providers))
     )
   )
 

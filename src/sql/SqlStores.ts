@@ -34,9 +34,20 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Effect, Layer, Option, Schema } from "effect"
+import { Array, DateTime, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
-import type { AccountTokens, AuthStores, PersistenceFailureKind, UserPatch } from "../domain/Stores.js"
+import { omitUndefined } from "../internal/records.js"
+import type {
+  AccountStoreService,
+  AccountTokens,
+  AuthStores,
+  PersistenceFailureKind,
+  SessionStoreService,
+  UserPatch,
+  UserStoreService,
+  VerificationStoreService,
+  WithAuthTransactionService
+} from "../domain/Stores.js"
 import {
   AccountStore,
   PersistenceError,
@@ -166,38 +177,39 @@ const persist =
 const decodeUser = Schema.decodeUnknownEffect(User)
 const decodeAccount = Schema.decodeUnknownEffect(Account)
 
-const firstOption = <A>(rows: ReadonlyArray<A>): Option.Option<A> =>
-  rows.length === 0 ? Option.none() : Option.some(rows[0]!)
+/**
+ * The one row an `UPDATE … RETURNING` produced, decoded — or `None` when the
+ * statement matched nothing, which every caller reads as "no such row".
+ */
+const decodeFirst =
+  <A, E, R>(decode: (row: unknown) => Effect.Effect<A, E, R>) =>
+  (rows: ReadonlyArray<unknown>): Effect.Effect<Option.Option<A>, E, R> =>
+    Option.match(Array.head(rows), {
+      onNone: () => Effect.succeedNone,
+      onSome: (row) => Effect.asSome(decode(row))
+    })
 
-// -----------------------------------------------------------------------------
-// The layer
-// -----------------------------------------------------------------------------
+const firstUser = decodeFirst(decodeUser)
+const firstAccount = decodeFirst(decodeAccount)
 
-const make = Effect.fnUntraced(function*() {
-  const sql = yield* SqlClient.SqlClient
-
-  const userCols = sql.literal(userColumns)
-  const sessionCols = sql.literal(sessionColumns)
-  const sessionWithUserCols = sql.literal(sessionWithUserColumns)
-  const accountCols = sql.literal(accountColumns)
-  const verificationCols = sql.literal(verificationColumns)
-
-  /**
-   * SQLite has no boolean type: `users.email_verified` is an integer flag
-   * there and a real boolean on PostgreSQL. These two adapters are the only
-   * dialect divergence in the store implementations.
-   */
-  const encodeBoolean = sql.onDialectOrElse({
+/**
+ * SQLite has no boolean type: `users.email_verified` is an integer flag there
+ * and a real boolean on PostgreSQL. These two adapters are the only dialect
+ * divergence in the store implementations.
+ */
+const booleanCodec = (sql: SqlClient.SqlClient) => ({
+  encode: sql.onDialectOrElse({
     orElse: () => (value: boolean): boolean | number => value,
     sqlite: () => (value: boolean): boolean | number => value ? 1 : 0
-  })
-
-  const decodeBoolean = sql.onDialectOrElse({
+  }),
+  decode: sql.onDialectOrElse({
     orElse: () => (value: unknown): unknown => value,
     sqlite: () => (value: unknown): unknown => value === 1 || value === true
   })
+})
 
-  const userRow = (row: RawUserRow) => ({
+const userRowsWith = (decodeBoolean: (value: unknown) => unknown) => (rows: ReadonlyArray<RawUserRow>) =>
+  rows.map((row) => ({
     id: row.id,
     name: row.name,
     email: row.email,
@@ -205,203 +217,227 @@ const make = Effect.fnUntraced(function*() {
     image: row.image,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
-  })
+  }))
 
-  const userRows = (rows: ReadonlyArray<RawUserRow>) => rows.map(userRow)
+const countRows = (rows: ReadonlyArray<RawCountRow>): number => rows.length === 0 ? 0 : Number(rows[0]!.count)
 
-  const sessionWithUserRow = (row: RawSessionWithUserRow) => ({
-    session: {
-      id: row.s_id,
-      tokenHash: row.s_tokenHash,
-      userId: row.s_userId,
-      expiresAt: row.s_expiresAt,
-      ipAddress: row.s_ipAddress,
-      userAgent: row.s_userAgent,
-      createdAt: row.s_createdAt,
-      updatedAt: row.s_updatedAt
-    },
-    user: {
-      id: row.u_id,
-      name: row.u_name,
-      email: row.u_email,
-      emailVerified: decodeBoolean(row.u_emailVerified),
-      image: row.u_image,
-      createdAt: row.u_createdAt,
-      updatedAt: row.u_updatedAt
-    }
-  })
+const encodeExpiry = (value: DateTime.Utc | null | undefined): string | null =>
+  value === null || value === undefined ? null : DateTime.formatIso(value)
 
-  const countRows = (rows: ReadonlyArray<RawCountRow>): number => rows.length === 0 ? 0 : Number(rows[0]!.count)
+// -----------------------------------------------------------------------------
+// UserStore
+// -----------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // UserStore
-  // ---------------------------------------------------------------------------
+const makeUserStore: () => Effect.Effect<UserStoreService, never, SqlClient.SqlClient> = Effect
+  .fnUntraced(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const userCols = sql.literal(userColumns)
+    const boolean = booleanCodec(sql)
+    const userRows = userRowsWith(boolean.decode)
 
-  const insertUser = SqlSchema.findOne({
-    Request: User.insert,
-    Result: User,
-    execute: (row) =>
-      Effect.map(
-        sql<RawUserRow>`INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
-          VALUES (${row.id}, ${row.name}, ${row.email}, ${encodeBoolean(row.emailVerified)}, ${row.image}, ${row.createdAt}, ${row.updatedAt})
+    const insertUser = SqlSchema.findOne({
+      Request: User.insert,
+      Result: User,
+      execute: (row) =>
+        Effect.map(
+          sql<RawUserRow>`INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
+          VALUES (${row.id}, ${row.name}, ${row.email}, ${boolean.encode(row.emailVerified)}, ${row.image}, ${row.createdAt}, ${row.updatedAt})
           RETURNING ${userCols}`,
-        userRows
-      )
+          userRows
+        )
+    })
+
+    const selectUserById = SqlSchema.findOneOption({
+      Request: Schema.String,
+      Result: User,
+      execute: (id) =>
+        Effect.map(
+          sql<RawUserRow>`SELECT ${userCols} FROM users WHERE id = ${id}`,
+          userRows
+        )
+    })
+
+    const selectUserByEmail = SqlSchema.findOneOption({
+      Request: Schema.String,
+      Result: User,
+      execute: (email) =>
+        Effect.map(
+          sql<RawUserRow>`SELECT ${userCols} FROM users WHERE email = ${email}`,
+          userRows
+        )
+    })
+
+    return UserStore.of({
+      create: (user) => persist("UserStore.create")(insertUser(user)),
+
+      findById: (id) => persist("UserStore.findById")(selectUserById(id)),
+
+      findByEmail: (email) => persist("UserStore.findByEmail")(selectUserByEmail(email)),
+
+      update: (id, patch: UserPatch) =>
+        persist("UserStore.update")(Effect.gen(function*() {
+          const now = yield* DateTime.now
+          const set = omitUndefined({
+            name: patch.name,
+            email: patch.email,
+            email_verified: patch.emailVerified === undefined ? undefined : boolean.encode(patch.emailVerified),
+            image: patch.image,
+            updated_at: DateTime.formatIso(now)
+          })
+
+          const rows = yield* sql<
+            RawUserRow
+          >`UPDATE users SET ${sql.update(set)} WHERE id = ${id} RETURNING ${userCols}`
+          return yield* firstUser(userRows(rows))
+        })),
+
+      delete: (id) =>
+        persist("UserStore.delete")(
+          Effect.map(sql<RawIdRow>`DELETE FROM users WHERE id = ${id} RETURNING id`, (rows) => rows.length > 0)
+        )
+    })
   })
 
-  const selectUserById = SqlSchema.findOneOption({
-    Request: Schema.String,
-    Result: User,
-    execute: (id) =>
-      Effect.map(
-        sql<RawUserRow>`SELECT ${userCols} FROM users WHERE id = ${id}`,
-        userRows
-      )
-  })
+// -----------------------------------------------------------------------------
+// SessionStore
+// -----------------------------------------------------------------------------
 
-  const selectUserByEmail = SqlSchema.findOneOption({
-    Request: Schema.String,
-    Result: User,
-    execute: (email) =>
-      Effect.map(
-        sql<RawUserRow>`SELECT ${userCols} FROM users WHERE email = ${email}`,
-        userRows
-      )
-  })
+const makeSessionStore: () => Effect.Effect<SessionStoreService, never, SqlClient.SqlClient> = Effect
+  .fnUntraced(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const sessionCols = sql.literal(sessionColumns)
+    const sessionWithUserCols = sql.literal(sessionWithUserColumns)
+    const decodeBoolean = booleanCodec(sql).decode
 
-  const userStore = UserStore.of({
-    create: (user) => persist("UserStore.create")(insertUser(user)),
+    const sessionWithUserRow = (row: RawSessionWithUserRow) => ({
+      session: {
+        id: row.s_id,
+        tokenHash: row.s_tokenHash,
+        userId: row.s_userId,
+        expiresAt: row.s_expiresAt,
+        ipAddress: row.s_ipAddress,
+        userAgent: row.s_userAgent,
+        createdAt: row.s_createdAt,
+        updatedAt: row.s_updatedAt
+      },
+      user: {
+        id: row.u_id,
+        name: row.u_name,
+        email: row.u_email,
+        emailVerified: decodeBoolean(row.u_emailVerified),
+        image: row.u_image,
+        createdAt: row.u_createdAt,
+        updatedAt: row.u_updatedAt
+      }
+    })
 
-    findById: (id) => persist("UserStore.findById")(selectUserById(id)),
-
-    findByEmail: (email) => persist("UserStore.findByEmail")(selectUserByEmail(email)),
-
-    update: (id, patch: UserPatch) =>
-      persist("UserStore.update")(Effect.gen(function*() {
-        const now = yield* DateTime.now
-        const set: Record<string, unknown> = Object.create(null)
-        if (patch.name !== undefined) set["name"] = patch.name
-        if (patch.email !== undefined) set["email"] = patch.email
-        if (patch.emailVerified !== undefined) set["email_verified"] = encodeBoolean(patch.emailVerified)
-        if (patch.image !== undefined) set["image"] = patch.image
-        set["updated_at"] = DateTime.formatIso(now)
-
-        const rows = yield* sql<RawUserRow>`UPDATE users SET ${sql.update(set)} WHERE id = ${id} RETURNING ${userCols}`
-        const first = firstOption(userRows(rows))
-        return yield* Option.isNone(first) ? Effect.succeedNone : Effect.asSome(decodeUser(first.value))
-      })),
-
-    delete: (id) =>
-      persist("UserStore.delete")(
-        Effect.map(sql<RawIdRow>`DELETE FROM users WHERE id = ${id} RETURNING id`, (rows) => rows.length > 0)
-      )
-  })
-
-  // ---------------------------------------------------------------------------
-  // SessionStore
-  // ---------------------------------------------------------------------------
-
-  const insertSession = SqlSchema.findOne({
-    Request: Session.insert,
-    Result: Session,
-    execute: (row) =>
-      sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, created_at, updated_at)
+    const insertSession = SqlSchema.findOne({
+      Request: Session.insert,
+      Result: Session,
+      execute: (row) =>
+        sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, created_at, updated_at)
         VALUES (${row.id}, ${row.tokenHash}, ${row.userId}, ${row.expiresAt}, ${row.ipAddress}, ${row.userAgent}, ${row.createdAt}, ${row.updatedAt})
         RETURNING ${sessionCols}`
-  })
+    })
 
-  const selectSessionWithUser = SqlSchema.findOneOption({
-    Request: TokenHashRequest,
-    Result: SessionWithUserSchema,
-    execute: (tokenHash) =>
-      Effect.map(
-        sql<RawSessionWithUserRow>`SELECT ${sessionWithUserCols}
+    const selectSessionWithUser = SqlSchema.findOneOption({
+      Request: TokenHashRequest,
+      Result: SessionWithUserSchema,
+      execute: (tokenHash) =>
+        Effect.map(
+          sql<RawSessionWithUserRow>`SELECT ${sessionWithUserCols}
           FROM sessions s
           INNER JOIN users u ON u.id = s.user_id
           WHERE s.token_hash = ${tokenHash}`,
-        (rows) => rows.map(sessionWithUserRow)
-      )
-  })
+          (rows) => rows.map(sessionWithUserRow)
+        )
+    })
 
-  const touchSession = SqlSchema.findOneOption({
-    Request: SessionTouchRequest,
-    Result: Session,
-    execute: (row) =>
-      sql`UPDATE sessions SET expires_at = ${row.expiresAt}, updated_at = ${row.updatedAt}
+    const touchSession = SqlSchema.findOneOption({
+      Request: SessionTouchRequest,
+      Result: Session,
+      execute: (row) =>
+        sql`UPDATE sessions SET expires_at = ${row.expiresAt}, updated_at = ${row.updatedAt}
         WHERE id = ${row.id}
         RETURNING ${sessionCols}`
-  })
+    })
 
-  const listSessions = SqlSchema.findAll({
-    Request: SessionListRequest,
-    Result: Session,
-    execute: (row) =>
-      sql`SELECT ${sessionCols} FROM sessions
+    const listSessions = SqlSchema.findAll({
+      Request: SessionListRequest,
+      Result: Session,
+      execute: (row) =>
+        sql`SELECT ${sessionCols} FROM sessions
         WHERE user_id = ${row.userId} AND expires_at > ${row.now}
         ORDER BY created_at DESC, id DESC`
+    })
+
+    return SessionStore.of({
+      create: (session) => persist("SessionStore.create")(insertSession(session)),
+
+      findByTokenHash: (tokenHash) =>
+        persist("SessionStore.findByTokenHash")(selectSessionWithUser(tokenHash)),
+
+      touch: (id, expiresAt) =>
+        persist("SessionStore.touch")(Effect.flatMap(
+          DateTime.now,
+          (now) => touchSession({ id, expiresAt, updatedAt: now })
+        )),
+
+      deleteById: (id, userId) =>
+        persist("SessionStore.deleteById")(
+          Effect.map(
+            sql<RawIdRow>`DELETE FROM sessions WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
+            (rows) => rows.length > 0
+          )
+        ),
+
+      deleteByUserId: (userId) =>
+        persist("SessionStore.deleteByUserId")(
+          Effect.map(
+            sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} RETURNING id`,
+            (rows) => rows.length
+          )
+        ),
+
+      deleteByUserIdExcept: (userId, sessionId) =>
+        persist("SessionStore.deleteByUserIdExcept")(
+          Effect.map(
+            sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} AND id <> ${sessionId} RETURNING id`,
+            (rows) => rows.length
+          )
+        ),
+
+      listByUserId: (userId) =>
+        persist("SessionStore.listByUserId")(Effect.flatMap(
+          DateTime.now,
+          (now) => listSessions({ userId, now })
+        )),
+
+      deleteExpired: persist("SessionStore.deleteExpired")(Effect.flatMap(
+        DateTime.now,
+        (now) =>
+          Effect.map(
+            sql<RawIdRow>`DELETE FROM sessions WHERE expires_at <= ${DateTime.formatIso(now)} RETURNING id`,
+            (rows) => rows.length
+          )
+      ))
+    })
   })
 
-  const sessionStore = SessionStore.of({
-    create: (session) => persist("SessionStore.create")(insertSession(session)),
+// -----------------------------------------------------------------------------
+// AccountStore
+// -----------------------------------------------------------------------------
 
-    findByTokenHash: (tokenHash) =>
-      persist("SessionStore.findByTokenHash")(selectSessionWithUser(tokenHash)),
+const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClient.SqlClient> = Effect
+  .fnUntraced(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const accountCols = sql.literal(accountColumns)
 
-    touch: (id, expiresAt) =>
-      persist("SessionStore.touch")(Effect.flatMap(
-        DateTime.now,
-        (now) => touchSession({ id, expiresAt, updatedAt: now })
-      )),
-
-    deleteById: (id, userId) =>
-      persist("SessionStore.deleteById")(
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-          (rows) => rows.length > 0
-        )
-      ),
-
-    deleteByUserId: (userId) =>
-      persist("SessionStore.deleteByUserId")(
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} RETURNING id`,
-          (rows) => rows.length
-        )
-      ),
-
-    deleteByUserIdExcept: (userId, sessionId) =>
-      persist("SessionStore.deleteByUserIdExcept")(
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} AND id <> ${sessionId} RETURNING id`,
-          (rows) => rows.length
-        )
-      ),
-
-    listByUserId: (userId) =>
-      persist("SessionStore.listByUserId")(Effect.flatMap(
-        DateTime.now,
-        (now) => listSessions({ userId, now })
-      )),
-
-    deleteExpired: persist("SessionStore.deleteExpired")(Effect.flatMap(
-      DateTime.now,
-      (now) =>
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE expires_at <= ${DateTime.formatIso(now)} RETURNING id`,
-          (rows) => rows.length
-        )
-    ))
-  })
-
-  // ---------------------------------------------------------------------------
-  // AccountStore
-  // ---------------------------------------------------------------------------
-
-  const insertAccount = SqlSchema.findOne({
-    Request: Account.insert,
-    Result: Account,
-    execute: (row) =>
-      sql`INSERT INTO accounts (
+    const insertAccount = SqlSchema.findOne({
+      Request: Account.insert,
+      Result: Account,
+      execute: (row) =>
+        sql`INSERT INTO accounts (
           id, issuer, account_id, provider_id, user_id,
           access_token, refresh_token, id_token,
           access_token_expires_at, refresh_token_expires_at,
@@ -412,203 +448,215 @@ const make = Effect.fnUntraced(function*() {
           ${row.accessTokenExpiresAt}, ${row.refreshTokenExpiresAt},
           ${row.scope}, ${row.passwordHash}, ${row.createdAt}, ${row.updatedAt}
         ) RETURNING ${accountCols}`
-  })
+    })
 
-  const selectAccountByIssuer = SqlSchema.findOneOption({
-    Request: IssuerAccountRequest,
-    Result: Account,
-    execute: (row) =>
-      sql`SELECT ${accountCols} FROM accounts
+    const selectAccountByIssuer = SqlSchema.findOneOption({
+      Request: IssuerAccountRequest,
+      Result: Account,
+      execute: (row) =>
+        sql`SELECT ${accountCols} FROM accounts
         WHERE issuer = ${row.issuer} AND account_id = ${row.accountId}`
-  })
+    })
 
-  const selectAccountByProvider = SqlSchema.findOneOption({
-    Request: UserProviderRequest,
-    Result: Account,
-    execute: (row) =>
-      sql`SELECT ${accountCols} FROM accounts
+    const selectAccountByProvider = SqlSchema.findOneOption({
+      Request: UserProviderRequest,
+      Result: Account,
+      execute: (row) =>
+        sql`SELECT ${accountCols} FROM accounts
         WHERE user_id = ${row.userId} AND provider_id = ${row.providerId}`
-  })
+    })
 
-  const listAccounts = SqlSchema.findAll({
-    Request: Schema.String,
-    Result: Account,
-    execute: (userId) =>
-      sql`SELECT ${accountCols} FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC, id ASC`
-  })
+    const listAccounts = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: Account,
+      execute: (userId) =>
+        sql`SELECT ${accountCols} FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC, id ASC`
+    })
 
-  /**
-   * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
-   * already, so the plain read is the same guarantee there.
-   */
-  const lockClause = sql.onDialectOrElse({
-    orElse: () => sql.literal(" FOR UPDATE"),
-    sqlite: () => sql.literal("")
-  })
+    /**
+     * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
+     * already, so the plain read is the same guarantee there.
+     */
+    const lockClause = sql.onDialectOrElse({
+      orElse: () => sql.literal(" FOR UPDATE"),
+      sqlite: () => sql.literal("")
+    })
 
-  const listAccountsForUpdate = SqlSchema.findAll({
-    Request: Schema.String,
-    Result: Account,
-    execute: (userId) =>
-      sql`SELECT ${accountCols} FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC, id ASC${lockClause}`
-  })
+    const listAccountsForUpdate = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: Account,
+      execute: (userId) =>
+        sql`SELECT ${accountCols} FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC, id ASC${lockClause}`
+    })
 
-  const encodeExpiry = (value: DateTime.Utc | null | undefined): string | null =>
-    value === null || value === undefined ? null : DateTime.formatIso(value)
+    const updateAccountRow = (operation: string, id: AccountId, set: Record<string, unknown>) =>
+      persist(operation)(Effect.gen(function*() {
+        const rows = yield* sql`UPDATE accounts SET ${sql.update(set)} WHERE id = ${id} RETURNING ${accountCols}`
+        return yield* firstAccount(rows)
+      }))
 
-  const updateAccountRow = (operation: string, id: AccountId, set: Record<string, unknown>) =>
-    persist(operation)(Effect.gen(function*() {
-      const rows = yield* sql`UPDATE accounts SET ${sql.update(set)} WHERE id = ${id} RETURNING ${accountCols}`
-      const first = firstOption(rows)
-      return yield* Option.isNone(first) ? Effect.succeedNone : Effect.asSome(decodeAccount(first.value))
-    }))
+    return AccountStore.of({
+      create: (account) => persist("AccountStore.create")(insertAccount(account)),
 
-  const accountStore = AccountStore.of({
-    create: (account) => persist("AccountStore.create")(insertAccount(account)),
+      findByIssuerAccountId: (issuer, accountId) =>
+        persist("AccountStore.findByIssuerAccountId")(selectAccountByIssuer({ issuer, accountId })),
 
-    findByIssuerAccountId: (issuer, accountId) =>
-      persist("AccountStore.findByIssuerAccountId")(selectAccountByIssuer({ issuer, accountId })),
+      findByUserIdAndProviderId: (userId, providerId) =>
+        persist("AccountStore.findByUserIdAndProviderId")(selectAccountByProvider({ userId, providerId })),
 
-    findByUserIdAndProviderId: (userId, providerId) =>
-      persist("AccountStore.findByUserIdAndProviderId")(selectAccountByProvider({ userId, providerId })),
+      listByUserId: (userId) => persist("AccountStore.listByUserId")(listAccounts(userId)),
 
-    listByUserId: (userId) => persist("AccountStore.listByUserId")(listAccounts(userId)),
+      listByUserIdForUpdate: (userId) =>
+        persist("AccountStore.listByUserIdForUpdate")(listAccountsForUpdate(userId)),
 
-    listByUserIdForUpdate: (userId) =>
-      persist("AccountStore.listByUserIdForUpdate")(listAccountsForUpdate(userId)),
+      updateTokens: (id, tokens: AccountTokens) =>
+        Effect.flatMap(DateTime.now, (now) =>
+          updateAccountRow(
+            "AccountStore.updateTokens",
+            id,
+            omitUndefined({
+              access_token: tokens.accessToken,
+              refresh_token: tokens.refreshToken,
+              id_token: tokens.idToken,
+              access_token_expires_at: tokens.accessTokenExpiresAt === undefined
+                ? undefined
+                : encodeExpiry(tokens.accessTokenExpiresAt),
+              refresh_token_expires_at: tokens.refreshTokenExpiresAt === undefined
+                ? undefined
+                : encodeExpiry(tokens.refreshTokenExpiresAt),
+              scope: tokens.scope,
+              updated_at: DateTime.formatIso(now)
+            })
+          )),
 
-    updateTokens: (id, tokens: AccountTokens) =>
-      Effect.flatMap(DateTime.now, (now) => {
-        const set: Record<string, unknown> = Object.create(null)
-        if (tokens.accessToken !== undefined) set["access_token"] = tokens.accessToken
-        if (tokens.refreshToken !== undefined) set["refresh_token"] = tokens.refreshToken
-        if (tokens.idToken !== undefined) set["id_token"] = tokens.idToken
-        if (tokens.accessTokenExpiresAt !== undefined) {
-          set["access_token_expires_at"] = encodeExpiry(tokens.accessTokenExpiresAt)
-        }
-        if (tokens.refreshTokenExpiresAt !== undefined) {
-          set["refresh_token_expires_at"] = encodeExpiry(tokens.refreshTokenExpiresAt)
-        }
-        if (tokens.scope !== undefined) set["scope"] = tokens.scope
-        set["updated_at"] = DateTime.formatIso(now)
-        return updateAccountRow("AccountStore.updateTokens", id, set)
-      }),
-
-    updatePasswordHash: (userId, passwordHash) =>
-      persist("AccountStore.updatePasswordHash")(Effect.gen(function*() {
-        const now = yield* DateTime.now
-        const rows = yield* sql`UPDATE accounts
+      updatePasswordHash: (userId, passwordHash) =>
+        persist("AccountStore.updatePasswordHash")(Effect.gen(function*() {
+          const now = yield* DateTime.now
+          const rows = yield* sql`UPDATE accounts
           SET password_hash = ${passwordHash}, updated_at = ${DateTime.formatIso(now)}
           WHERE user_id = ${userId} AND issuer = ${CredentialIssuer}
           RETURNING ${accountCols}`
-        const first = firstOption(rows)
-        return yield* Option.isNone(first) ? Effect.succeedNone : Effect.asSome(decodeAccount(first.value))
-      })),
+          return yield* firstAccount(rows)
+        })),
 
-    deleteById: (id, userId) =>
-      persist("AccountStore.deleteById")(
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM accounts WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-          (rows) => rows.length > 0
-        )
-      ),
+      deleteById: (id, userId) =>
+        persist("AccountStore.deleteById")(
+          Effect.map(
+            sql<RawIdRow>`DELETE FROM accounts WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
+            (rows) => rows.length > 0
+          )
+        ),
 
-    countByUserId: (userId) =>
-      persist("AccountStore.countByUserId")(
-        Effect.map(
-          sql<RawCountRow>`SELECT COUNT(*) AS "count" FROM accounts WHERE user_id = ${userId}`,
-          countRows
+      countByUserId: (userId) =>
+        persist("AccountStore.countByUserId")(
+          Effect.map(
+            sql<RawCountRow>`SELECT COUNT(*) AS "count" FROM accounts WHERE user_id = ${userId}`,
+            countRows
+          )
         )
-      )
+    })
   })
 
-  // ---------------------------------------------------------------------------
-  // VerificationStore
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// VerificationStore
+// -----------------------------------------------------------------------------
 
-  const insertVerification = SqlSchema.findOne({
-    Request: Verification.insert,
-    Result: Verification,
-    execute: (row) =>
-      sql`INSERT INTO verifications (id, identifier, value_hash, payload, expires_at, created_at, updated_at)
+const makeVerificationStore: () => Effect.Effect<VerificationStoreService, never, SqlClient.SqlClient> = Effect
+  .fnUntraced(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const verificationCols = sql.literal(verificationColumns)
+
+    const insertVerification = SqlSchema.findOne({
+      Request: Verification.insert,
+      Result: Verification,
+      execute: (row) =>
+        sql`INSERT INTO verifications (id, identifier, value_hash, payload, expires_at, created_at, updated_at)
         VALUES (${row.id}, ${row.identifier}, ${row.valueHash}, ${row.payload}, ${row.expiresAt}, ${row.createdAt}, ${row.updatedAt})
         RETURNING ${verificationCols}`
-  })
+    })
 
-  /**
-   * The whole race-safety story: one statement claims the row, guarded by the
-   * expiry, and hands it to exactly one caller.
-   */
-  const consumeVerification = SqlSchema.findOneOption({
-    Request: ConsumeRequest,
-    Result: Verification,
-    execute: (row) =>
-      sql`DELETE FROM verifications
+    /**
+     * The whole race-safety story: one statement claims the row, guarded by the
+     * expiry, and hands it to exactly one caller.
+     */
+    const consumeVerification = SqlSchema.findOneOption({
+      Request: ConsumeRequest,
+      Result: Verification,
+      execute: (row) =>
+        sql`DELETE FROM verifications
         WHERE identifier = ${row.identifier}
           AND value_hash = ${row.valueHash}
           AND expires_at > ${row.now}
         RETURNING ${verificationCols}`
-  })
+    })
 
-  const deleteVerificationsByIdentifier = SqlSchema.findAll({
-    Request: Schema.String,
-    Result: Schema.Struct({ id: Schema.String }),
-    execute: (identifier) => sql`DELETE FROM verifications WHERE identifier = ${identifier} RETURNING id`
-  })
+    const deleteVerificationsByIdentifier = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: Schema.Struct({ id: Schema.String }),
+      execute: (identifier) => sql`DELETE FROM verifications WHERE identifier = ${identifier} RETURNING id`
+    })
 
-  const deleteExpiredVerifications = SqlSchema.findAll({
-    Request: NowRequest,
-    Result: Schema.Struct({ id: Schema.String }),
-    execute: (row) => sql`DELETE FROM verifications WHERE expires_at <= ${row.now} RETURNING id`
-  })
+    const deleteExpiredVerifications = SqlSchema.findAll({
+      Request: NowRequest,
+      Result: Schema.Struct({ id: Schema.String }),
+      execute: (row) => sql`DELETE FROM verifications WHERE expires_at <= ${row.now} RETURNING id`
+    })
 
-  const verificationStore = VerificationStore.of({
-    create: (verification) => persist("VerificationStore.create")(insertVerification(verification)),
+    return VerificationStore.of({
+      create: (verification) => persist("VerificationStore.create")(insertVerification(verification)),
 
-    consume: (identifier, valueHash) =>
-      persist("VerificationStore.consume")(Effect.flatMap(
+      consume: (identifier, valueHash) =>
+        persist("VerificationStore.consume")(Effect.flatMap(
+          DateTime.now,
+          (now) => consumeVerification({ identifier, valueHash, now })
+        )),
+
+      deleteByIdentifier: (identifier) =>
+        persist("VerificationStore.deleteByIdentifier")(
+          Effect.map(deleteVerificationsByIdentifier(identifier), (rows) => rows.length)
+        ),
+
+      deleteExpired: persist("VerificationStore.deleteExpired")(Effect.flatMap(
         DateTime.now,
-        (now) => consumeVerification({ identifier, valueHash, now })
-      )),
-
-    deleteByIdentifier: (identifier) =>
-      persist("VerificationStore.deleteByIdentifier")(
-        Effect.map(deleteVerificationsByIdentifier(identifier), (rows) => rows.length)
-      ),
-
-    deleteExpired: persist("VerificationStore.deleteExpired")(Effect.flatMap(
-      DateTime.now,
-      (now) => Effect.map(deleteExpiredVerifications({ now }), (rows) => rows.length)
-    ))
+        (now) => Effect.map(deleteExpiredVerifications({ now }), (rows) => rows.length)
+      ))
+    })
   })
 
-  // ---------------------------------------------------------------------------
-  // WithAuthTransaction
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// WithAuthTransaction
+// -----------------------------------------------------------------------------
 
-  const withAuthTransaction = WithAuthTransaction.of({
-    run: <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | PersistenceError, R> =>
-      Effect.mapError(
-        sql.withTransaction(effect),
-        (error): E | PersistenceError =>
-          SqlError.isSqlError(error)
-            ? new PersistenceError({ operation: "WithAuthTransaction.run", cause: error })
-            : error
-      )
+const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, SqlClient.SqlClient> = Effect
+  .fnUntraced(function*() {
+    const sql = yield* SqlClient.SqlClient
+    return WithAuthTransaction.of({
+      run: <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | PersistenceError, R> =>
+        Effect.mapError(
+          sql.withTransaction(effect),
+          (error): E | PersistenceError =>
+            SqlError.isSqlError(error)
+              ? new PersistenceError({ operation: "WithAuthTransaction.run", cause: error })
+              : error
+        )
+    })
   })
 
-  return Context.make(UserStore, userStore).pipe(
-    Context.add(SessionStore, sessionStore),
-    Context.add(AccountStore, accountStore),
-    Context.add(VerificationStore, verificationStore),
-    Context.add(WithAuthTransaction, withAuthTransaction)
-  )
-})
+// -----------------------------------------------------------------------------
+// The layer
+// -----------------------------------------------------------------------------
 
 /**
  * Implements the whole persistence seam — `UserStore`, `SessionStore`,
  * `AccountStore`, `VerificationStore` and `WithAuthTransaction` — over an
  * ambient `SqlClient`.
+ *
+ * **Details**
+ *
+ * One layer per store, merged. Each of them takes the same `SqlClient` — which
+ * its own layer memoizes, so this is one client and five sets of prepared
+ * statements, not five clients — and a deployment that wants to replace exactly
+ * one store can merge its own over this.
  *
  * **When to use**
  *
@@ -628,4 +676,10 @@ const make = Effect.fnUntraced(function*() {
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient> = Layer.effectContext(make())
+export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient> = Layer.mergeAll(
+  Layer.effect(UserStore, makeUserStore()),
+  Layer.effect(SessionStore, makeSessionStore()),
+  Layer.effect(AccountStore, makeAccountStore()),
+  Layer.effect(VerificationStore, makeVerificationStore()),
+  Layer.effect(WithAuthTransaction, makeTransaction())
+)

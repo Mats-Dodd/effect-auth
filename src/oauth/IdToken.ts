@@ -21,10 +21,12 @@
  *
  * @since 1.0.0
  */
-import { DateTime, Effect, Redacted } from "effect"
+import { Cache, Context, DateTime, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import type { JWTPayload, JWTVerifyGetKey } from "jose"
-import { createRemoteJWKSet, customFetch, jwtVerify } from "jose"
+import { createLocalJWKSet, jwtVerify } from "jose"
 import { OAuthProviderError as ProviderError } from "../domain/Errors.js"
+import { lenient, Truthy } from "./internal/claims.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -69,8 +71,8 @@ export interface IdTokenClaims {
    *
    * **Gotchas**
    *
-   * Provider-controlled keys. Read it with `Object.hasOwn`, never with `in`,
-   * and never enumerate it with `for...in`.
+   * Provider-controlled keys. Read it with a `Schema` decoder, never by walking
+   * the object, and never enumerate it with `for...in`.
    */
   readonly raw: JWTPayload
 }
@@ -110,7 +112,7 @@ export interface VerifyOptions {
 }
 
 // -----------------------------------------------------------------------------
-// Remote key sets
+// Refusing a redirected JWKS
 // -----------------------------------------------------------------------------
 
 const redirectStatuses: ReadonlySet<number> = new Set([301, 302, 303, 307, 308])
@@ -133,71 +135,216 @@ export const isRedirectResponse = (response: {
   readonly type?: string
 }): boolean => response.type === "opaqueredirect" || response.status === 0 || redirectStatuses.has(response.status)
 
-const jwksCache = new Map<string, KeyResolver>()
+// -----------------------------------------------------------------------------
+// Remote key sets
+// -----------------------------------------------------------------------------
 
 /**
- * A JWKS resolver for a provider's `jwks_uri`, cached per URL.
- *
- * **Details**
- *
- * `jose` keeps its own key cache and cooldown behind the returned function, so
- * reusing one resolver per URL is what stops every callback from fetching the
- * key set again. The fetch refuses HTTP redirects for the same reason the token
- * exchange does: a `jwks_uri` that can bounce the server elsewhere is an SSRF
- * primitive, and a JWKS served from the redirect target would sign whatever the
- * attacker wants.
+ * A provider's `jwks_uri` could not be turned into a usable key set.
  *
  * **Gotchas**
  *
- * This one call goes through the platform `fetch` rather than the ambient
- * `HttpClient`: `jose` owns the request. Pass `fetchImpl` to intercept it.
+ * This never reaches a caller of the flow: `OAuthFlow` maps it straight to
+ * `OAuthProviderError({ reason: "IdTokenInvalid" })`, because "we could not
+ * check the signature" and "the signature is wrong" must be the same answer.
+ *
+ * @category errors
+ * @since 1.0.0
+ */
+export class JwksUnavailable
+  extends Schema.TaggedError<JwksUnavailable>("effect-auth/JwksUnavailable")("JwksUnavailable", {
+    jwksUrl: Schema.String
+  }, {
+    description: "A provider's JWKS endpoint could not be read"
+  })
+{}
+
+/**
+ * One key of a JSON Web Key Set, as a provider publishes it.
+ *
+ * **Gotchas**
+ *
+ * Only the public parameters are read. A key set that carries private material
+ * — `d`, `p`, `q` — has it dropped here rather than handed to `jose`.
+ */
+const JsonWebKey = Schema.Struct({
+  kty: Schema.optionalKey(Schema.String),
+  alg: Schema.optionalKey(Schema.String),
+  use: Schema.optionalKey(Schema.String),
+  kid: Schema.optionalKey(Schema.String),
+  crv: Schema.optionalKey(Schema.String),
+  e: Schema.optionalKey(Schema.String),
+  n: Schema.optionalKey(Schema.String),
+  x: Schema.optionalKey(Schema.String),
+  y: Schema.optionalKey(Schema.String),
+  pub: Schema.optionalKey(Schema.String),
+  x5c: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+  x5t: Schema.optionalKey(Schema.String),
+  "x5t#S256": Schema.optionalKey(Schema.String),
+  x5u: Schema.optionalKey(Schema.String),
+  key_ops: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+  ext: Schema.optionalKey(Schema.Boolean)
+})
+
+const JsonWebKeySet = Schema.Struct({
+  keys: Schema.mutable(Schema.Array(JsonWebKey))
+})
+
+const decodeKeySet = Schema.decodeUnknownEffect(JsonWebKeySet)
+
+/**
+ * How long a fetched key set is reused, and how many providers' key sets are
+ * kept at once.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface JwksOptions {
+  /**
+   * How long a successfully fetched key set is served from memory.
+   *
+   * **Gotchas**
+   *
+   * A provider that rotates its signing keys publishes the new one well before
+   * it signs with it, so a stale window of minutes is safe; a window of hours
+   * is not. Failures are never cached, so an unreachable endpoint is retried on
+   * the next callback rather than after this duration.
+   *
+   * @default "10 minutes"
+   */
+  readonly timeToLive?: Duration.Input | undefined
+  /**
+   * How many distinct `jwks_uri`s are kept. One per OIDC provider.
+   *
+   * @default 16
+   */
+  readonly capacity?: number | undefined
+}
+
+/**
+ * The {@link Jwks} service definition: a provider's published signing keys,
+ * fetched over the ambient `HttpClient` and cached per URL.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface JwksService {
+  /**
+   * The key resolver for a `jwks_uri`.
+   *
+   * **Details**
+   *
+   * Concurrent callbacks for the same provider share one fetch, and the
+   * resulting key set is reused for {@link JwksOptions.timeToLive}. A failed
+   * fetch is not cached.
+   */
+  readonly keys: (jwksUrl: string) => Effect.Effect<KeyResolver, JwksUnavailable>
+}
+
+/**
+ * A provider's published signing keys.
+ *
+ * **Details**
+ *
+ * The fetch goes over the `HttpClient` this service was built with — the flow
+ * hands it the same redirect-refusing client the token exchange runs on, so a
+ * `jwks_uri` that answers `302` cannot bounce a server-side request at an
+ * internal address and serve keys from the target.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Jwks extends Context.Service<Jwks, JwksService>()("effect-auth/Jwks") {}
+
+/**
+ * How long a JWKS fetch is given before it is treated as unreachable.
  *
  * @category constructors
  * @since 1.0.0
  */
-export const remoteKeys = (
-  jwksUrl: string,
-  fetchImpl?: typeof globalThis.fetch
-): KeyResolver => {
-  const cached = jwksCache.get(jwksUrl)
-  if (fetchImpl === undefined && cached !== undefined) return cached
-  const perform = fetchImpl ?? globalThis.fetch
-  const resolver = createRemoteJWKSet(new URL(jwksUrl), {
-    [customFetch]: async (url, options) => {
-      const response = await perform(url, { ...options, redirect: "manual" })
-      if (isRedirectResponse(response)) {
-        throw new Error("effect-auth: the JWKS endpoint answered with a redirect, which is refused")
-      }
-      return response
-    }
-  })
-  if (fetchImpl === undefined) jwksCache.set(jwksUrl, resolver)
-  return resolver
-}
+export const jwksRequestTimeout: Duration.Duration = Duration.seconds(10)
+
+/**
+ * Builds the {@link Jwks} implementation.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeJwks: (
+  options?: JwksOptions
+) => Effect.Effect<JwksService, never, HttpClient.HttpClient> = Effect.fnUntraced(
+  function*(options?: JwksOptions) {
+    const client = yield* HttpClient.HttpClient
+    const timeToLive = options?.timeToLive ?? Duration.minutes(10)
+
+    const fetchKeys = Effect.fnUntraced(function*(jwksUrl: string) {
+      const unavailable = new JwksUnavailable({ jwksUrl })
+      const response = yield* Effect.mapError(
+        Effect.timeout(client.execute(HttpClientRequest.get(jwksUrl, { acceptJson: true })), jwksRequestTimeout),
+        () => unavailable
+      )
+      // Belt and braces: the client refuses redirects, and a redirect that
+      // reached this far is still not a key set.
+      if (isRedirectResponse(response) || response.status >= 400) return yield* Effect.fail(unavailable)
+      const body = yield* Effect.mapError(Effect.timeout(response.json, jwksRequestTimeout), () => unavailable)
+      const keySet = yield* Effect.mapError(decodeKeySet(body), () => unavailable)
+      return yield* Effect.try({ try: () => createLocalJWKSet(keySet), catch: () => unavailable })
+    })
+
+    const cache = yield* Cache.makeWith(fetchKeys, {
+      capacity: options?.capacity ?? 16,
+      // Only a key set earns the cache. A provider that was unreachable once is
+      // asked again on the next callback rather than refused for ten minutes.
+      timeToLive: (exit: Exit.Exit<KeyResolver, JwksUnavailable>) => Exit.isSuccess(exit) ? timeToLive : Duration.zero
+    })
+
+    return Jwks.of({ keys: (jwksUrl) => Cache.get(cache, jwksUrl) })
+  }
+)
+
+/**
+ * Provides {@link Jwks} over the ambient `HttpClient`.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerJwks: Layer.Layer<Jwks, never, HttpClient.HttpClient> = Layer.effect(Jwks, makeJwks())
+
+/**
+ * {@link layerJwks}, with the cache tuned.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerJwksWith = (
+  options: JwksOptions
+): Layer.Layer<Jwks, never, HttpClient.HttpClient> => Layer.effect(Jwks, makeJwks(options))
 
 // -----------------------------------------------------------------------------
 // Verification
 // -----------------------------------------------------------------------------
 
-const stringClaim = (payload: JWTPayload, key: string): string | null => {
-  if (!Object.hasOwn(payload, key)) return null
-  const value = payload[key]
-  return typeof value === "string" && value.length > 0 ? value : null
-}
+/**
+ * The claims this module projects, and the only shapes they are believed in.
+ *
+ * `sub` and `exp` are load-bearing and required; everything else is advisory
+ * and reads as absent when the provider spells it in some other way.
+ */
+const Claims = Schema.Struct({
+  sub: Schema.NonEmptyString,
+  exp: Schema.Finite,
+  aud: lenient(Schema.Union([Schema.NonEmptyString, Schema.Array(Schema.String)])),
+  email: lenient(Schema.NonEmptyString),
+  email_verified: lenient(Truthy),
+  name: lenient(Schema.NonEmptyString),
+  picture: lenient(Schema.NonEmptyString),
+  nonce: lenient(Schema.NonEmptyString)
+})
 
-const booleanClaim = (payload: JWTPayload, key: string): boolean => {
-  if (!Object.hasOwn(payload, key)) return false
-  const value = payload[key]
-  // Several providers encode the flag as the string "true".
-  return value === true || value === "true"
-}
+const decodeClaims = Schema.decodeUnknownEffect(Claims)
 
-const audienceOf = (payload: JWTPayload): ReadonlyArray<string> => {
-  const value = payload.aud
-  if (typeof value === "string") return [value]
-  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string")
-  return []
-}
+const audienceOf = (aud: string | ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
+  aud === undefined ? [] : typeof aud === "string" ? [aud] : aud
 
 /**
  * Verifies an `id_token` and projects its claims.
@@ -234,28 +381,23 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   })
 
   const payload = verified.payload
-  const subject = stringClaim(payload, "sub")
-  if (subject === null) return yield* Effect.fail(invalid)
+  const claims = yield* Effect.mapError(decodeClaims(payload), () => invalid)
 
-  const nonce = stringClaim(payload, "nonce")
+  const nonce = claims.nonce ?? null
   if (options.nonce !== null && nonce !== options.nonce) {
     return yield* Effect.fail(invalid)
   }
 
-  const expiresAt = typeof payload.exp === "number" ? DateTime.fromEpochSeconds(payload.exp) : null
-  if (expiresAt === null) return yield* Effect.fail(invalid)
-
-  const claims: IdTokenClaims = {
-    subject,
+  return {
+    subject: claims.sub,
     issuer: options.issuer,
-    audience: audienceOf(payload),
-    email: stringClaim(payload, "email"),
-    emailVerified: booleanClaim(payload, "email_verified"),
-    name: stringClaim(payload, "name"),
-    picture: stringClaim(payload, "picture"),
+    audience: audienceOf(claims.aud),
+    email: claims.email ?? null,
+    emailVerified: claims.email_verified !== undefined,
+    name: claims.name ?? null,
+    picture: claims.picture ?? null,
     nonce,
-    expiresAt,
+    expiresAt: DateTime.fromEpochSeconds(claims.exp),
     raw: payload
-  }
-  return claims
+  } satisfies IdTokenClaims
 })

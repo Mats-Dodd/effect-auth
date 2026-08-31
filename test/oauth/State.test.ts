@@ -3,6 +3,7 @@ import { Duration, Effect, Layer, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { layer as authConfigLayer } from "../../src/config/AuthConfig.js"
 import { layer as tokenLayer, Token } from "../../src/crypto/Token.js"
+import { layerWebCrypto } from "../../src/internal/crypto.js"
 import { UserId } from "../../src/domain/Schema.js"
 import { VerificationStore } from "../../src/domain/Stores.js"
 import { codeChallengeMethod, consume, issue } from "../../src/oauth/State.js"
@@ -19,6 +20,7 @@ import { AuthTest } from "../../src/testing/index.js"
  * runs on a clock of its own.
  */
 const layerState = Layer.mergeAll(tokenLayer, authConfigLayer(AuthTest.testConfig())).pipe(
+  Layer.provide(layerWebCrypto),
   Layer.provideMerge(AuthTest.layerStores)
 )
 

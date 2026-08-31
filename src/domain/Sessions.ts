@@ -23,10 +23,11 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Redacted } from "effect"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
+import { insertRow } from "../internal/effects.js"
 import { NotFound, SessionExpired, SessionNotFresh, Unauthorized } from "./Errors.js"
 import { AuthEvents, publishSafely } from "./Events.js"
 import type { Session, SessionId, User, UserId } from "./Schema.js"
@@ -296,13 +297,13 @@ export const make: () => Effect.Effect<
     const ttl = options.rememberMe === false
       ? config.session.rememberMeDisabledExpiresIn
       : config.session.expiresIn
-    const row = yield* Effect.orDie(SessionModel.insert.makeEffect({
+    const row = yield* insertRow(SessionModel.insert, {
       tokenHash,
       userId: options.userId,
       expiresAt: DateTime.addDuration(now, ttl),
       ipAddress: options.ipAddress ?? null,
       userAgent: options.userAgent ?? null
-    }))
+    })
     const session = yield* store.create(row)
     return { session, token } satisfies CreatedSession
   })
@@ -310,10 +311,7 @@ export const make: () => Effect.Effect<
   const verify = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
     const tokenHash = yield* tokens.hashToken(token)
     const found = yield* store.findByTokenHash(tokenHash)
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new Unauthorized())
-    }
-    const { session, user } = found.value
+    const { session, user } = yield* Effect.fromOption(found, () => new Unauthorized())
     const now = yield* DateTime.now
 
     if (isExpired(session, now)) {
@@ -329,11 +327,9 @@ export const make: () => Effect.Effect<
 
     const expiresAt = DateTime.addDuration(now, grantedLifetime(session, config))
     const touched = yield* store.touch(session.id, expiresAt)
-    if (Option.isNone(touched)) {
-      // Revoked between the read and the update.
-      return yield* Effect.fail(new Unauthorized())
-    }
-    return { session: touched.value, user, refreshed: true } satisfies VerifiedSession
+    // A `None` means the session was revoked between the read and the update.
+    const refreshed = yield* Effect.fromOption(touched, () => new Unauthorized())
+    return { session: refreshed, user, refreshed: true } satisfies VerifiedSession
   })
 
   const signOut = Effect.fnUntraced(function*(session: Session) {

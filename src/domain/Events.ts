@@ -39,6 +39,7 @@
  */
 import type { Scope } from "effect"
 import { Context, Effect, Layer, PubSub, Schema, Stream } from "effect"
+import { annotateAuthLogs } from "../internal/effects.js"
 import { AccountId, SessionId, UserId } from "./Schema.js"
 
 // -----------------------------------------------------------------------------
@@ -438,5 +439,5 @@ export const publishSafely = (
 ): Effect.Effect<void> =>
   Effect.catchCause(
     events.publish(event),
-    (cause) => Effect.logDebug("effect-auth: an auth event was not published", cause)
+    (cause) => annotateAuthLogs(Effect.logDebug("an auth event was not published", cause))
   )

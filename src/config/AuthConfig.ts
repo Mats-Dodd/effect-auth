@@ -10,6 +10,8 @@
  */
 import type { Redacted } from "effect"
 import { Context, Duration, Layer } from "effect"
+import { trustedOrigins } from "../http/OriginCheck.js"
+import { withDefaults } from "../internal/records.js"
 
 /**
  * Makes every property of `T` optional and explicitly `undefined`-able, so a
@@ -400,25 +402,24 @@ export const cookieName = (config: AuthConfigService): string =>
  * @since 1.0.0
  */
 export const make = (options: AuthConfigOptions): AuthConfigService => {
-  const secure = options.cookie?.secure ?? isSecureUrl(options.baseUrl)
-  return {
+  const config: AuthConfigService = {
     baseUrl: options.baseUrl,
     basePath: options.basePath ?? "/auth",
     secret: options.secret,
     trustedOrigins: options.trustedOrigins ?? [],
     trustedProviders: options.trustedProviders ?? [],
-    session: { ...defaultSession, ...stripUndefined(options.session) },
-    emailPassword: { ...defaultEmailPassword, ...stripUndefined(options.emailPassword) },
-    cookie: {
-      path: options.cookie?.path ?? "/",
-      sameSite: options.cookie?.sameSite ?? "lax",
-      secure,
-      domain: options.cookie?.domain
-    },
-    tokens: { ...defaultTokens, ...stripUndefined(options.tokens) },
-    rateLimit: { ...defaultRateLimit, ...stripUndefined(options.rateLimit) },
-    emailPaths: { ...defaultEmailPaths, ...stripUndefined(options.emailPaths) }
+    session: withDefaults(defaultSession, options.session),
+    emailPassword: withDefaults(defaultEmailPassword, options.emailPassword),
+    cookie: withDefaults(defaultCookie(options.baseUrl), options.cookie),
+    tokens: withDefaults(defaultTokens, options.tokens),
+    rateLimit: withDefaults(defaultRateLimit, options.rateLimit),
+    emailPaths: withDefaults(defaultEmailPaths, options.emailPaths)
   }
+  // The origin set is on the hot path of every state-changing request and every
+  // redirect target, and it is a pure function of the two fields above — so it
+  // is computed here, once, rather than on the first request that asks for it.
+  primeTrustedOrigins(config)
+  return config
 }
 
 /**
@@ -429,14 +430,24 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
  */
 export const layer = (options: AuthConfigOptions): Layer.Layer<AuthConfig> => Layer.succeed(AuthConfig)(make(options))
 
-// A section's keys are declared by us, but a caller may pass an explicit
-// `undefined` for any of them; those must not overwrite a default when spread.
-const stripUndefined = <T extends object>(section: PartialOptions<T> | undefined): Partial<T> => {
-  const out: Record<string, unknown> = Object.create(null)
-  if (section === undefined) return out as Partial<T>
-  for (const key of Object.keys(section)) {
-    const value = (section as Record<string, unknown>)[key]
-    if (value !== undefined) out[key] = value
-  }
-  return { ...out } as Partial<T>
+/**
+ * The default cookie shape for a deployment served from `baseUrl`.
+ *
+ * `secure` is the only default that depends on anything, and `domain` is
+ * deliberately present-and-`undefined`: omitting the attribute scopes the
+ * cookie to the exact host that set it.
+ */
+const defaultCookie = (baseUrl: string): CookieConfig => ({
+  path: "/",
+  sameSite: "lax",
+  secure: isSecureUrl(baseUrl),
+  domain: undefined
+})
+
+/**
+ * Fills `OriginCheck`'s per-configuration memo the moment the configuration
+ * exists, so no request pays for the parse.
+ */
+const primeTrustedOrigins = (config: AuthConfigService): void => {
+  trustedOrigins(config)
 }

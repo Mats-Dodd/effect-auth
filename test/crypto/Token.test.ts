@@ -1,10 +1,11 @@
 import { assert, it, layer } from "@effect/vitest"
-import { Effect, Encoding, Redacted, Result } from "effect"
+import { Crypto, Effect, Encoding, Layer, Redacted, Result } from "effect"
 import * as Token from "../../src/crypto/Token.js"
+import { layerWebCrypto } from "../../src/internal/crypto.js"
 
 const base64url = /^[A-Za-z0-9_-]+$/
 
-layer(Token.layer)("crypto/Token", (it) => {
+layer(Token.layer.pipe(Layer.provide(layerWebCrypto)))("crypto/Token", (it) => {
   it.effect("mints 32 random bytes as a 43-character base64url string", () =>
     Effect.gen(function*() {
       const tokens = yield* Token.Token
@@ -73,18 +74,15 @@ layer(Token.layer)("crypto/Token", (it) => {
 })
 
 // Outside the block on purpose: this one builds its own `Token` over an
-// injected WebCrypto, which is the whole point of the assertion.
-it.effect("crypto/Token can be bound to an explicit WebCrypto instance", () =>
+// injected `Crypto`, which is the whole point of the assertion.
+it.effect("crypto/Token can be bound to an explicit Crypto instance", () =>
   Effect.gen(function*() {
     // A stubbed generator proves nothing leaks in from `globalThis`: the
     // token is exactly the bytes the injected crypto handed over.
-    const stub = {
-      getRandomValues: <A extends ArrayBufferView>(array: A): A => {
-        new Uint8Array(array.buffer, array.byteOffset, array.byteLength).fill(1)
-        return array
-      },
-      subtle: globalThis.crypto.subtle
-    } as unknown as Crypto
+    const stub = Crypto.make({
+      randomBytes: (size) => new Uint8Array(size).fill(1),
+      digest: (_algorithm, data) => Effect.succeed(data)
+    })
 
     const tokens = Token.make(stub)
     const token = yield* tokens.generateToken

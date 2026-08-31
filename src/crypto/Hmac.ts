@@ -8,6 +8,7 @@
  */
 import { Context, Effect, Layer, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
+import { encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
 /**
  * The {@link Hmac} service definition.
@@ -46,18 +47,17 @@ export class Hmac extends Context.Service<Hmac, HmacService>()("effect-auth/Hmac
 // Implementation
 // -----------------------------------------------------------------------------
 
-const utf8 = new TextEncoder()
-
-const toArrayBuffer = (data: Uint8Array): ArrayBuffer => {
-  const buffer = new ArrayBuffer(data.byteLength)
-  new Uint8Array(buffer).set(data)
-  return buffer
-}
-
 /**
  * Builds an {@link Hmac} implementation from a WebCrypto instance and a secret.
  *
  * **Details**
+ *
+ * This is the one service that cannot be written against `Crypto.Crypto`:
+ * that interface offers random bytes and message digests, and HMAC is neither.
+ * Recomputing a tag from `digest` by hand would also give up
+ * `subtle.verify`'s constant-time comparison, which is the point of
+ * {@link HmacService.verify}. So the WebCrypto instance stays an explicit
+ * parameter here.
  *
  * The secret is imported as a non-extractable `CryptoKey` once, at layer
  * construction, and the `Redacted` wrapper is unwrapped only for that single
@@ -78,7 +78,7 @@ export const make = (
     Effect.promise(() =>
       crypto.subtle.importKey(
         "raw",
-        toArrayBuffer(utf8.encode(Redacted.value(secret))),
+        toArrayBuffer(encodeUtf8(Redacted.value(secret))),
         { name: "HMAC", hash: "SHA-256" },
         false,
         ["sign", "verify"]

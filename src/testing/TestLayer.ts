@@ -19,7 +19,7 @@
  * @since 1.0.0
  */
 import { PgliteClient } from "@effect/sql-pglite"
-import type { Scope } from "effect"
+import type { Crypto, Scope } from "effect"
 import { Effect, FileSystem, Layer, Path, PubSub, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import type { HttpClient } from "effect/unstable/http"
@@ -48,6 +48,7 @@ import type { AuthStores } from "../domain/Stores.js"
 import type { AuthApiGroup } from "../http/AuthApi.js"
 import { AuthApi } from "../http/AuthApi.js"
 import * as AuthHandlers from "../http/Handlers.js"
+import { webCrypto } from "../internal/crypto.js"
 import * as Migrations from "../sql/Migrations.js"
 import * as SqlStores from "../sql/SqlStores.js"
 import type { EmailDelivery } from "./TestEmails.js"
@@ -139,7 +140,7 @@ export interface Options {
    * A hashing layer to use instead of scrypt at test cost — the seam
    * {@link countingHasher} plugs into.
    */
-  readonly hasher?: Layer.Layer<PasswordHasher> | undefined
+  readonly hasher?: Layer.Layer<PasswordHasher, never, Crypto.Crypto> | undefined
   /**
    * Whether the capturing mailer accepts what it is handed, or records it and
    * then reports a delivery failure. Defaults to `"ok"`.
@@ -176,7 +177,7 @@ export const testConfig = (options?: Options): AuthConfigOptions => ({
   emailPaths: options?.emailPaths
 })
 
-const hasherOf = (options?: Options): Layer.Layer<PasswordHasher> =>
+const hasherOf = (options?: Options): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
   options?.hasher ?? layerScrypt(options?.scrypt ?? testScryptOptions)
 
 /**
@@ -480,7 +481,7 @@ export const countingHasher = (
   options?: ScryptOptions
 ): { readonly layer: Layer.Layer<PasswordHasher>; readonly state: HasherCounts } => {
   const state: HasherCounts = { hashes: 0, verifies: 0 }
-  const inner = makeScrypt(globalThis.crypto, options ?? testScryptOptions)
+  const inner = makeScrypt(webCrypto, options ?? testScryptOptions)
   const layer = Layer.succeed(PasswordHasher)({
     hash: (password) =>
       Effect.suspend(() => {

@@ -33,6 +33,7 @@ import { AuthEmails, resetPasswordUrl, verifyEmailUrl } from "../config/AuthEmai
 import { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { Token } from "../crypto/Token.js"
 import { validateUrl } from "../http/OriginCheck.js"
+import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import type { PasswordHashError } from "./Errors.js"
 import {
   EmailNotVerified,
@@ -500,12 +501,12 @@ export const make: () => Effect.Effect<
   const issue = Effect.fnUntraced(function*(identifier: string, subject: string, expiresAt: DateTime.Utc) {
     const secret = yield* tokens.generateToken
     const valueHash = yield* tokens.hashToken(secret)
-    const row = yield* Effect.orDie(Verification.insert.makeEffect({
+    const row = yield* insertRow(Verification.insert, {
       identifier,
       valueHash,
       payload: null,
       expiresAt
-    }))
+    })
     yield* verifications.create(row)
     return encodeSubjectToken(subject, secret)
   })
@@ -515,16 +516,13 @@ export const make: () => Effect.Effect<
     token: Redacted.Redacted<string>,
     identifierOf: (subject: string) => string
   ) {
-    const parts = decodeSubjectToken(token)
-    if (Option.isNone(parts)) {
-      return yield* Effect.fail(new InvalidToken())
-    }
-    const valueHash = yield* tokens.hashToken(parts.value.secret)
-    const consumed = yield* verifications.consume(identifierOf(parts.value.subject), valueHash)
-    if (Option.isNone(consumed)) {
-      return yield* Effect.fail(new InvalidToken())
-    }
-    return parts.value.subject
+    const parts = yield* Effect.fromOption(decodeSubjectToken(token), () => new InvalidToken())
+    const valueHash = yield* tokens.hashToken(parts.secret)
+    const consumed = yield* verifications.consume(identifierOf(parts.subject), valueHash)
+    // An expired row was never claimable and a claimed row is already gone:
+    // both are `None` here, and both are one and the same answer.
+    yield* Effect.fromOption(consumed, () => new InvalidToken())
+    return parts.subject
   })
 
   const sendVerificationTo = Effect.fnUntraced(function*(
@@ -540,16 +538,16 @@ export const make: () => Effect.Effect<
     const url = withCallback(verifyEmailUrl(config, token), callbackURL)
     // Delivery is the application's responsibility and its failure must not
     // change what the caller observes; it is logged and dropped.
-    yield* Effect.ignore(
+    yield* annotateAuthLogs(Effect.ignore(
       emails.sendVerification({ user, token, url }),
-      { log: "Warn", message: "effect-auth: verification e-mail delivery failed" }
-    )
+      { log: "Warn", message: "verification e-mail delivery failed" }
+    ))
   })
 
   const credentialAccountFor = (userId: UserId) => accounts.findByIssuerAccountId(CredentialIssuer, userId)
 
   const createCredentialAccount = Effect.fnUntraced(function*(userId: UserId, passwordHash: string) {
-    const row = yield* Effect.orDie(Account.insert.makeEffect({
+    const row = yield* insertRow(Account.insert, {
       issuer: CredentialIssuer,
       accountId: userId,
       providerId: credentialProviderId,
@@ -561,7 +559,7 @@ export const make: () => Effect.Effect<
       refreshTokenExpiresAt: null,
       scope: null,
       passwordHash
-    }))
+    })
     return yield* accounts.create(row)
   })
 
@@ -579,12 +577,12 @@ export const make: () => Effect.Effect<
     const passwordHash = yield* hasher.hash(options.password)
 
     const user = yield* transaction.run(Effect.gen(function*() {
-      const row = yield* Effect.orDie(UserModel.insert.makeEffect({
+      const row = yield* insertRow(UserModel.insert, {
         name: options.name,
         email,
         emailVerified: false,
         image: options.image ?? null
-      }))
+      })
       const created = yield* users.create(row)
       yield* createCredentialAccount(created.id, passwordHash)
       return created
@@ -689,10 +687,10 @@ export const make: () => Effect.Effect<
       DateTime.addDuration(now, config.tokens.passwordResetTtl)
     )
     const url = withCallback(resetPasswordUrl(config, token), options.redirectTo)
-    yield* Effect.ignore(
+    yield* annotateAuthLogs(Effect.ignore(
       emails.sendPasswordReset({ user, token, url }),
-      { log: "Warn", message: "effect-auth: password reset e-mail delivery failed" }
-    )
+      { log: "Warn", message: "password reset e-mail delivery failed" }
+    ))
     yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: user.id })
   })
 
@@ -703,10 +701,7 @@ export const make: () => Effect.Effect<
     const subject = yield* claim(options.token, (userId) => passwordResetIdentifier(userId as UserId))
     const userId = subject as UserId
 
-    const found = yield* users.findById(userId)
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new InvalidToken())
-    }
+    yield* Effect.fromOption(yield* users.findById(userId), () => new InvalidToken())
 
     const passwordHash = yield* hasher.hash(options.newPassword)
 
@@ -747,14 +742,13 @@ export const make: () => Effect.Effect<
     }
 
     const passwordHash = yield* hasher.hash(options.newPassword)
+    // A `None` here means the credential account was removed between the
+    // verification above and this write — a racing unlink or reset. Nothing
+    // changed, so nothing is revoked and no `PasswordChanged` is published: the
+    // caller must present the current password again, against whatever
+    // credential now exists.
     const updated = yield* accounts.updatePasswordHash(options.userId, passwordHash)
-    if (Option.isNone(updated)) {
-      // The credential account was removed between the verification above and
-      // this write — a racing unlink or reset. Nothing changed, so nothing is
-      // revoked and no `PasswordChanged` is published: the caller must present
-      // the current password again, against whatever credential now exists.
-      return yield* Effect.fail(new InvalidCredentials())
-    }
+    yield* Effect.fromOption(updated, () => new InvalidCredentials())
 
     // Same reasoning as in `resetPassword`: a password that has just been
     // changed from inside a session must not still be resettable by a link
@@ -784,21 +778,19 @@ export const make: () => Effect.Effect<
     const email = yield* claim(token, emailVerifyIdentifier)
 
     const found = yield* users.findByEmail(normalizeEmail(email))
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new InvalidToken())
-    }
+    const user = yield* Effect.fromOption(found, () => new InvalidToken())
 
-    const updated = yield* users.update(found.value.id, { emailVerified: true })
-    if (Option.isNone(updated)) {
-      return yield* Effect.fail(new InvalidToken())
-    }
+    const updated = yield* users.update(user.id, { emailVerified: true })
+    // The user was deleted between the two reads: the token is spent and there
+    // is nothing to verify.
+    const verified = yield* Effect.fromOption(updated, () => new InvalidToken())
 
     yield* publishSafely(events, {
       _tag: "EmailVerified",
-      userId: updated.value.id,
-      email: updated.value.email
+      userId: verified.id,
+      email: verified.email
     })
-    return updated.value
+    return verified
   })
 
   return Passwords.of({

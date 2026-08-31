@@ -23,6 +23,7 @@ import { RateLimiter } from "effect/unstable/persistence"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { RateLimited } from "../domain/Errors.js"
+import { authLogAnnotations } from "../internal/effects.js"
 
 // -----------------------------------------------------------------------------
 // Buckets
@@ -235,9 +236,9 @@ export const consumeWith = (options: {
     const failClosed = config.rateLimit.failClosed
     yield* Effect.logWarning(
       failClosed
-        ? "effect-auth: the rate limiter store failed; request refused (rateLimit.failClosed)"
-        : "effect-auth: the rate limiter store failed; request allowed"
-    ).pipe(Effect.annotateLogs({ bucket: bucket.name }))
+        ? "the rate limiter store failed; request refused (rateLimit.failClosed)"
+        : "the rate limiter store failed; request allowed"
+    ).pipe(Effect.annotateLogs({ ...authLogAnnotations, bucket: bucket.name }))
     if (failClosed) {
       // No counter means no way to tell an ordinary caller from a run of
       // guesses, so the window's own length is what the caller is told to wait.
