@@ -619,6 +619,11 @@ export const make: () => Effect.Effect<
       audience: provider.clientId,
       keys,
       nonce,
+      // Key rotation: a fetched key set that does not hold the token's `kid`
+      // is refetched once (rate-limited by Jwks). Pinned keys are pinned.
+      ...(pinned === undefined && jwksUrl !== undefined
+        ? { freshKeys: Effect.mapError(keySets.refresh(jwksUrl), () => invalid) }
+        : {}),
       ...(provider.algorithms === undefined ? {} : { algorithms: provider.algorithms })
     })
     return { ...tokens, idTokenClaims: claims } satisfies OAuthTokens

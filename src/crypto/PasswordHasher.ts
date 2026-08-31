@@ -19,7 +19,7 @@
  */
 import { Context, Crypto, Effect, Encoding, Layer, Redacted, Result } from "effect"
 import { PasswordHashError } from "../domain/Errors.js"
-import { encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
+import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
 /**
  * The {@link PasswordHasher} service definition.
@@ -389,8 +389,8 @@ interface Pbkdf2Params {
 
 /**
  * PBKDF2 is a WebCrypto `subtle` operation, and `Crypto.Crypto` offers random
- * bytes and message digests only — so this one reaches for `globalThis.crypto`
- * directly. The salt, which *is* just random bytes, comes from the service.
+ * bytes and message digests only — so this one reaches for the ambient
+ * WebCrypto handle (via `internal/crypto`) directly. The salt, which *is* just random bytes, comes from the service.
  */
 const pbkdf2Derive = (
   password: string,
@@ -399,7 +399,7 @@ const pbkdf2Derive = (
 ): Effect.Effect<Uint8Array, PasswordHashError> =>
   Effect.tryPromise({
     try: async () => {
-      const subtle = globalThis.crypto.subtle
+      const subtle = ambientCrypto().subtle
       const key = await subtle.importKey(
         "raw",
         toArrayBuffer(encodeUtf8(password)),

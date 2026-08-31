@@ -8,7 +8,7 @@
  */
 import { Context, Effect, Layer, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
-import { encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
+import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
 /**
  * The {@link Hmac} service definition.
@@ -108,5 +108,5 @@ export const make = (
  */
 export const layer: Layer.Layer<Hmac, never, AuthConfig> = Layer.effect(
   Hmac,
-  AuthConfig.use((config) => make(globalThis.crypto, config.secret))
+  AuthConfig.use((config) => make(ambientCrypto(), config.secret))
 )

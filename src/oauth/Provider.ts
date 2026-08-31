@@ -360,7 +360,7 @@ export const revealToken = (token: Redacted.Redacted<string> | null): string | n
 export const providerRequestTimeout: Duration.Duration = Duration.seconds(10)
 
 /**
- * How many times a request that never reached the provider is tried again.
+ * How many times a transport-level failure is tried again.
  *
  * @category constructors
  * @since 1.0.0
@@ -375,9 +375,13 @@ export const providerRetryCount = 2
  * Two failure modes, treated differently. A request that hangs is bounded by
  * {@link providerRequestTimeout} — without it a provider that accepts a
  * connection and never answers holds a callback fiber open for as long as the
- * runtime allows. A request that never got made at all — DNS, a refused
- * connection, a dropped socket — is a `TransportError`, and those are worth
- * repeating with an exponential back-off.
+ * runtime allows. A `TransportError` — DNS, a refused connection, a dropped
+ * socket — is worth repeating with an exponential back-off. Usually that means
+ * the request never reached the provider, but not always: a socket can die
+ * after the request was transmitted, so a retried one-time authorization code
+ * may already be burnt. That retry cannot double-issue anything — the provider
+ * answers `invalid_grant`, the sign-in fails either way — it only changes
+ * which error the failure is reported as.
  *
  * **Gotchas**
  *

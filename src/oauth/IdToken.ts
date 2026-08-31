@@ -109,6 +109,20 @@ export interface VerifyOptions {
   readonly algorithms?: ReadonlyArray<string> | undefined
   /** Clock skew allowance for `exp` and `nbf`, in seconds. Default 0. */
   readonly clockToleranceSeconds?: number | undefined
+  /**
+   * A second chance at the verification keys, taken only when the token names
+   * a `kid` the current resolver does not hold.
+   *
+   * **Details**
+   *
+   * A provider that rotates its signing keys can sign with the new key while
+   * a cached key set is still being served. When this is set, that one
+   * failure — jose's "no matching key", nothing else — re-resolves the keys
+   * through this effect and verifies once more. Every other failure stays a
+   * single opaque `IdTokenInvalid`, and a forged `kid` earns at most one
+   * (rate-limited) refresh, never acceptance.
+   */
+  readonly freshKeys?: Effect.Effect<KeyResolver, ProviderError> | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -206,9 +220,11 @@ export interface JwksOptions {
    * **Gotchas**
    *
    * A provider that rotates its signing keys publishes the new one well before
-   * it signs with it, so a stale window of minutes is safe; a window of hours
-   * is not. Failures are never cached, so an unreachable endpoint is retried on
-   * the next callback rather than after this duration.
+   * it signs with it, so a stale window of minutes is safe; a token signed
+   * with a key this cache has not seen triggers a {@link JwksService.refresh}
+   * rather than waiting the window out. Failures are never cached, so an
+   * unreachable endpoint is retried on the next callback rather than after
+   * this duration.
    *
    * @default "10 minutes"
    */
@@ -219,6 +235,20 @@ export interface JwksOptions {
    * @default 16
    */
   readonly capacity?: number | undefined
+  /**
+   * How long a {@link JwksService.refresh} result is reused before the
+   * endpoint may be asked again.
+   *
+   * **Gotchas**
+   *
+   * The refresh path is reachable by anyone who can present a token with an
+   * invented `kid`, so it is rate-limited: within this window every refresh
+   * for the same URL is served the one freshly fetched key set. This mirrors
+   * jose's own remote-JWKS cooldown.
+   *
+   * @default "30 seconds"
+   */
+  readonly refreshCooldown?: Duration.Input | undefined
 }
 
 /**
@@ -239,6 +269,18 @@ export interface JwksService {
    * fetch is not cached.
    */
   readonly keys: (jwksUrl: string) => Effect.Effect<KeyResolver, JwksUnavailable>
+  /**
+   * Drops the cached key set for a `jwks_uri` and fetches it again.
+   *
+   * **Details**
+   *
+   * This is the key-rotation path: a token signed with a `kid` the cached set
+   * does not hold asks for fresh keys instead of failing until the cache
+   * expires. At most one upstream fetch per
+   * {@link JwksOptions.refreshCooldown} per URL — callers inside the window
+   * share the freshly fetched set.
+   */
+  readonly refresh: (jwksUrl: string) => Effect.Effect<KeyResolver, JwksUnavailable>
 }
 
 /**
@@ -298,7 +340,26 @@ export const makeJwks: (
       timeToLive: (exit: Exit.Exit<KeyResolver, JwksUnavailable>) => Exit.isSuccess(exit) ? timeToLive : Duration.zero
     })
 
-    return Jwks.of({ keys: (jwksUrl) => Cache.get(cache, jwksUrl) })
+    // The rotation path, rate-limited: a successful refresh is served to every
+    // caller of the same URL for the cooldown window, so an invented `kid`
+    // costs the provider at most one fetch per window.
+    const refreshCooldown = options?.refreshCooldown ?? Duration.seconds(30)
+    const refreshCache = yield* Cache.makeWith(
+      Effect.fnUntraced(function*(jwksUrl: string) {
+        yield* Cache.invalidate(cache, jwksUrl)
+        return yield* Cache.get(cache, jwksUrl)
+      }),
+      {
+        capacity: options?.capacity ?? 16,
+        timeToLive: (exit: Exit.Exit<KeyResolver, JwksUnavailable>) =>
+          Exit.isSuccess(exit) ? refreshCooldown : Duration.zero
+      }
+    )
+
+    return Jwks.of({
+      keys: (jwksUrl) => Cache.get(cache, jwksUrl),
+      refresh: (jwksUrl) => Cache.get(refreshCache, jwksUrl)
+    })
   }
 )
 
@@ -323,6 +384,18 @@ export const layerJwksWith = (
 // -----------------------------------------------------------------------------
 // Verification
 // -----------------------------------------------------------------------------
+
+/**
+ * jose's "the token names a `kid` this key set does not hold" — the one
+ * verification failure that is evidence of key rotation rather than forgery,
+ * and therefore the only one allowed to trigger a JWKS refresh.
+ */
+const isNoMatchingKey = (cause: unknown): boolean =>
+  typeof cause === "object" && cause !== null && "code" in cause &&
+  (cause as { readonly code?: unknown }).code === "ERR_JWKS_NO_MATCHING_KEY"
+
+/** Internal marker distinguishing the refreshable failure inside {@link verify}. */
+const unknownKeyId = Symbol.for("effect-auth/IdToken/unknownKeyId")
 
 /**
  * The claims this module projects, and the only shapes they are believed in.
@@ -368,17 +441,23 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   const invalid = new ProviderError({ providerId: options.providerId, reason: "IdTokenInvalid" })
   const now = yield* DateTime.now
 
-  const verified = yield* Effect.tryPromise({
-    try: () =>
-      jwtVerify(Redacted.value(options.token), options.keys, {
-        issuer: options.issuer,
-        audience: options.audience,
-        currentDate: DateTime.toDate(now),
-        clockTolerance: options.clockToleranceSeconds ?? 0,
-        ...(options.algorithms === undefined ? {} : { algorithms: [...options.algorithms] })
-      }),
-    catch: () => invalid
-  })
+  const attempt = (keys: KeyResolver) =>
+    Effect.tryPromise({
+      try: () =>
+        jwtVerify(Redacted.value(options.token), keys, {
+          issuer: options.issuer,
+          audience: options.audience,
+          currentDate: DateTime.toDate(now),
+          clockTolerance: options.clockToleranceSeconds ?? 0,
+          ...(options.algorithms === undefined ? {} : { algorithms: [...options.algorithms] })
+        }),
+      catch: (cause) => (isNoMatchingKey(cause) ? unknownKeyId : invalid)
+    })
+
+  const verified = yield* Effect.catch(attempt(options.keys), (error) =>
+    error !== unknownKeyId || options.freshKeys === undefined
+      ? Effect.fail(invalid)
+      : Effect.catch(Effect.flatMap(options.freshKeys, attempt), () => Effect.fail(invalid)))
 
   const payload = verified.payload
   const claims = yield* Effect.mapError(decodeClaims(payload), () => invalid)

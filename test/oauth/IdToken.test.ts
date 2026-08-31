@@ -242,6 +242,55 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
       }).pipe(Effect.provide(over(server.fetch)))
     })
 
+    it.effect("refetches a rotated key set when a token names an unknown kid", () => {
+      const server = MockProvider.mockServer()
+      return Effect.gen(function*() {
+        const { body: oldBody } = yield* published
+        // The provider's next key: not in the published set the cache warmed
+        // up on, exactly what an emergency rotation looks like.
+        const rotated = yield* Effect.promise(async () => {
+          const pair = await generateKeyPair("RS256", { extractable: true })
+          const jwk = await exportJWK(pair.publicKey)
+          const token = await new SignJWT({ sub: "rotated-subject" })
+            .setProtectedHeader({ alg: "RS256", kid: "rotated-k2" })
+            .setIssuer(issuer)
+            .setAudience(audience)
+            .setExpirationTime(expiresAt)
+            .sign(pair.privateKey)
+          return {
+            body: { keys: [{ ...jwk, kid: "rotated-k2", alg: "RS256", use: "sig" }] },
+            token: Redacted.make(token)
+          }
+        })
+
+        // Warm the cache on the pre-rotation set...
+        server.on(jwksUrl, () => MockProvider.json(oldBody))
+        const jwks = yield* Jwks
+        const keys = yield* jwks.keys(jwksUrl)
+
+        // ...then rotate: the endpoint now serves the new set, and the token
+        // is signed with a kid the cached resolver has never seen.
+        server.on(jwksUrl, () => MockProvider.json(rotated.body))
+        const claims = yield* verify({
+          providerId: "remote",
+          token: rotated.token,
+          issuer,
+          audience,
+          keys,
+          nonce: null,
+          algorithms: ["RS256"],
+          freshKeys: Effect.orDie(jwks.refresh(jwksUrl))
+        })
+        assert.strictEqual(claims.subject, "rotated-subject")
+        assert.strictEqual(server.to(jwksUrl).length, 2)
+
+        // Inside the cooldown a second refresh is served the same fresh set —
+        // an invented kid cannot turn callbacks into a fetch storm.
+        yield* jwks.refresh(jwksUrl)
+        assert.strictEqual(server.to(jwksUrl).length, 2)
+      }).pipe(Effect.provide(over(server.fetch)))
+    })
+
     it.effect("refuses a JWKS endpoint that answers with a redirect", () => {
       const server = MockProvider.mockServer()
       server.on(jwksUrl, () => MockProvider.redirect("http://169.254.169.254/latest/meta-data/"))

@@ -32,6 +32,18 @@ export const toArrayBuffer = (data: Uint8Array): ArrayBuffer => {
 }
 
 /**
+ * The runtime's ambient WebCrypto handle.
+ *
+ * `Crypto.Crypto` covers random bytes and digests only; HMAC and PBKDF2 are
+ * `subtle` operations, so their modules need the real handle. Routing every
+ * access through here keeps "what touches the ambient runtime crypto" a
+ * one-file grep.
+ *
+ * @internal
+ */
+export const ambientCrypto = (): globalThis.Crypto => globalThis.crypto
+
+/**
  * `Crypto.Crypto` over the runtime's WebCrypto (`globalThis.crypto`).
  *
  * **Details**

@@ -7,8 +7,14 @@
  * moves session expiry, that `layerConfig` reads what it says it reads, that
  * `layerWithOAuth` is the same stack with the flow in it, and that the redacted
  * header names reach the context the application actually runs on.
+ *
+ * The default-deployment tests share one database through `layer()`. The event
+ * hub and `cleanupExpired` tests stay on per-test deployments: the hub is
+ * shared by everything in a block, so a shared subscription would also record
+ * the siblings, and the sweep is table-wide, so a shared database would lose
+ * the siblings' live rows to it.
  */
-import { assert, it } from "@effect/vitest"
+import { assert, it, layer } from "@effect/vitest"
 import {
   Config,
   ConfigProvider,
@@ -27,8 +33,7 @@ import type { HttpClient } from "effect/unstable/http"
 import { FetchHttpClient, Headers } from "effect/unstable/http"
 import { Auth, AuthConfig, AuthCookies, Github, OAuthFlow, Passwords, Sessions } from "../../src/index.js"
 import { AuthTest } from "../../src/testing/index.js"
-
-const password = Redacted.make("correct horse battery staple")
+import { newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * A transport that refuses to be used. `start` mints a state row and builds a
@@ -43,25 +48,95 @@ const noNetwork: Layer.Layer<HttpClient.HttpClient> = FetchHttpClient.layer.pipe
   )
 )
 
-it.effect("signs a user up, through the whole stack", () =>
-  Effect.gen(function*() {
-    const passwords = yield* Passwords.Passwords
-    const result = yield* passwords.signUp({
-      name: "Ada Lovelace",
-      email: "Ada@Example.COM",
-      password
-    })
+layer(AuthTest.layer())("config/Auth assembly", (it) => {
+  it.effect("signs a user up, through the whole stack", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords.Passwords
+      const email = uniqueEmail("assembly")
+      const result = yield* passwords.signUp({
+        name: testName,
+        // The address was normalised on the way in.
+        email: email.toUpperCase(),
+        password: testPassword
+      })
 
-    // The address was normalised on the way in.
-    assert.strictEqual(result.user.email, "ada@example.com")
-    assert.strictEqual(result.user.emailVerified, false)
-    // `autoSignIn` defaults on and verification is not required here.
-    assert.strictEqual(Option.isSome(result.session), true)
+      assert.strictEqual(result.user.email, email)
+      assert.strictEqual(result.user.emailVerified, false)
+      // `autoSignIn` defaults on and verification is not required here.
+      assert.strictEqual(Option.isSome(result.session), true)
 
-    // And the row is really in the database: signing in reads it back.
-    const signedIn = yield* passwords.signIn({ email: "ada@example.com", password })
-    assert.strictEqual(signedIn.user.id, result.user.id)
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
+      // And the row is really in the database: signing in reads it back.
+      const signedIn = yield* passwords.signIn({ email, password: testPassword })
+      assert.strictEqual(signedIn.user.id, result.user.id)
+    }))
+
+  it.effect("expires a session once its lifetime has elapsed", () =>
+    AuthTest.freshClock(Effect.gen(function*() {
+      const passwords = yield* Passwords.Passwords
+      const sessions = yield* Sessions.Sessions
+      const email = uniqueEmail("expiry")
+
+      yield* passwords.signUp({ name: testName, email, password: testPassword })
+      const signedIn = yield* passwords.signIn({ email, password: testPassword })
+
+      // Well inside the default seven days: still good, and refreshed on the way.
+      yield* TestClock.adjust(Duration.days(2))
+      const live = yield* sessions.verify(signedIn.token)
+      assert.strictEqual(live.refreshed, true)
+
+      // Past the refreshed expiry: refused, and the dead row is cleaned up.
+      yield* TestClock.adjust(Duration.days(8))
+      const expired = yield* Effect.flip(sessions.verify(signedIn.token))
+      assert.strictEqual(expired._tag, "SessionExpired")
+    })))
+
+  it.effect("captures the reset e-mail so a test can read its token", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords.Passwords
+      const emails = yield* AuthTest.TestEmails
+      const email = uniqueEmail("reset")
+
+      yield* passwords.signUp({ name: testName, email, password: testPassword })
+      assert.strictEqual(Option.isNone(yield* emails.last("reset", email)), true)
+
+      yield* passwords.requestReset({ email })
+      const token = yield* emails.tokenFor("reset", email)
+
+      yield* passwords.resetPassword({ token, newPassword })
+
+      const signedIn = yield* passwords.signIn({ email, password: newPassword })
+      assert.strictEqual(signedIn.user.email, email)
+    }))
+
+  it.effect("asks nothing of an unknown address, and says nothing about it", () =>
+    Effect.gen(function*() {
+      const passwords = yield* Passwords.Passwords
+      const emails = yield* AuthTest.TestEmails
+      const email = uniqueEmail("nobody")
+
+      // No account: still a success, and no mail goes out.
+      yield* passwords.requestReset({ email })
+      assert.strictEqual(Option.isNone(yield* emails.last("reset", email)), true)
+      assert.deepStrictEqual(yield* emails.to(email), [])
+    }))
+
+  it.effect("test deployments share one fixed secret and a normalised clock", () =>
+    AuthTest.freshClock(Effect.gen(function*() {
+      const config = yield* AuthConfig.AuthConfig
+      assert.strictEqual(config.secret, AuthTest.testSecret)
+      assert.strictEqual(config.baseUrl, AuthTest.testBaseUrl)
+      // The limits are off unless a test asks for them: three requests is fewer
+      // than most flows make.
+      assert.strictEqual(config.rateLimit.enabled, false)
+      assert.strictEqual(config.emailPassword.enabled, true)
+
+      // Everything is on the test clock, so a token minted now is dated now.
+      const before = yield* DateTime.now
+      yield* TestClock.adjust(Duration.hours(1))
+      const after = yield* DateTime.now
+      assert.strictEqual(DateTime.toEpochMillis(after) - DateTime.toEpochMillis(before), 3_600_000)
+    })))
+})
 
 it.effect("publishes events to `Auth.events`", () =>
   Effect.gen(function*() {
@@ -71,67 +146,20 @@ it.effect("publishes events to `Auth.events`", () =>
     const collected = yield* Effect.forkChild(Stream.runCollect(Stream.take(Auth.events, 2)))
     yield* Effect.yieldNow
 
-    yield* passwords.signUp({ name: "Ada", email: "ada@example.com", password })
+    yield* passwords.signUp({ name: testName, email: uniqueEmail("events"), password: testPassword })
 
     const events = yield* Fiber.join(collected)
     assert.deepStrictEqual(events.map((event) => event._tag), ["UserCreated", "SignedIn"])
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
-
-it.effect("expires a session once its lifetime has elapsed", () =>
-  Effect.gen(function*() {
-    const passwords = yield* Passwords.Passwords
-    const sessions = yield* Sessions.Sessions
-
-    yield* passwords.signUp({ name: "Ada", email: "ada@example.com", password })
-    const signedIn = yield* passwords.signIn({ email: "ada@example.com", password })
-
-    // Well inside the default seven days: still good, and refreshed on the way.
-    yield* TestClock.adjust(Duration.days(2))
-    const live = yield* sessions.verify(signedIn.token)
-    assert.strictEqual(live.refreshed, true)
-
-    // Past the refreshed expiry: refused, and the dead row is cleaned up.
-    yield* TestClock.adjust(Duration.days(8))
-    const expired = yield* Effect.flip(sessions.verify(signedIn.token))
-    assert.strictEqual(expired._tag, "SessionExpired")
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
-
-it.effect("captures the reset e-mail so a test can read its token", () =>
-  Effect.gen(function*() {
-    const passwords = yield* Passwords.Passwords
-    const emails = yield* AuthTest.TestEmails
-
-    yield* passwords.signUp({ name: "Ada", email: "ada@example.com", password })
-    assert.strictEqual(Option.isNone(yield* emails.last("reset", "ada@example.com")), true)
-
-    yield* passwords.requestReset({ email: "ada@example.com" })
-    const token = yield* emails.tokenFor("reset", "ada@example.com")
-
-    const newPassword = Redacted.make("a-much-longer-replacement-passphrase")
-    yield* passwords.resetPassword({ token, newPassword })
-
-    const signedIn = yield* passwords.signIn({ email: "ada@example.com", password: newPassword })
-    assert.strictEqual(signedIn.user.email, "ada@example.com")
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
-
-it.effect("asks nothing of an unknown address, and says nothing about it", () =>
-  Effect.gen(function*() {
-    const passwords = yield* Passwords.Passwords
-    const emails = yield* AuthTest.TestEmails
-
-    // No account: still a success, and no mail goes out.
-    yield* passwords.requestReset({ email: "nobody@example.com" })
-    assert.strictEqual(Option.isNone(yield* emails.last("reset", "nobody@example.com")), true)
-    assert.deepStrictEqual(yield* emails.to("nobody@example.com"), [])
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
+  }).pipe(Effect.provide(AuthTest.layer())))
 
 it.effect("cleanupExpired reaps what has expired and leaves what has not", () =>
   Effect.gen(function*() {
     const passwords = yield* Passwords.Passwords
     const sessions = yield* Sessions.Sessions
+    const email = uniqueEmail("cleanup")
 
-    const { user } = yield* passwords.signUp({ name: "Ada", email: "ada@example.com", password })
-    yield* passwords.requestReset({ email: "ada@example.com" })
+    const { user } = yield* passwords.signUp({ name: testName, email, password: testPassword })
+    yield* passwords.requestReset({ email })
     // A second session that outlives the first, so the sweep has to be
     // selective rather than a truncate.
     yield* sessions.create({ userId: user.id })
@@ -149,8 +177,8 @@ it.effect("cleanupExpired reaps what has expired and leaves what has not", () =>
     assert.deepStrictEqual(second, { sessions: 0, verifications: 0 })
 
     // The user is untouched: only the dead rows went.
-    yield* passwords.signIn({ email: "ada@example.com", password })
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
+    yield* passwords.signIn({ email, password: testPassword })
+  }).pipe(Effect.provide(AuthTest.layer())))
 
 it.effect("layerConfig reads the scalar settings from a ConfigProvider", () =>
   Effect.gen(function*() {
@@ -182,24 +210,7 @@ it.effect("layerConfig reads the scalar settings from a ConfigProvider", () =>
         )
       )
     )
-  ), AuthTest.testTimeout)
-
-it.effect("test deployments share one fixed secret and a normalised clock", () =>
-  Effect.gen(function*() {
-    const config = yield* AuthConfig.AuthConfig
-    assert.strictEqual(config.secret, AuthTest.testSecret)
-    assert.strictEqual(config.baseUrl, AuthTest.testBaseUrl)
-    // The limits are off unless a test asks for them: three requests is fewer
-    // than most flows make.
-    assert.strictEqual(config.rateLimit.enabled, false)
-    assert.strictEqual(config.emailPassword.enabled, true)
-
-    // Everything is on the test clock, so a token minted now is dated now.
-    const before = yield* DateTime.now
-    yield* TestClock.adjust(Duration.hours(1))
-    const after = yield* DateTime.now
-    assert.strictEqual(DateTime.toEpochMillis(after) - DateTime.toEpochMillis(before), 3_600_000)
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
+  ))
 
 it.effect("layerWithOAuth assembles the flow over the providers it is handed", () =>
   Effect.gen(function*() {
@@ -226,7 +237,7 @@ it.effect("layerWithOAuth assembles the flow over the providers it is handed", (
         Layer.provide(noNetwork)
       )
     )
-  ), AuthTest.testTimeout)
+  ))
 
 it.effect("layerConfigWithOAuth reads the provider credentials from a ConfigProvider", () =>
   Effect.gen(function*() {
@@ -266,7 +277,7 @@ it.effect("layerConfigWithOAuth reads the provider credentials from a ConfigProv
         )
       )
     )
-  ), AuthTest.testTimeout)
+  ))
 
 it.effect("registers the redacted header names on the application's own context", () =>
   Effect.gen(function*() {
@@ -300,4 +311,4 @@ it.effect("registers the redacted header names on the application's own context"
         redactedHeaders: ["x-tenant-token"]
       }).pipe(Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())))
     )
-  ), AuthTest.testTimeout)
+  ))

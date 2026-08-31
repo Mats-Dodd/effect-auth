@@ -422,14 +422,6 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
 // -----------------------------------------------------------------------------
 
 /**
- * The stubbed transport, as an `HttpClient`.
- *
- * @category layers
- * @since 1.0.0
- */
-export const httpLayer = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClient.HttpClient> => layerFetch(fetch)
-
-/**
  * The stubbed transport wrapped exactly as the flow wraps it, for exercising a
  * provider's `userInfo` on its own: a provider always runs under the
  * redirect-refusing client, and a test of one should too.
@@ -443,4 +435,4 @@ export const safeHttpLayer = (fetch: typeof globalThis.fetch): Layer.Layer<HttpC
     Effect.gen(function*() {
       return refuseRedirects(yield* HttpClient.HttpClient)
     })
-  ).pipe(Layer.provide(httpLayer(fetch)))
+  ).pipe(Layer.provide(layerFetch(fetch)))

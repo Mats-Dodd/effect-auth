@@ -93,20 +93,6 @@ export const testBaseUrl = "http://localhost:3000"
  */
 export const testScryptOptions: ScryptOptions = { N: 1024, r: 8, p: 1 }
 
-/**
- * A per-test timeout that accommodates a cold PGlite boot plus the migrations.
- *
- * **Gotchas**
- *
- * `vitest.config.ts` already sets this globally. It survives as an export
- * because a suite that boots a database outside a `layer()` block may still
- * want to name it.
- *
- * @category constructors
- * @since 1.0.0
- */
-export const testTimeout = 30_000
-
 // -----------------------------------------------------------------------------
 // Options
 // -----------------------------------------------------------------------------

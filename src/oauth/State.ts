@@ -38,6 +38,7 @@ import type { UserId } from "../domain/Schema.js"
 import { oauthStateIdentifier, UserId as UserIdSchema, Verification } from "../domain/Schema.js"
 import type { PersistenceError } from "../domain/Stores.js"
 import { VerificationStore } from "../domain/Stores.js"
+import { insertRow } from "../internal/effects.js"
 
 // -----------------------------------------------------------------------------
 // Payload
@@ -173,12 +174,12 @@ export const issue: (
       rememberMe: options.rememberMe ?? true
     }))
 
-    const row = yield* Effect.orDie(Verification.insert.makeEffect({
+    const row = yield* insertRow(Verification.insert, {
       identifier: oauthStateIdentifier(stateHash),
       valueHash: stateHash,
       payload,
       expiresAt
-    }))
+    })
     yield* store.create(row)
 
     return { state, codeVerifier, codeChallenge, nonce, expiresAt } satisfies IssuedState
