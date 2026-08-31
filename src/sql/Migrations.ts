@@ -17,6 +17,11 @@
  * what the expiry predicates in `SessionStore` and `VerificationStore` depend
  * on.
  *
+ * A deployment that added user fields of its own needs a column for each of
+ * them. {@link forUserFields} derives those statements from the model — the
+ * column name, its type and its default all come off the field's schema — and
+ * {@link layerFor} is the four tables plus that.
+ *
  * **Gotchas**
  *
  * The `ON DELETE CASCADE` foreign keys are only enforced by SQLite when the
@@ -24,18 +29,20 @@
  *
  * @since 1.0.0
  */
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option, Predicate, SchemaAST } from "effect"
+import type { Schema } from "effect"
 import { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
+import type { UserFields, UserModel } from "../domain/Schema.js"
+import { camelToSnake } from "../internal/records.js"
 
 // -----------------------------------------------------------------------------
 // Migrations
 // -----------------------------------------------------------------------------
 
+const migrationError = (message: string) => new Migrator.MigrationError({ kind: "Failed", message })
+
 const unsupportedDialect = Effect.fail(
-  new Migrator.MigrationError({
-    kind: "Failed",
-    message: `effect-auth migrations only support the "pg" and "sqlite" dialects`
-  })
+  migrationError(`effect-auth migrations only support the "pg" and "sqlite" dialects`)
 )
 
 const createUsers = Effect.gen(function*() {
@@ -126,6 +133,189 @@ const createVerifications = Effect.gen(function*() {
   yield* sql`CREATE INDEX IF NOT EXISTS verifications_identifier_idx ON verifications (identifier)`
 })
 
+// -----------------------------------------------------------------------------
+// Custom user fields
+// -----------------------------------------------------------------------------
+
+/**
+ * The shape of a column, as far as either dialect is concerned.
+ */
+type ColumnKind = "text" | "boolean" | "number"
+
+/** The SQL type and the boolean literals each dialect spells differently. */
+interface Dialect {
+  readonly type: (kind: ColumnKind) => string
+  readonly boolean: (value: boolean) => string
+  readonly addColumn: (table: string, definition: string) => string
+  readonly existingColumns: Effect.Effect<ReadonlySet<string>, SqlError.SqlError, SqlClient.SqlClient>
+}
+
+/**
+ * Only names this library derives from a model's own field names are ever
+ * interpolated into a statement, but a table name comes from a caller, and the
+ * two go into the same string. Anything that is not a plain identifier is
+ * refused rather than escaped.
+ */
+const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
+ * The column kind a field is stored as, read off its *encoded* schema.
+ *
+ * **Details**
+ *
+ * `Schema.Literals(["free", "pro"])` is a union of string literals and stores as
+ * text; `Schema.DateTimeUtcFromString` decodes to a `DateTime` and stores as
+ * text; a branded string is a string. A union is resolved by dropping its `null`
+ * member and requiring the rest to agree, which is what makes
+ * `Schema.NullOr(…)` work and a genuinely mixed union fail.
+ */
+const columnKind = (ast: SchemaAST.AST): Option.Option<ColumnKind> => {
+  const encoded = SchemaAST.toEncoded(ast)
+  if (SchemaAST.isString(encoded) || SchemaAST.isTemplateLiteral(encoded)) return Option.some("text")
+  if (SchemaAST.isBoolean(encoded)) return Option.some("boolean")
+  if (SchemaAST.isNumber(encoded)) return Option.some("number")
+  if (SchemaAST.isLiteral(encoded)) {
+    const { literal } = encoded
+    if (Predicate.isString(literal)) return Option.some("text")
+    if (Predicate.isBoolean(literal)) return Option.some("boolean")
+    if (Predicate.isNumber(literal)) return Option.some("number")
+    return Option.none()
+  }
+  if (SchemaAST.isUnion(encoded)) {
+    const kinds = encoded.types.filter((member) => !SchemaAST.isNull(member)).map(columnKind)
+    const first = kinds[0]
+    if (kinds.length === 0 || first === undefined || Option.isNone(first)) return Option.none()
+    return kinds.every((kind) => Option.isSome(kind) && kind.value === first.value) ? first : Option.none()
+  }
+  return Option.none()
+}
+
+/** Whether a field accepts `null`, and therefore whether its column may. */
+const isNullable = (ast: SchemaAST.AST): boolean => {
+  const encoded = SchemaAST.toEncoded(ast)
+  return SchemaAST.isNull(encoded) ||
+    (SchemaAST.isUnion(encoded) && encoded.types.some((member) => SchemaAST.isNull(member)))
+}
+
+/** A default value, as the literal a `DEFAULT` clause takes. */
+const defaultLiteral = (value: unknown, dialect: Dialect): Option.Option<string> => {
+  if (Predicate.isString(value)) return Option.some(`'${value.replace(/'/g, "''")}'`)
+  if (Predicate.isBoolean(value)) return Option.some(dialect.boolean(value))
+  if (Predicate.isNumber(value) && Number.isFinite(value)) return Option.some(String(value))
+  return Option.none()
+}
+
+const dialectOf = (
+  sql: SqlClient.SqlClient,
+  table: string
+): Option.Option<Dialect> =>
+  sql.onDialectOrElse({
+    orElse: (): Option.Option<Dialect> => Option.none(),
+    pg: () =>
+      Option.some({
+        type: (kind) => kind === "text" ? "text" : kind === "boolean" ? "boolean" : "double precision",
+        boolean: (value) => value ? "true" : "false",
+        // PostgreSQL has the idempotence built in; SQLite has to be asked.
+        addColumn: (table, definition) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`,
+        existingColumns: Effect.succeed(new Set<string>())
+      }),
+    sqlite: () =>
+      Option.some({
+        type: (kind) => kind === "text" ? "text" : kind === "boolean" ? "integer" : "real",
+        boolean: (value) => value ? "1" : "0",
+        addColumn: (table, definition) => `ALTER TABLE ${table} ADD COLUMN ${definition}`,
+        existingColumns: Effect.map(
+          sql.unsafe<{ readonly name: unknown }>(`PRAGMA table_info(${table})`),
+          (rows) => new Set(rows.map((row) => row.name).filter(Predicate.isString))
+        )
+      })
+  })
+
+/**
+ * Adds a column to the `users` table for every custom field a model declares.
+ *
+ * **Details**
+ *
+ * The column name is the field name in `snake_case`, its type comes from the
+ * field's encoded schema, and its `DEFAULT` is the field's own declared default,
+ * encoded — which is what lets the statement run against a table that already
+ * has rows in it. A field whose schema stores as something neither dialect has a
+ * column for fails with a `MigrationError` naming it, at migration time rather
+ * than at the first insert.
+ *
+ * It is idempotent on both dialects: PostgreSQL is asked for
+ * `ADD COLUMN IF NOT EXISTS`, and SQLite — which has no such clause — is read
+ * with `PRAGMA table_info` first.
+ *
+ * **When to use**
+ *
+ * Number it into your own migration record, above this library's own ids:
+ *
+ * ```ts skip-type-checking
+ * const loader = Migrator.fromRecord({
+ *   ...Migrations.migrations,
+ *   "0005_user_fields": Migrations.forUserFields(model)
+ * })
+ * ```
+ *
+ * **Gotchas**
+ *
+ * `Migrator` runs each id exactly once, so *adding another field later* needs
+ * another id (`"0006_user_fields"`) — the recorded `0005` will not run again. Its
+ * statements are idempotent precisely so that re-listing it under a new id is
+ * the whole of what adding a field costs. {@link layerFor} sidesteps this by
+ * running it outside the migrator on every boot.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const forUserFields = <F extends UserFields>(
+  model: UserModel<F>,
+  options?: { readonly table?: string | undefined }
+): Effect.Effect<void, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> =>
+  Effect.gen(function*() {
+    if (model.extraKeys.length === 0) return
+
+    const table = options?.table ?? "users"
+    if (!identifier.test(table)) {
+      return yield* Effect.fail(migrationError(`effect-auth: ${table} is not a valid table name`))
+    }
+
+    const sql = yield* SqlClient.SqlClient
+    const dialect = dialectOf(sql, table)
+    if (Option.isNone(dialect)) return yield* unsupportedDialect
+
+    const defaults = yield* model.extraDefaults
+    const existing = yield* dialect.value.existingColumns
+
+    for (const field of model.extraKeys) {
+      const schema: Schema.Top | undefined = model.selectFields[field]
+      if (schema === undefined) continue
+
+      const column = camelToSnake(field)
+      if (!identifier.test(column)) {
+        return yield* Effect.fail(migrationError(`effect-auth: the user field ${field} is not a valid column name`))
+      }
+      if (existing.has(column)) continue
+
+      const kind = columnKind(schema.ast)
+      if (Option.isNone(kind)) {
+        return yield* Effect.fail(
+          migrationError(
+            `effect-auth: the user field ${field} has no column type — a custom field must store as a string, a boolean or a number, so declare it over Schema.String, Schema.Literals, Schema.Boolean, Schema.Number or a DateTime, or add its column by hand`
+          )
+        )
+      }
+
+      const value = defaultLiteral(defaults[field], dialect.value)
+      const nullable = isNullable(schema.ast)
+      const definition = `${column} ${dialect.value.type(kind.value)}${nullable ? "" : " NOT NULL"}${
+        Option.isSome(value) ? ` DEFAULT ${value.value}` : ""
+      }`
+      yield* sql.unsafe(dialect.value.addColumn(table, definition))
+    }
+  })
+
 /**
  * Every `effect-auth` migration, keyed by `<id>_<name>` as
  * `Migrator.fromRecord` expects.
@@ -201,3 +391,28 @@ export const run: Effect.Effect<
  */
 export const layer: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> = Layer
   .effectDiscard(run)
+
+/**
+ * {@link layer}, plus the columns a model's custom user fields need.
+ *
+ * **Details**
+ *
+ * The four table migrations run through `Migrator` as always; the custom columns
+ * are then synchronised by {@link forUserFields}, *outside* the migrator and on
+ * every build. That is deliberate: the statements are idempotent, and a recorded
+ * migration would silently skip a field added after the first deployment — which
+ * is exactly the mistake this convenience layer exists to spare a quickstart.
+ *
+ * **When to use**
+ *
+ * As a quickstart and in tests. A production deployment that owns its migrator
+ * numbers {@link forUserFields} into its own record instead, and takes on the
+ * bookkeeping that comes with that.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> =>
+  Layer.effectDiscard(Effect.flatMap(run, () => forUserFields(model)))

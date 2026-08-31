@@ -40,6 +40,39 @@ export const omitUndefined = <A extends object>(record: A): Defined<A> =>
   )
 
 /**
+ * A model field name in the `snake_case` form the database columns use:
+ * `emailVerified` becomes `email_verified`.
+ *
+ * **Details**
+ *
+ * The models are declared in `camelCase` and the schema is written in
+ * `snake_case`, and every projection aliases one back to the other. Deriving the
+ * column from the field — rather than listing both — is what lets a
+ * consumer-declared custom field reach the store without editing a projection
+ * string.
+ *
+ * @internal
+ */
+export const camelToSnake = (name: string): string => name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)
+
+/**
+ * The subset of `record` named by `keys`, with absent keys simply absent.
+ *
+ * @internal
+ */
+export const pickKeys = (
+  record: object,
+  keys: ReadonlyArray<string>
+): { readonly [key: string]: unknown } => {
+  const wanted = new Set(keys)
+  const picked: Record<string, unknown> = Object.create(null)
+  for (const [key, value] of Object.entries(record)) {
+    if (wanted.has(key)) picked[key] = value
+  }
+  return picked
+}
+
+/**
  * `defaults`, with whatever `overrides` actually states applied over it.
  *
  * **Details**

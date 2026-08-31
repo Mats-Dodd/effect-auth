@@ -23,7 +23,20 @@
  */
 import type { DateTime, Effect, Option } from "effect"
 import { Context, Schema } from "effect"
-import type { Account, AccountId, Session, SessionId, User, UserId, Verification } from "./Schema.js"
+import type {
+  Account,
+  AccountId,
+  BaseUserPatch,
+  Session,
+  SessionId,
+  UserExtras,
+  UserFields,
+  UserId,
+  UserInsertOf,
+  UserModel,
+  UserOf,
+  Verification
+} from "./Schema.js"
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -102,7 +115,13 @@ export const isUniqueViolation = (error: PersistenceError): boolean => error.kin
 // -----------------------------------------------------------------------------
 
 /**
- * The mutable fields of a {@link User}.
+ * The mutable fields of a user, for a model parameterized by `F`.
+ *
+ * **Details**
+ *
+ * Everything the `update` variant carries except the primary key and the
+ * timestamp the store maintains itself, each of them optional: an absent key is
+ * a column the statement does not touch.
  *
  * **Gotchas**
  *
@@ -112,44 +131,47 @@ export const isUniqueViolation = (error: PersistenceError): boolean => error.kin
  * @category models
  * @since 1.0.0
  */
-export interface UserPatch {
-  readonly name?: string
-  readonly email?: string
-  readonly emailVerified?: boolean
-  readonly image?: string | null
-}
+export type UserPatch<F extends UserFields = {}> = BaseUserPatch & Partial<UserExtras<F, "update">>
 
 /**
- * The {@link UserStore} service definition.
+ * The {@link UserStore} service definition, for a model parameterized by `F`.
  *
  * @category models
  * @since 1.0.0
  */
-export interface UserStoreService {
+export interface UserStoreService<F extends UserFields = {}> {
   /**
    * Inserts a user and returns the stored row.
    *
    * Fails with {@link PersistenceError} when the unique index on `email`
    * rejects the insert; the sign-up flow translates that into
    * `UserAlreadyExists`.
+   *
+   * **Gotchas**
+   *
+   * A caller holding this service through the base-typed {@link UserStore} key
+   * hands in a row built from the base fields alone. An implementation must fill
+   * the model's custom fields in itself — `UserModel.completeInsert` is what the
+   * SQL store uses — which the provisionability rule on `makeUserModel`
+   * guarantees is always possible.
    */
-  readonly create: (user: typeof User.insert.Type) => Effect.Effect<User, PersistenceError>
+  readonly create: (user: UserInsertOf<F>) => Effect.Effect<UserOf<F>, PersistenceError>
 
   /**
    * Looks a user up by primary key.
    */
-  readonly findById: (id: UserId) => Effect.Effect<Option.Option<User>, PersistenceError>
+  readonly findById: (id: UserId) => Effect.Effect<Option.Option<UserOf<F>>, PersistenceError>
 
   /**
    * Looks a user up by normalized e-mail address.
    */
-  readonly findByEmail: (email: string) => Effect.Effect<Option.Option<User>, PersistenceError>
+  readonly findByEmail: (email: string) => Effect.Effect<Option.Option<UserOf<F>>, PersistenceError>
 
   /**
    * Applies a partial update and returns the stored row, or `None` when no user
    * has that id.
    */
-  readonly update: (id: UserId, patch: UserPatch) => Effect.Effect<Option.Option<User>, PersistenceError>
+  readonly update: (id: UserId, patch: UserPatch<F>) => Effect.Effect<Option.Option<UserOf<F>>, PersistenceError>
 
   /**
    * Deletes a user. Sessions and accounts cascade. Returns whether a row was
@@ -159,12 +181,38 @@ export interface UserStoreService {
 }
 
 /**
- * Storage for {@link User} rows.
+ * Storage for user rows.
  *
  * @category services
  * @since 1.0.0
  */
 export class UserStore extends Context.Service<UserStore, UserStoreService>()("effect-auth/UserStore") {}
+
+/**
+ * {@link UserStore}, seen through a model's custom fields.
+ *
+ * **Details**
+ *
+ * The same key — same string, same `Identifier`, same slot in the context — with
+ * a narrower `Shape`. Yielding this gives a `UserStoreService<F>` whose reads
+ * carry the deployment's own columns, while every layer that *provides* the
+ * store still publishes it under the plain `UserStore` key, so no signature in
+ * the library becomes generic.
+ *
+ * **Gotchas**
+ *
+ * Reading through the base key stays sound: `UserOf<{}>` is what every user has
+ * in common, and a row with more columns than that is still one of them. Writing
+ * is the direction that needs care, and only this library's own layers write —
+ * see {@link UserStoreService.create}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const userStoreOf = <F extends UserFields>(
+  _model: UserModel<F>
+): Context.Service<UserStore, UserStoreService<F>> =>
+  Context.Service<UserStore, UserStoreService<F>>("effect-auth/UserStore")
 
 // -----------------------------------------------------------------------------
 // SessionStore
@@ -176,18 +224,23 @@ export class UserStore extends Context.Service<UserStore, UserStoreService>()("e
  * @category models
  * @since 1.0.0
  */
-export interface SessionWithUser {
+export interface SessionWithUser<F extends UserFields = {}> {
   readonly session: Session
-  readonly user: User
+  readonly user: UserOf<F>
 }
 
 /**
- * The {@link SessionStore} service definition.
+ * The {@link SessionStore} service definition, for a model parameterized by `F`.
+ *
+ * **Details**
+ *
+ * `F` reaches exactly one method: the joined read is the only place a session
+ * store hands a user back.
  *
  * @category models
  * @since 1.0.0
  */
-export interface SessionStoreService {
+export interface SessionStoreService<F extends UserFields = {}> {
   /**
    * Inserts a session and returns the stored row.
    */
@@ -203,7 +256,9 @@ export interface SessionStoreService {
    * expired row means, so that an expired session can be distinguished from an
    * unknown one and cleaned up.
    */
-  readonly findByTokenHash: (tokenHash: string) => Effect.Effect<Option.Option<SessionWithUser>, PersistenceError>
+  readonly findByTokenHash: (
+    tokenHash: string
+  ) => Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError>
 
   /**
    * Extends a session's expiry (the rolling refresh) and returns the updated
@@ -256,6 +311,20 @@ export interface SessionStoreService {
  * @since 1.0.0
  */
 export class SessionStore extends Context.Service<SessionStore, SessionStoreService>()("effect-auth/SessionStore") {}
+
+/**
+ * {@link SessionStore}, seen through a model's custom fields.
+ *
+ * The same key with a narrower shape — see {@link userStoreOf} for what that
+ * means and why it is sound.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const sessionStoreOf = <F extends UserFields>(
+  _model: UserModel<F>
+): Context.Service<SessionStore, SessionStoreService<F>> =>
+  Context.Service<SessionStore, SessionStoreService<F>>("effect-auth/SessionStore")
 
 // -----------------------------------------------------------------------------
 // AccountStore

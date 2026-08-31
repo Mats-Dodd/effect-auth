@@ -14,7 +14,7 @@ import { Context, DateTime, Duration, Effect } from "effect"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { SessionNotFresh, Unauthorized } from "../domain/Errors.js"
-import type { Session, User } from "../domain/Schema.js"
+import type { Session, User, UserFields, UserModel, UserOf } from "../domain/Schema.js"
 import {
   bearerSecurity,
   insecureSessionCookieSecurity,
@@ -64,6 +64,29 @@ export class CurrentSession extends Context.Service<CurrentSession, Session>()(
 export class CurrentUser extends Context.Service<CurrentUser, User>()(
   "effect-auth/CurrentUser"
 ) {}
+
+/**
+ * {@link CurrentUser}, seen through a model's custom fields.
+ *
+ * **Details**
+ *
+ * This is how a deployment's own columns reach a handler: the same key, the same
+ * slot, a narrower shape. `MiddlewareLive` provides the authenticated user
+ * through this view, and a handler — or an application's own endpoint — reads it
+ * back through the same view to see the fields it declared.
+ *
+ * **Example**
+ *
+ * ```ts skip-type-checking
+ * const plan = Effect.map(currentUserOf(model), (user) => user.plan)
+ * ```
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const currentUserOf = <F extends UserFields>(
+  _model: UserModel<F>
+): Context.Service<CurrentUser, UserOf<F>> => Context.Service<CurrentUser, UserOf<F>>("effect-auth/CurrentUser")
 
 // -----------------------------------------------------------------------------
 // Middleware

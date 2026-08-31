@@ -13,6 +13,13 @@
  * which keeps the schema idiomatic on PostgreSQL without depending on a
  * client-level name transform the application may not have configured.
  *
+ * The three fixed models spell their projections out. The user model does not:
+ * a deployment may add columns to it, so its projection, its `INSERT` and its
+ * `UPDATE` are all derived from the model's own field map when
+ * {@link layerFor} builds the layer. Which of its columns is a boolean — the one
+ * thing PostgreSQL and SQLite genuinely disagree about — is read off the field's
+ * encoded schema rather than off its name.
+ *
  * Two behaviours are worth calling out because the security of the library
  * rests on them:
  *
@@ -34,15 +41,16 @@
  *
  * @since 1.0.0
  */
-import { Array, DateTime, Effect, Layer, Option, Schema } from "effect"
+import { Array, DateTime, Effect, Layer, Option, Predicate, Schema, SchemaAST } from "effect"
 import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
-import { omitUndefined } from "../internal/records.js"
+import { camelToSnake, omitUndefined } from "../internal/records.js"
 import type {
   AccountStoreService,
   AccountTokens,
   AuthStores,
   PersistenceFailureKind,
   SessionStoreService,
+  SessionWithUser,
   UserPatch,
   UserStoreService,
   VerificationStoreService,
@@ -51,20 +59,17 @@ import type {
 import {
   AccountStore,
   PersistenceError,
-  SessionStore,
-  UserStore,
+  sessionStoreOf,
+  userStoreOf,
   VerificationStore,
   WithAuthTransaction
 } from "../domain/Stores.js"
-import type { AccountId } from "../domain/Schema.js"
-import { Account, CredentialIssuer, Session, User, Verification } from "../domain/Schema.js"
+import type { AccountId, UserFields, UserModel, UserOf, UserRow } from "../domain/Schema.js"
+import { Account, baseUserModel, CredentialIssuer, Session, Verification } from "../domain/Schema.js"
 
 // -----------------------------------------------------------------------------
 // Column projections
 // -----------------------------------------------------------------------------
-
-const userColumns =
-  `id, name, email, email_verified AS "emailVerified", image, created_at AS "createdAt", updated_at AS "updatedAt"`
 
 const sessionColumns =
   `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", created_at AS "createdAt", updated_at AS "updatedAt"`
@@ -75,40 +80,58 @@ const accountColumns =
 const verificationColumns =
   `id, identifier, value_hash AS "valueHash", payload, expires_at AS "expiresAt", created_at AS "createdAt", updated_at AS "updatedAt"`
 
-const sessionWithUserColumns =
-  `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt", u.id AS "u_id", u.name AS "u_name", u.email AS "u_email", u.email_verified AS "u_emailVerified", u.image AS "u_image", u.created_at AS "u_createdAt", u.updated_at AS "u_updatedAt"`
+const sessionJoinColumns =
+  `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
 
 // -----------------------------------------------------------------------------
-// Raw row shapes
+// User columns, derived from the model
 // -----------------------------------------------------------------------------
 
-interface RawUserRow {
-  readonly id: unknown
-  readonly name: unknown
-  readonly email: unknown
-  readonly emailVerified: unknown
-  readonly image: unknown
-  readonly createdAt: unknown
-  readonly updatedAt: unknown
+/**
+ * One stored column of the user model.
+ *
+ * **Details**
+ *
+ * `field` is what the model calls it, `column` is what the database calls it,
+ * and `boolean` is whether the stored value is one — the single dialect-sensitive
+ * property a column has here, and the reason it is read off the schema rather
+ * than off a hard-coded list of names.
+ */
+interface UserColumn {
+  readonly field: string
+  readonly column: string
+  readonly boolean: boolean
 }
 
-interface RawSessionWithUserRow {
-  readonly s_id: unknown
-  readonly s_tokenHash: unknown
-  readonly s_userId: unknown
-  readonly s_expiresAt: unknown
-  readonly s_ipAddress: unknown
-  readonly s_userAgent: unknown
-  readonly s_createdAt: unknown
-  readonly s_updatedAt: unknown
-  readonly u_id: unknown
-  readonly u_name: unknown
-  readonly u_email: unknown
-  readonly u_emailVerified: unknown
-  readonly u_image: unknown
-  readonly u_createdAt: unknown
-  readonly u_updatedAt: unknown
+/**
+ * Whether a field's *stored* form is a boolean.
+ *
+ * **Gotchas**
+ *
+ * The encoded side is what matters: `Schema.DateTimeUtcFromString` decodes to a
+ * `DateTime` and stores a string, and a `Schema.Literals` of strings stores one
+ * too. A nullable boolean is a union, so its members are looked at as well.
+ */
+const storesBoolean = (schema: Schema.Top): boolean => {
+  const ast = SchemaAST.toEncoded(schema.ast)
+  return SchemaAST.isBoolean(ast) ||
+    (SchemaAST.isUnion(ast) && ast.types.some((member) => SchemaAST.isBoolean(member)))
 }
+
+const userColumnsOf = (fields: { readonly [key: string]: Schema.Top }): ReadonlyArray<UserColumn> =>
+  Object.entries(fields).map(([field, schema]) => ({
+    field,
+    column: camelToSnake(field),
+    boolean: storesBoolean(schema)
+  }))
+
+/** `id, email_verified AS "emailVerified", …` — the projection of a plain read. */
+const projectionOf = (columns: ReadonlyArray<UserColumn>): string =>
+  columns.map(({ column, field }) => column === field ? column : `${column} AS "${field}"`).join(", ")
+
+/** `u.email_verified AS "u_emailVerified", …` — the projection of the joined read. */
+const joinedProjectionOf = (columns: ReadonlyArray<UserColumn>, alias: string, prefix: string): string =>
+  columns.map(({ column, field }) => `${alias}.${column} AS "${prefix}${field}"`).join(", ")
 
 interface RawCountRow {
   readonly count: unknown
@@ -118,22 +141,11 @@ interface RawIdRow {
   readonly id: unknown
 }
 
-/**
- * The result schema of the one relational read: a session together with its
- * user.
- */
-const SessionWithUserSchema = Schema.Struct({
-  session: Session,
-  user: User
-})
-
 // -----------------------------------------------------------------------------
 // Request schemas
 // -----------------------------------------------------------------------------
 
 const IsoString = Schema.DateTimeUtcFromString
-
-const TokenHashRequest = Schema.String
 
 const SessionListRequest = Schema.Struct({ userId: Schema.String, now: IsoString })
 
@@ -174,7 +186,6 @@ const persist =
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, PersistenceError, R> =>
     Effect.mapError(effect, fail(operation))
 
-const decodeUser = Schema.decodeUnknownEffect(User)
 const decodeAccount = Schema.decodeUnknownEffect(Account)
 
 /**
@@ -189,7 +200,6 @@ const decodeFirst =
       onSome: (row) => Effect.asSome(decode(row))
     })
 
-const firstUser = decodeFirst(decodeUser)
 const firstAccount = decodeFirst(decodeAccount)
 
 /**
@@ -208,16 +218,44 @@ const booleanCodec = (sql: SqlClient.SqlClient) => ({
   })
 })
 
-const userRowsWith = (decodeBoolean: (value: unknown) => unknown) => (rows: ReadonlyArray<RawUserRow>) =>
-  rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    emailVerified: decodeBoolean(row.emailVerified),
-    image: row.image,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt
-  }))
+/**
+ * Reads the user half out of a result row: the columns the model declares,
+ * un-prefixed, with the boolean ones brought back from whatever the dialect
+ * stores them as.
+ */
+const userReaderOf = (
+  columns: ReadonlyArray<UserColumn>,
+  decodeBoolean: (value: unknown) => unknown
+) =>
+(row: UserRow, prefix: string): UserRow => {
+  const user: Record<string, unknown> = Object.create(null)
+  for (const { boolean, field } of columns) {
+    const value = row[`${prefix}${field}`]
+    user[field] = boolean ? decodeBoolean(value) : value
+  }
+  return user
+}
+
+/**
+ * Turns an encoded model row into the columns a statement writes: `camelCase`
+ * becomes `snake_case`, and a boolean becomes whatever this dialect stores one
+ * as.
+ */
+const columnWriterOf = (
+  columns: ReadonlyArray<UserColumn>,
+  encodeBoolean: (value: boolean) => boolean | number
+) => {
+  const byField = new Map(columns.map((column) => [column.field, column]))
+  return (row: UserRow): Record<string, unknown> => {
+    const record: Record<string, unknown> = Object.create(null)
+    for (const [field, value] of Object.entries(row)) {
+      const column = byField.get(field)
+      record[column?.column ?? camelToSnake(field)] =
+        column?.boolean === true && Predicate.isBoolean(value) ? encodeBoolean(value) : value
+    }
+    return record
+  }
+}
 
 const countRows = (rows: ReadonlyArray<RawCountRow>): number => rows.length === 0 ? 0 : Number(rows[0]!.count)
 
@@ -228,108 +266,134 @@ const encodeExpiry = (value: DateTime.Utc | null | undefined): string | null =>
 // UserStore
 // -----------------------------------------------------------------------------
 
-const makeUserStore: () => Effect.Effect<UserStoreService, never, SqlClient.SqlClient> = Effect
-  .fnUntraced(function*() {
+const makeUserStore: <F extends UserFields>(
+  model: UserModel<F>
+) => Effect.Effect<UserStoreService<F>, never, SqlClient.SqlClient> = Effect.fnUntraced(
+  function*<F extends UserFields>(model: UserModel<F>) {
     const sql = yield* SqlClient.SqlClient
-    const userCols = sql.literal(userColumns)
+    const columns = userColumnsOf(model.selectFields)
+    const userCols = sql.literal(projectionOf(columns))
     const boolean = booleanCodec(sql)
-    const userRows = userRowsWith(boolean.decode)
+    const readUser = userReaderOf(columns, boolean.decode)
+    const toColumns = columnWriterOf(columns, boolean.encode)
 
-    const insertUser = SqlSchema.findOne({
-      Request: User.insert,
-      Result: User,
-      execute: (row) =>
-        Effect.map(
-          sql<RawUserRow>`INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
-          VALUES (${row.id}, ${row.name}, ${row.email}, ${boolean.encode(row.emailVerified)}, ${row.image}, ${row.createdAt}, ${row.updatedAt})
-          RETURNING ${userCols}`,
-          userRows
-        )
-    })
+    const encodeInsert = Schema.encodeUnknownEffect(model.rows.insert)
+    const encodePatch = Schema.encodeUnknownEffect(model.rows.patch)
 
-    const selectUserById = SqlSchema.findOneOption({
-      Request: Schema.String,
-      Result: User,
-      execute: (id) =>
-        Effect.map(
-          sql<RawUserRow>`SELECT ${userCols} FROM users WHERE id = ${id}`,
-          userRows
-        )
-    })
+    /** A decoding failure means the columns and the model have drifted apart. */
+    const decoded = (operation: string, row: UserRow): Effect.Effect<UserOf<F>, PersistenceError> =>
+      Effect.mapError(
+        model.decodeRow(readUser(row, "")),
+        (cause) => new PersistenceError({ operation, cause })
+      )
 
-    const selectUserByEmail = SqlSchema.findOneOption({
-      Request: Schema.String,
-      Result: User,
-      execute: (email) =>
-        Effect.map(
-          sql<RawUserRow>`SELECT ${userCols} FROM users WHERE email = ${email}`,
-          userRows
-        )
-    })
+    const one = (operation: string) => (rows: ReadonlyArray<UserRow>): Effect.Effect<UserOf<F>, PersistenceError> =>
+      Option.match(Array.head(rows), {
+        onNone: () =>
+          Effect.fail(
+            new PersistenceError({ operation, cause: "the statement returned no row" })
+          ),
+        onSome: (row) => decoded(operation, row)
+      })
 
-    return UserStore.of({
-      create: (user) => persist("UserStore.create")(insertUser(user)),
+    const first =
+      (operation: string) =>
+      (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<UserOf<F>>, PersistenceError> =>
+        Option.match(Array.head(rows), {
+          onNone: () => Effect.succeedNone,
+          onSome: (row) => Effect.asSome(decoded(operation, row))
+        })
 
-      findById: (id) => persist("UserStore.findById")(selectUserById(id)),
+    return userStoreOf(model).of({
+      create: (user) =>
+        Effect.gen(function*() {
+          // A caller holding the base-typed key builds rows out of base fields
+          // alone; the model's own defaults are what makes such a row storable.
+          const complete = yield* model.completeInsert(user)
+          const encoded = yield* Effect.orDie(encodeInsert(complete))
+          const rows = yield* persist("UserStore.create")(
+            sql<UserRow>`INSERT INTO users ${sql.insert(toColumns(encoded))} RETURNING ${userCols}`
+          )
+          return yield* one("UserStore.create")(rows)
+        }),
 
-      findByEmail: (email) => persist("UserStore.findByEmail")(selectUserByEmail(email)),
+      findById: (id) =>
+        Effect.flatMap(
+          persist("UserStore.findById")(sql<UserRow>`SELECT ${userCols} FROM users WHERE id = ${id}`),
+          first("UserStore.findById")
+        ),
 
-      update: (id, patch: UserPatch) =>
-        persist("UserStore.update")(Effect.gen(function*() {
+      findByEmail: (email) =>
+        Effect.flatMap(
+          persist("UserStore.findByEmail")(sql<UserRow>`SELECT ${userCols} FROM users WHERE email = ${email}`),
+          first("UserStore.findByEmail")
+        ),
+
+      update: (id, patch: UserPatch<F>) =>
+        Effect.gen(function*() {
           const now = yield* DateTime.now
-          const set = omitUndefined({
-            name: patch.name,
-            email: patch.email,
-            email_verified: patch.emailVerified === undefined ? undefined : boolean.encode(patch.emailVerified),
-            image: patch.image,
-            updated_at: DateTime.formatIso(now)
-          })
-
-          const rows = yield* sql<
-            RawUserRow
-          >`UPDATE users SET ${sql.update(set)} WHERE id = ${id} RETURNING ${userCols}`
-          return yield* firstUser(userRows(rows))
-        })),
+          // The patch is already typed by the model, so an encoding failure here
+          // is a bug rather than something a caller can act on.
+          const encoded = yield* Effect.orDie(encodePatch(patch))
+          const set = omitUndefined({ ...toColumns(encoded), updated_at: DateTime.formatIso(now) })
+          const rows = yield* persist("UserStore.update")(
+            sql<UserRow>`UPDATE users SET ${sql.update(set)} WHERE id = ${id} RETURNING ${userCols}`
+          )
+          return yield* first("UserStore.update")(rows)
+        }),
 
       delete: (id) =>
         persist("UserStore.delete")(
           Effect.map(sql<RawIdRow>`DELETE FROM users WHERE id = ${id} RETURNING id`, (rows) => rows.length > 0)
         )
     })
-  })
+  }
+)
 
 // -----------------------------------------------------------------------------
 // SessionStore
 // -----------------------------------------------------------------------------
 
-const makeSessionStore: () => Effect.Effect<SessionStoreService, never, SqlClient.SqlClient> = Effect
-  .fnUntraced(function*() {
+const makeSessionStore: <F extends UserFields>(
+  model: UserModel<F>
+) => Effect.Effect<SessionStoreService<F>, never, SqlClient.SqlClient> = Effect.fnUntraced(
+  function*<F extends UserFields>(model: UserModel<F>) {
     const sql = yield* SqlClient.SqlClient
     const sessionCols = sql.literal(sessionColumns)
-    const sessionWithUserCols = sql.literal(sessionWithUserColumns)
+    const columns = userColumnsOf(model.selectFields)
+    const sessionWithUserCols = sql.literal(
+      `${sessionJoinColumns}, ${joinedProjectionOf(columns, "u", "u_")}`
+    )
     const decodeBoolean = booleanCodec(sql).decode
+    const readUser = userReaderOf(columns, decodeBoolean)
 
-    const sessionWithUserRow = (row: RawSessionWithUserRow) => ({
-      session: {
-        id: row.s_id,
-        tokenHash: row.s_tokenHash,
-        userId: row.s_userId,
-        expiresAt: row.s_expiresAt,
-        ipAddress: row.s_ipAddress,
-        userAgent: row.s_userAgent,
-        createdAt: row.s_createdAt,
-        updatedAt: row.s_updatedAt
-      },
-      user: {
-        id: row.u_id,
-        name: row.u_name,
-        email: row.u_email,
-        emailVerified: decodeBoolean(row.u_emailVerified),
-        image: row.u_image,
-        createdAt: row.u_createdAt,
-        updatedAt: row.u_updatedAt
-      }
+    const decodeSession = Schema.decodeUnknownEffect(Session)
+
+    const sessionFromRow = (row: UserRow) => ({
+      id: row["s_id"],
+      tokenHash: row["s_tokenHash"],
+      userId: row["s_userId"],
+      expiresAt: row["s_expiresAt"],
+      ipAddress: row["s_ipAddress"],
+      userAgent: row["s_userAgent"],
+      createdAt: row["s_createdAt"],
+      updatedAt: row["s_updatedAt"]
     })
+
+    /**
+     * The two halves of the joined row are decoded separately rather than
+     * through one composite schema: only the user half is the model's, and
+     * keeping it that way is what stops the model's field map leaking into the
+     * session store's own types.
+     */
+    const decodeJoined = (row: UserRow): Effect.Effect<SessionWithUser<F>, PersistenceError> =>
+      Effect.mapError(
+        Effect.all({
+          session: decodeSession(sessionFromRow(row)),
+          user: model.decodeRow(readUser(row, "u_"))
+        }),
+        (cause) => new PersistenceError({ operation: "SessionStore.findByTokenHash", cause })
+      )
 
     const insertSession = SqlSchema.findOne({
       Request: Session.insert,
@@ -340,18 +404,22 @@ const makeSessionStore: () => Effect.Effect<SessionStoreService, never, SqlClien
         RETURNING ${sessionCols}`
     })
 
-    const selectSessionWithUser = SqlSchema.findOneOption({
-      Request: TokenHashRequest,
-      Result: SessionWithUserSchema,
-      execute: (tokenHash) =>
-        Effect.map(
-          sql<RawSessionWithUserRow>`SELECT ${sessionWithUserCols}
+    const selectSessionWithUser = (
+      tokenHash: string
+    ): Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError> =>
+      Effect.flatMap(
+        persist("SessionStore.findByTokenHash")(
+          sql<UserRow>`SELECT ${sessionWithUserCols}
           FROM sessions s
           INNER JOIN users u ON u.id = s.user_id
-          WHERE s.token_hash = ${tokenHash}`,
-          (rows) => rows.map(sessionWithUserRow)
-        )
-    })
+          WHERE s.token_hash = ${tokenHash}`
+        ),
+        (rows) =>
+          Option.match(Array.head(rows), {
+            onNone: (): Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError> => Effect.succeedNone,
+            onSome: (row) => Effect.asSome(decodeJoined(row))
+          })
+      )
 
     const touchSession = SqlSchema.findOneOption({
       Request: SessionTouchRequest,
@@ -371,11 +439,10 @@ const makeSessionStore: () => Effect.Effect<SessionStoreService, never, SqlClien
         ORDER BY created_at DESC, id DESC`
     })
 
-    return SessionStore.of({
+    return sessionStoreOf(model).of({
       create: (session) => persist("SessionStore.create")(insertSession(session)),
 
-      findByTokenHash: (tokenHash) =>
-        persist("SessionStore.findByTokenHash")(selectSessionWithUser(tokenHash)),
+      findByTokenHash: (tokenHash) => selectSessionWithUser(tokenHash),
 
       touch: (id, expiresAt) =>
         persist("SessionStore.touch")(Effect.flatMap(
@@ -422,7 +489,8 @@ const makeSessionStore: () => Effect.Effect<SessionStoreService, never, SqlClien
           )
       ))
     })
-  })
+  }
+)
 
 // -----------------------------------------------------------------------------
 // AccountStore
@@ -649,7 +717,7 @@ const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, Sq
 /**
  * Implements the whole persistence seam — `UserStore`, `SessionStore`,
  * `AccountStore`, `VerificationStore` and `WithAuthTransaction` — over an
- * ambient `SqlClient`.
+ * ambient `SqlClient`, for the user model given.
  *
  * **Details**
  *
@@ -658,17 +726,24 @@ const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, Sq
  * statements, not five clients — and a deployment that wants to replace exactly
  * one store can merge its own over this.
  *
+ * The user store's columns are read off `model` once, when the layer is built:
+ * the projection, the `INSERT` and the `UPDATE` are all derived from the field
+ * map, so a deployment's own columns are stored and read back without a line of
+ * SQL being written for them. The two stores are published under the plain
+ * `UserStore` / `SessionStore` keys, so this layer's type is the same whatever
+ * the model is.
+ *
  * **When to use**
  *
  * Provide it below `Auth.layer` together with a driver layer (`PgClient.layer`,
  * `PgliteClient.layer`, a SQLite client, …). The tables it reads are created by
- * `Migrations.layer` or by the application's own migrator.
+ * `Migrations.layerFor(model)` or by the application's own migrator.
  *
  * **Example**
  *
  * ```ts skip-type-checking
- * const StoresLive = SqlStores.layer.pipe(
- *   Layer.provideMerge(Migrations.layer),
+ * const StoresLive = SqlStores.layerFor(model).pipe(
+ *   Layer.provideMerge(Migrations.layerFor(model)),
  *   Layer.provide(PgLive)
  * )
  * ```
@@ -676,10 +751,21 @@ const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, Sq
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient> = Layer.mergeAll(
-  Layer.effect(UserStore, makeUserStore()),
-  Layer.effect(SessionStore, makeSessionStore()),
-  Layer.effect(AccountStore, makeAccountStore()),
-  Layer.effect(VerificationStore, makeVerificationStore()),
-  Layer.effect(WithAuthTransaction, makeTransaction())
-)
+export const layerFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<AuthStores, never, SqlClient.SqlClient> =>
+  Layer.mergeAll(
+    Layer.effect(userStoreOf(model), makeUserStore(model)),
+    Layer.effect(sessionStoreOf(model), makeSessionStore(model)),
+    Layer.effect(AccountStore, makeAccountStore()),
+    Layer.effect(VerificationStore, makeVerificationStore()),
+    Layer.effect(WithAuthTransaction, makeTransaction())
+  )
+
+/**
+ * {@link layerFor}, for a deployment that added no user fields of its own.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient> = layerFor(baseUserModel)

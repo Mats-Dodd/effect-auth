@@ -15,8 +15,9 @@
  *
  * @since 1.0.0
  */
-import { Schema } from "effect"
-import { Model } from "effect/unstable/schema"
+import { Context, Effect, Option, Schema, Struct } from "effect"
+import { Model, VariantSchema } from "effect/unstable/schema"
+import { pickKeys } from "../internal/records.js"
 
 // -----------------------------------------------------------------------------
 // Identifiers
@@ -277,6 +278,722 @@ export class Verification extends Model.Class<Verification>("effect-auth/Verific
 }) {}
 
 // -----------------------------------------------------------------------------
+// Custom user fields
+// -----------------------------------------------------------------------------
+
+/**
+ * The identifier every variant of the user model is annotated with, so a
+ * deployment that adds custom fields keeps the component names — and therefore
+ * the OpenAPI document — a base deployment has.
+ */
+const userModelId = "effect-auth/User"
+
+/**
+ * The shape of a custom user field map: exactly what `Model.Struct` accepts, so
+ * `Model.Sensitive`, `Model.GeneratedByApp` and a bare `Schema` all fit.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserFields = VariantSchema.Struct.Fields
+
+/**
+ * The field declarations of the base {@link User} model.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type BaseUserFields = typeof User[typeof VariantSchema.TypeId]
+
+/**
+ * The field declarations of a user model parameterized by `F`: the base fields
+ * with the custom ones laid over them.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserModelFields<F extends UserFields> = Struct.Simplify<BaseUserFields & F>
+
+/**
+ * The field map of one variant — `select`, `insert`, `json`, … — of a user model
+ * parameterized by `F`.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserVariantFields<F extends UserFields, V extends string> = Struct.Simplify<
+  VariantSchema.ExtractFields<V, UserModelFields<F>>
+>
+
+/**
+ * One variant of a user model.
+ *
+ * **Details**
+ *
+ * `Type` and `Encoded` are *stated* here rather than computed from `fields`. A
+ * struct computes its type from its field map, and a field map that is still a
+ * type parameter computes to something no code can be written against — a
+ * handler could not build the response, a store could not read `user.email`. So
+ * a variant says what it decodes to (the base user's own shape, intersected with
+ * whatever the custom fields contribute) and keeps `fields` alongside for the
+ * callers that build payload schemas out of it.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserVariant<A, I, Fields extends Schema.Struct.Fields> extends Schema.Codec<A, I> {
+  readonly fields: Fields
+}
+
+/**
+ * Just the custom fields of a user model, in one variant.
+ *
+ * **When to use**
+ *
+ * To type the extras a caller may supply — a sign-up payload's custom columns —
+ * without restating the base fields around them.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserExtras<F extends UserFields, V extends string> = Schema.Struct<
+  Struct.Simplify<VariantSchema.ExtractFields<V, F>>
+>["Type"]
+
+/**
+ * {@link UserExtras}, on the wire.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserExtrasEncoded<F extends UserFields, V extends string> = Schema.Struct<
+  Struct.Simplify<VariantSchema.ExtractFields<V, F>>
+>["Encoded"]
+
+/**
+ * The stored user of a model parameterized by `F`. `UserOf<{}>` is
+ * interchangeable with {@link User}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserOf<F extends UserFields> = User & UserExtras<F, "select">
+
+/**
+ * {@link UserOf}, as its columns are stored.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserEncodedOf<F extends UserFields> = typeof User.select.Encoded & UserExtrasEncoded<F, "select">
+
+/**
+ * The client-facing projection of a {@link UserOf}. Fields declared with
+ * {@link UserFieldConstructors.hidden} are absent from it.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserPublicOf<F extends UserFields> = typeof User.json.Type & UserExtras<F, "json">
+
+/**
+ * {@link UserPublicOf}, on the wire.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserPublicEncodedOf<F extends UserFields> = typeof User.json.Encoded & UserExtrasEncoded<F, "json">
+
+/**
+ * The row a `UserStore.create` of a model parameterized by `F` takes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserInsertOf<F extends UserFields> = typeof User.insert.Type & UserExtras<F, "insert">
+
+/**
+ * {@link UserInsertOf}, as its columns are written.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserInsertEncodedOf<F extends UserFields> = typeof User.insert.Encoded & UserExtrasEncoded<F, "insert">
+
+/**
+ * The row a `UserStore.update` of a model parameterized by `F` writes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserUpdateOf<F extends UserFields> = typeof User.update.Type & UserExtras<F, "update">
+
+/**
+ * The mutable base fields of a user: the `update` variant without the key a
+ * statement addresses the row by, and without the timestamp the store maintains
+ * itself.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type BaseUserPatch = Partial<Omit<typeof User.update.Type, "id" | "updatedAt">>
+
+/**
+ * {@link UserUpdateOf}, as its columns are written.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserUpdateEncodedOf<F extends UserFields> = typeof User.update.Encoded & UserExtrasEncoded<F, "update">
+
+/**
+ * The JSON create variant of a model parameterized by `F` — the shape a sign-up
+ * payload's user half has.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserCreateOf<F extends UserFields> = typeof User.jsonCreate.Type & UserExtras<F, "jsonCreate">
+
+/**
+ * {@link UserCreateOf}, on the wire.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserCreateEncodedOf<F extends UserFields> =
+  & typeof User.jsonCreate.Encoded
+  & UserExtrasEncoded<F, "jsonCreate">
+
+/**
+ * The JSON update variant of a model parameterized by `F` — the shape a profile
+ * update payload's user half has.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserPatchOf<F extends UserFields> = typeof User.jsonUpdate.Type & UserExtras<F, "jsonUpdate">
+
+/**
+ * {@link UserPatchOf}, on the wire.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserPatchEncodedOf<F extends UserFields> =
+  & typeof User.jsonUpdate.Encoded
+  & UserExtrasEncoded<F, "jsonUpdate">
+
+/**
+ * The base fields every caller supplies when it provisions a user.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface BaseUserInsert {
+  readonly name: string
+  readonly email: string
+  readonly emailVerified: boolean
+  readonly image: string | null
+}
+
+/**
+ * What {@link UserModel.makeInsert} takes: the base fields, plus whichever
+ * custom ones the caller wants to state.
+ *
+ * **Gotchas**
+ *
+ * The custom half is deliberately untyped — a caller that has them holds them as
+ * a record it picked out of a payload, and the model validates what it is given.
+ * The typed door into custom fields is `SignUpOptions<F>`, whose extras come
+ * straight off the model's `jsonCreate` variant.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserInsertInput extends BaseUserInsert {
+  readonly [key: string]: unknown
+}
+
+/**
+ * A user model: the {@link User} fields with a deployment's own laid over them,
+ * together with the six schema variants derived from the result.
+ *
+ * **Details**
+ *
+ * This value — not a service key — is what carries custom fields through the
+ * library. Every constructor that *produces* users takes one
+ * (`Passwords.make(model)`, `SqlStores.layerFor(model)`, …); readers that need
+ * the field-sensitive type ask for a *typed view* of the key they already use
+ * (`userStoreOf(model)`, `currentUserOf(model)`), which is the same key with a
+ * narrower shape. No `Context.Service` is re-created, so no layer signature
+ * anywhere in the library becomes generic.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserModel<F extends UserFields> {
+  /** The custom fields alone, exactly as they were declared. */
+  readonly fields: F
+  /** The names of the custom fields, in declaration order. */
+  readonly extraKeys: ReadonlyArray<keyof F & string>
+  /** The combined variant struct, for callers that want to extract their own variant. */
+  readonly struct: VariantSchema.Struct<UserModelFields<F>>
+  /**
+   * The stored fields — the `select` variant's field map with its field types
+   * erased, which is what a storage implementation derives its columns from.
+   */
+  readonly selectFields: { readonly [key: string]: Schema.Top }
+  /**
+   * The erased encoders a storage implementation writes rows through. See
+   * {@link UserRowCodecs}.
+   */
+  readonly rows: UserRowCodecs
+  readonly select: UserVariant<UserOf<F>, UserEncodedOf<F>, UserVariantFields<F, "select">>
+  readonly insert: UserVariant<UserInsertOf<F>, UserInsertEncodedOf<F>, UserVariantFields<F, "insert">>
+  readonly update: UserVariant<UserUpdateOf<F>, UserUpdateEncodedOf<F>, UserVariantFields<F, "update">>
+  readonly json: UserVariant<UserPublicOf<F>, UserPublicEncodedOf<F>, UserVariantFields<F, "json">>
+  readonly jsonCreate: UserVariant<UserCreateOf<F>, UserCreateEncodedOf<F>, UserVariantFields<F, "jsonCreate">>
+  readonly jsonUpdate: UserVariant<UserPatchOf<F>, UserPatchEncodedOf<F>, UserVariantFields<F, "jsonUpdate">>
+  /**
+   * Builds an insert row: the generated columns (`id`, `createdAt`,
+   * `updatedAt`) and every unstated custom field come from the model's own
+   * defaults.
+   *
+   * A construction failure is a defect, not an error: the base fields are
+   * validated before they get here and the rest is the model's own doing.
+   */
+  readonly makeInsert: (input: UserInsertInput) => Effect.Effect<UserInsertOf<F>>
+  /**
+   * Decodes a stored row — a bag of columns, as a storage implementation holds
+   * one — into this model's user.
+   */
+  readonly decodeRow: (row: unknown) => Effect.Effect<UserOf<F>, Schema.SchemaError>
+  /**
+   * The custom fields' declared defaults, encoded.
+   *
+   * **When to use**
+   *
+   * In a migration, which needs them as column defaults. This is the only place
+   * they are recoverable from: a constructor default is an effect hanging off
+   * the field's AST, not a literal anybody can read back.
+   */
+  readonly extraDefaults: Effect.Effect<UserRow>
+  /**
+   * Fills in whichever custom fields a row does not carry.
+   *
+   * **When to use**
+   *
+   * At the storage boundary. A caller holding the base-typed `UserStore` key —
+   * the OAuth flow, a plugin — builds rows out of base fields alone, and this is
+   * what makes such a row storable under a model that has more columns than
+   * that.
+   */
+  readonly completeInsert: (row: UserInsertOf<F>) => Effect.Effect<UserInsertOf<F>>
+  /**
+   * A patch that touches only the base user fields, typed as this model's patch.
+   *
+   * **Gotchas**
+   *
+   * It exists to work around a TypeScript limitation rather than to do anything:
+   * at runtime it is the identity. A `Partial` of a type that is still a type
+   * parameter accepts nothing but the empty object, so generic library code
+   * cannot hand `{ emailVerified: true }` straight to a `UserPatch<F>`. The
+   * model, which knows the answer, states it.
+   */
+  readonly basePatch: (patch: BaseUserPatch) => BaseUserPatch & Partial<UserExtras<F, "update">>
+}
+
+/**
+ * A user row as a storage implementation holds it: a bag of columns.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserRow {
+  readonly [key: string]: unknown
+}
+
+/**
+ * The two encoders a storage implementation writes rows through, with their
+ * field maps erased.
+ *
+ * **Details**
+ *
+ * Reading needs none of this: `Schema.decodeUnknownEffect(model.select)` takes a
+ * bag of columns and answers a `UserOf<F>` directly. Writing is the direction
+ * whose *result* is a record, and a variant whose field map is still a type
+ * parameter has an `Encoded` type nothing can be written against — so the two
+ * writing codecs are named here over the record shape a statement holds.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserRowCodecs {
+  /** The `insert` variant: a complete row, encoded into its columns. */
+  readonly insert: Schema.Codec<UserRow, UserRow>
+  /** The `update` variant with every field optional: a patch, encoded into the columns it names. */
+  readonly patch: Schema.Codec<UserRow, UserRow>
+}
+
+/**
+ * A {@link UserModel} with its field map erased — what a plugin reads out of
+ * {@link UserModelRef} when it has no `F` of its own to speak of.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface AnyUserModel {
+  readonly fields: UserFields
+  readonly extraKeys: ReadonlyArray<string>
+  readonly selectFields: { readonly [key: string]: Schema.Top }
+  readonly rows: UserRowCodecs
+  readonly select: Schema.Top
+  readonly insert: Schema.Top
+  readonly update: Schema.Top
+  readonly json: Schema.Top
+  readonly jsonCreate: Schema.Top
+  readonly jsonUpdate: Schema.Top
+  makeInsert(input: UserInsertInput): Effect.Effect<unknown>
+  completeInsert(row: UserRow): Effect.Effect<unknown>
+  basePatch(patch: BaseUserPatch): BaseUserPatch
+  decodeRow(row: unknown): Effect.Effect<unknown, Schema.SchemaError>
+  readonly extraDefaults: Effect.Effect<UserRow>
+}
+
+/**
+ * The variant field {@link UserFieldConstructors.withDefault} builds: required
+ * everywhere a stored user is read, optional wherever a client writes one.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserFieldWithDefault<S extends Schema.Top & Schema.WithoutConstructorDefault> extends
+  VariantSchema.Field<{
+    readonly select: S
+    readonly insert: Schema.withConstructorDefault<S>
+    readonly update: S
+    readonly json: S
+    readonly jsonCreate: Schema.optionalKey<S>
+    readonly jsonUpdate: Schema.optionalKey<S>
+  }>
+{}
+
+/**
+ * The four constructors a custom user field is declared with.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserFieldConstructors {
+  /**
+   * A field present, and required, in every variant.
+   *
+   * **Gotchas**
+   *
+   * A schema that carries no constructor default of its own fails
+   * {@link makeUserModel}'s provisionability check: a user provisioned by OAuth
+   * or by a plugin is built from the base fields alone, and there would be
+   * nothing to put in this column. Reach for {@link UserFieldConstructors.withDefault}
+   * unless the schema already defaults itself.
+   */
+  readonly required: <S extends Schema.Top>(schema: S) => S
+
+  /**
+   * A field a client may state and the model fills in when it does not.
+   *
+   * **Details**
+   *
+   * Always present on a stored user, and always in a response; optional in the
+   * two JSON payload variants and defaulted when a row is built, which together
+   * are what "may state" means.
+   */
+  readonly withDefault: <S extends Schema.Top & Schema.WithoutConstructorDefault>(
+    schema: S,
+    defaultValue: () => S["~type.make.in"]
+  ) => UserFieldWithDefault<S>
+
+  /**
+   * A field the application owns: readable everywhere, never settable through
+   * the JSON create or update payloads. A client that sends one anyway has it
+   * silently dropped, and the default is written instead.
+   */
+  readonly readOnly: <S extends Schema.Top & Schema.WithoutConstructorDefault>(
+    schema: S,
+    defaultValue: () => S["~type.make.in"]
+  ) => Model.GeneratedByApp<Schema.withConstructorDefault<S>>
+
+  /**
+   * A field that never leaves the server: present in every database variant and
+   * absent from every JSON one, so it cannot reach a response body, a generated
+   * client, or the session cookie cache.
+   */
+  readonly hidden: <S extends Schema.Top & Schema.WithoutConstructorDefault>(
+    schema: S,
+    defaultValue: () => S["~type.make.in"]
+  ) => Model.Sensitive<Schema.withConstructorDefault<S>>
+}
+
+const withConstructorDefault = <S extends Schema.Top & Schema.WithoutConstructorDefault>(
+  schema: S,
+  defaultValue: () => S["~type.make.in"]
+): Schema.withConstructorDefault<S> => schema.pipe(Schema.withConstructorDefault(Effect.sync(defaultValue)))
+
+/**
+ * How a custom user field is declared.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Schema } from "effect"
+ * import { UserField, makeUserModel } from "effect-auth"
+ *
+ * const model = makeUserModel({
+ *   plan: UserField.withDefault(Schema.Literals(["free", "pro"]), () => "free" as const),
+ *   role: UserField.readOnly(Schema.Literals(["user", "admin"]), () => "user" as const),
+ *   apiSecret: UserField.hidden(Schema.NullOr(Schema.String), () => null)
+ * })
+ * ```
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const UserField: UserFieldConstructors = {
+  required: (schema) => schema,
+  withDefault: (schema, defaultValue) =>
+    Model.Field({
+      select: schema,
+      insert: withConstructorDefault(schema, defaultValue),
+      update: schema,
+      json: schema,
+      jsonCreate: Schema.optionalKey(schema),
+      jsonUpdate: Schema.optionalKey(schema)
+    }),
+  readOnly: (schema, defaultValue) => Model.GeneratedByApp(withConstructorDefault(schema, defaultValue)),
+  hidden: (schema, defaultValue) => Model.Sensitive(withConstructorDefault(schema, defaultValue))
+}
+
+/**
+ * The row {@link makeUserModel} tries to build in order to prove that a model's
+ * custom fields can be provisioned without a client stating any of them.
+ */
+const provisioningSample: UserInsertInput = {
+  name: "",
+  email: "",
+  emailVerified: false,
+  image: null
+}
+
+/**
+ * A variant of the erased model. `Schema.Codec` rather than `Schema.Struct`
+ * because a struct's constructor input is computed from its field map, and an
+ * erased field map computes an input nothing can be assigned to; the codec view
+ * states the record shape the constructors actually take.
+ */
+interface UncheckedVariant extends Schema.Codec<UserRow, UserRow> {}
+
+/**
+ * The model as it is built, before `F` is put back on it. Every type here is
+ * erased on purpose: `VariantSchema`'s field validation and variant extraction
+ * cannot be proved for an `F` that is still a type parameter, so the
+ * construction is checked once against the erased field map and
+ * {@link UserModel} states what the result is.
+ */
+interface UncheckedUserModel {
+  readonly fields: UserFields
+  readonly extraKeys: ReadonlyArray<string>
+  readonly struct: VariantSchema.Struct<UserFields>
+  readonly selectFields: { readonly [key: string]: Schema.Top }
+  readonly rows: UserRowCodecs
+  readonly select: UncheckedVariant
+  readonly insert: UncheckedVariant
+  readonly update: UncheckedVariant
+  readonly json: UncheckedVariant
+  readonly jsonCreate: UncheckedVariant
+  readonly jsonUpdate: UncheckedVariant
+  readonly makeInsert: (input: UserInsertInput) => Effect.Effect<UserRow>
+  readonly completeInsert: (row: UserRow) => Effect.Effect<UserRow>
+  readonly basePatch: (patch: BaseUserPatch) => BaseUserPatch
+  readonly decodeRow: (row: unknown) => Effect.Effect<UserRow, Schema.SchemaError>
+  readonly extraDefaults: Effect.Effect<UserRow>
+}
+
+const variantAnnotations = (variant: string): { readonly id: string; readonly title: string } => ({
+  id: `${userModelId}.${variant}`,
+  title: `${userModelId}.${variant}`
+})
+
+const buildUserModel = (fields: UserFields): UncheckedUserModel => {
+  const baseFields: UserFields = Model.fields(User)
+  const shadowed = Object.keys(fields).filter((key) => Object.hasOwn(baseFields, key))
+  if (shadowed.length > 0) {
+    throw new Error(
+      `effect-auth: the custom user fields ${
+        shadowed.join(", ")
+      } redeclare fields the base user model already has. A custom field is added to the base user, never laid over one of its fields — every part of the library, and every deployment's own code, depends on a user having the base fields with the base types.`
+    )
+  }
+
+  const allFields: UserFields = { ...baseFields, ...fields }
+  const struct = Model.Struct(allFields)
+
+  // The variants a `Model.Class` generates are annotated `<id>.<variant>`, and
+  // an extracted one is not. Re-annotating is what keeps the OpenAPI component
+  // names — and therefore the published document — identical whether or not a
+  // deployment added fields.
+  const selectStruct = Model.extract(struct, "select")
+  const updateStruct = Model.extract(struct, "update")
+  const selectFields: { readonly [key: string]: Schema.Top } = selectStruct.fields
+  const select: UncheckedVariant = selectStruct.annotate(variantAnnotations("select"))
+  const insert: UncheckedVariant = Model.extract(struct, "insert").annotate(variantAnnotations("insert"))
+  const update: UncheckedVariant = updateStruct.annotate(variantAnnotations("update"))
+  const json: UncheckedVariant = Model.extract(struct, "json").annotate(variantAnnotations("json"))
+  const jsonCreate: UncheckedVariant = Model.extract(struct, "jsonCreate").annotate(variantAnnotations("jsonCreate"))
+  const jsonUpdate: UncheckedVariant = Model.extract(struct, "jsonUpdate").annotate(variantAnnotations("jsonUpdate"))
+
+  const extraKeys = Object.keys(fields)
+
+  if (extraKeys.length > 0 && Option.isNone(insert.makeOption(provisioningSample))) {
+    throw new Error(
+      `effect-auth: the custom user fields ${
+        extraKeys.join(", ")
+      } are not provisionable. Every custom field must be constructible from the base user fields alone — OAuth sign-in, plugins and the base-typed UserStore all create users without stating one — so declare it with UserField.withDefault, UserField.readOnly or UserField.hidden, or give its schema a constructor default of its own.`
+    )
+  }
+
+  // Every field optional: the encoder a partial update goes through, which names
+  // exactly the columns the caller stated and nothing else.
+  const patch: UncheckedVariant = updateStruct.mapFields(Struct.map(Schema.optionalKey))
+
+  const basePatch = (patch: BaseUserPatch) => patch
+
+  const decodeRow = Schema.decodeUnknownEffect(select)
+  const encodeInsert = Schema.encodeUnknownEffect(insert)
+
+  const makeInsert = (input: UserInsertInput) => Effect.orDie(insert.makeEffect(input))
+
+  const extraDefaults: Effect.Effect<UserRow> = extraKeys.length === 0
+    ? Effect.succeed<UserRow>({})
+    : Effect.map(
+      Effect.flatMap(makeInsert(provisioningSample), (row) => Effect.orDie(encodeInsert(row))),
+      (encoded) => pickKeys(encoded, extraKeys)
+    )
+
+  const completeInsert = (row: UserRow) =>
+    extraKeys.length === 0 || extraKeys.every((key) => Object.hasOwn(row, key))
+      ? Effect.succeed(row)
+      : Effect.map(makeInsert(provisioningSample), (defaults) => ({ ...defaults, ...row }))
+
+  return {
+    fields,
+    extraKeys,
+    struct,
+    selectFields,
+    rows: { insert, patch },
+    select,
+    insert,
+    update,
+    json,
+    jsonCreate,
+    jsonUpdate,
+    makeInsert,
+    completeInsert,
+    basePatch,
+    decodeRow,
+    extraDefaults
+  }
+}
+
+/**
+ * Builds a {@link UserModel} from the custom fields a deployment adds to
+ * {@link User}.
+ *
+ * **Details**
+ *
+ * The base fields are always present and cannot be redeclared away: what is
+ * handed in is laid *over* them. Each of the six variants is re-annotated
+ * `effect-auth/User.<variant>`, so the schema components a base deployment
+ * publishes are the ones a parameterized deployment publishes too.
+ *
+ * **Gotchas**
+ *
+ * *Provisionability.* Every custom field must be constructible without a value,
+ * because users are created by paths that know nothing about them — an OAuth
+ * callback, a magic link, any caller holding the base-typed `UserStore`. This is
+ * checked here, when the model is built, and a field that fails it throws
+ * immediately with the field names in the message. The type system cannot state
+ * the rule without the kind of value-dependent constraint this codebase does not
+ * use, so it is a start-up check instead of a compile error.
+ *
+ * *Excess is dropped, not refused.* Schema decodes with
+ * `onExcessProperty: "ignore"`, so a client that sends a `readOnly` or unknown
+ * field in a sign-up payload gets the model's default rather than a 400.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Schema } from "effect"
+ * import { UserField, makeUserModel } from "effect-auth"
+ *
+ * const model = makeUserModel({
+ *   plan: UserField.withDefault(Schema.Literals(["free", "pro"]), () => "free" as const)
+ * })
+ * ```
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeUserModel = <const F extends UserFields>(fields: F): UserModel<F> =>
+  // The one cast in this module, and the reason `buildUserModel` exists: the
+  // construction above is type-checked against the erased field map, because
+  // `VariantSchema.Struct.Validate` and `ExtractFields` are not provable for a
+  // field map that is still a type parameter. `UserModel<F>` is the statement of
+  // what that value is, and every consumer in the library is checked against the
+  // statement rather than against the construction.
+  buildUserModel(fields) as unknown as UserModel<F>
+
+/**
+ * The user model of a deployment that added no fields of its own.
+ *
+ * **Details**
+ *
+ * Every module-level `layer` in this library is `layerFor(baseUserModel)`, and
+ * every base-typed export — `UserPublic`, `SessionWithUser`, `CurrentUser` — is
+ * this model's. Its variants are structurally the same schemas as `User.select`,
+ * `User.json` and the rest, annotated identically.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const baseUserModel: UserModel<{}> = makeUserModel({})
+
+/**
+ * The user model the ambient deployment was built with.
+ *
+ * **When to use**
+ *
+ * In a plugin that provisions users — a magic link, an invitation flow — and has
+ * no `F` of its own to be generic over. Reading the model here rather than
+ * taking it as a parameter is what lets such a plugin write rows a deployment's
+ * custom columns are satisfied by, while the plugin's own layer signature stays
+ * non-generic.
+ *
+ * **Gotchas**
+ *
+ * The default is {@link baseUserModel}, so a plugin used in a deployment that
+ * never provided this reference still works — it just cannot fill in fields it
+ * does not know about, which is exactly what the provisionability rule
+ * guarantees is safe.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const UserModelRef: Context.Reference<AnyUserModel> = Context.Reference<AnyUserModel>(
+  "effect-auth/UserModel",
+  { defaultValue: () => baseUserModel }
+)
+
+// -----------------------------------------------------------------------------
 // Public (JSON) projections
 // -----------------------------------------------------------------------------
 
@@ -286,7 +1003,7 @@ export class Verification extends Model.Class<Verification>("effect-auth/Verific
  * @category models
  * @since 1.0.0
  */
-export const UserPublic = User.json
+export const UserPublic = baseUserModel.json
 
 /**
  * The type of a {@link UserPublic}.
@@ -294,7 +1011,7 @@ export const UserPublic = User.json
  * @category models
  * @since 1.0.0
  */
-export type UserPublic = typeof User.json.Type
+export type UserPublic = UserPublicOf<{}>
 
 /**
  * The client-facing projection of a {@link Session}. It omits `tokenHash`.
@@ -330,15 +1047,43 @@ export const AccountPublic = Account.json
 export type AccountPublic = typeof Account.json.Type
 
 /**
+ * The schema {@link makeSessionWithUser} builds.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface SessionWithUserSchema<F extends UserFields> extends
+  Schema.Struct<{
+    readonly user: UserModel<F>["json"]
+    readonly session: typeof SessionPublic
+  }>
+{}
+
+/**
+ * The payload every endpoint that establishes or reads a session returns, for a
+ * model parameterized by `F`.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeSessionWithUser = <F extends UserFields>(model: UserModel<F>): SessionWithUserSchema<F> =>
+  Schema.Struct({ user: model.json, session: SessionPublic })
+
+/**
+ * The type of a {@link makeSessionWithUser}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type SessionWithUserOf<F extends UserFields> = SessionWithUserSchema<F>["Type"]
+
+/**
  * The payload returned by every endpoint that establishes or reads a session.
  *
  * @category models
  * @since 1.0.0
  */
-export const SessionWithUser = Schema.Struct({
-  user: UserPublic,
-  session: SessionPublic
-})
+export const SessionWithUser: SessionWithUserSchema<{}> = makeSessionWithUser(baseUserModel)
 
 /**
  * The type of a {@link SessionWithUser}.
@@ -346,7 +1091,37 @@ export const SessionWithUser = Schema.Struct({
  * @category models
  * @since 1.0.0
  */
-export type SessionWithUser = typeof SessionWithUser.Type
+export type SessionWithUser = SessionWithUserOf<{}>
+
+/**
+ * The schema {@link makeSignUpResponse} builds.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface SignUpResponseSchema<F extends UserFields> extends
+  Schema.Struct<{
+    readonly user: UserModel<F>["json"]
+    readonly session: Schema.NullOr<typeof SessionPublic>
+  }>
+{}
+
+/**
+ * The payload sign-up returns, for a model parameterized by `F`.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeSignUpResponse = <F extends UserFields>(model: UserModel<F>): SignUpResponseSchema<F> =>
+  Schema.Struct({ user: model.json, session: Schema.NullOr(SessionPublic) })
+
+/**
+ * The type of a {@link makeSignUpResponse}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type SignUpResponseOf<F extends UserFields> = SignUpResponseSchema<F>["Type"]
 
 /**
  * The payload returned by sign-up.
@@ -362,10 +1137,7 @@ export type SessionWithUser = typeof SessionWithUser.Type
  * @category models
  * @since 1.0.0
  */
-export const SignUpResponse = Schema.Struct({
-  user: UserPublic,
-  session: Schema.NullOr(SessionPublic)
-})
+export const SignUpResponse: SignUpResponseSchema<{}> = makeSignUpResponse(baseUserModel)
 
 /**
  * The type of a {@link SignUpResponse}.
@@ -373,4 +1145,32 @@ export const SignUpResponse = Schema.Struct({
  * @category models
  * @since 1.0.0
  */
-export type SignUpResponse = typeof SignUpResponse.Type
+export type SignUpResponse = SignUpResponseOf<{}>
+
+/**
+ * The schema {@link makeUserResponse} builds.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserResponseSchema<F extends UserFields> extends
+  Schema.Struct<{ readonly user: UserModel<F>["json"] }>
+{}
+
+/**
+ * The payload an endpoint that answers with a user and nothing else returns —
+ * profile updates, for instance.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeUserResponse = <F extends UserFields>(model: UserModel<F>): UserResponseSchema<F> =>
+  Schema.Struct({ user: model.json })
+
+/**
+ * The type of a {@link makeUserResponse}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserResponseOf<F extends UserFields> = UserResponseSchema<F>["Type"]

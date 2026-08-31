@@ -30,10 +30,10 @@ import { Token } from "../crypto/Token.js"
 import { insertRow } from "../internal/effects.js"
 import { NotFound, SessionExpired, SessionNotFresh, Unauthorized } from "./Errors.js"
 import { AuthEvents, publishSafely } from "./Events.js"
-import type { Session, SessionId, User, UserId } from "./Schema.js"
-import { Session as SessionModel } from "./Schema.js"
+import type { Session, SessionId, UserFields, UserId, UserModel, UserOf } from "./Schema.js"
+import { baseUserModel, Session as SessionModel } from "./Schema.js"
 import type { PersistenceError } from "./Stores.js"
-import { SessionStore } from "./Stores.js"
+import { SessionStore, sessionStoreOf } from "./Stores.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -87,9 +87,9 @@ export interface CreatedSession {
  * @category models
  * @since 1.0.0
  */
-export interface VerifiedSession {
+export interface VerifiedSession<F extends UserFields = {}> {
   readonly session: Session
-  readonly user: User
+  readonly user: UserOf<F>
   /**
    * `true` when this verification rolled the expiry forward, which is the HTTP
    * layer's signal to re-send the session cookie with a new `Max-Age`.
@@ -179,7 +179,7 @@ export const isFreshAt = (session: Session, config: AuthConfigService, now: Date
  * @category models
  * @since 1.0.0
  */
-export interface SessionsService {
+export interface SessionsService<F extends UserFields = {}> {
   /**
    * Mints a session for a user and returns it together with its raw token.
    *
@@ -205,7 +205,7 @@ export interface SessionsService {
    */
   readonly verify: (
     token: Redacted.Redacted<string>
-  ) => Effect.Effect<VerifiedSession, Unauthorized | SessionExpired | PersistenceError>
+  ) => Effect.Effect<VerifiedSession<F>, Unauthorized | SessionExpired | PersistenceError>
 
   /**
    * Ends the session the caller presented — the sign-out path.
@@ -269,6 +269,21 @@ export interface SessionsService {
  */
 export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/Sessions") {}
 
+/**
+ * {@link Sessions}, seen through a model's custom fields.
+ *
+ * The same key with a narrower shape: `verify` is the one method whose result
+ * carries a user, so it is the one place `F` shows. See `userStoreOf` in
+ * `domain/Stores.ts` for what a typed view is and why it is sound.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const sessionsOf = <F extends UserFields>(
+  _model: UserModel<F>
+): Context.Service<Sessions, SessionsService<F>> =>
+  Context.Service<Sessions, SessionsService<F>>("effect-auth/Sessions")
+
 // -----------------------------------------------------------------------------
 // Implementation
 // -----------------------------------------------------------------------------
@@ -280,14 +295,16 @@ export class Sessions extends Context.Service<Sessions, SessionsService>()("effe
  * @category constructors
  * @since 1.0.0
  */
-export const make: () => Effect.Effect<
-  SessionsService,
+export const make: <F extends UserFields>(
+  model: UserModel<F>
+) => Effect.Effect<
+  SessionsService<F>,
   never,
   AuthConfig | Token | SessionStore | AuthEvents
-> = Effect.fnUntraced(function*() {
+> = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const tokens = yield* Token
-  const store = yield* SessionStore
+  const store = yield* sessionStoreOf(model)
   const events = yield* AuthEvents
 
   const create = Effect.fnUntraced(function*(options: CreateOptions) {
@@ -322,14 +339,14 @@ export const make: () => Effect.Effect<
     }
 
     if (!isRefreshDue(session, config, now)) {
-      return { session, user, refreshed: false } satisfies VerifiedSession
+      return { session, user, refreshed: false } satisfies VerifiedSession<F>
     }
 
     const expiresAt = DateTime.addDuration(now, grantedLifetime(session, config))
     const touched = yield* store.touch(session.id, expiresAt)
     // A `None` means the session was revoked between the read and the update.
     const refreshed = yield* Effect.fromOption(touched, () => new Unauthorized())
-    return { session: refreshed, user, refreshed: true } satisfies VerifiedSession
+    return { session: refreshed, user, refreshed: true } satisfies VerifiedSession<F>
   })
 
   const signOut = Effect.fnUntraced(function*(session: Session) {
@@ -370,7 +387,7 @@ export const make: () => Effect.Effect<
     }
   })
 
-  return Sessions.of({
+  return sessionsOf(model).of({
     create,
     verify,
     signOut,
@@ -384,12 +401,23 @@ export const make: () => Effect.Effect<
 })
 
 /**
- * Provides {@link Sessions}.
+ * Provides {@link Sessions} for the user model given: `verify` answers with that
+ * model's user, while the layer's own type stays the base one.
  *
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<Sessions, never, AuthConfig | Token | SessionStore | AuthEvents> = Layer.effect(
-  Sessions,
-  make()
+export const layerFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<Sessions, never, AuthConfig | Token | SessionStore | AuthEvents> =>
+  Layer.effect(sessionsOf(model), make(model))
+
+/**
+ * {@link layerFor}, for a deployment that added no user fields of its own.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layer: Layer.Layer<Sessions, never, AuthConfig | Token | SessionStore | AuthEvents> = layerFor(
+  baseUserModel
 )

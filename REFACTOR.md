@@ -100,7 +100,7 @@ Rules:
 - Purely mechanical and non-breaking: exported class names, service key strings, and member
   signatures are unchanged.
 
-## 5. The two permitted boundary casts (and only these)
+## 5. The permitted boundary casts (and only these)
 
 1. `src/http/Handlers.ts` — `HttpApiBuilder.group` needs the concrete api type; a library
    accepts any consumer api structurally containing the auth group. Tighten the constraint from
@@ -110,6 +110,12 @@ Rules:
    why-this-is-safe comment.
 2. `src/client/AuthClient.ts:466` — same boundary for `AtomHttpApi.Service`. Same treatment.
    Also replace the `AtomResultFn<any, A, E>` helper params with proper generics.
+3. `src/domain/Schema.ts` — `makeUserModel`. `VariantSchema`'s field validation and variant
+   extraction cannot be proved for a field map that is still a type parameter, so the model is
+   built and type-checked once against the *erased* field map (`buildUserModel`) and re-typed on
+   the way out. `UserModel<F>` is the statement of what that value is, and every consumer in the
+   library is checked against the statement rather than against the construction. Added by the
+   custom-user-fields wave; keep it to exactly one `as unknown as` in that module.
 
 ## 6. Definition of done (gates — the final reviewer runs all of these)
 

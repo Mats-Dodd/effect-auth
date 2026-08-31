@@ -40,15 +40,17 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
-import type { Session } from "../domain/Schema.js"
-import { Sessions } from "../domain/Sessions.js"
+import type { Session, UserFields, UserModel } from "../domain/Schema.js"
+import { baseUserModel } from "../domain/Schema.js"
+import { Sessions, sessionsOf } from "../domain/Sessions.js"
 import {
   expiredSessionCookieOptions,
   insecureSessionCookieSecurity,
   secureSessionCookieSecurity,
   sessionCookieOptions
 } from "./Cookies.js"
-import { Authenticated, CurrentSession, CurrentUser } from "./Middleware.js"
+import type { CurrentUser } from "./Middleware.js"
+import { Authenticated, CurrentSession, currentUserOf } from "./Middleware.js"
 import { checkOrigin } from "./OriginCheck.js"
 
 // -----------------------------------------------------------------------------
@@ -148,14 +150,22 @@ export const clearSessionCookie = (
 
 /**
  * Builds the {@link Authenticated} implementation from the ambient
- * configuration and session service.
+ * configuration and session service, for the user model given.
+ *
+ * **Details**
+ *
+ * `model` is how a deployment's own user columns reach a handler: the
+ * authenticated user is provided through `currentUserOf(model)`, which is the
+ * `CurrentUser` key with that model's shape. Nothing else about the middleware
+ * — the transports, the origin check, the error — depends on it.
  *
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*() {
+export const make = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
-  const sessions = yield* Sessions
+  const sessions = yield* sessionsOf(model)
+  const currentUser = currentUserOf(model)
 
   const authenticate = (transport: { readonly cookie: boolean }) =>
     Effect.fnUntraced(function*<A, E, R>(
@@ -191,7 +201,7 @@ export const make = Effect.fnUntraced(function*() {
       }
 
       return yield* httpEffect.pipe(
-        Effect.provideService(CurrentUser, user),
+        Effect.provideService(currentUser, user),
         Effect.provideService(CurrentSession, session)
       )
     })
@@ -225,10 +235,24 @@ export const make = Effect.fnUntraced(function*() {
  * `Middleware.ts` so that a browser client can import the contract without
  * pulling the session store in behind it.
  *
+ * **Details**
+ *
+ * The layer's type does not mention the model: `Authenticated` is one key with
+ * one shape whatever a deployment's user carries. What the model decides is the
+ * shape of the `CurrentUser` a handler reads back — see
+ * `Middleware.currentUserOf`.
+ *
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<Authenticated, never, AuthConfig | Sessions> = Layer.effect(
-  Authenticated,
-  make()
-)
+export const layerFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<Authenticated, never, AuthConfig | Sessions> => Layer.effect(Authenticated, make(model))
+
+/**
+ * {@link layerFor}, for a deployment that added no user fields of its own.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layer: Layer.Layer<Authenticated, never, AuthConfig | Sessions> = layerFor(baseUserModel)

@@ -34,6 +34,7 @@ import { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { Token } from "../crypto/Token.js"
 import { validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
+import { pickKeys } from "../internal/records.js"
 import type { PasswordHashError } from "./Errors.js"
 import {
   EmailNotVerified,
@@ -43,14 +44,22 @@ import {
   UserAlreadyExists
 } from "./Errors.js"
 import { AuthEvents, passwordMethod, publishSafely } from "./Events.js"
-import type { Session, SessionId, User, UserId } from "./Schema.js"
+import type {
+  Session,
+  SessionId,
+  UserExtras,
+  UserFields,
+  UserId,
+  UserModel,
+  UserOf
+} from "./Schema.js"
 import {
   Account,
+  baseUserModel,
   CredentialIssuer,
   emailVerifyIdentifier,
   normalizeEmail,
   passwordResetIdentifier,
-  User as UserModel,
   Verification
 } from "./Schema.js"
 import type { CreatedSession } from "./Sessions.js"
@@ -61,6 +70,7 @@ import {
   isUniqueViolation,
   SessionStore,
   UserStore,
+  userStoreOf,
   VerificationStore,
   WithAuthTransaction
 } from "./Stores.js"
@@ -219,12 +229,13 @@ export const checkPolicy = (
 // -----------------------------------------------------------------------------
 
 /**
- * What {@link Passwords} needs to register a user.
+ * What {@link Passwords} needs to register a user, before a deployment's own
+ * fields are added to it.
  *
  * @category models
  * @since 1.0.0
  */
-export interface SignUpOptions {
+export interface BaseSignUpOptions {
   readonly name: string
   readonly email: string
   readonly password: Redacted.Redacted<string>
@@ -241,6 +252,20 @@ export interface SignUpOptions {
 }
 
 /**
+ * What {@link Passwords} needs to register a user.
+ *
+ * **Details**
+ *
+ * The custom half comes straight off the model's `jsonCreate` variant, so a
+ * field declared with `UserField.withDefault` is optional here, and one declared
+ * `readOnly` or `hidden` cannot be passed at all.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type SignUpOptions<F extends UserFields = {}> = BaseSignUpOptions & UserExtras<F, "jsonCreate">
+
+/**
  * The outcome of a sign-up.
  *
  * **Details**
@@ -252,8 +277,8 @@ export interface SignUpOptions {
  * @category models
  * @since 1.0.0
  */
-export interface SignUpResult {
-  readonly user: User
+export interface SignUpResult<F extends UserFields = {}> {
+  readonly user: UserOf<F>
   readonly session: Option.Option<CreatedSession>
 }
 
@@ -277,8 +302,8 @@ export interface SignInOptions {
  * @category models
  * @since 1.0.0
  */
-export interface SignInResult {
-  readonly user: User
+export interface SignInResult<F extends UserFields = {}> {
+  readonly user: UserOf<F>
   readonly session: Session
   readonly token: Redacted.Redacted<string>
 }
@@ -316,15 +341,18 @@ export interface ChangePasswordOptions {
  * @category models
  * @since 1.0.0
  */
-export interface PasswordsService {
+export interface PasswordsService<F extends UserFields = {}> {
   /**
    * Registers a user and their `local:credential` account in one transaction,
    * then — outside it — emits `UserCreated`, sends the verification mail if the
    * configuration asks for one, and establishes a session if it allows one.
    */
   readonly signUp: (
-    options: SignUpOptions
-  ) => Effect.Effect<SignUpResult, UserAlreadyExists | PasswordPolicyViolation | PasswordHashError | PersistenceError>
+    options: SignUpOptions<F>
+  ) => Effect.Effect<
+    SignUpResult<F>,
+    UserAlreadyExists | PasswordPolicyViolation | PasswordHashError | PersistenceError
+  >
 
   /**
    * Verifies a password and establishes a session.
@@ -346,7 +374,7 @@ export interface PasswordsService {
    */
   readonly signIn: (
     options: SignInOptions
-  ) => Effect.Effect<SignInResult, InvalidCredentials | EmailNotVerified | PasswordHashError | PersistenceError>
+  ) => Effect.Effect<SignInResult<F>, InvalidCredentials | EmailNotVerified | PasswordHashError | PersistenceError>
 
   /**
    * Mints a password reset token and hands it to the `AuthEmails` seam.
@@ -416,7 +444,7 @@ export interface PasswordsService {
    */
   readonly verifyEmail: (
     token: Redacted.Redacted<string>
-  ) => Effect.Effect<User, InvalidToken | PersistenceError>
+  ) => Effect.Effect<UserOf<F>, InvalidToken | PersistenceError>
 }
 
 /**
@@ -426,6 +454,21 @@ export interface PasswordsService {
  * @since 1.0.0
  */
 export class Passwords extends Context.Service<Passwords, PasswordsService>()("effect-auth/Passwords") {}
+
+/**
+ * {@link Passwords}, seen through a model's custom fields.
+ *
+ * The same key with a narrower shape: the three methods that answer with a user
+ * answer with the deployment's own. See `userStoreOf` in `domain/Stores.ts` for
+ * what a typed view is and why it is sound.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const passwordsOf = <F extends UserFields>(
+  _model: UserModel<F>
+): Context.Service<Passwords, PasswordsService<F>> =>
+  Context.Service<Passwords, PasswordsService<F>>("effect-auth/Passwords")
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -441,11 +484,15 @@ export class Passwords extends Context.Service<Passwords, PasswordsService>()("e
  * failure is promoted to a defect rather than added to the layer's error
  * channel.
  *
+ * `model` is what makes a deployment's own user columns part of sign-up: the
+ * custom half of `SignUpOptions` comes off its `jsonCreate` variant, and the row
+ * is built through the model so anything the caller left out is defaulted.
+ *
  * @category constructors
  * @since 1.0.0
  */
-export const make: () => Effect.Effect<
-  PasswordsService,
+export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
+  PasswordsService<F>,
   never,
   | AuthConfig
   | AuthEmails
@@ -458,11 +505,11 @@ export const make: () => Effect.Effect<
   | AccountStore
   | VerificationStore
   | WithAuthTransaction
-> = Effect.fnUntraced(function*() {
+> = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const hasher = yield* PasswordHasher
   const tokens = yield* Token
-  const users = yield* UserStore
+  const users = yield* userStoreOf(model)
   const accounts = yield* AccountStore
   const sessionStore = yield* SessionStore
   const verifications = yield* VerificationStore
@@ -526,7 +573,7 @@ export const make: () => Effect.Effect<
   })
 
   const sendVerificationTo = Effect.fnUntraced(function*(
-    user: User,
+    user: UserOf<F>,
     callbackURL: string | undefined
   ) {
     const now = yield* DateTime.now
@@ -565,7 +612,7 @@ export const make: () => Effect.Effect<
 
   // ---------------------------------------------------------------------------
 
-  const signUp = Effect.fnUntraced(function*(options: SignUpOptions) {
+  const signUp = Effect.fnUntraced(function*(options: SignUpOptions<F>) {
     yield* checkPolicy(options.password, config)
     const email = normalizeEmail(options.email)
 
@@ -577,11 +624,15 @@ export const make: () => Effect.Effect<
     const passwordHash = yield* hasher.hash(options.password)
 
     const user = yield* transaction.run(Effect.gen(function*() {
-      const row = yield* insertRow(UserModel.insert, {
+      // Whatever the model declares beyond the base fields comes off the
+      // payload by name; anything the caller did not state is defaulted by the
+      // model itself.
+      const row = yield* model.makeInsert({
         name: options.name,
         email,
         emailVerified: false,
-        image: options.image ?? null
+        image: options.image ?? null,
+        ...pickKeys(options, model.extraKeys)
       })
       const created = yield* users.create(row)
       yield* createCredentialAccount(created.id, passwordHash)
@@ -606,11 +657,11 @@ export const make: () => Effect.Effect<
 
     if (config.emailPassword.requireEmailVerification) {
       yield* sendVerificationTo(user, options.callbackURL)
-      return { user, session: Option.none() } satisfies SignUpResult
+      return { user, session: Option.none() } satisfies SignUpResult<F>
     }
 
     if (!config.emailPassword.autoSignIn) {
-      return { user, session: Option.none() } satisfies SignUpResult
+      return { user, session: Option.none() } satisfies SignUpResult<F>
     }
 
     const created = yield* sessions.create({
@@ -625,7 +676,7 @@ export const make: () => Effect.Effect<
       sessionId: created.session.id,
       method: passwordMethod
     })
-    return { user, session: Option.some(created) } satisfies SignUpResult
+    return { user, session: Option.some(created) } satisfies SignUpResult<F>
   })
 
   const signIn = Effect.fnUntraced(function*(options: SignInOptions) {
@@ -668,7 +719,7 @@ export const make: () => Effect.Effect<
       sessionId: created.session.id,
       method: passwordMethod
     })
-    return { user, session: created.session, token: created.token } satisfies SignInResult
+    return { user, session: created.session, token: created.token } satisfies SignInResult<F>
   })
 
   const requestReset = Effect.fnUntraced(function*(
@@ -780,7 +831,7 @@ export const make: () => Effect.Effect<
     const found = yield* users.findByEmail(normalizeEmail(email))
     const user = yield* Effect.fromOption(found, () => new InvalidToken())
 
-    const updated = yield* users.update(user.id, { emailVerified: true })
+    const updated = yield* users.update(user.id, model.basePatch({ emailVerified: true }))
     // The user was deleted between the two reads: the token is spent and there
     // is nothing to verify.
     const verified = yield* Effect.fromOption(updated, () => new InvalidToken())
@@ -793,7 +844,7 @@ export const make: () => Effect.Effect<
     return verified
   })
 
-  return Passwords.of({
+  return passwordsOf(model).of({
     signUp,
     signIn,
     requestReset,
@@ -805,7 +856,33 @@ export const make: () => Effect.Effect<
 })
 
 /**
- * Provides {@link Passwords}.
+ * Provides {@link Passwords} for the user model given: sign-up takes that
+ * model's custom fields and every method that answers with a user answers with
+ * its own, while the layer's type stays the base one.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<
+  Passwords,
+  never,
+  | AuthConfig
+  | AuthEmails
+  | AuthEvents
+  | PasswordHasher
+  | Token
+  | Sessions
+  | UserStore
+  | SessionStore
+  | AccountStore
+  | VerificationStore
+  | WithAuthTransaction
+> => Layer.effect(passwordsOf(model), make(model))
+
+/**
+ * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
  * @since 1.0.0
@@ -824,4 +901,4 @@ export const layer: Layer.Layer<
   | AccountStore
   | VerificationStore
   | WithAuthTransaction
-> = Layer.effect(Passwords, make())
+> = layerFor(baseUserModel)
