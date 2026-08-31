@@ -31,6 +31,7 @@ import { layerScrypt } from "../crypto/PasswordHasher.js"
 import type { Token } from "../crypto/Token.js"
 import { layer as tokenLayer } from "../crypto/Token.js"
 import { Accounts, layer as accountsLayer } from "../domain/Accounts.js"
+import type { DiscoveryError } from "../domain/Errors.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents, layer as eventsLayer } from "../domain/Events.js"
 import type { PasswordsService } from "../domain/Passwords.js"
@@ -55,6 +56,8 @@ import type { SessionsService } from "../domain/Sessions.js"
 import { layerFor as sessionsLayerFor, Sessions, sessionsOf } from "../domain/Sessions.js"
 import type { AccountStore, AuthStores, PersistenceError, UserStore, UserStoreService } from "../domain/Stores.js"
 import { SessionStore, userStoreOf, VerificationStore, WithAuthTransaction } from "../domain/Stores.js"
+import type { UsersService } from "../domain/Users.js"
+import { layerFor as usersLayerFor, Users, usersOf } from "../domain/Users.js"
 import { layer as verificationsLayer, Verifications } from "../domain/Verifications.js"
 import type { AuthApiGroupOf } from "../http/AuthApi.js"
 import { makeAuthApi, makeAuthApiGroup } from "../http/AuthApi.js"
@@ -82,7 +85,8 @@ import type {
   PartialOptions,
   RateLimitConfig,
   SessionConfig,
-  TokenConfig
+  TokenConfig,
+  UserConfigOptions
 } from "./AuthConfig.js"
 import { AuthConfig, layer as authConfigLayer, make as makeAuthConfig } from "./AuthConfig.js"
 import type { AuthEmails } from "./AuthEmails.js"
@@ -115,9 +119,29 @@ export type ProviderList = readonly [OAuthProviderConfig, ...Array<OAuthProvider
  * @since 1.0.0
  */
 export type ProviderConfigList = readonly [
-  Effect.Effect<OAuthProviderConfig, Config.ConfigError>,
-  ...Array<Effect.Effect<OAuthProviderConfig, Config.ConfigError>>
+  ProviderConfigEffect,
+  ...Array<ProviderConfigEffect>
 ]
+
+/**
+ * One entry of a {@link ProviderConfigList}: a provider still to be resolved.
+ *
+ * **Details**
+ *
+ * Three things can happen while resolving one, and all three are in the type. It
+ * may read credentials from the environment and fail `ConfigError`; it may fetch
+ * an OIDC discovery document and fail `DiscoveryError`; and fetching one needs an
+ * `HttpClient`, which a deployment serving providers supplies anyway. A provider
+ * that does none of that — `Github.makeConfig` — simply uses less of it.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type ProviderConfigEffect = Effect.Effect<
+  OAuthProviderConfig,
+  Config.ConfigError | DiscoveryError,
+  HttpClient.HttpClient
+>
 
 /**
  * The knobs every entry point in this module accepts on top of the settings.
@@ -206,8 +230,17 @@ export interface Extras {
  * @category models
  * @since 1.0.0
  */
-export interface UserOptions<F extends UserFields> {
-  readonly model: UserModel<F>
+export interface UserOptions<F extends UserFields> extends UserConfigOptions {
+  /**
+   * The model the stack's stores, sign-up and middleware are built for.
+   *
+   * **Gotchas**
+   *
+   * Optional because this section is also where the change-email and
+   * delete-account policies live, and a deployment may want those without
+   * declaring a field of its own. Leaving it out is `baseUserModel`.
+   */
+  readonly model?: UserModel<F> | undefined
 }
 
 /**
@@ -265,7 +298,10 @@ export interface OAuthSettings extends Settings {
  * @category models
  * @since 1.0.0
  */
-export interface OAuthOptions<F extends UserFields = {}> extends Options<F>, OAuthSettings {}
+export interface OAuthOptions<F extends UserFields = {}> extends Options<F>, OAuthSettings {
+  /** Restated so that the two supertypes agree on it. See {@link Options.user}. */
+  readonly user?: UserOptions<F> | undefined
+}
 
 /**
  * Everything {@link layerConfig} accepts except the user model: the scalar
@@ -287,6 +323,7 @@ export interface ConfigSettings extends Extras {
   readonly rateLimit?: PartialOptions<RateLimitConfig> | undefined
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
   readonly cookieCache?: PartialOptions<CookieCacheConfig> | undefined
+  readonly user?: UserConfigOptions | undefined
 }
 
 /**
@@ -338,7 +375,10 @@ export interface OAuthConfigSettings extends ConfigSettings {
  * @category models
  * @since 1.0.0
  */
-export interface OAuthConfigOptions<F extends UserFields = {}> extends ConfigOptions<F>, OAuthConfigSettings {}
+export interface OAuthConfigOptions<F extends UserFields = {}> extends ConfigOptions<F>, OAuthConfigSettings {
+  /** Restated so that the two supertypes agree on it. See {@link Options.user}. */
+  readonly user?: UserOptions<F> | undefined
+}
 
 // -----------------------------------------------------------------------------
 // Layer shape
@@ -382,6 +422,7 @@ export type Services =
   | Sessions
   | Accounts
   | Passwords
+  | Users
   | Authenticated
   | RateLimiter.RateLimiter
 
@@ -501,7 +542,10 @@ const compose = <A, RIn, F extends UserFields>(
   model: UserModel<F>,
   top: Layer.Layer<A, never, RIn>
 ) =>
-  middlewareLayerFor(model).pipe(
+  Layer.mergeAll(middlewareLayerFor(model), usersLayerFor(model)).pipe(
+    // `Users` sits beside the middleware rather than in `top`, because it reads
+    // `Passwords` — which is what `top` provides — and because both of the two
+    // entry points want it.
     Layer.provideMerge(top),
     Layer.provideMerge(
       Layer.mergeAll(
@@ -610,7 +654,8 @@ const resolveConfig = <F extends UserFields>(
         tokens: options.tokens,
         rateLimit: options.rateLimit,
         emailPaths: options.emailPaths,
-        cookieCache: options.cookieCache
+        cookieCache: options.cookieCache,
+        user: options.user
       })
   )
 
@@ -655,7 +700,7 @@ const resolveConfig = <F extends UserFields>(
 export const layer = <F extends UserFields = {}>(
   options: Options<F>
 ): Layer.Layer<Services, never, Requirements> =>
-  options.user === undefined
+  options.user?.model === undefined
     ? stack(makeAuthConfig(options), options, baseUserModel)
     : stack(makeAuthConfig(options), options, options.user.model)
 
@@ -700,7 +745,7 @@ export const layer = <F extends UserFields = {}>(
 export const layerWithOAuth = <F extends UserFields = {}>(
   options: OAuthOptions<F>
 ): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
-  options.user === undefined
+  options.user?.model === undefined
     ? oauthStack(makeAuthConfig(options), options, baseUserModel, options.providers)
     : oauthStack(makeAuthConfig(options), options, options.user.model, options.providers)
 
@@ -733,7 +778,7 @@ export const layerConfig = <F extends UserFields = {}>(
   options: ConfigOptions<F>
 ): Layer.Layer<Services, Config.ConfigError, Requirements> =>
   Layer.unwrap(Effect.map(resolveConfig(options), (config) =>
-    options.user === undefined
+    options.user?.model === undefined
       ? stack(config, options, baseUserModel)
       : stack(config, options, options.user.model)))
 
@@ -771,12 +816,12 @@ export const layerConfig = <F extends UserFields = {}>(
  */
 export const layerConfigWithOAuth = <F extends UserFields = {}>(
   options: OAuthConfigOptions<F>
-): Layer.Layer<OAuthServices, Config.ConfigError, OAuthRequirements> =>
+): Layer.Layer<OAuthServices, Config.ConfigError | DiscoveryError, OAuthRequirements> =>
   Layer.unwrap(
     Effect.map(
       Effect.all([resolveConfig(options), Effect.all(options.providers)]),
       ([config, providers]) =>
-        options.user === undefined
+        options.user?.model === undefined
           ? oauthStack(config, options, baseUserModel, providers)
           : oauthStack(config, options, options.user.model, providers)
     )
@@ -835,6 +880,8 @@ export interface Definition<F extends UserFields> {
   readonly Sessions: Context.Service<Sessions, SessionsService<F>>
   /** `Passwords`, seen through this model. */
   readonly Passwords: Context.Service<Passwords, PasswordsService<F>>
+  /** `Users`, seen through this model. */
+  readonly Users: Context.Service<Users, UsersService<F>>
 
   /** The `auth` group, declared with this model. */
   readonly ApiGroup: AuthApiGroupOf<F>
@@ -856,7 +903,7 @@ export interface Definition<F extends UserFields> {
   /** {@link layerConfigWithOAuth}, for this model. */
   readonly layerConfigWithOAuth: (
     options: OAuthConfigSettings
-  ) => Layer.Layer<OAuthServices, Config.ConfigError, OAuthRequirements>
+  ) => Layer.Layer<OAuthServices, Config.ConfigError | DiscoveryError, OAuthRequirements>
   /**
    * `Migrations.layer` plus the columns this model's custom fields need.
    *
@@ -951,6 +998,7 @@ export const define = <const F extends UserFields>(options: DefineOptions<F>): D
     UserStore: userStoreOf(model),
     Sessions: sessionsOf(model),
     Passwords: passwordsOf(model),
+    Users: usersOf(model),
     ApiGroup,
     Api: makeAuthApi(model),
     handlers: (api) => AuthHandlers.layer(api, model),

@@ -100,6 +100,51 @@ export interface OAuthUserInfo {
   readonly name?: string | undefined
   /** An avatar URL for a user this flow provisions. */
   readonly image?: string | null | undefined
+  /**
+   * The issuer this *particular* identity belongs under, when the provider is a
+   * multi-tenant one and the tenant is only known from the token.
+   *
+   * **When to use**
+   *
+   * Microsoft Entra, where one configured provider serves every tenant and the
+   * account's identity is `(issuer, sub)` with the issuer derived from the
+   * token's `tid`. A single-tenant provider leaves it undefined and its accounts
+   * are stored under {@link providerIssuer}.
+   *
+   * **Gotchas**
+   *
+   * It becomes half of an account's primary identity, so it must come from a
+   * **verified** `id_token` claim and never from a user-info body: an
+   * attacker-chosen issuer would be an attacker-chosen account.
+   */
+  readonly issuer?: string | undefined
+}
+
+/**
+ * What a provider's {@link OAuthProviderConfig.userInfo} is told about the
+ * request that produced the tokens.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserInfoOptions {
+  /**
+   * The extra parameters the provider sent back with the authorization code.
+   *
+   * **When to use**
+   *
+   * Apple, which posts a `user` field carrying the person's name — once, on the
+   * very first authorization, and never again. A provider that needs nothing
+   * from the callback ignores this.
+   *
+   * **Gotchas**
+   *
+   * Every value here is attacker-controllable: it arrived in a query string or a
+   * form body, and no signature covers it. Read it with a `Schema` decoder, and
+   * use it only for display fields a person can change anyway — never for an
+   * identity, an address, or a verification flag.
+   */
+  readonly params?: Readonly<Record<string, string>> | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -124,8 +169,27 @@ export interface OAuthProviderConfig {
   /**
    * The OAuth client secret, sent with `client_secret_post` on the token
    * request and nowhere else.
+   *
+   * **Details**
+   *
+   * Three shapes, because three kinds of client exist. A confidential client
+   * holds a fixed secret and passes the `Redacted` string. A client whose secret
+   * is *minted* per request — Apple, whose secret is a short-lived ES256
+   * assertion — passes an `Effect` that produces one, and it is run once per
+   * token request. A **public** client omits it altogether: PKCE is what proves
+   * the exchange, and a secret shipped inside a native or single-page
+   * application would not be one.
+   *
+   * **Gotchas**
+   *
+   * Resolve it with {@link resolveClientSecret} rather than reading this field:
+   * the three shapes are one `Option` there, and the effectful case has an error
+   * channel a caller must not drop.
    */
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret?:
+    | Redacted.Redacted<string>
+    | Effect.Effect<Redacted.Redacted<string>, OAuthProviderError>
+    | undefined
   /** The provider's authorization endpoint, where the browser is sent. */
   readonly authorizationUrl: string
   /** The provider's token endpoint, where the code is exchanged server-side. */
@@ -143,6 +207,62 @@ export interface OAuthProviderConfig {
    * is stored under the synthetic `local:oauth:<id>` issuer.
    */
   readonly issuer?: string | undefined
+  /**
+   * The issuer an `id_token` must claim, derived from the token's own claims.
+   *
+   * **When to use**
+   *
+   * Multi-tenant providers, where the expected `iss` is not one string but a
+   * function of the tenant the token names — Microsoft Entra derives it from
+   * `tid`. Returning `null` rejects the token.
+   *
+   * **Gotchas**
+   *
+   * It runs on the token's payload **before** the signature has been checked
+   * against that issuer, so it decides what to *expect*, never what to believe.
+   * A provider that accepts any tenant must still constrain the shape of the
+   * issuer it derives, or the check is not one; when it is absent,
+   * {@link OAuthProviderConfig.issuer} is the expected value, as it is for every
+   * single-tenant provider.
+   */
+  readonly issuerOf?: ((claims: Readonly<Record<string, unknown>>) => string | null) | undefined
+  /**
+   * The audience an `id_token` must carry, when it is not simply
+   * {@link OAuthProviderConfig.clientId}.
+   *
+   * **When to use**
+   *
+   * Where one deployment accepts tokens minted for more than one client — Apple,
+   * whose native applications receive tokens addressed to the app's bundle
+   * identifier rather than to the web Services ID.
+   *
+   * **Gotchas**
+   *
+   * A list is a list of *permitted* audiences, not a requirement that all be
+   * present. Keep it as short as the deployment genuinely needs: every entry is
+   * another client whose tokens are accepted here.
+   */
+  readonly idTokenAudience?: string | ReadonlyArray<string> | undefined
+  /**
+   * Whether, and how, this provider's stored tokens may be refreshed.
+   *
+   * **Details**
+   *
+   * Absent means refreshing is allowed with no extra parameters, which is what
+   * the specification describes. Set `enabled: false` for a provider whose
+   * refresh tokens this deployment must not spend, and `params` for one that
+   * requires more than `grant_type` and `refresh_token` on the request —
+   * Microsoft wants the `scope` repeated.
+   *
+   * **Gotchas**
+   *
+   * Parameters the flow owns cannot be overridden here; see
+   * {@link reservedTokenParams}.
+   */
+  readonly tokenRefresh?: {
+    readonly enabled?: boolean | undefined
+    readonly params?: Readonly<Record<string, string>> | undefined
+  } | undefined
   /** Where the provider publishes its signing keys. Required with `issuer`. */
   readonly jwksUrl?: string | undefined
   /**
@@ -191,7 +311,8 @@ export interface OAuthProviderConfig {
    * following one to an internal address.
    */
   readonly userInfo: (
-    tokens: OAuthTokens
+    tokens: OAuthTokens,
+    options?: UserInfoOptions | undefined
   ) => Effect.Effect<OAuthUserInfo, OAuthProviderError, HttpClient.HttpClient>
   /**
    * Projects the provider's stable subject out of the identity. Never the
@@ -217,6 +338,45 @@ export const reservedAuthorizationParams: ReadonlySet<string> = new Set([
   "code_challenge_method",
   "nonce"
 ])
+
+/**
+ * The token-request parameters the flow sets itself, which
+ * {@link OAuthProviderConfig.tokenRefresh}'s `params` may not overwrite.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const reservedTokenParams: ReadonlySet<string> = new Set([
+  "grant_type",
+  "code",
+  "code_verifier",
+  "refresh_token",
+  "redirect_uri",
+  "client_id",
+  "client_secret"
+])
+
+/**
+ * Resolves a provider's client secret: absent for a public PKCE client, a fixed
+ * value for a confidential one, freshly minted for a provider that signs its
+ * own.
+ *
+ * **Gotchas**
+ *
+ * Run this once per token request, not once per layer. The effectful case exists
+ * because the secret *expires* — Apple's is a JWT with an `exp` — so caching it
+ * across a deployment's lifetime is exactly what it must not do.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const resolveClientSecret = (
+  provider: OAuthProviderConfig
+): Effect.Effect<Option.Option<Redacted.Redacted<string>>, OAuthProviderError> => {
+  const secret = provider.clientSecret
+  if (secret === undefined) return Effect.succeedNone
+  return Redacted.isRedacted(secret) ? Effect.succeedSome(secret) : Effect.map(secret, Option.some)
+}
 
 /**
  * Whether the provider publishes an OIDC issuer, and therefore whether the flow

@@ -50,10 +50,16 @@ import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
 import type { OAuthIdentity } from "../domain/Accounts.js"
 import { Accounts } from "../domain/Accounts.js"
-import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../domain/Errors.js"
+import type {
+  AccountAlreadyLinked,
+  NotFound,
+  OAuthProviderError,
+  TokenRefreshFailed,
+  UserNotFound
+} from "../domain/Errors.js"
 import { OAuthStateMismatch } from "../domain/Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "../domain/Events.js"
-import type { Account, Session, User } from "../domain/Schema.js"
+import type { Account, AccountId, Session, User, UserId } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { AccountTokens, PersistenceError } from "../domain/Stores.js"
 import { VerificationStore } from "../domain/Stores.js"
@@ -69,6 +75,7 @@ import {
   providerRequestTimeout,
   reservedAuthorizationParams,
   resilient,
+  resolveClientSecret,
   revealToken
 } from "./Provider.js"
 import type { IssueOptions, StatePayload } from "./State.js"
@@ -338,8 +345,74 @@ export interface CallbackOptions {
   readonly state?: string | undefined
   /** The provider's `error` query parameter, when it refused. */
   readonly error?: string | undefined
+  /**
+   * Whatever else the provider sent back with the code, forwarded to the
+   * provider's `userInfo`.
+   *
+   * **Gotchas**
+   *
+   * Unsigned, attacker-controllable input — see `UserInfoOptions.params`. It is
+   * carried, not trusted.
+   */
+  readonly params?: Readonly<Record<string, string>> | undefined
   readonly ipAddress?: string | null | undefined
   readonly userAgent?: string | null | undefined
+}
+
+/**
+ * Which of a user's linked accounts a token operation addresses.
+ *
+ * **Gotchas**
+ *
+ * `userId` comes from the session, `accountId` from the request, and the store
+ * matches on both in one statement — so naming somebody else's account is a
+ * `NotFound`, indistinguishable from naming one that does not exist.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface TokenSelector {
+  readonly userId: UserId
+  readonly accountId: AccountId
+}
+
+/**
+ * A usable access token for one linked account.
+ *
+ * **Gotchas**
+ *
+ * `accessToken` and `idToken` are `Redacted`: they are bearer credentials for
+ * somebody's account *at the provider*, so they must reach a response body and
+ * nothing else — never a log line, never a span attribute.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface AccessTokenResult {
+  readonly accessToken: Redacted.Redacted<string>
+  readonly accessTokenExpiresAt: DateTime.Utc | null
+  readonly idToken: Redacted.Redacted<string> | null
+  /** The granted scopes, split out of the stored `scope` column. */
+  readonly scopes: ReadonlyArray<string>
+  readonly providerId: string
+  readonly accountId: AccountId
+}
+
+/**
+ * {@link AccessTokenResult} together with the refresh token that produced it.
+ *
+ * **Details**
+ *
+ * A provider that rotates refresh tokens returns a new one and the old one stops
+ * working; a provider that does not returns none, and the stored one is kept. In
+ * both cases this carries the refresh token the account now holds.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface RefreshedTokens extends AccessTokenResult {
+  readonly refreshToken: Redacted.Redacted<string>
+  readonly refreshTokenExpiresAt: DateTime.Utc | null
 }
 
 /**
@@ -476,7 +549,70 @@ export interface OAuthFlowService {
   readonly complete: (
     options: CallbackOptions
   ) => Effect.Effect<CallbackOutcome, PersistenceError>
+
+  /**
+   * A usable access token for one of the caller's linked accounts, refreshing it
+   * first only if it has to.
+   *
+   * **Details**
+   *
+   * "Has to" means: the stored access token is within
+   * {@link accessTokenSkew} of expiring (or already past it), the account has a
+   * refresh token, and the provider permits refreshing. Otherwise the stored
+   * token is handed back untouched — this endpoint is on an application's hot
+   * path, and spending a refresh token per call would both cost a round trip and,
+   * on a provider that rotates them, race with itself.
+   *
+   * **Gotchas**
+   *
+   * An account with no access token and no way to get one is
+   * `TokenRefreshFailed({ reason: "AccessTokenMissing" })`, not a `null` success:
+   * the caller asked for a credential and there is none.
+   */
+  readonly accessToken: (
+    selector: TokenSelector
+  ) => Effect.Effect<AccessTokenResult, NotFound | TokenRefreshFailed | PersistenceError>
+
+  /**
+   * Spends an account's refresh token, unconditionally, and stores what comes
+   * back.
+   *
+   * **When to use**
+   *
+   * Where the caller knows the stored access token is no good — a provider
+   * answered `401` with it — and {@link OAuthFlowService.accessToken}'s expiry
+   * arithmetic therefore says the wrong thing. Ordinary callers want
+   * `accessToken`.
+   *
+   * **Gotchas**
+   *
+   * The granted `scope` is never overwritten by a refresh: providers routinely
+   * omit it from a refresh response, and taking that as "no scopes" would erase
+   * what the person actually consented to.
+   *
+   * Emits `TokensRefreshed`.
+   */
+  readonly refreshTokens: (
+    selector: TokenSelector
+  ) => Effect.Effect<RefreshedTokens, NotFound | TokenRefreshFailed | PersistenceError>
 }
+
+/**
+ * How close to expiry a stored access token has to be before
+ * {@link OAuthFlowService.accessToken} refreshes it.
+ *
+ * **Details**
+ *
+ * Small on purpose. It is not a safety margin for the caller's own request — a
+ * token handed over with four seconds left is a token that will fail — but the
+ * width of the window in which *this* process might race its own clock against
+ * the provider's. A generous margin would refresh far more often than necessary,
+ * and on a provider that rotates refresh tokens every refresh is a write.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const accessTokenSkew: Duration.Duration = Duration.seconds(5)
 
 /**
  * The OAuth runner.
@@ -556,6 +692,10 @@ export const make: () => Effect.Effect<
     codeVerifier: string
   ) {
     const failed = providerError(provider.id, "TokenExchangeFailed")
+    // Resolved per request, not per layer: a provider whose secret is minted
+    // rather than configured mints one that expires. A public PKCE client has
+    // none, and sends none — PKCE is what proves the exchange there.
+    const secret = yield* resolveClientSecret(provider)
     const request = HttpClientRequest.post(provider.tokenUrl, {
       acceptJson: true,
       body: HttpBody.urlParams({
@@ -566,7 +706,7 @@ export const make: () => Effect.Effect<
         client_id: provider.clientId,
         // The one place the secret is unwrapped. `client_secret_post`: it goes
         // in the body of this single request and nowhere else.
-        client_secret: Redacted.value(provider.clientSecret)
+        ...(Option.isNone(secret) ? {} : { client_secret: Redacted.value(secret.value) })
       })
     })
 
@@ -603,8 +743,10 @@ export const make: () => Effect.Effect<
     const claims: IdTokenClaims = yield* verifyIdToken({
       providerId: provider.id,
       token: tokens.idToken,
-      issuer: provider.issuer,
-      audience: provider.clientId,
+      // A multi-tenant provider derives the expected issuer from the token's own
+      // claims; everyone else states one. See `VerifyOptions.issuer`.
+      issuer: provider.issuerOf ?? provider.issuer,
+      audience: provider.idTokenAudience ?? provider.clientId,
       keys,
       nonce,
       // Key rotation: a fetched key set that does not hold the token's `kid`
@@ -653,7 +795,10 @@ export const make: () => Effect.Effect<
     const tokens = yield* withIdToken(provider, exchanged, payload.nonce)
 
     const info = yield* Effect.provideService(
-      provider.userInfo(tokens),
+      // Whatever else the provider posted back travels with the tokens — Apple
+      // sends the person's name there, once, and never again. It is unsigned, so
+      // a provider that reads it is expected to treat it as such.
+      provider.userInfo(tokens, { params: options.params ?? {} }),
       HttpClient.HttpClient,
       client
     )
@@ -664,7 +809,10 @@ export const make: () => Effect.Effect<
 
     const identity: OAuthIdentity = {
       providerId: provider.id,
-      issuer: providerIssuer(provider),
+      // A multi-tenant provider names the issuer this identity belongs under,
+      // derived from a *verified* `id_token` claim; everyone else is stored under
+      // the provider's own.
+      issuer: info.issuer ?? providerIssuer(provider),
       accountId: subject,
       email: info.email,
       emailVerified: info.emailVerified,
@@ -755,7 +903,17 @@ export const make: () => Effect.Effect<
   }, (effect, options) =>
     Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } }))
 
-  return OAuthFlow.of({ start, callback, complete })
+  return OAuthFlow.of({
+    start,
+    callback,
+    complete,
+    // Declared before they are implemented: the two token endpoints and the
+    // generated client are written against this contract. A defect rather than a
+    // failure — an unimplemented method must not be catchable as one of the
+    // errors it declares.
+    accessToken: () => Effect.die("effect-auth/OAuthFlow: accessToken is not implemented"),
+    refreshTokens: () => Effect.die("effect-auth/OAuthFlow: refreshTokens is not implemented")
+  })
 })
 
 /**

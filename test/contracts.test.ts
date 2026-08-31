@@ -1,9 +1,9 @@
 import { assert, describe, it } from "@effect/vitest"
 import { DateTime, Duration, Effect, Redacted, Schema } from "effect"
 import * as AuthConfig from "../src/config/AuthConfig.js"
-import { verifyEmailUrl } from "../src/config/AuthEmails.js"
+import { changeEmailVerifyUrl, deleteAccountUrl, verifyEmailUrl } from "../src/config/AuthEmails.js"
 import { InvalidCredentials, PasswordPolicyViolation } from "../src/domain/Errors.js"
-import { normalizeEmail, Session, User } from "../src/domain/Schema.js"
+import { normalizeEmail, scopesOf, Session, User } from "../src/domain/Schema.js"
 import { timingSafeEqualUint8 } from "../src/crypto/PasswordHasher.js"
 
 const userEncoded = {
@@ -97,6 +97,22 @@ describe("domain/Errors", () => {
     }))
 })
 
+describe("domain/Schema.scopesOf", () => {
+  it("splits a stored scope column on whatever the provider separated it with", () => {
+    // OAuth 2.0 says spaces; several providers send commas anyway, and at least
+    // one sends both.
+    assert.deepStrictEqual(scopesOf("read:user user:email"), ["read:user", "user:email"])
+    assert.deepStrictEqual(scopesOf("openid,email,profile"), ["openid", "email", "profile"])
+    assert.deepStrictEqual(scopesOf("openid, email\tprofile"), ["openid", "email", "profile"])
+  })
+
+  it("reads an absent or empty column as no scopes at all", () => {
+    assert.deepStrictEqual(scopesOf(null), [])
+    assert.deepStrictEqual(scopesOf(""), [])
+    assert.deepStrictEqual(scopesOf("  ,  "), [])
+  })
+})
+
 describe("config/AuthConfig", () => {
   it("applies the documented defaults", () => {
     const config = AuthConfig.make({
@@ -113,6 +129,31 @@ describe("config/AuthConfig", () => {
     assert.strictEqual(Duration.toMillis(config.session.expiresIn), 7 * 24 * 60 * 60 * 1000)
     assert.strictEqual(config.cookie.secure, true)
     assert.strictEqual(AuthConfig.cookieName(config), "__Secure-effect_auth.session")
+
+    // The two flows a deployment opts into, and the lifetimes of the links they
+    // send. Off by default: neither is served unless it is asked for.
+    assert.strictEqual(config.user.changeEmail.enabled, false)
+    assert.strictEqual(config.user.deleteUser.enabled, false)
+    assert.strictEqual(config.user.deleteUser.confirmByEmail, false)
+    assert.strictEqual(Duration.toMillis(config.tokens.changeEmailTtl), 60 * 60 * 1000)
+    assert.strictEqual(Duration.toMillis(config.tokens.deleteAccountTtl), 24 * 60 * 60 * 1000)
+    assert.strictEqual(config.emailPaths.changeEmailConfirm, "/auth/change-email/confirm")
+    assert.strictEqual(config.emailPaths.changeEmailVerify, "/auth/change-email/verify")
+    assert.strictEqual(config.emailPaths.deleteAccount, "/auth/delete-user/callback")
+  })
+
+  it("resolves one field of a user sub-section without losing the other", () => {
+    // `user` is a section of sections, so it is not resolved wholesale: stating
+    // `confirmByEmail` alone must not silently switch `enabled` back off.
+    const config = AuthConfig.make({
+      baseUrl: "http://localhost:3000",
+      secret: Redacted.make("test-secret"),
+      user: { deleteUser: { confirmByEmail: true }, changeEmail: { enabled: true } }
+    })
+
+    assert.strictEqual(config.user.deleteUser.confirmByEmail, true)
+    assert.strictEqual(config.user.deleteUser.enabled, false)
+    assert.strictEqual(config.user.changeEmail.enabled, true)
   })
 
   it("leaves cookies insecure on a plain-http base url", () => {
@@ -148,6 +189,24 @@ describe("config/AuthEmails", () => {
     assert.strictEqual(
       Redacted.value(url),
       "https://app.example.com/auth/verify-email?token=tok3n"
+    )
+  })
+
+  it("keeps the proposed address out of the change-email link", () => {
+    const config = AuthConfig.make({
+      baseUrl: "https://app.example.com",
+      secret: Redacted.make("test-secret")
+    })
+    const url = Redacted.value(changeEmailVerifyUrl(config, Redacted.make("tok3n")))
+
+    // The new address travels in the token's server-side payload. A link that
+    // named it could be edited into one that moves the account elsewhere.
+    assert.strictEqual(url, "https://app.example.com/auth/change-email/verify?token=tok3n")
+    assert.isFalse(url.includes("@"))
+
+    assert.strictEqual(
+      Redacted.value(deleteAccountUrl(config, Redacted.make("tok3n"))),
+      "https://app.example.com/auth/delete-user/callback?token=tok3n"
     )
   })
 })

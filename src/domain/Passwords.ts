@@ -34,7 +34,7 @@ import { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs, insertRow } from "../internal/effects.js"
 import { pickKeys } from "../internal/records.js"
-import type { PasswordHashError } from "./Errors.js"
+import type { PasswordAlreadySet, PasswordHashError } from "./Errors.js"
 import {
   EmailNotVerified,
   InvalidCredentials,
@@ -260,6 +260,18 @@ export interface ChangePasswordOptions {
   readonly currentSessionId?: SessionId | undefined
 }
 
+/**
+ * What {@link PasswordsService.setPassword} needs to give a user their first
+ * password.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface SetPasswordOptions {
+  readonly userId: UserId
+  readonly newPassword: Redacted.Redacted<string>
+}
+
 // -----------------------------------------------------------------------------
 // Service
 // -----------------------------------------------------------------------------
@@ -353,6 +365,57 @@ export interface PasswordsService<F extends UserFields = {}> {
   readonly changePassword: (
     options: ChangePasswordOptions
   ) => Effect.Effect<void, InvalidCredentials | PasswordPolicyViolation | PasswordHashError | PersistenceError>
+
+  /**
+   * Whether a password matches the user's stored credential.
+   *
+   * **Details**
+   *
+   * Exactly one hash verification runs, whether or not the user has a credential
+   * — against {@link dummyPassword}'s hash when they do not — so "no password
+   * set" and "wrong password" take the same time and are the same answer,
+   * `false`.
+   *
+   * **When to use**
+   *
+   * As a re-authentication check inside an already-authenticated flow: deleting
+   * an account, for instance. It answers a boolean rather than failing, because
+   * the caller decides what a mismatch means for its own operation.
+   */
+  readonly verifyPassword: (
+    userId: UserId,
+    password: Redacted.Redacted<string>
+  ) => Effect.Effect<boolean, PasswordHashError | PersistenceError>
+
+  /**
+   * Gives a user their **first** password.
+   *
+   * **Details**
+   *
+   * A user provisioned through OAuth alone has no `local:credential` account;
+   * this creates one, so they can sign in with an address and password as well.
+   * A user whose credential row exists but carries no hash — nothing this
+   * library writes, but a migration might — has it filled in.
+   *
+   * **Gotchas**
+   *
+   * It can never *replace* a password: a user who already has one gets
+   * `PasswordAlreadySet`, and so does the loser of a race between two concurrent
+   * calls, which the unique index settles. Changing a known password is
+   * `changePassword` and replacing a forgotten one is the reset flow — both of
+   * them prove something this endpoint cannot.
+   *
+   * Nothing is revoked: no existing credential was invalidated, so no session
+   * was.
+   *
+   * Emits `AccountLinked` for the credential account.
+   */
+  readonly setPassword: (
+    options: SetPasswordOptions
+  ) => Effect.Effect<
+    void,
+    PasswordAlreadySet | PasswordPolicyViolation | PasswordHashError | PersistenceError
+  >
 
   /**
    * Mints an e-mail verification token and hands it to the `AuthEmails` seam.
@@ -749,6 +812,13 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     requestReset,
     resetPassword,
     changePassword,
+    // Declared here and implemented in the wave that owns the flows above them:
+    // the endpoints and the `Users` service are written against this contract,
+    // so the shape lands before the bodies do. A defect rather than a failure —
+    // an unimplemented method must not be catchable as one of the errors it
+    // declares.
+    verifyPassword: () => Effect.die("effect-auth/Passwords: verifyPassword is not implemented"),
+    setPassword: () => Effect.die("effect-auth/Passwords: setPassword is not implemented"),
     sendVerificationEmail,
     verifyEmail
   })

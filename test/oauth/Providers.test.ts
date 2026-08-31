@@ -1,12 +1,21 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Config, ConfigProvider, DateTime, Effect, Redacted } from "effect"
+import { Config, ConfigProvider, DateTime, Effect, Option, Redacted } from "effect"
 import type { IdTokenClaims } from "../../src/oauth/IdToken.js"
-import { providerIssuer } from "../../src/oauth/Provider.js"
+import type { OAuthProviderConfig } from "../../src/oauth/Provider.js"
+import { providerIssuer, resolveClientSecret } from "../../src/oauth/Provider.js"
 import * as Github from "../../src/oauth/providers/Github.js"
 import * as Google from "../../src/oauth/providers/Google.js"
 import { MockProvider } from "../../src/testing/index.js"
 
 const githubApi = "https://api.github.com"
+
+/**
+ * The client secret a provider will actually send, unwrapped. `clientSecret` is
+ * one of three shapes — absent for a public PKCE client, fixed, or minted per
+ * request — so a test reads it the way the flow does.
+ */
+const secretOf = (provider: OAuthProviderConfig) =>
+  Effect.map(resolveClientSecret(provider), Option.map(Redacted.value))
 
 const github = Github.make({
   clientId: "Iv1.github-client",
@@ -134,7 +143,7 @@ describe("oauth/providers/Github", () => {
         assert.strictEqual(provider.id, "github")
         assert.strictEqual(provider.clientId, "Iv1.from-the-environment")
         // The secret is `Redacted` from the moment it leaves the environment.
-        assert.strictEqual(Redacted.value(provider.clientSecret), "github-secret-from-the-environment")
+        assert.deepStrictEqual(yield* secretOf(provider), Option.some("github-secret-from-the-environment"))
         assert.strictEqual(provider.authorizationUrl, "https://github.acme.internal/login/oauth/authorize")
       }).pipe(
         Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
@@ -367,7 +376,7 @@ describe("oauth/providers/Google", () => {
       })
       assert.strictEqual(provider.id, "google")
       assert.strictEqual(provider.clientId, "0123.from-the-environment")
-      assert.strictEqual(Redacted.value(provider.clientSecret), "google-secret-from-the-environment")
+      assert.deepStrictEqual(yield* secretOf(provider), Option.some("google-secret-from-the-environment"))
       assert.strictEqual(provider.issuer, "https://accounts.google.com")
       assert.strictEqual(provider.authorizationParams?.hd, "acme.test")
     }).pipe(

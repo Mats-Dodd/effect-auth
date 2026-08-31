@@ -58,6 +58,7 @@ export * as Ids from "./domain/Ids.js"
 export * as Passwords from "./domain/Passwords.js"
 export * as Sessions from "./domain/Sessions.js"
 export * as Stores from "./domain/Stores.js"
+export * as Users from "./domain/Users.js"
 export * as Verifications from "./domain/Verifications.js"
 
 // -----------------------------------------------------------------------------

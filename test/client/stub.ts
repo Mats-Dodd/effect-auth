@@ -50,6 +50,24 @@ export const sessionWithUserJson = {
   session: sessionJson
 }
 
+/**
+ * The encoded form of an `AccessTokenResponse`.
+ *
+ * **Gotchas**
+ *
+ * The two credentials are plain strings on the wire and `Redacted` once the
+ * generated client has decoded them — which is the point of declaring them as
+ * `Secret`, and what the client test asserts.
+ */
+export const accessTokenJson = {
+  accessToken: "provider-access-token",
+  accessTokenExpiresAt: "2024-01-01T01:00:00.000Z",
+  idToken: null,
+  scopes: ["read:user", "user:email"],
+  providerId: "github",
+  accountId: "0192e5a0-0000-7000-8000-000000000003"
+}
+
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), {
     status,
@@ -124,7 +142,27 @@ export const make = (options?: {
       return json(200, { success: true })
     },
     "POST /auth/sign-in/social": () =>
-      json(200, { url: "https://github.test/login/oauth/authorize?state=abc", redirect: true })
+      json(200, { url: "https://github.test/login/oauth/authorize?state=abc", redirect: true }),
+    "POST /auth/update-user": () => signedIn ? json(200, { user }) : unauthorized(),
+    "POST /auth/change-email": () => signedIn ? json(200, { success: true }) : unauthorized(),
+    "GET /auth/change-email/confirm": () => json(200, { success: true }),
+    "GET /auth/change-email/verify": () => json(200, { success: true }),
+    "POST /auth/delete-user": () => {
+      if (!signedIn) return unauthorized()
+      signedIn = false
+      return json(200, { success: true, status: "Deleted" })
+    },
+    "POST /auth/set-password": () => signedIn ? json(200, { success: true }) : unauthorized(),
+    "POST /auth/get-access-token": () =>
+      signedIn ? json(200, accessTokenJson) : unauthorized(),
+    "POST /auth/refresh-token": () =>
+      signedIn
+        ? json(200, {
+          ...accessTokenJson,
+          refreshToken: "provider-refresh-token",
+          refreshTokenExpiresAt: null
+        })
+        : unauthorized()
   }
 
   const client = HttpClient.makeWith(

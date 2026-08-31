@@ -71,6 +71,48 @@ eq<
     E.NotFound | E.Unauthorized
   >
 >(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "updateUser">>>,
+    E.UserNotFound | E.Unauthorized
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "changeEmail">>>,
+    E.EmailUnchanged | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "verifyEmailChange">>>,
+    E.InvalidToken | E.UserAlreadyExists
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "deleteUser">>>,
+    E.InvalidCredentials | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "setPassword">>>,
+    E.PasswordAlreadySet | E.PasswordPolicyViolation | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "getAccessToken">>>,
+    E.NotFound | E.TokenRefreshFailed | E.Unauthorized
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "refreshToken">>>,
+    E.NotFound | E.TokenRefreshFailed | E.Unauthorized
+  >
+>(true)
 
 // ---------------------------------------------------------------------------
 // A composed API — the auth group plus the application's own — must be
@@ -148,8 +190,17 @@ eq<
     MutationArg<"unlinkAccount">["payload"]
   >
 >(true)
-// The one query-parameter endpoint: its argument is the query, not a payload.
+eq<Exact<WriteArg<AuthClient.AuthClient["updateUser"]>, MutationArg<"updateUser">["payload"]>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["changeEmail"]>, MutationArg<"changeEmail">["payload"]>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["deleteUser"]>, MutationArg<"deleteUser">["payload"]>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["setPassword"]>, MutationArg<"setPassword">["payload"]>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["getAccessToken"]>, MutationArg<"getAccessToken">["payload"]>>(true)
+// The query-parameter endpoints: their argument is the query, not a payload.
 eq<Exact<WriteArg<AuthClient.AuthClient["verifyEmail"]>, MutationArg<"verifyEmail">["query"]>>(true)
+eq<
+  Exact<WriteArg<AuthClient.AuthClient["confirmEmailChange"]>, MutationArg<"confirmEmailChange">["query"]>
+>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["verifyEmailChange"]>, MutationArg<"verifyEmailChange">["query"]>>(true)
 // And the endpoints that take nothing accept nothing.
 eq<Exact<WriteArg<AuthClient.AuthClient["signOut"]>, void>>(true)
 eq<Exact<WriteArg<AuthClient.AuthClient["revokeSessions"]>, void>>(true)

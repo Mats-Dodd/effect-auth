@@ -238,6 +238,123 @@ export const EmailVerified = Schema.TaggedStruct("EmailVerified", {
 export type EmailVerified = typeof EmailVerified.Type
 
 /**
+ * Which of a user's own profile fields a {@link UserUpdated} touched.
+ *
+ * **Gotchas**
+ *
+ * The base user's two mutable fields, and only those. A deployment's own custom
+ * columns are deliberately not named here: an event is forwarded to log sinks
+ * and webhooks, and this library cannot know whether a field a deployment added
+ * is safe to name there. An update that touched nothing but custom fields
+ * publishes an empty `fields`.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const UpdatedUserField = Schema.Literals(["name", "image"])
+
+/**
+ * The type of an {@link UpdatedUserField}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UpdatedUserField = typeof UpdatedUserField.Type
+
+/**
+ * A user edited their own profile.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const UserUpdated = Schema.TaggedStruct("UserUpdated", {
+  userId: UserId,
+  /** The base fields the update actually changed. See {@link UpdatedUserField}. */
+  fields: Schema.Array(UpdatedUserField)
+})
+
+/**
+ * The type of a {@link UserUpdated} event.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserUpdated = typeof UserUpdated.Type
+
+/**
+ * A user's e-mail address was replaced, both halves of the two-hop change
+ * having been proven.
+ *
+ * **Details**
+ *
+ * The address ends up verified: the token that completed the change was
+ * delivered to it. `previousEmail` is carried because a security pipeline that
+ * alerts on address changes needs to be able to reach the *old* mailbox.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const EmailChanged = Schema.TaggedStruct("EmailChanged", {
+  userId: UserId,
+  previousEmail: Schema.String,
+  email: Schema.String
+})
+
+/**
+ * The type of an {@link EmailChanged} event.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type EmailChanged = typeof EmailChanged.Type
+
+/**
+ * A user row was deleted, taking its sessions and its sign-in methods with it.
+ *
+ * **Gotchas**
+ *
+ * Published *after* the row has gone, so a subscriber that wants anything else
+ * about the person has to have recorded it beforehand. `email` is carried for
+ * exactly that reason: it is the one field an off-boarding pipeline invariably
+ * needs and can no longer read.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const UserDeleted = Schema.TaggedStruct("UserDeleted", {
+  userId: UserId,
+  email: Schema.String
+})
+
+/**
+ * The type of a {@link UserDeleted} event.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UserDeleted = typeof UserDeleted.Type
+
+/**
+ * A linked provider's tokens were exchanged for fresh ones.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const TokensRefreshed = Schema.TaggedStruct("TokensRefreshed", {
+  userId: UserId,
+  accountId: AccountId,
+  providerId: Schema.String
+})
+
+/**
+ * The type of a {@link TokensRefreshed} event.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type TokensRefreshed = typeof TokensRefreshed.Type
+
+/**
  * A sign-in method was added to a user.
  *
  * @category models
@@ -340,6 +457,10 @@ export const AuthEvent = Schema.Union([
   PasswordChanged,
   PasswordResetRequested,
   EmailVerified,
+  UserUpdated,
+  EmailChanged,
+  UserDeleted,
+  TokensRefreshed,
   AccountLinked,
   AccountUnlinked,
   PluginEvent

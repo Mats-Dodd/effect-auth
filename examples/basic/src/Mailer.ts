@@ -11,10 +11,18 @@
 import { Effect, Layer, Redacted } from "effect"
 import { AuthEmails } from "effect-auth"
 
-const print = (subject: string) => (email: AuthEmails.AuthEmail) =>
-  Effect.log(`${subject} for ${email.user.email}: ${Redacted.value(email.url)}`)
+const send = (subject: string, to: string, url: Redacted.Redacted<string>) =>
+  Effect.log(`${subject} for ${to}: ${Redacted.value(url)}`)
+
+const print = (subject: string) => (email: AuthEmails.AuthEmail) => send(subject, email.user.email, email.url)
 
 export const layer: Layer.Layer<AuthEmails.AuthEmails> = Layer.succeed(AuthEmails.AuthEmails)({
   sendVerification: print("Verify your e-mail address"),
-  sendPasswordReset: print("Reset your password")
+  sendPasswordReset: print("Reset your password"),
+  // The first hop goes to the address the account has now, and says where it is
+  // being moved to; the second goes to the new address, and is what moves it.
+  sendChangeEmailConfirmation: (email) =>
+    send(`Confirm the move to ${email.newEmail}`, email.user.email, email.url),
+  sendChangeEmailVerification: (email) => send("Verify your new e-mail address", email.newEmail, email.url),
+  sendDeleteAccountConfirmation: print("Confirm deleting your account")
 })

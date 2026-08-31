@@ -44,7 +44,8 @@ import type {
   PartialOptions,
   RateLimitConfig,
   SessionConfig,
-  TokenConfig
+  TokenConfig,
+  UserConfigOptions
 } from "../config/AuthConfig.js"
 import type { ScryptOptions } from "../crypto/PasswordHasher.js"
 import { layerScrypt, makeScrypt, PasswordHasher } from "../crypto/PasswordHasher.js"
@@ -64,7 +65,15 @@ import type { EmailDelivery } from "./TestEmails.js"
 import { layerEmails, TestEmails } from "./TestEmails.js"
 
 export type { EmailDelivery, EmailKind, SentEmail, TestEmailsService } from "./TestEmails.js"
-export { layerEmails, resetKind, TestEmails, verificationKind } from "./TestEmails.js"
+export {
+  changeEmailConfirmationKind,
+  changeEmailVerificationKind,
+  deleteAccountKind,
+  layerEmails,
+  resetKind,
+  TestEmails,
+  verificationKind
+} from "./TestEmails.js"
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -131,6 +140,12 @@ export interface Settings {
    */
   readonly cookieCache?: PartialOptions<CookieCacheConfig> | undefined
   /**
+   * What a signed-in person may do to their own record: whether change-email and
+   * delete-account are served, and how. Off by default, exactly as in
+   * production, so a test of those flows has to switch them on.
+   */
+  readonly user?: UserConfigOptions | undefined
+  /**
    * A `SessionStore` laid over the SQL one — the seam
    * {@link countingSessionStore} plugs into.
    */
@@ -166,7 +181,20 @@ export interface Settings {
  * @since 1.0.0
  */
 export interface Options<F extends UserFields = {}> extends Settings {
-  readonly user?: { readonly model: UserModel<F> } | undefined
+  /**
+   * {@link Settings.user}, plus the model the deployment is built for.
+   */
+  readonly user?: UserTestOptions<F> | undefined
+}
+
+/**
+ * {@link Settings.user}, plus the model the deployment is built for.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserTestOptions<F extends UserFields> extends UserConfigOptions {
+  readonly model?: UserModel<F> | undefined
 }
 
 /**
@@ -196,7 +224,8 @@ export const testConfig = (options?: Settings): AuthConfigOptions => ({
   tokens: options?.tokens,
   rateLimit: { enabled: false, ...options?.rateLimit },
   emailPaths: options?.emailPaths,
-  cookieCache: options?.cookieCache
+  cookieCache: options?.cookieCache,
+  user: options?.user
 })
 
 const hasherOf = (options?: Settings): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
@@ -219,7 +248,10 @@ const composed = <F extends UserFields>(options: Settings | undefined, model: Us
       ...testConfig(options),
       passwordHasher: hasherOf(options),
       sessionStore: options?.sessionStore,
-      user: { model }
+      // The model laid over whatever the block said about the user *policy*:
+      // `user` is one section carrying both, so replacing it here would drop the
+      // change-email and delete-account settings a test just asked for.
+      user: { ...options?.user, model }
     }).pipe(
       Layer.provideMerge(layerEmails(options?.emailDelivery))
     )
@@ -372,7 +404,7 @@ export const layer = <F extends UserFields = {}>(
   Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
-  options?.user === undefined
+  options?.user?.model === undefined
     ? deployment(options, baseUserModel)
     : deployment(options, options.user.model)
 
@@ -419,7 +451,10 @@ export interface FlowSettings extends Settings {
  * @category models
  * @since 1.0.0
  */
-export interface FlowOptions<F extends UserFields = {}> extends Options<F>, FlowSettings {}
+export interface FlowOptions<F extends UserFields = {}> extends Options<F>, FlowSettings {
+  /** Restated so that the two supertypes agree on it. See {@link Options.user}. */
+  readonly user?: UserTestOptions<F> | undefined
+}
 
 /**
  * {@link layer} with the OAuth flow in it, talking to a stubbed provider.
@@ -433,7 +468,7 @@ export const layerFlow = <F extends UserFields = {}>(
   OAuthServices | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
-  options.user === undefined
+  options.user?.model === undefined
     ? flowDeployment(options, baseUserModel)
     : flowDeployment(options, options.user.model)
 
@@ -451,7 +486,7 @@ const flowDeployment = <F extends UserFields>(
       passwordHasher: hasherOf(options),
       sessionStore: options.sessionStore,
       providers: options.providers,
-      user: { model }
+      user: { ...options.user, model }
     }).pipe(
       Layer.provideMerge(layerEmails(options.emailDelivery)),
       Layer.provide(layerFetch(options.fetch))

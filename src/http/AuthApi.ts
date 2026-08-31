@@ -17,15 +17,19 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "
 import {
   CannotUnlinkLastAccount,
   EmailNotVerified,
+  EmailUnchanged,
   InvalidCredentials,
   InvalidToken,
   NotFound,
   OAuthProviderError,
   OAuthStateMismatch,
+  PasswordAlreadySet,
   PasswordPolicyViolation,
   RateLimited,
   SessionNotFresh,
-  UserAlreadyExists
+  TokenRefreshFailed,
+  UserAlreadyExists,
+  UserNotFound
 } from "../domain/Errors.js"
 import type { UserExtras, UserExtrasEncoded, UserFields, UserModel } from "../domain/Schema.js"
 import {
@@ -34,6 +38,7 @@ import {
   baseUserModel,
   makeSessionWithUser,
   makeSignUpResponse,
+  makeUserResponse,
   SessionId,
   SessionPublic
 } from "../domain/Schema.js"
@@ -276,6 +281,215 @@ export const VerifyEmailQuery = Schema.Struct({
 })
 
 /**
+ * The query string of every endpoint whose only input is a token from a link.
+ *
+ * **Gotchas**
+ *
+ * It decodes to a plain `string` rather than to a {@link Secret}: query strings
+ * do not go through the JSON codec, so there is no transformation to hang the
+ * redaction on. Each handler wraps it with `Redacted.make` as its first act,
+ * before anything can log it.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const TokenQuery = Schema.Struct({
+  token: Schema.String
+})
+
+/**
+ * The body of `POST /auth/update-user`, before a deployment's own user fields
+ * are laid alongside it.
+ *
+ * **Gotchas**
+ *
+ * `image` is `optional(NullOr(...))` and the two mean different things: an
+ * absent key leaves the column alone, an explicit `null` clears it. `email` is
+ * deliberately absent — moving an account to another address is the two-hop
+ * change-email flow, never a profile edit.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const UpdateUserPayload = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  image: Schema.optional(Schema.NullOr(Schema.String))
+})
+
+/**
+ * The schema {@link makeUpdateUserPayload} builds.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UpdateUserPayloadSchema<F extends UserFields> extends
+  Schema.Codec<
+    typeof UpdateUserPayload.Type & UserExtras<F, "jsonUpdate">,
+    typeof UpdateUserPayload.Encoded & UserExtrasEncoded<F, "jsonUpdate">
+  >
+{}
+
+/**
+ * The body of `POST /auth/update-user` for a model parameterized by `F`:
+ * {@link UpdateUserPayload} with the model's own writable fields alongside it.
+ *
+ * **Details**
+ *
+ * The custom half is the model's `jsonUpdate` variant, so a field declared
+ * `readOnly` or `hidden` is absent and cannot be stated by a client. An excess
+ * key is dropped rather than refused.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeUpdateUserPayload = <F extends UserFields>(
+  model: UserModel<F>
+): UpdateUserPayloadSchema<F> => model.withExtras(UpdateUserPayload, "jsonUpdate")
+
+/**
+ * The type of a {@link makeUpdateUserPayload}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UpdateUserOf<F extends UserFields> = UpdateUserPayloadSchema<F>["Type"]
+
+/**
+ * The body of `POST /auth/change-email`.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const ChangeEmailPayload = Schema.Struct({
+  /** The address to move the account to. */
+  newEmail: Schema.String,
+  /** Where the link should land once the change completes. Validated against `trustedOrigins`. */
+  callbackURL: Schema.optional(Schema.String)
+})
+
+/**
+ * The body of `POST /auth/delete-user`.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const DeleteUserPayload = Schema.Struct({
+  /**
+   * The caller's current password, where they have one.
+   *
+   * **Gotchas**
+   *
+   * Optional because an OAuth-only account has none. Omitting it does not skip a
+   * check: the deployment's `user.deleteUser.confirmByEmail` setting decides
+   * whether a mailbox or a fresh session is the second factor.
+   */
+  password: Schema.optional(Secret),
+  /** Where to send the browser once the account is gone. */
+  callbackURL: Schema.optional(Schema.String)
+})
+
+/**
+ * What `POST /auth/delete-user` did.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const DeleteUserResponse = Schema.Struct({
+  success: Schema.Boolean,
+  /**
+   * `"Deleted"` when the account is already gone, `"ConfirmationSent"` when a
+   * link was mailed and nothing has been deleted yet.
+   */
+  status: Schema.Literals(["Deleted", "ConfirmationSent"])
+})
+
+/**
+ * The type of a {@link DeleteUserResponse}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type DeleteUserResponse = typeof DeleteUserResponse.Type
+
+/**
+ * The body of `POST /auth/set-password`.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const SetPasswordPayload = Schema.Struct({
+  newPassword: Secret
+})
+
+/**
+ * The body of the two endpoints that name one of the caller's linked accounts.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const AccountSelection = Schema.Struct({
+  accountId: AccountId
+})
+
+/**
+ * A provider access token for one of the caller's linked accounts.
+ *
+ * **Gotchas**
+ *
+ * This is the one response in the library that carries a credential for
+ * *another* system. `accessToken` and `idToken` decode to `Redacted`, so a
+ * client that logs the response body logs `<redacted>` — but the value is on the
+ * wire, so serve these endpoints over TLS and do not cache their responses.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const AccessTokenResponse = Schema.Struct({
+  accessToken: Secret,
+  accessTokenExpiresAt: Schema.NullOr(Schema.DateTimeUtcFromString),
+  idToken: Schema.NullOr(Secret),
+  /** The granted scopes, split out of the stored `scope` column. */
+  scopes: Schema.Array(Schema.String),
+  providerId: Schema.String,
+  accountId: AccountId
+})
+
+/**
+ * The type of an {@link AccessTokenResponse}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type AccessTokenResponse = typeof AccessTokenResponse.Type
+
+/**
+ * {@link AccessTokenResponse} together with the refresh token the account now
+ * holds.
+ *
+ * **Details**
+ *
+ * A provider that rotates refresh tokens returns a new one and the old one stops
+ * working, so a client that stores tokens of its own has to be told. A provider
+ * that does not rotate them gets the stored one back unchanged.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const RefreshTokenResponse = Schema.Struct({
+  ...AccessTokenResponse.fields,
+  refreshToken: Secret,
+  refreshTokenExpiresAt: Schema.NullOr(Schema.DateTimeUtcFromString)
+})
+
+/**
+ * The type of a {@link RefreshTokenResponse}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type RefreshTokenResponse = typeof RefreshTokenResponse.Type
+
+/**
  * The body of `POST /auth/sign-in/social`.
  *
  * @category models
@@ -318,8 +532,40 @@ export const OAuthCallbackQuery = Schema.Struct({
   code: Schema.optional(Schema.String),
   state: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
-  error_description: Schema.optional(Schema.String)
+  error_description: Schema.optional(Schema.String),
+  /**
+   * A provider-specific extra, forwarded to the provider's `userInfo`.
+   *
+   * **Gotchas**
+   *
+   * Apple's, which carries a JSON object with the person's name — once, on the
+   * first authorization, and never again. Nothing signs it, so it is used for
+   * display fields and never for an identity.
+   */
+  user: Schema.optional(Schema.String)
 })
+
+/**
+ * The body of `POST /auth/callback/:providerId` — a provider that answers with
+ * `response_mode=form_post` rather than a redirect.
+ *
+ * **Details**
+ *
+ * The same fields as {@link OAuthCallbackQuery}, as
+ * `application/x-www-form-urlencoded`, because that is what the provider's
+ * browser-side form submits. The endpoint does nothing but redirect to the `GET`
+ * twin — see the endpoint's own description for why.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const OAuthCallbackForm = Schema.Struct({
+  code: Schema.optional(Schema.String),
+  state: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+  error_description: Schema.optional(Schema.String),
+  user: Schema.optional(Schema.String)
+}).pipe(HttpApiSchema.asFormUrlEncoded())
 
 /**
  * The body of `POST /auth/link-social`.
@@ -533,7 +779,121 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         .annotateMerge(OpenApi.annotations({
           summary: "Remove one of the caller's sign-in methods",
           description: "Refuses to remove the last one, and requires a fresh session."
-        }))
+        })),
+      HttpApiEndpoint.post("updateUser", "/update-user", {
+        payload: makeUpdateUserPayload(model),
+        success: makeUserResponse(model),
+        error: UserNotFound
+      })
+        .middleware(Authenticated)
+        .annotateMerge(OpenApi.annotations({
+          summary: "Edit the caller's own profile",
+          description:
+            "Patches the fields the body names — the base name and image, plus whichever of the deployment's own user fields a client may write. An absent key leaves the column alone; an explicit null image clears it. The address is not editable here: moving an account to another one is the change-email flow."
+        })),
+      HttpApiEndpoint.post("changeEmail", "/change-email", {
+        payload: ChangeEmailPayload,
+        success: Ok,
+        error: [EmailUnchanged, SessionNotFresh, RateLimited]
+      })
+        .middleware(Authenticated)
+        // The current address decides which hop is sent, and whether it is
+        // verified is a fact about the row, not about a snapshot.
+        .annotate(AuthoritativeSession, true)
+        .annotateMerge(OpenApi.annotations({
+          summary: "Start moving the account to another e-mail address",
+          description:
+            "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns."
+        })),
+      HttpApiEndpoint.get("confirmEmailChange", "/change-email/confirm", {
+        query: TokenQuery,
+        success: Ok,
+        error: InvalidToken
+      }).annotateMerge(OpenApi.annotations({
+        summary: "Confirm an e-mail change from the current address",
+        description:
+          "Consumes the first-hop token and sends the second hop to the new address. Nothing about the account has changed yet."
+      })),
+      HttpApiEndpoint.get("verifyEmailChange", "/change-email/verify", {
+        query: TokenQuery,
+        success: Ok,
+        error: [InvalidToken, UserAlreadyExists]
+      }).annotateMerge(OpenApi.annotations({
+        summary: "Complete an e-mail change from the new address",
+        description:
+          "Consumes the second-hop token and moves the account, which ends up verified — the link was delivered to the address it names. UserAlreadyExists means somebody claimed that address between the two hops."
+      })),
+      HttpApiEndpoint.post("deleteUser", "/delete-user", {
+        payload: DeleteUserPayload,
+        success: DeleteUserResponse,
+        error: [InvalidCredentials, SessionNotFresh, RateLimited]
+      })
+        .middleware(Authenticated)
+        // A password is verified against the stored hash, and the row is about
+        // to be destroyed: neither may be decided from a snapshot.
+        .annotate(AuthoritativeSession, true)
+        .annotateMerge(OpenApi.annotations({
+          summary: "Delete the caller's own account",
+          description:
+            "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed."
+        })),
+      HttpApiEndpoint.get("deleteUserCallback", "/delete-user/callback", {
+        query: TokenQuery,
+        success: Redirect,
+        error: InvalidToken
+      })
+        .middleware(Authenticated)
+        .annotate(AuthoritativeSession, true)
+        .annotateMerge(OpenApi.annotations({
+          summary: "Complete an account deletion from the mailed link",
+          description:
+            "The link has to be followed by the account's own signed-in browser: the token is claimed first and only then checked against the caller, so a link presented by anybody else is burnt as well as refused."
+        })),
+      HttpApiEndpoint.post("setPassword", "/set-password", {
+        payload: SetPasswordPayload,
+        success: Ok,
+        error: [PasswordAlreadySet, PasswordPolicyViolation, SessionNotFresh, RateLimited]
+      })
+        .middleware(Authenticated)
+        // Whether a credential already exists is exactly what this endpoint
+        // branches on.
+        .annotate(AuthoritativeSession, true)
+        .annotateMerge(OpenApi.annotations({
+          summary: "Give an account without one its first password",
+          description:
+            "For an account provisioned through a provider. It can never replace an existing password — that is change-password, or the reset flow — and requires a fresh session. Nothing is revoked: no credential was invalidated."
+        })),
+      HttpApiEndpoint.post("getAccessToken", "/get-access-token", {
+        payload: AccountSelection,
+        success: AccessTokenResponse,
+        error: [NotFound, TokenRefreshFailed]
+      })
+        .middleware(Authenticated)
+        .annotateMerge(OpenApi.annotations({
+          summary: "A usable provider access token for one of the caller's accounts",
+          description:
+            "Refreshes first only if the stored token is about to expire. An account that is not the caller's is reported as NotFound, exactly as one that does not exist."
+        })),
+      HttpApiEndpoint.post("refreshToken", "/refresh-token", {
+        payload: AccountSelection,
+        success: RefreshTokenResponse,
+        error: [NotFound, TokenRefreshFailed]
+      })
+        .middleware(Authenticated)
+        .annotateMerge(OpenApi.annotations({
+          summary: "Spend one of the caller's refresh tokens",
+          description:
+            "Unconditional, unlike get-access-token. For a client that has learnt the stored access token is no good. The granted scope is never overwritten by a refresh."
+        })),
+      HttpApiEndpoint.post("oauthCallbackForm", "/callback/:providerId", {
+        params: OAuthCallbackParams,
+        payload: OAuthCallbackForm,
+        success: Redirect
+      }).annotateMerge(OpenApi.annotations({
+        summary: "Receive a form_post OAuth callback",
+        description:
+          "Providers configured with response_mode=form_post (Apple) return the code by posting a form to this path. A cross-site POST carries no SameSite=Lax cookie, so this endpoint does not complete the flow: it answers a 302 to the GET twin with the same parameters as a query string, and that top-level navigation does carry the cookies."
+      }))
     )
     .prefix("/auth")
     .annotateMerge(OpenApi.annotations({

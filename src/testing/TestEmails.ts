@@ -20,7 +20,7 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Option, Redacted, Ref } from "effect"
-import type { AuthEmail } from "../config/AuthEmails.js"
+import type { AuthEmail, ChangeEmailEmail } from "../config/AuthEmails.js"
 import { AuthEmails } from "../config/AuthEmails.js"
 import { EmailDeliveryError } from "../domain/Errors.js"
 import type { User } from "../domain/Schema.js"
@@ -55,6 +55,37 @@ export const verificationKind: EmailKind = "verification"
  * @since 1.0.0
  */
 export const resetKind: EmailKind = "reset"
+
+/**
+ * The kind recorded for the first hop of an e-mail change — the one sent to the
+ * address the account currently has.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const changeEmailConfirmationKind: EmailKind = "change-email-confirmation"
+
+/**
+ * The kind recorded for the second hop of an e-mail change — the one sent to
+ * the **new** address.
+ *
+ * **Gotchas**
+ *
+ * `to` is that new address, so `emails.tokenFor(changeEmailVerificationKind,
+ * newAddress)` is how a test reads the link, exactly as the person would.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const changeEmailVerificationKind: EmailKind = "change-email-verification"
+
+/**
+ * The kind recorded for the "confirm you want to delete your account" message.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const deleteAccountKind: EmailKind = "delete-account"
 
 /**
  * One e-mail the application asked to have delivered.
@@ -210,9 +241,24 @@ export const layerEmails = (
           )
         )
 
-      /** The library's own two messages, which always know their user. */
+      /** The library's messages, which always know their user. */
       const recordAuthEmail = (kind: EmailKind) => (email: AuthEmail) =>
         record({ kind, to: email.user.email, user: email.user, token: email.token, url: email.url })
+
+      /**
+       * The second hop of an e-mail change, which is the one message this
+       * library sends to an address the user does not (yet) have. Recording it
+       * under `to: newEmail` is what lets a test read it the way its recipient
+       * would.
+       */
+      const recordChangeEmailVerification = (email: ChangeEmailEmail) =>
+        record({
+          kind: changeEmailVerificationKind,
+          to: email.newEmail,
+          user: email.user,
+          token: email.token,
+          url: email.url
+        })
 
       const last = (kind: EmailKind, address?: string) =>
         Effect.map(Ref.get(outbox), (sent) => {
@@ -248,7 +294,10 @@ export const layerEmails = (
       }).pipe(
         Context.add(AuthEmails, {
           sendVerification: recordAuthEmail(verificationKind),
-          sendPasswordReset: recordAuthEmail(resetKind)
+          sendPasswordReset: recordAuthEmail(resetKind),
+          sendChangeEmailConfirmation: recordAuthEmail(changeEmailConfirmationKind),
+          sendChangeEmailVerification: recordChangeEmailVerification,
+          sendDeleteAccountConfirmation: recordAuthEmail(deleteAccountKind)
         })
       )
     })

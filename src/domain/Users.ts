@@ -1,0 +1,494 @@
+/**
+ * What a signed-in person may do to their own user record: edit the profile,
+ * move the account to another e-mail address, and delete it.
+ *
+ * **Details**
+ *
+ * Three flows, and two of them are deliberately not one-shot.
+ *
+ * *Changing an address is two hops.* A session alone must not be enough to walk
+ * off with somebody's account, and an address is the account's recovery path —
+ * whoever receives its mail can reset its password. So the first hop tells the
+ * address the account has **now** that a move has been requested, and only when
+ * that link is followed is a second one sent to the **new** address; following
+ * *that* is what changes the column. The proposed address never appears in a
+ * URL: it travels in the token's server-side payload, so a link cannot be edited
+ * into a link that moves the account somewhere else. An account whose current
+ * address is unverified has no first hop — an unverified address is no evidence
+ * that anybody reads it — and starts at the second.
+ *
+ * *Deleting is either fresh or confirmed.* With `user.deleteUser.confirmByEmail`
+ * off, the caller's session has to be fresh and the row goes immediately; with it
+ * on, a link is mailed and the deletion happens when that link is followed. Both
+ * shapes exist because the right one depends on what losing the account costs.
+ *
+ * **Gotchas — enumeration**
+ *
+ * `requestEmailChange` answers the same whether or not the new address already
+ * belongs to somebody: `"Ignored"` does the same work as the other outcomes
+ * minus the write, and the endpoint above it answers `200` regardless. A
+ * distinguishable answer would turn a signed-in session into an oracle for "is
+ * this person registered here". The collision is caught at the *second* hop
+ * instead, by the unique index, and reported as `UserAlreadyExists` to somebody
+ * who has by then proven they control the address.
+ *
+ * @since 1.0.0
+ */
+import type { Redacted } from "effect"
+import { Context, Effect, Layer, Schema } from "effect"
+import { AuthConfig } from "../config/AuthConfig.js"
+import { AuthEmails } from "../config/AuthEmails.js"
+import type {
+  EmailUnchanged,
+  InvalidCredentials,
+  InvalidToken,
+  SessionNotFresh,
+  UserAlreadyExists,
+  UserNotFound
+} from "./Errors.js"
+import { AuthEvents } from "./Events.js"
+import { Passwords } from "./Passwords.js"
+import type { Session, UserExtras, UserFields, UserId, UserModel, UserOf } from "./Schema.js"
+import { baseUserModel } from "./Schema.js"
+import { Sessions } from "./Sessions.js"
+import type { PersistenceError } from "./Stores.js"
+import { UserStore, VerificationStore, WithAuthTransaction } from "./Stores.js"
+import type { TokenPurpose } from "./Verifications.js"
+import { purpose, Verifications } from "./Verifications.js"
+
+// -----------------------------------------------------------------------------
+// Purposes
+// -----------------------------------------------------------------------------
+
+/**
+ * What travels with either hop of an e-mail change: the address being moved to.
+ *
+ * **Gotchas**
+ *
+ * Server-side state in the `verifications` table, not a claim in a URL. That is
+ * the whole reason the payload exists — see the module header.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const ChangeEmailPayload = Schema.Struct({
+  newEmail: Schema.String
+})
+
+/**
+ * The type of a {@link ChangeEmailPayload}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type ChangeEmailPayload = typeof ChangeEmailPayload.Type
+
+/**
+ * What travels with an account-deletion link: where to send the browser
+ * afterwards.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const DeleteAccountPayload = Schema.Struct({
+  callbackURL: Schema.NullOr(Schema.String)
+})
+
+/**
+ * The type of a {@link DeleteAccountPayload}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type DeleteAccountPayload = typeof DeleteAccountPayload.Type
+
+/**
+ * The first hop of an e-mail change: the link sent to the address the account
+ * currently has. Its subject is the user's id.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const changeEmailConfirmPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
+  "change-email-confirm",
+  ChangeEmailPayload
+)
+
+/**
+ * The second hop: the link sent to the new address, which is what actually
+ * changes the column. Its subject is the user's id.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const changeEmailVerifyPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
+  "change-email-verify",
+  ChangeEmailPayload
+)
+
+/**
+ * An account-deletion confirmation link. Its subject is the user's id.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose(
+  "delete-account",
+  DeleteAccountPayload
+)
+
+// -----------------------------------------------------------------------------
+// Models
+// -----------------------------------------------------------------------------
+
+/**
+ * The base half of {@link UpdateOptions}: who is being updated, and the two
+ * mutable fields every user has.
+ *
+ * **Gotchas**
+ *
+ * An absent key is a column the update does not touch; `image: null` clears it.
+ * The distinction is why these are `| undefined` rather than merely optional.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface BaseUpdateOptions {
+  readonly userId: UserId
+  readonly name?: string | undefined
+  readonly image?: string | null | undefined
+}
+
+/**
+ * What {@link UsersService.update} takes: the base fields, plus whichever of the
+ * deployment's own the caller stated.
+ *
+ * **Details**
+ *
+ * The custom half comes straight off the model's `jsonUpdate` variant, so a
+ * field declared `readOnly` or `hidden` cannot be passed at all — the same rule
+ * `SignUpOptions` follows for creation.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type UpdateOptions<F extends UserFields = {}> = BaseUpdateOptions & UserExtras<F, "jsonUpdate">
+
+/**
+ * What {@link UsersService.requestEmailChange} takes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface RequestEmailChangeOptions<F extends UserFields = {}> {
+  /** The signed-in user, as the middleware resolved them. */
+  readonly user: UserOf<F>
+  /** The address they have asked to move to. Normalized here, not by the caller. */
+  readonly newEmail: string
+  /**
+   * Where the link should land once the change completes. Validated against
+   * `trustedOrigins` again here, and dropped rather than refused if it does not
+   * survive that.
+   */
+  readonly callbackURL?: string | undefined
+}
+
+/**
+ * What asking for an e-mail change did.
+ *
+ * **Gotchas**
+ *
+ * Every member is reported to the caller as the same `200`. The distinction is
+ * for logs and for a domain-level caller — not for an HTTP response, which would
+ * make it an enumeration oracle. See the module header.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type EmailChangeOutcome =
+  /** The current address is verified, so hop one was mailed to it. */
+  | "ConfirmationSent"
+  /** The current address is unverified, so the flow started at hop two. */
+  | "VerificationSent"
+  /** The new address already belongs to somebody. Nothing was written or sent. */
+  | "Ignored"
+
+/**
+ * What {@link UsersService.requestDeletion} takes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface RequestDeletionOptions<F extends UserFields = {}> {
+  readonly user: UserOf<F>
+  /** The session making the request — the freshness guard's subject. */
+  readonly session: Session
+  /**
+   * The caller's current password, where they have one.
+   *
+   * **Details**
+   *
+   * Verified in constant work when present: exactly one hash comparison runs,
+   * against a dummy hash for a user with no credential, so "you have no
+   * password" and "that is the wrong password" cost the same and answer the
+   * same.
+   */
+  readonly password?: Redacted.Redacted<string> | undefined
+  /** Where to send the browser after the deletion completes. */
+  readonly callbackURL?: string | undefined
+}
+
+/**
+ * What asking to delete an account did.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type DeletionOutcome =
+  /** The row is gone, and every session with it. */
+  | "Deleted"
+  /** A confirmation link was mailed; nothing has been deleted yet. */
+  | "ConfirmationSent"
+
+/**
+ * What {@link UsersService.confirmDeletion} takes.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface ConfirmDeletionOptions {
+  /** The token from the link. */
+  readonly token: Redacted.Redacted<string>
+  /**
+   * The user the *session* presenting the link belongs to.
+   *
+   * **Gotchas**
+   *
+   * The token is claimed before this is compared, so a link presented by the
+   * wrong person is burnt as well as refused. Leaving it claimable would let
+   * somebody who has read another person's mailbox park the link until they
+   * could get a session.
+   */
+  readonly userId: UserId
+}
+
+/**
+ * Where a completed deletion sends the browser.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface DeletionResult {
+  /** The validated URL, already resolved against `trustedOrigins`. */
+  readonly redirectTo: string
+}
+
+// -----------------------------------------------------------------------------
+// Service
+// -----------------------------------------------------------------------------
+
+/**
+ * The {@link Users} service definition, for a model parameterized by `F`.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UsersService<F extends UserFields = {}> {
+  /**
+   * Applies a profile update and answers the stored row.
+   *
+   * **Details**
+   *
+   * `UserNotFound` means the row vanished between the middleware resolving the
+   * session and this write — a concurrent deletion, not a caller mistake.
+   *
+   * Emits `UserUpdated` naming the base fields that actually changed.
+   */
+  readonly update: (
+    options: UpdateOptions<F>
+  ) => Effect.Effect<UserOf<F>, UserNotFound | PersistenceError>
+
+  /**
+   * Starts an e-mail change. See the module header for the two hops.
+   *
+   * **Gotchas**
+   *
+   * Fails `EmailUnchanged` when the address is the one the account already has,
+   * which is the only refusal this step makes out loud — the caller already
+   * knows their own address, so saying so leaks nothing.
+   */
+  readonly requestEmailChange: (
+    options: RequestEmailChangeOptions<F>
+  ) => Effect.Effect<EmailChangeOutcome, EmailUnchanged | PersistenceError>
+
+  /**
+   * Claims a first-hop token and mails the second hop to the new address.
+   *
+   * Nothing about the account has changed when this succeeds.
+   */
+  readonly confirmEmailChange: (
+    token: Redacted.Redacted<string>
+  ) => Effect.Effect<void, InvalidToken | PersistenceError>
+
+  /**
+   * Claims a second-hop token and moves the account to the new address, which
+   * ends up **verified** — the token that got here was delivered to it.
+   *
+   * **Details**
+   *
+   * The write and the retirement of every sibling token commit together. A
+   * collision on the unique index is `UserAlreadyExists`: somebody else claimed
+   * the address between hop one and hop two.
+   *
+   * Emits `EmailChanged`.
+   */
+  readonly verifyEmailChange: (
+    token: Redacted.Redacted<string>
+  ) => Effect.Effect<UserOf<F>, InvalidToken | UserAlreadyExists | PersistenceError>
+
+  /**
+   * Deletes the account, or mails a link that will.
+   *
+   * **Details**
+   *
+   * With `confirmByEmail` off this requires a fresh session and deletes
+   * immediately; with it on it mints a `delete-account` token and mails it, and
+   * the session's age does not matter because the mailbox is the second factor.
+   */
+  readonly requestDeletion: (
+    options: RequestDeletionOptions<F>
+  ) => Effect.Effect<DeletionOutcome, InvalidCredentials | SessionNotFresh | PersistenceError>
+
+  /**
+   * Claims a deletion token presented by a signed-in caller and deletes the
+   * account.
+   */
+  readonly confirmDeletion: (
+    options: ConfirmDeletionOptions
+  ) => Effect.Effect<DeletionResult, InvalidToken | PersistenceError>
+
+  /**
+   * Deletes a user outright — no token, no freshness check.
+   *
+   * **When to use**
+   *
+   * From an application's own administrative code. Sessions and accounts cascade
+   * with the row, and this user's outstanding verification tokens are retired
+   * with it. Emits `UserDeleted` after the row has gone.
+   */
+  readonly delete: (user: UserOf<F>) => Effect.Effect<void, PersistenceError>
+}
+
+/**
+ * What a signed-in person may do to their own user record. See
+ * {@link UsersService}.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export class Users extends Context.Service<Users, UsersService>()("effect-auth/Users") {}
+
+/**
+ * {@link Users}, seen through a model's custom fields.
+ *
+ * The same key with a narrower shape: the methods that take or answer with a
+ * user carry the deployment's own. See `userStoreOf` in `domain/Stores.ts` for
+ * what a typed view is and why it is sound.
+ *
+ * @category services
+ * @since 1.0.0
+ */
+export const usersOf = <F extends UserFields>(
+  _model: UserModel<F>
+): Context.Service<Users, UsersService<F>> => Context.Service<Users, UsersService<F>>("effect-auth/Users")
+
+// -----------------------------------------------------------------------------
+// Implementation
+// -----------------------------------------------------------------------------
+
+/**
+ * What {@link make} needs.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type Requirements =
+  | AuthConfig
+  | AuthEmails
+  | AuthEvents
+  | Verifications
+  | UserStore
+  | VerificationStore
+  | WithAuthTransaction
+  | Sessions
+  | Passwords
+
+/**
+ * The defect a method of this service raises until its body lands.
+ *
+ * **Gotchas**
+ *
+ * A defect rather than a failure, and deliberately: these methods' error
+ * channels are the contract every caller above is already written against, so an
+ * unimplemented one must not be catchable as though it were one of them. It
+ * renders as an opaque `500`, exactly as any other broken deployment does.
+ */
+const notImplemented = (method: string): Effect.Effect<never> =>
+  Effect.die(`effect-auth/Users: ${method} is not implemented`)
+
+/**
+ * Builds the {@link Users} implementation for a user model.
+ *
+ * **Gotchas**
+ *
+ * Every service is resolved here, when the layer is built, so that no method
+ * carries a request-time requirement — the same shape `Passwords.make` has, and
+ * for the same reason.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const make: <F extends UserFields>(
+  model: UserModel<F>
+) => Effect.Effect<UsersService<F>, never, Requirements> = Effect.fnUntraced(function*<F extends UserFields>(
+  model: UserModel<F>
+) {
+  yield* AuthConfig
+  yield* AuthEmails
+  yield* AuthEvents
+  yield* Verifications
+  yield* UserStore
+  yield* VerificationStore
+  yield* WithAuthTransaction
+  yield* Sessions
+  yield* Passwords
+
+  return usersOf(model).of({
+    update: () => notImplemented("update"),
+    requestEmailChange: () => notImplemented("requestEmailChange"),
+    confirmEmailChange: () => notImplemented("confirmEmailChange"),
+    verifyEmailChange: () => notImplemented("verifyEmailChange"),
+    requestDeletion: () => notImplemented("requestDeletion"),
+    confirmDeletion: () => notImplemented("confirmDeletion"),
+    delete: () => notImplemented("delete")
+  })
+})
+
+/**
+ * Provides {@link Users} for the user model given: the methods that carry a user
+ * carry that model's, while the layer's own type stays the base one.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layerFor = <F extends UserFields>(
+  model: UserModel<F>
+): Layer.Layer<Users, never, Requirements> => Layer.effect(usersOf(model), make(model))
+
+/**
+ * {@link layerFor}, for a deployment that added no user fields of its own.
+ *
+ * @category layers
+ * @since 1.0.0
+ */
+export const layer: Layer.Layer<Users, never, Requirements> = layerFor(baseUserModel)

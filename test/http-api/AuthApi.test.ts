@@ -1,9 +1,9 @@
 import { assert, describe, expect, it } from "@effect/vitest"
-import { Effect, Redacted, Schema } from "effect"
+import { Context, Effect, Redacted, Schema } from "effect"
 import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { AuthApi, AuthApiGroup, SignInEmailPayload } from "../../src/http/AuthApi.js"
-import { Authenticated } from "../../src/http/Middleware.js"
+import { Authenticated, AuthoritativeSession } from "../../src/http/Middleware.js"
 import { testPasswordText } from "../fixtures.js"
 
 /**
@@ -111,7 +111,96 @@ const contract = [
     path: "/auth/unlink-account",
     authenticated: true,
     errors: ["effect-auth/CannotUnlinkLastAccount", "effect/HttpApiError/NotFound", "effect-auth/SessionNotFresh"]
+  },
+  {
+    identifier: "updateUser",
+    method: "POST",
+    path: "/auth/update-user",
+    authenticated: true,
+    errors: ["effect-auth/UserNotFound"]
+  },
+  {
+    identifier: "changeEmail",
+    method: "POST",
+    path: "/auth/change-email",
+    authenticated: true,
+    errors: ["effect-auth/EmailUnchanged", "effect-auth/SessionNotFresh", "effect-auth/RateLimited"]
+  },
+  {
+    identifier: "confirmEmailChange",
+    method: "GET",
+    path: "/auth/change-email/confirm",
+    authenticated: false,
+    errors: ["effect-auth/InvalidToken"]
+  },
+  {
+    identifier: "verifyEmailChange",
+    method: "GET",
+    path: "/auth/change-email/verify",
+    authenticated: false,
+    errors: ["effect-auth/InvalidToken", "effect-auth/UserAlreadyExists"]
+  },
+  {
+    identifier: "deleteUser",
+    method: "POST",
+    path: "/auth/delete-user",
+    authenticated: true,
+    errors: ["effect-auth/InvalidCredentials", "effect-auth/SessionNotFresh", "effect-auth/RateLimited"]
+  },
+  {
+    identifier: "deleteUserCallback",
+    method: "GET",
+    path: "/auth/delete-user/callback",
+    authenticated: true,
+    errors: ["effect-auth/InvalidToken"]
+  },
+  {
+    identifier: "setPassword",
+    method: "POST",
+    path: "/auth/set-password",
+    authenticated: true,
+    errors: [
+      "effect-auth/PasswordAlreadySet",
+      "effect-auth/PasswordPolicyViolation",
+      "effect-auth/SessionNotFresh",
+      "effect-auth/RateLimited"
+    ]
+  },
+  {
+    identifier: "getAccessToken",
+    method: "POST",
+    path: "/auth/get-access-token",
+    authenticated: true,
+    errors: ["effect/HttpApiError/NotFound", "effect-auth/TokenRefreshFailed"]
+  },
+  {
+    identifier: "refreshToken",
+    method: "POST",
+    path: "/auth/refresh-token",
+    authenticated: true,
+    errors: ["effect/HttpApiError/NotFound", "effect-auth/TokenRefreshFailed"]
+  },
+  {
+    identifier: "oauthCallbackForm",
+    method: "POST",
+    path: "/auth/callback/:providerId",
+    authenticated: false,
+    errors: []
   }
+] as const
+
+/**
+ * The endpoints that must see the session as the database has it, rather than as
+ * a cookie-cache snapshot remembers it. Every one of them either reads a
+ * credential, changes one, or changes the identity behind it.
+ */
+const authoritative = [
+  "changePassword",
+  "unlinkAccount",
+  "changeEmail",
+  "deleteUser",
+  "deleteUserCallback",
+  "setPassword"
 ] as const
 
 const endpoints = AuthApiGroup.endpoints as unknown as Readonly<Record<string, HttpApiEndpoint.Top>>
@@ -138,7 +227,7 @@ describe("http/AuthApi", () => {
       Object.keys(endpoints),
       contract.map((entry) => entry.identifier)
     )
-    assert.strictEqual(contract.length, 18)
+    assert.strictEqual(contract.length, 28)
   })
 
   it("serves every endpoint at its specified method and path", () => {
@@ -155,7 +244,18 @@ describe("http/AuthApi", () => {
       endpointOf(identifier).middlewares.has(Authenticated as never)
     )
     assert.deepStrictEqual(actual, expected)
-    assert.strictEqual(expected.length, 10)
+    assert.strictEqual(expected.length, 17)
+  })
+
+  it("marks exactly the credential- and identity-changing endpoints authoritative", () => {
+    // The cookie cache is bypassed for these, in both directions. A new endpoint
+    // that reads or changes a credential and forgets the annotation would be
+    // served from a snapshot up to `cookieCache.maxAge` old — which is why the
+    // list is pinned here rather than left to review.
+    const actual = Object.keys(endpoints).filter((identifier) =>
+      Context.get(endpointOf(identifier).annotations, AuthoritativeSession)
+    )
+    assert.deepStrictEqual(actual, [...authoritative])
   })
 
   it("declares the specified error union on each endpoint", () => {
@@ -164,14 +264,32 @@ describe("http/AuthApi", () => {
     }
   })
 
-  it("keeps the raw session token out of every success schema", () => {
+  it("keeps the stored digests out of the whole document", () => {
     // The `.json` model variants drop every `Model.Sensitive` field. Assert on
     // the whole generated document so no endpoint can reintroduce one.
-    const spec = OpenApi.fromApi(AuthApi)
-    const json = JSON.stringify(spec)
+    const json = JSON.stringify(OpenApi.fromApi(AuthApi))
     assert.isFalse(json.includes("tokenHash"))
     assert.isFalse(json.includes("passwordHash"))
     assert.isFalse(json.includes("valueHash"))
+  })
+
+  it("keeps provider tokens out of every schema but the two that exist to serve them", () => {
+    // `get-access-token` and `refresh-token` hand a provider credential to the
+    // account's own owner, on purpose; the `Account`, `Session` and `User`
+    // projections every other endpoint answers with must carry none. The two
+    // paths are removed and the rest of the document asserted against, so a
+    // token field reintroduced anywhere else — a `listAccounts` that started
+    // returning `accessToken`, say — fails here.
+    const spec = OpenApi.fromApi(AuthApi) as unknown as {
+      readonly paths: Record<string, unknown>
+      readonly components: unknown
+    }
+    const elsewhere = Object.fromEntries(
+      Object.entries(spec.paths).filter(([path]) =>
+        path !== "/auth/get-access-token" && path !== "/auth/refresh-token"
+      )
+    )
+    const json = JSON.stringify({ paths: elsewhere, components: spec.components })
     assert.isFalse(json.includes(`"accessToken"`))
     assert.isFalse(json.includes(`"refreshToken"`))
     assert.isFalse(json.includes(`"idToken"`))
@@ -182,7 +300,7 @@ describe("http/AuthApi", () => {
       const api = HttpApi.make("app").addHttpApi(AuthApi)
       assert.deepStrictEqual(Object.keys(api.groups), ["auth"])
       const group = api.groups.auth as unknown as { readonly endpoints: Record<string, unknown> }
-      assert.strictEqual(Object.keys(group.endpoints).length, 18)
+      assert.strictEqual(Object.keys(group.endpoints).length, 28)
     })
 
     it("generates an OpenAPI document without throwing", () => {
@@ -205,11 +323,30 @@ describe("http/AuthApi", () => {
         "/auth/send-verification-email",
         "/auth/verify-email",
         "/auth/sign-in/social",
+        // Both the GET a provider redirects to and the POST a `form_post`
+        // provider submits to live here, so the path appears once.
         "/auth/callback/{providerId}",
         "/auth/accounts",
         "/auth/link-social",
-        "/auth/unlink-account"
+        "/auth/unlink-account",
+        "/auth/update-user",
+        "/auth/change-email",
+        "/auth/change-email/confirm",
+        "/auth/change-email/verify",
+        "/auth/delete-user",
+        "/auth/delete-user/callback",
+        "/auth/set-password",
+        "/auth/get-access-token",
+        "/auth/refresh-token"
       ])
+    })
+
+    it("serves the form_post callback beside the redirect callback on one path", () => {
+      const spec = OpenApi.fromApi(HttpApi.make("app").addHttpApi(AuthApi))
+      const operations = (spec.paths as Record<string, Record<string, unknown>>)["/auth/callback/{providerId}"]
+
+      assert.isDefined(operations)
+      assert.deepStrictEqual(Object.keys(operations ?? {}).sort(), ["get", "post"])
     })
 
     it("matches the committed OpenAPI snapshot", async () => {

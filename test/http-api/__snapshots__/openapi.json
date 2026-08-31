@@ -1495,6 +1495,21 @@
               ]
             },
             "required": false
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "required": false
           }
         ],
         "security": [],
@@ -1533,6 +1548,101 @@
         },
         "description": "Consumes the state atomically, exchanges the code, links or creates the account, sets the cookie and redirects to the validated callbackURL.",
         "summary": "Complete an OAuth flow"
+      },
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.oauthCallbackForm",
+        "parameters": [
+          {
+            "name": "providerId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "302": {
+            "description": "<No Content>",
+            "headers": {
+              "location": {
+                "schema": {
+                  "type": "string"
+                },
+                "required": true
+              }
+            }
+          }
+        },
+        "description": "Providers configured with response_mode=form_post (Apple) return the code by posting a form to this path. A cross-site POST carries no SameSite=Lax cookie, so this endpoint does not complete the flow: it answers a 302 to the GET twin with the same parameters as a query string, and that top-level navigation does carry the cookies.",
+        "summary": "Receive a form_post OAuth callback",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "state": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error_description": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "user": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
       }
     },
     "/auth/accounts": {
@@ -1867,6 +1977,946 @@
           "required": true
         }
       }
+    },
+    "/auth/update-user": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.updateUser",
+        "parameters": [],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": "string"
+                        },
+                        "emailVerified": {
+                          "type": "boolean"
+                        },
+                        "image": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "email",
+                        "emailVerified",
+                        "image",
+                        "createdAt",
+                        "updatedAt"
+                      ],
+                      "additionalProperties": false,
+                      "title": "effect-auth/User.json"
+                    }
+                  },
+                  "required": [
+                    "user"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No user matched the request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_UserNotFoundEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Patches the fields the body names — the base name and image, plus whichever of the deployment's own user fields a client may write. An absent key leaves the column alone; an explicit null image clears it. The address is not editable here: moving an account to another one is the change-email flow.",
+        "summary": "Edit the caller's own profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "image": {
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/auth/change-email": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.changeEmail",
+        "parameters": [],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The requested address is the one the account already has",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_EmailUnchangedEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is not fresh enough for this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_SessionNotFreshEncoded"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_RateLimitedEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns.",
+        "summary": "Start moving the account to another e-mail address",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newEmail": {
+                    "type": "string"
+                  },
+                  "callbackURL": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "newEmail"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/auth/change-email/confirm": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.confirmEmailChange",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The verification token is invalid or has already been used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_InvalidTokenEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Consumes the first-hop token and sends the second hop to the new address. Nothing about the account has changed yet.",
+        "summary": "Confirm an e-mail change from the current address"
+      }
+    },
+    "/auth/change-email/verify": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.verifyEmailChange",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The verification token is invalid or has already been used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_InvalidTokenEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An account already exists for that e-mail address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_UserAlreadyExistsEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Consumes the second-hop token and moves the account, which ends up verified — the link was delivered to the address it names. UserAlreadyExists means somebody claimed that address between the two hops.",
+        "summary": "Complete an e-mail change from the new address"
+      }
+    },
+    "/auth/delete-user": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.deleteUser",
+        "parameters": [],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "Deleted",
+                        "ConfirmationSent"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The credentials provided did not match a known sign-in method | Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect-auth_InvalidCredentialsEncoded"
+                    },
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is not fresh enough for this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_SessionNotFreshEncoded"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_RateLimitedEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed.",
+        "summary": "Delete the caller's own account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "password": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "callbackURL": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/auth/delete-user/callback": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.deleteUserCallback",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "<No Content>",
+            "headers": {
+              "location": {
+                "schema": {
+                  "type": "string"
+                },
+                "required": true
+              }
+            }
+          },
+          "400": {
+            "description": "The verification token is invalid or has already been used",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_InvalidTokenEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "The link has to be followed by the account's own signed-in browser: the token is claimed first and only then checked against the caller, so a link presented by anybody else is burnt as well as refused.",
+        "summary": "Complete an account deletion from the mailed link"
+      }
+    },
+    "/auth/set-password": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.setPassword",
+        "parameters": [],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session is not fresh enough for this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_SessionNotFreshEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account already has a password credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_PasswordAlreadySetEncoded"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The password did not satisfy the configured password policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_PasswordPolicyViolationEncoded"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_RateLimitedEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "For an account provisioned through a provider. It can never replace an existing password — that is change-password, or the reset flow — and requires a fresh session. Nothing is revoked: no credential was invalidated.",
+        "summary": "Give an account without one its first password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "newPassword": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "newPassword"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/auth/get-access-token": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.getAccessToken",
+        "parameters": [],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accessToken": {
+                      "type": "string"
+                    },
+                    "accessTokenExpiresAt": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "idToken": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "scopes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "providerId": {
+                      "type": "string"
+                    },
+                    "accountId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "accessToken",
+                    "accessTokenExpiresAt",
+                    "idToken",
+                    "scopes",
+                    "providerId",
+                    "accountId"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The provider tokens for that account could not be refreshed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_TokenRefreshFailedEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFound",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_NotFoundEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Refreshes first only if the stored token is about to expire. An account that is not the caller's is reported as NotFound, exactly as one that does not exist.",
+        "summary": "A usable provider access token for one of the caller's accounts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/auth/refresh-token": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "auth.refreshToken",
+        "parameters": [],
+        "security": [
+          {
+            "secureSessionCookie": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accessToken": {
+                      "type": "string"
+                    },
+                    "accessTokenExpiresAt": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "idToken": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "scopes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "providerId": {
+                      "type": "string"
+                    },
+                    "accountId": {
+                      "type": "string"
+                    },
+                    "refreshToken": {
+                      "type": "string"
+                    },
+                    "refreshTokenExpiresAt": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "accessToken",
+                    "accessTokenExpiresAt",
+                    "idToken",
+                    "scopes",
+                    "providerId",
+                    "accountId",
+                    "refreshToken",
+                    "refreshTokenExpiresAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The provider tokens for that account could not be refreshed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect-auth_TokenRefreshFailedEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_UnauthorizedEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFound",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/effect_HttpApiError_NotFoundEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Unconditional, unlike get-access-token. For a client that has learnt the stored access token is no good. The granted scope is never overwritten by a refresh.",
+        "summary": "Spend one of the caller's refresh tokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "accountId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "accountId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
     }
   },
   "components": {
@@ -2050,7 +3100,8 @@
               "TokenExchangeFailed",
               "UserInfoFailed",
               "IdTokenInvalid",
-              "ProviderUnavailable"
+              "ProviderUnavailable",
+              "ClientSecretUnavailable"
             ]
           }
         },
@@ -2088,6 +3139,82 @@
         },
         "required": [
           "_tag"
+        ],
+        "additionalProperties": false
+      },
+      "effect-auth_UserNotFoundEncoded": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "UserNotFound"
+            ]
+          }
+        },
+        "required": [
+          "_tag"
+        ],
+        "additionalProperties": false
+      },
+      "effect-auth_EmailUnchangedEncoded": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "EmailUnchanged"
+            ]
+          }
+        },
+        "required": [
+          "_tag"
+        ],
+        "additionalProperties": false
+      },
+      "effect-auth_PasswordAlreadySetEncoded": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "PasswordAlreadySet"
+            ]
+          }
+        },
+        "required": [
+          "_tag"
+        ],
+        "additionalProperties": false
+      },
+      "effect-auth_TokenRefreshFailedEncoded": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "TokenRefreshFailed"
+            ]
+          },
+          "accountId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "ProviderNotSupported",
+              "RefreshNotSupported",
+              "RefreshTokenMissing",
+              "AccessTokenMissing",
+              "RefreshRejected",
+              "ProviderUnavailable"
+            ]
+          }
+        },
+        "required": [
+          "_tag",
+          "accountId",
+          "reason"
         ],
         "additionalProperties": false
       }

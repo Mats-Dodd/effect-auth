@@ -88,10 +88,29 @@ export interface VerifyOptions {
   readonly providerId: string
   /** The compact JWS handed back by the token endpoint. */
   readonly token: Redacted.Redacted<string>
-  /** The issuer the token must claim. */
-  readonly issuer: string
-  /** The audience the token must carry — our OAuth client id. */
-  readonly audience: string
+  /**
+   * The issuer the token must claim.
+   *
+   * **Details**
+   *
+   * A string for a single-tenant provider. A **function** for a multi-tenant
+   * one, where the expected issuer is derived from the token's own claims —
+   * Microsoft Entra reads it off `tid`. Returning `null` rejects the token.
+   *
+   * **Gotchas**
+   *
+   * The function runs on the payload of a token whose signature has been
+   * checked but whose issuer has not, so it decides what to *expect*, never
+   * what to believe: whatever it returns is then compared with the token's own
+   * `iss`, and a mismatch is a rejection. Write it so that it constrains the
+   * issuer — a function that echoes `claims.iss` back is not a check.
+   */
+  readonly issuer: string | ((claims: Readonly<Record<string, unknown>>) => string | null)
+  /**
+   * The audience the token must carry — our OAuth client id, or the set of
+   * client ids this deployment accepts tokens for.
+   */
+  readonly audience: string | ReadonlyArray<string>
   /** Where the verification key comes from. */
   readonly keys: KeyResolver
   /**
@@ -441,12 +460,18 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   const invalid = new ProviderError({ providerId: options.providerId, reason: "IdTokenInvalid" })
   const now = yield* DateTime.now
 
+  // A fixed issuer is handed to jose, which checks it alongside the signature.
+  // A derived one cannot be: it is a function of claims that are not yet
+  // trustworthy, so the expectation is computed *after* the signature verifies
+  // and compared below. Either way, exactly one comparison decides it.
+  const fixedIssuer = typeof options.issuer === "string" ? options.issuer : undefined
+
   const attempt = (keys: KeyResolver) =>
     Effect.tryPromise({
       try: () =>
         jwtVerify(Redacted.value(options.token), keys, {
-          issuer: options.issuer,
-          audience: options.audience,
+          ...(fixedIssuer === undefined ? {} : { issuer: fixedIssuer }),
+          audience: typeof options.audience === "string" ? options.audience : [...options.audience],
           currentDate: DateTime.toDate(now),
           clockTolerance: options.clockToleranceSeconds ?? 0,
           ...(options.algorithms === undefined ? {} : { algorithms: [...options.algorithms] })
@@ -462,6 +487,14 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   const payload = verified.payload
   const claims = yield* Effect.mapError(decodeClaims(payload), () => invalid)
 
+  // The derived case: what the deployment expects for *this* token, against what
+  // the token says. A function that cannot name an issuer for these claims — an
+  // unrecognised tenant — rejects, exactly as a mismatch does.
+  const issuer = fixedIssuer ?? (typeof options.issuer === "string" ? options.issuer : options.issuer(payload))
+  if (issuer === null || issuer.length === 0 || payload.iss !== issuer) {
+    return yield* Effect.fail(invalid)
+  }
+
   const nonce = claims.nonce ?? null
   if (options.nonce !== null && nonce !== options.nonce) {
     return yield* Effect.fail(invalid)
@@ -469,7 +502,7 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
 
   return {
     subject: claims.sub,
-    issuer: options.issuer,
+    issuer,
     audience: audienceOf(claims.aud),
     email: claims.email ?? null,
     emailVerified: claims.email_verified !== undefined,

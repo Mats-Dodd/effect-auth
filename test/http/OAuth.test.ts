@@ -56,6 +56,8 @@ const stubLayer = Layer.effectContext(Effect.gen(function*() {
           }
         ),
       callback: () => Effect.die("the handlers must call `complete`, not `callback`"),
+      accessToken: () => Effect.die("the stub flow holds no provider tokens"),
+      refreshTokens: () => Effect.die("the stub flow holds no provider tokens"),
       complete: () =>
         Effect.flatMap(
           Ref.get(outcome),

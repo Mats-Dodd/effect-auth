@@ -249,6 +249,18 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         )
         assert.strictEqual(byProvider.id, credential.id)
 
+        const byId = yield* expectSome(
+          yield* accounts.findByIdAndUserId(byIssuer.id, user.id),
+          "expected the github account by its own id"
+        )
+        assert.strictEqual(byId.id, byIssuer.id)
+
+        // Ownership is a predicate of the statement, not a check afterwards: a
+        // real account belonging to somebody else answers exactly as a
+        // non-existent one does.
+        const stranger = yield* createUser(uniqueEmail("accounts-stranger"))
+        assert.isTrue(Option.isNone(yield* accounts.findByIdAndUserId(byIssuer.id, stranger.id)))
+
         assert.strictEqual(yield* accounts.countByUserId(user.id), 2)
         assert.strictEqual((yield* accounts.listByUserId(user.id)).length, 2)
 

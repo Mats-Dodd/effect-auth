@@ -50,15 +50,19 @@ import { Atom, AtomHttpApi } from "effect/unstable/reactivity"
 import type {
   CannotUnlinkLastAccount,
   EmailNotVerified,
+  EmailUnchanged,
   InvalidCredentials,
   InvalidToken,
   NotFound,
   OAuthProviderError,
+  PasswordAlreadySet,
   PasswordPolicyViolation,
   RateLimited,
   SessionNotFresh,
+  TokenRefreshFailed,
   Unauthorized,
-  UserAlreadyExists
+  UserAlreadyExists,
+  UserNotFound
 } from "../domain/Errors.js"
 import type {
   AccountPublic,
@@ -66,20 +70,35 @@ import type {
   SessionWithUserOf,
   SignUpResponseOf,
   UserFields,
-  UserModel
+  UserModel,
+  UserPublicOf
 } from "../domain/Schema.js"
-import type { AuthApiGroupOf, OAuthRedirect, Ok, SignUpEmailOf } from "../http/AuthApi.js"
+import type {
+  AccessTokenResponse,
+  AuthApiGroupOf,
+  DeleteUserResponse,
+  OAuthRedirect,
+  Ok,
+  RefreshTokenResponse,
+  SignUpEmailOf,
+  UpdateUserOf
+} from "../http/AuthApi.js"
 import {
+  AccountSelection,
   AuthApi,
+  ChangeEmailPayload,
   ChangePasswordPayload,
+  DeleteUserPayload,
   LinkSocialPayload,
   RequestPasswordResetPayload,
   ResetPasswordPayload,
   RevokeSessionPayload,
   SendVerificationEmailPayload,
+  SetPasswordPayload,
   SignInEmailPayload,
   SignInSocialPayload,
   SignUpEmailPayload,
+  TokenQuery,
   UnlinkAccountPayload,
   VerifyEmailQuery
 } from "../http/AuthApi.js"
@@ -230,6 +249,48 @@ export type LinkSocial = typeof LinkSocialPayload.Type
  * @since 1.0.0
  */
 export type UnlinkAccount = typeof UnlinkAccountPayload.Type
+
+/**
+ * The argument of {@link AuthClient.changeEmail}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type ChangeEmail = typeof ChangeEmailPayload.Type
+
+/**
+ * The argument of {@link AuthClient.confirmEmailChange} and
+ * {@link AuthClient.verifyEmailChange} — the token out of a mailed link.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type TokenArgument = typeof TokenQuery.Type
+
+/**
+ * The argument of {@link AuthClient.deleteUser}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type DeleteUser = typeof DeleteUserPayload.Type
+
+/**
+ * The argument of {@link AuthClient.setPassword}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type SetPassword = typeof SetPasswordPayload.Type
+
+/**
+ * The argument of {@link AuthClient.getAccessToken} and
+ * {@link AuthClient.refreshToken}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type SelectAccount = typeof AccountSelection.Type
 
 // -----------------------------------------------------------------------------
 // Options
@@ -417,6 +478,57 @@ export interface AuthClient<F extends UserFields = {}> {
     Ok,
     CannotUnlinkLastAccount | NotFound | SessionNotFresh | Unauthorized
   >
+  /**
+   * Edits the caller's own profile. The session atom carries the user, so this
+   * invalidates {@link sessionKey}.
+   */
+  readonly updateUser: Atom.AtomResultFn<
+    UpdateUserOf<F>,
+    { readonly user: UserPublicOf<F> },
+    UserNotFound | Unauthorized
+  >
+  /**
+   * Starts moving the account to another address. Succeeds whether or not the
+   * address is free — see the endpoint. Nothing has changed when it returns, so
+   * nothing is invalidated.
+   */
+  readonly changeEmail: Atom.AtomResultFn<
+    ChangeEmail,
+    Ok,
+    EmailUnchanged | SessionNotFresh | RateLimited | Unauthorized
+  >
+  /** Consumes the first-hop token, from the current address. */
+  readonly confirmEmailChange: Atom.AtomResultFn<TokenArgument, Ok, InvalidToken>
+  /** Consumes the second-hop token, from the new address. The address changes, so this invalidates {@link sessionKey}. */
+  readonly verifyEmailChange: Atom.AtomResultFn<TokenArgument, Ok, InvalidToken | UserAlreadyExists>
+  /**
+   * Deletes the caller's own account, or asks for the confirmation mail that
+   * will. Read `status` to tell the two apart — and invalidate either way, since
+   * a `"Deleted"` answer means every atom below is now unauthorized.
+   */
+  readonly deleteUser: Atom.AtomResultFn<
+    DeleteUser,
+    DeleteUserResponse,
+    InvalidCredentials | SessionNotFresh | RateLimited | Unauthorized
+  >
+  /** Gives an account without one its first password. Invalidates {@link accountsKey}. */
+  readonly setPassword: Atom.AtomResultFn<
+    SetPassword,
+    Ok,
+    PasswordAlreadySet | PasswordPolicyViolation | SessionNotFresh | RateLimited | Unauthorized
+  >
+  /** A usable provider access token for one of the caller's linked accounts. */
+  readonly getAccessToken: Atom.AtomResultFn<
+    SelectAccount,
+    AccessTokenResponse,
+    NotFound | TokenRefreshFailed | Unauthorized
+  >
+  /** Spends one of the caller's refresh tokens. */
+  readonly refreshToken: Atom.AtomResultFn<
+    SelectAccount,
+    RefreshTokenResponse,
+    NotFound | TokenRefreshFailed | Unauthorized
+  >
 
   /**
    * Starts an OAuth sign-in and answers the authorization URL to send the
@@ -534,6 +646,17 @@ export const make = <
     UserAlreadyExists | PasswordPolicyViolation | RateLimited
   >
 
+  // The same cast, for the same reason, on the other endpoint whose *payload*
+  // type mentions `F`. See the comment above: `HttpApiEndpoint.ClientRequest`
+  // branches on the payload type, and a conditional over an unresolved `F` has no
+  // writable form inside this function — while at a call site, where `F` is a
+  // concrete field map, it resolves to exactly what is stated here.
+  const updateUserMutation = service.mutation("auth", "updateUser") as unknown as Atom.AtomResultFn<
+    PayloadRequest<UpdateUserOf<F>>,
+    { readonly user: UserPublicOf<F> },
+    UserNotFound | Unauthorized
+  >
+
   return {
     service,
     runtime: service.runtime,
@@ -568,6 +691,27 @@ export const make = <
     signInSocial,
     linkSocial,
     unlinkAccount: withPayload<UnlinkAccount>()(service.mutation("auth", "unlinkAccount"), [accountsKey]),
+
+    updateUser: withPayload<UpdateUserOf<F>>()(updateUserMutation, [sessionKey]),
+    changeEmail: withPayload<ChangeEmail>()(service.mutation("auth", "changeEmail"), undefined),
+    confirmEmailChange: withQuery<TokenArgument>()(
+      service.mutation("auth", "confirmEmailChange"),
+      [sessionKey]
+    ),
+    verifyEmailChange: withQuery<TokenArgument>()(
+      service.mutation("auth", "verifyEmailChange"),
+      [sessionKey]
+    ),
+    // A `"Deleted"` answer leaves nothing behind, so every atom that reads the
+    // caller goes with it. A `"ConfirmationSent"` one invalidates three atoms
+    // that had not changed, which costs three refetches and no correctness.
+    deleteUser: withPayload<DeleteUser>()(
+      service.mutation("auth", "deleteUser"),
+      [sessionKey, sessionsKey, accountsKey]
+    ),
+    setPassword: withPayload<SetPassword>()(service.mutation("auth", "setPassword"), [accountsKey]),
+    getAccessToken: withPayload<SelectAccount>()(service.mutation("auth", "getAccessToken"), undefined),
+    refreshToken: withPayload<SelectAccount>()(service.mutation("auth", "refreshToken"), undefined),
 
     signInSocialUrl: (payload) => Effect.map(run(signInSocial, payload), (_) => _.url),
     linkSocialUrl: (payload) => Effect.map(run(linkSocial, payload), (_) => _.url)

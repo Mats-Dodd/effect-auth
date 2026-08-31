@@ -49,6 +49,29 @@ const maxAgeSeconds = (
   return maxAge === undefined ? undefined : Duration.toSeconds(Duration.fromInputUnsafe(maxAge))
 }
 
+/**
+ * The status behind a request the generated client could not decode.
+ *
+ * **Details**
+ *
+ * An endpoint whose feature is switched off answers `404`, which is a status no
+ * such endpoint declares — so the client reports an `HttpClientError` carrying
+ * the response rather than one of the contract's own errors. Reading the status
+ * off it is how a test says "not served" without asserting on the shape of a
+ * decode failure. Anything the client *could* decode answers its own status.
+ */
+const refusedStatus = <A, E>(request: Effect.Effect<A, E>): Effect.Effect<number> =>
+  Effect.match(request, {
+    onSuccess: () => 200,
+    onFailure: (error) =>
+      typeof error === "object" && error !== null && "reason" in error &&
+        typeof error.reason === "object" && error.reason !== null && "response" in error.reason &&
+        typeof error.reason.response === "object" && error.reason.response !== null &&
+        "status" in error.reason.response && typeof error.reason.response.status === "number"
+        ? error.reason.response.status
+        : 0
+  })
+
 const sevenDays = Duration.toSeconds(Duration.days(7))
 const oneDay = Duration.toSeconds(Duration.days(1))
 
@@ -511,6 +534,111 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         }))
     })
   })
+})
+
+layer(AuthTest.layerHttp())("http/Handlers opt-in flows", (it) => {
+  it.effect("does not serve change-email or delete-user until a deployment asks for them", () =>
+    Effect.gen(function*() {
+      const { client } = yield* signedUp(uniqueEmail("opt-in-off"))
+
+      // The endpoints are *declared* unconditionally — a schema-driven API has
+      // one shape, not one per configuration — so a deployment that has not
+      // opted in answers 404, which is what "this deployment does not serve
+      // that" means over HTTP rather than inventing an error the contract does
+      // not mention.
+      assert.strictEqual(
+        yield* refusedStatus(client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-new") } })),
+        404
+      )
+      assert.strictEqual(yield* refusedStatus(client.auth.deleteUser({ payload: {} })), 404)
+      assert.strictEqual(
+        yield* refusedStatus(client.auth.confirmEmailChange({ query: { token: "irrelevant" } })),
+        404
+      )
+
+      // And the account is still there, which is the assertion that matters.
+      const session = yield* client.auth.getSession()
+      assert.strictEqual(session.user.emailVerified, false)
+    }))
+
+  it.layer(AuthTest.layerHttp({ user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } } }))(
+    "once they are switched on",
+    (it) => {
+      it.effect("stops answering 404 and reaches the domain instead", () =>
+        Effect.gen(function*() {
+          const { client } = yield* signedUp(uniqueEmail("opt-in-on"))
+
+          // The gate is the only thing under test here. `Users.requestEmailChange`
+          // has no body yet and dies saying so, which is precisely the evidence
+          // that the request got past the gate and into the service — a 404
+          // would mean it never did.
+          const reached = yield* Effect.exit(
+            client.auth.changeEmail({ payload: { newEmail: uniqueEmail("opt-in-next") } })
+          )
+          assert.isTrue(reached._tag === "Failure" && Cause.hasDies(reached.cause))
+        }))
+    }
+  )
+})
+
+layer(AuthTest.layerHttp())("http/Handlers form_post callback", (it) => {
+  it.effect("turns a cross-site POST into a top-level GET carrying the same parameters", () =>
+    Effect.gen(function*() {
+      const { client, cookies } = yield* makeClient()
+
+      const [, response] = yield* client.auth.oauthCallbackForm({
+        params: { providerId: "apple" },
+        payload: { code: "the-code", state: "the-state", user: `{"name":{"firstName":"Ada"}}` },
+        responseMode: "decoded-and-response"
+      })
+
+      // The whole endpoint is a hop. A cross-site POST carries no
+      // `SameSite=Lax` cookie, so completing the flow here could neither read
+      // this browser's session nor write one it would keep.
+      assert.strictEqual(response.status, 302)
+      const location = new URL(response.headers["location"] ?? "")
+      assert.strictEqual(location.origin, "http://localhost:3000")
+      assert.strictEqual(location.pathname, "/auth/callback/apple")
+      assert.strictEqual(location.searchParams.get("code"), "the-code")
+      assert.strictEqual(location.searchParams.get("state"), "the-state")
+      assert.strictEqual(location.searchParams.get("user"), `{"name":{"firstName":"Ada"}}`)
+      // Nothing the provider did not send.
+      assert.isFalse(location.searchParams.has("error"))
+      // And nothing is signed in by a hop.
+      assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
+    }))
+
+  it.effect("sends the browser to this deployment, whatever the provider named", () =>
+    Effect.gen(function*() {
+      // The target is built from `baseUrl` and `basePath`, never from the
+      // request's own `Host` — which is attacker-controllable, and a `Location`
+      // built from one is an open redirect.
+      const { client } = yield* makeClient({ headers: { host: "evil.test" } })
+
+      const [, response] = yield* client.auth.oauthCallbackForm({
+        params: { providerId: "apple" },
+        payload: { error: "user_cancelled_authorize" },
+        responseMode: "decoded-and-response"
+      })
+
+      const location = new URL(response.headers["location"] ?? "")
+      assert.strictEqual(location.origin, "http://localhost:3000")
+      assert.strictEqual(location.searchParams.get("error"), "user_cancelled_authorize")
+    }))
+
+  it.effect("escapes a provider id rather than letting it shape the path", () =>
+    Effect.gen(function*() {
+      const { client } = yield* makeClient()
+
+      const [, response] = yield* client.auth.oauthCallbackForm({
+        params: { providerId: "../../evil" },
+        payload: {},
+        responseMode: "decoded-and-response"
+      })
+
+      const location = new URL(response.headers["location"] ?? "")
+      assert.strictEqual(location.pathname, "/auth/callback/..%2F..%2Fevil")
+    }))
 })
 
 describe("http/Handlers dieOn", () => {

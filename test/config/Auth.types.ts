@@ -14,12 +14,14 @@ import type { RateLimiter } from "effect/unstable/persistence"
 import type { SqlClient } from "effect/unstable/sql"
 import { Auth, AuthApi, AuthEmails, AuthHandlers } from "../../src/index.js"
 import type { AuthConfig } from "../../src/config/AuthConfig.js"
+import type { DiscoveryError } from "../../src/domain/Errors.js"
 import type { Hmac } from "../../src/crypto/Hmac.js"
 import type { Token } from "../../src/crypto/Token.js"
 import type { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthEvents } from "../../src/domain/Events.js"
 import type { Passwords } from "../../src/domain/Passwords.js"
 import type { Sessions } from "../../src/domain/Sessions.js"
+import type { Users } from "../../src/domain/Users.js"
 import type {
   AccountStore,
   SessionStore,
@@ -55,6 +57,7 @@ type Exposed =
   | Sessions
   | Accounts
   | Passwords
+  | Users
   | Authenticated
   | RateLimiter.RateLimiter
 
@@ -107,9 +110,13 @@ const _noEmptyProviders = Auth.layerWithOAuth({
 // channel and nothing else.
 // ---------------------------------------------------------------------------
 
+// Discovery joins `ConfigError` in the error channel: a provider list entry may
+// be an `OidcDiscovery.make`, which reads a document over the network before the
+// stack is built. A provider that only reads the environment simply never fails
+// that way.
 const _configured: Layer.Layer<
   Exposed | OAuthFlow,
-  Config.ConfigError,
+  Config.ConfigError | DiscoveryError,
   SqlClient.SqlClient | AuthEmails.AuthEmails | HttpClient.HttpClient
 > = Auth.layerConfigWithOAuth({
   baseUrl: Config.string("BASE_URL"),

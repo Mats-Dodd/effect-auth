@@ -371,6 +371,27 @@ export interface AccountStoreService {
   ) => Effect.Effect<Option.Option<Account>, PersistenceError>
 
   /**
+   * Looks an account up by its primary key, scoped to the user it must belong
+   * to.
+   *
+   * **When to use**
+   *
+   * Wherever a caller names one of *their own* accounts — asking for its access
+   * token, refreshing it. The ownership predicate is part of the statement, so
+   * there is no read-then-check window and no branch that could be skipped.
+   *
+   * **Gotchas**
+   *
+   * `None` covers "no such account" and "not yours" alike, and deliberately so:
+   * telling them apart would let a signed-in caller probe which account ids
+   * exist.
+   */
+  readonly findByIdAndUserId: (
+    id: AccountId,
+    userId: UserId
+  ) => Effect.Effect<Option.Option<Account>, PersistenceError>
+
+  /**
    * Looks up a user's account for one provider — including the synthetic
    * `local:credential` provider that holds the password hash.
    */

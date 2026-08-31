@@ -18,6 +18,7 @@
  */
 import { Schema } from "effect"
 import { HttpApiError } from "effect/unstable/httpapi"
+import { AccountId } from "./Schema.js"
 import type { PersistenceError } from "./Stores.js"
 
 // -----------------------------------------------------------------------------
@@ -156,6 +157,49 @@ export class PasswordPolicyViolation extends Schema.TaggedError<PasswordPolicyVi
   httpApiStatus: 422
 }) {}
 
+/**
+ * A change-email request named the address the account already has.
+ *
+ * **Details**
+ *
+ * The one case `changeEmail` refuses out loud. Every other outcome — including
+ * "that address already belongs to somebody else" — answers `200`, because the
+ * endpoint would otherwise tell a signed-in caller which addresses are
+ * registered. Naming your *own* address leaks nothing: the caller already knows
+ * it.
+ *
+ * @category errors
+ * @since 1.0.0
+ */
+export class EmailUnchanged
+  extends Schema.TaggedError<EmailUnchanged>("effect-auth/EmailUnchanged")("EmailUnchanged", {}, {
+    description: "The requested address is the one the account already has",
+    httpApiStatus: 400
+  })
+{}
+
+/**
+ * `setPassword` was called for a user who already has a password.
+ *
+ * **Gotchas**
+ *
+ * This endpoint adds a credential; it never replaces one. Changing a known
+ * password is `changePassword` (which asks for the current one) and replacing a
+ * forgotten one is the reset flow (which proves control of the mailbox). If
+ * `setPassword` could overwrite, a stolen session would be enough to lock the
+ * owner out — which is exactly what the fresh-session guard alone does not
+ * prevent for ever.
+ *
+ * @category errors
+ * @since 1.0.0
+ */
+export class PasswordAlreadySet
+  extends Schema.TaggedError<PasswordAlreadySet>("effect-auth/PasswordAlreadySet")("PasswordAlreadySet", {}, {
+    description: "The account already has a password credential",
+    httpApiStatus: 409
+  })
+{}
+
 // -----------------------------------------------------------------------------
 // Sessions
 // -----------------------------------------------------------------------------
@@ -276,7 +320,19 @@ export const OAuthFailureReason = Schema.Literals([
   /** An OIDC `id_token` failed signature, issuer, audience, expiry or nonce validation. */
   "IdTokenInvalid",
   /** The provider could not be reached, or answered with a redirect where none is permitted. */
-  "ProviderUnavailable"
+  "ProviderUnavailable",
+  /**
+   * The client secret could not be produced.
+   *
+   * **Details**
+   *
+   * Only a provider whose secret is *minted* rather than configured can report
+   * this — Apple, whose secret is a short-lived ES256 assertion signed with the
+   * deployment's private key. A malformed key, or a signing primitive the
+   * runtime does not offer, lands here rather than as a token exchange the
+   * provider silently refuses.
+   */
+  "ClientSecretUnavailable"
 ])
 
 /**
@@ -306,6 +362,117 @@ export class OAuthProviderError
   }, {
     description: "The OAuth provider exchange failed",
     httpApiStatus: 502
+  })
+{}
+
+/**
+ * Why a stored provider token could not be turned into a usable access token.
+ *
+ * **Details**
+ *
+ * A closed set, and each member is a *configuration or provider* condition the
+ * caller can act on — reconnect the account, ask the provider again later — not
+ * a description of somebody else's credentials.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const TokenRefreshReason = Schema.Literals([
+  /** The account belongs to a provider this instance no longer serves. */
+  "ProviderNotSupported",
+  /** The provider is served, but refreshing is switched off for it. */
+  "RefreshNotSupported",
+  /** The account has no refresh token: the provider never issued one, or it was consumed. */
+  "RefreshTokenMissing",
+  /** The account has no access token at all, and none could be obtained. */
+  "AccessTokenMissing",
+  /** The provider refused the refresh — usually a revoked or expired grant. */
+  "RefreshRejected",
+  /** The provider could not be reached, or answered with a redirect where none is permitted. */
+  "ProviderUnavailable"
+])
+
+/**
+ * The type of a {@link TokenRefreshReason}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type TokenRefreshReason = typeof TokenRefreshReason.Type
+
+/**
+ * A provider access token could not be produced for one of the caller's linked
+ * accounts.
+ *
+ * **Gotchas**
+ *
+ * `accountId` is echoed because the caller named it; nothing else about the
+ * account, and nothing the provider said, is. A refusal from a provider
+ * routinely quotes the refresh token it refused.
+ *
+ * @category errors
+ * @since 1.0.0
+ */
+export class TokenRefreshFailed
+  extends Schema.TaggedError<TokenRefreshFailed>("effect-auth/TokenRefreshFailed")("TokenRefreshFailed", {
+    accountId: AccountId,
+    reason: TokenRefreshReason
+  }, {
+    description: "The provider tokens for that account could not be refreshed",
+    httpApiStatus: 400
+  })
+{}
+
+/**
+ * Why an OIDC discovery document could not be turned into a provider.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export const DiscoveryFailureReason = Schema.Literals([
+  /** The discovery endpoint could not be read, or answered with a redirect. */
+  "Unreachable",
+  /** The document was not JSON, or not an object. */
+  "Malformed",
+  /** The document declared no `issuer`. */
+  "IssuerMissing",
+  /** The document's `issuer` is not the one the deployment configured. */
+  "IssuerMismatch",
+  /** The document declared no authorization or no token endpoint. */
+  "EndpointsMissing",
+  /** The document declared no `jwks_uri`, and none was configured. */
+  "KeysMissing"
+])
+
+/**
+ * The type of a {@link DiscoveryFailureReason}.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export type DiscoveryFailureReason = typeof DiscoveryFailureReason.Type
+
+/**
+ * An OIDC discovery document could not be turned into a provider configuration.
+ *
+ * **Gotchas**
+ *
+ * This is a *start-up* failure: discovery runs when the stack is built, so a
+ * deployment whose provider cannot be discovered fails to boot rather than
+ * serving an endpoint that answers `UnknownProvider`. It reaches no endpoint's
+ * error union, and `id` is the provider id the deployment wrote down — never
+ * anything the remote document said.
+ *
+ * @category errors
+ * @since 1.0.0
+ */
+export class DiscoveryError
+  extends Schema.TaggedError<DiscoveryError>("effect-auth/DiscoveryError")("DiscoveryError", {
+    id: Schema.String,
+    reason: DiscoveryFailureReason
+  }, {
+    description: "An OIDC discovery document could not be turned into a provider",
+    httpApiStatus: 500
   })
 {}
 
@@ -441,12 +608,16 @@ export type AuthError =
   | UserAlreadyExists
   | UserNotFound
   | PasswordPolicyViolation
+  | EmailUnchanged
+  | PasswordAlreadySet
   | SessionExpired
   | SessionNotFresh
   | InvalidToken
   | TokenExpired
   | OAuthStateMismatch
   | OAuthProviderError
+  | TokenRefreshFailed
+  | DiscoveryError
   | AccountAlreadyLinked
   | CannotUnlinkLastAccount
   | RateLimited

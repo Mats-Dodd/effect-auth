@@ -122,14 +122,15 @@ Rules:
    the way out. `UserModel<F>` is the statement of what that value is, and every consumer in the
    library is checked against the statement rather than against the construction. Added by the
    custom-user-fields wave; keep it to exactly one `as unknown as` in that module.
-4. `src/client/AuthClient.ts` — the `signUpEmail` mutation atom's *argument* type. `signUpEmail`
-   is the one endpoint whose payload type mentions `F`, and `HttpApiEndpoint.ClientRequest`
+4. `src/client/AuthClient.ts` — the *argument* type of the mutation atoms whose payload mentions
+   `F`: `signUpEmail`, and `updateUser` since the core-parity wave. `HttpApiEndpoint.ClientRequest`
    branches on the payload type to decide the request shape; a conditional over an `F` that is
    still a type parameter stays deferred, so inside the generic `make` the argument type has no
    writable form at all. At a call site, where `F` is a concrete field map, it resolves to exactly
    what the cast states. Only the argument is named — the atom, the request it issues and the
-   schema it encodes through are `AtomHttpApi`'s own. Added by the custom-user-fields wave; keep
-   it to exactly two `as unknown as` in that module.
+   schema it encodes through are `AtomHttpApi`'s own. Added by the custom-user-fields wave, widened
+   by core parity; keep it to exactly one such cast per parameterized-payload endpoint, and
+   therefore to three `as unknown as` in that module in total (this pair plus §5.2's).
 
    The same deferral is why `src/http/Handlers.ts` narrows to the *base* group rather than to
    `AuthApiGroupOf<F>`: a handler built against a parameterized payload could not read

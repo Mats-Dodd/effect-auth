@@ -41,11 +41,12 @@ import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
-import { OAuthProviderError } from "../domain/Errors.js"
+import { NotFound, OAuthProviderError } from "../domain/Errors.js"
 import { Passwords, passwordsOf } from "../domain/Passwords.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import { Sessions, sessionsOf } from "../domain/Sessions.js"
+import { Users, usersOf } from "../domain/Users.js"
 import { OAuthFlow } from "../oauth/Flow.js"
 import type { AuthApiGroupOf } from "./AuthApi.js"
 import { AuthApiGroup } from "./AuthApi.js"
@@ -224,6 +225,41 @@ export const clearSessionCookies = (
 ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
   Effect.andThen(clearSessionCookie(config), cache.clear)
 
+/**
+ * The `GET` callback this deployment serves, carrying everything a `form_post`
+ * provider sent in its body as a query string.
+ *
+ * **Details**
+ *
+ * Built from `baseUrl` and `basePath` rather than from the incoming request, so
+ * the browser is sent to this deployment's own callback and nowhere else — a
+ * `Host` header is attacker-controllable and a `Location` built from one is an
+ * open redirect. Absent fields are simply not written.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const callbackFormTarget = (
+  config: AuthConfigService,
+  providerId: string,
+  form: {
+    readonly code?: string | undefined
+    readonly state?: string | undefined
+    readonly error?: string | undefined
+    readonly error_description?: string | undefined
+    readonly user?: string | undefined
+  }
+): string => {
+  const url = new URL(
+    `${config.basePath}/callback/${encodeURIComponent(providerId)}`,
+    config.baseUrl
+  )
+  for (const [key, value] of Object.entries(form)) {
+    if (value !== undefined) url.searchParams.set(key, value)
+  }
+  return url.toString()
+}
+
 // -----------------------------------------------------------------------------
 // Layer
 // -----------------------------------------------------------------------------
@@ -245,6 +281,7 @@ export type HandlerServices =
   | AuthConfig
   | Sessions
   | Passwords
+  | Users
   | Accounts
   | SessionCache
   | Authenticated
@@ -473,6 +510,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
         // deployment's own fields.
         const sessions = yield* sessionsOf(model)
         const passwords = yield* passwordsOf(model)
+        const users = yield* usersOf(model)
         const accounts = yield* Accounts
         const cache = yield* SessionCache
         const limiter = yield* RateLimiter.RateLimiter
@@ -708,6 +746,137 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               yield* accounts.unlink(payload.accountId, user.id).pipe(serverFault)
               return acknowledged
             }))
+          .handle("updateUser", ({ payload }) =>
+            Effect.gen(function*() {
+              const user = yield* CurrentUser
+              const session = yield* CurrentSession
+              const updated = yield* users.update({
+                userId: user.id,
+                name: payload.name,
+                image: payload.image,
+                // The deployment's own writable fields, recovered from the model
+                // — this handler is checked against the base group, so the
+                // payload's custom half is invisible to it otherwise.
+                ...model.extrasOf(payload, "jsonUpdate")
+              }).pipe(serverFault)
+              // The snapshot in this browser's cookie now names the old profile.
+              // Rewriting it here is cheaper than invalidating it, and keeps the
+              // very next request a cache hit.
+              yield* cache.write(session, updated)
+              return { user: model.toPublic(updated) }
+            }))
+          .handle("changeEmail", ({ payload, request }) =>
+            Effect.gen(function*() {
+              yield* rateLimit(credentials, request)
+              if (!config.user.changeEmail.enabled) return notServed
+              const user = yield* CurrentUser
+              const session = yield* CurrentSession
+              // The address is the account's recovery path, so a stale cookie
+              // must not be enough to start moving it.
+              yield* sessions.requireFresh(session)
+              yield* users.requestEmailChange({
+                user,
+                newEmail: payload.newEmail,
+                callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL))
+              }).pipe(serverFault)
+              // The same answer whichever branch ran, taken address included.
+              return acknowledged
+            }))
+          .handle("confirmEmailChange", ({ query }) =>
+            Effect.gen(function*() {
+              if (!config.user.changeEmail.enabled) return notServed
+              yield* users.confirmEmailChange(Redacted.make(query.token)).pipe(serverFault)
+              return acknowledged
+            }))
+          .handle("verifyEmailChange", ({ query }) =>
+            Effect.gen(function*() {
+              if (!config.user.changeEmail.enabled) return notServed
+              yield* users.verifyEmailChange(Redacted.make(query.token)).pipe(serverFault)
+              // Unauthenticated: this link may be opened in a browser that holds
+              // nobody's session, or the account owner's, and there is no
+              // `CurrentSession` here to rewrite a snapshot from. Dropping
+              // whatever this browser had costs one database read and is the
+              // only way a stale address cannot survive the change.
+              yield* cache.clear
+              return acknowledged
+            }))
+          .handle("deleteUser", ({ payload, request }) =>
+            Effect.gen(function*() {
+              yield* rateLimit(credentials, request)
+              if (!config.user.deleteUser.enabled) return notServed
+              const user = yield* CurrentUser
+              const session = yield* CurrentSession
+              const outcome = yield* users.requestDeletion({
+                user,
+                session,
+                password: payload.password,
+                callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL))
+              }).pipe(serverFault)
+
+              if (outcome === "Deleted") {
+                // The row and every session of it have gone; the credential in
+                // this browser is dead and must not look alive.
+                yield* clearSessionCookies(config, cache)
+              }
+              return { success: true, status: outcome }
+            }))
+          .handle("deleteUserCallback", ({ query }) =>
+            Effect.gen(function*() {
+              if (!config.user.deleteUser.enabled) return notServed
+              const user = yield* CurrentUser
+              const deleted = yield* users.confirmDeletion({
+                token: Redacted.make(query.token),
+                userId: user.id
+              }).pipe(serverFault)
+              yield* clearSessionCookies(config, cache)
+              return redirectTo(deleted.redirectTo)
+            }))
+          .handle("setPassword", ({ payload, request }) =>
+            Effect.gen(function*() {
+              yield* rateLimit(credentials, request)
+              if (!config.emailPassword.enabled) return notServed
+              const user = yield* CurrentUser
+              const session = yield* CurrentSession
+              // Adding a credential is adding a way in, so the same freshness
+              // rule as changing one.
+              yield* sessions.requireFresh(session)
+              yield* passwords.setPassword({
+                userId: user.id,
+                newPassword: payload.newPassword
+              }).pipe(serverFault)
+              return acknowledged
+            }))
+          .handle("getAccessToken", ({ payload }) =>
+            Effect.gen(function*() {
+              const user = yield* CurrentUser
+              if (Option.isNone(flow)) {
+                // No provider is configured, so no account can be one of theirs.
+                return yield* Effect.fail(new NotFound())
+              }
+              return yield* flow.value.accessToken({
+                userId: user.id,
+                accountId: payload.accountId
+              }).pipe(serverFault)
+            }))
+          .handle("refreshToken", ({ payload }) =>
+            Effect.gen(function*() {
+              const user = yield* CurrentUser
+              if (Option.isNone(flow)) {
+                return yield* Effect.fail(new NotFound())
+              }
+              return yield* flow.value.refreshTokens({
+                userId: user.id,
+                accountId: payload.accountId
+              }).pipe(serverFault)
+            }))
+          .handle("oauthCallbackForm", ({ params, payload }) =>
+            // No session, no state, no store: the whole endpoint is a hop. A
+            // provider using `response_mode=form_post` posts here cross-site,
+            // and a cross-site POST carries no `SameSite=Lax` cookie — so
+            // completing the flow here could neither read the caller's session
+            // nor write one that the browser would keep. The 302 turns it into
+            // the top-level GET navigation the rest of the flow is built for.
+            Effect.succeed(redirectTo(callbackFormTarget(config, params.providerId, payload))))
       })
   )
 }

@@ -133,6 +133,100 @@ export interface TokenConfig {
    * Lifetime of a pending OAuth authorization request. Default 10 minutes.
    */
   readonly oauthStateTtl: Duration.Duration
+  /**
+   * Lifetime of each hop of an e-mail change. Default 1 hour.
+   *
+   * **Details**
+   *
+   * The same figure bounds both the confirmation sent to the current address
+   * and the verification sent to the new one, and it is short for the reason a
+   * password reset is: a link that changes where the account's mail goes is a
+   * link that takes the account over.
+   */
+  readonly changeEmailTtl: Duration.Duration
+  /**
+   * Lifetime of an account-deletion confirmation link. Default 1 day.
+   *
+   * **Gotchas**
+   *
+   * Longer than the others on purpose: the outcome is irreversible, so the
+   * person is meant to have time to think, and a link that has expired costs
+   * them nothing but another click.
+   */
+  readonly deleteAccountTtl: Duration.Duration
+}
+
+/**
+ * Whether a signed-in person may change the address on their account.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface ChangeEmailConfig {
+  /**
+   * Whether the three change-email endpoints are served. Default `false`.
+   *
+   * **Details**
+   *
+   * Opt-in, because the flow needs a working mailer and because a deployment
+   * that treats the address as an external identifier — provisioned by an
+   * identity provider, say — must not let it be edited from inside the
+   * application.
+   */
+  readonly enabled: boolean
+}
+
+/**
+ * Whether a signed-in person may delete their own account, and how.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface DeleteUserConfig {
+  /**
+   * Whether the two delete-account endpoints are served. Default `false`.
+   */
+  readonly enabled: boolean
+  /**
+   * When `true`, `POST /auth/delete-user` mails a confirmation link instead of
+   * deleting, and the deletion happens when that link is followed. Default
+   * `false`.
+   *
+   * **When to use**
+   *
+   * Wherever losing the account is worse than being unable to leave it: the mail
+   * step means a stolen session alone cannot destroy somebody's data, because
+   * the attacker also has to reach the mailbox.
+   */
+  readonly confirmByEmail: boolean
+}
+
+/**
+ * What a signed-in person may do to their own user record.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserConfig {
+  readonly changeEmail: ChangeEmailConfig
+  readonly deleteUser: DeleteUserConfig
+}
+
+/**
+ * What a consumer may state about {@link UserConfig}.
+ *
+ * **Gotchas**
+ *
+ * Its own type rather than a `PartialOptions<UserConfig>`, because the two
+ * members are themselves sections: a caller stating one field of `deleteUser`
+ * must not lose the default of the other.
+ *
+ * @category models
+ * @since 1.0.0
+ */
+export interface UserConfigOptions {
+  readonly changeEmail?: PartialOptions<ChangeEmailConfig> | undefined
+  readonly deleteUser?: PartialOptions<DeleteUserConfig> | undefined
 }
 
 /**
@@ -243,6 +337,22 @@ export interface EmailPathConfig {
    * Default `"/auth/reset-password"`.
    */
   readonly resetPassword: string
+  /**
+   * Where the *first* hop of an e-mail change points — the link sent to the
+   * address the account currently has. Default
+   * `"/auth/change-email/confirm"`.
+   */
+  readonly changeEmailConfirm: string
+  /**
+   * Where the *second* hop points — the link sent to the new address, which is
+   * what actually changes it. Default `"/auth/change-email/verify"`.
+   */
+  readonly changeEmailVerify: string
+  /**
+   * Where an account-deletion confirmation link points. Default
+   * `"/auth/delete-user/callback"`.
+   */
+  readonly deleteAccount: string
 }
 
 // -----------------------------------------------------------------------------
@@ -290,6 +400,7 @@ export interface AuthConfigService {
   readonly rateLimit: RateLimitConfig
   readonly emailPaths: EmailPathConfig
   readonly cookieCache: CookieCacheConfig
+  readonly user: UserConfig
 }
 
 /**
@@ -324,6 +435,7 @@ export interface AuthConfigOptions {
   readonly rateLimit?: PartialOptions<RateLimitConfig> | undefined
   readonly emailPaths?: PartialOptions<EmailPathConfig> | undefined
   readonly cookieCache?: PartialOptions<CookieCacheConfig> | undefined
+  readonly user?: UserConfigOptions | undefined
 }
 
 // -----------------------------------------------------------------------------
@@ -367,7 +479,9 @@ export const defaultEmailPassword: EmailPasswordConfig = {
 export const defaultTokens: TokenConfig = {
   emailVerificationTtl: Duration.days(1),
   passwordResetTtl: Duration.hours(1),
-  oauthStateTtl: Duration.minutes(10)
+  oauthStateTtl: Duration.minutes(10),
+  changeEmailTtl: Duration.hours(1),
+  deleteAccountTtl: Duration.days(1)
 }
 
 /**
@@ -390,8 +504,28 @@ export const defaultRateLimit: RateLimitConfig = {
  */
 export const defaultEmailPaths: EmailPathConfig = {
   verifyEmail: "/auth/verify-email",
-  resetPassword: "/auth/reset-password"
+  resetPassword: "/auth/reset-password",
+  changeEmailConfirm: "/auth/change-email/confirm",
+  changeEmailVerify: "/auth/change-email/verify",
+  deleteAccount: "/auth/delete-user/callback"
 }
+
+/**
+ * The default change-email policy: not served.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const defaultChangeEmail: ChangeEmailConfig = { enabled: false }
+
+/**
+ * The default delete-account policy: not served, and — were it served — direct
+ * rather than confirmed by mail.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const defaultDeleteUser: DeleteUserConfig = { enabled: false, confirmByEmail: false }
 
 /**
  * The default cookie cache configuration: off, five minutes, no version.
@@ -506,7 +640,17 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
     tokens: withDefaults(defaultTokens, options.tokens),
     rateLimit: withDefaults(defaultRateLimit, options.rateLimit),
     emailPaths: withDefaults(defaultEmailPaths, options.emailPaths),
-    cookieCache: withDefaults(defaultCookieCache, options.cookieCache)
+    cookieCache: withDefaults(defaultCookieCache, options.cookieCache),
+    // Field by field rather than through one `withDefaults`, because `user` is a
+    // section of sections: resolving it wholesale would let a caller stating
+    // `deleteUser.enabled` lose the default of `confirmByEmail`. It also means
+    // anything else a caller's `user` object happens to carry — `Auth.Options`
+    // puts the deployment's `model` there — cannot reach the resolved
+    // configuration.
+    user: {
+      changeEmail: withDefaults(defaultChangeEmail, options.user?.changeEmail),
+      deleteUser: withDefaults(defaultDeleteUser, options.user?.deleteUser)
+    }
   }
   // The origin set is on the hot path of every state-changing request and every
   // redirect target, and it is a pure function of the two fields above — so it

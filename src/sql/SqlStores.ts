@@ -159,6 +159,8 @@ const IssuerAccountRequest = Schema.Struct({ issuer: Schema.String, accountId: S
 
 const UserProviderRequest = Schema.Struct({ userId: Schema.String, providerId: Schema.String })
 
+const IdUserRequest = Schema.Struct({ id: Schema.String, userId: Schema.String })
+
 const ConsumeRequest = Schema.Struct({
   identifier: Schema.String,
   valueHash: Schema.String,
@@ -526,6 +528,14 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
         WHERE issuer = ${row.issuer} AND account_id = ${row.accountId}`
     })
 
+    const selectAccountByIdAndUser = SqlSchema.findOneOption({
+      Request: IdUserRequest,
+      Result: Account,
+      execute: (row) =>
+        sql`SELECT ${accountCols} FROM accounts
+        WHERE id = ${row.id} AND user_id = ${row.userId}`
+    })
+
     const selectAccountByProvider = SqlSchema.findOneOption({
       Request: UserProviderRequest,
       Result: Account,
@@ -568,6 +578,9 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
 
       findByIssuerAccountId: (issuer, accountId) =>
         persist("AccountStore.findByIssuerAccountId")(selectAccountByIssuer({ issuer, accountId })),
+
+      findByIdAndUserId: (id, userId) =>
+        persist("AccountStore.findByIdAndUserId")(selectAccountByIdAndUser({ id, userId })),
 
       findByUserIdAndProviderId: (userId, providerId) =>
         persist("AccountStore.findByUserIdAndProviderId")(selectAccountByProvider({ userId, providerId })),

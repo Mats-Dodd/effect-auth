@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { Effect, Redacted, Result } from "effect"
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
+import type { AccountId } from "../../src/domain/Schema.js"
 import { testName, testPassword } from "../fixtures.js"
 import * as Stub from "./stub.js"
 
@@ -209,6 +210,41 @@ describe("AuthClient", () => {
 
       assert.strictEqual(url, "https://github.test/login/oauth/authorize?state=abc")
       assert.deepStrictEqual(stub.calls, ["POST /auth/sign-in/social"])
+    }))
+
+  it.effect("getAccessToken decodes the provider credential into a Redacted", () =>
+    Effect.gen(function*() {
+      const { client, reg, stub } = yield* harness({ signedIn: true })
+
+      const tokens = yield* AuthClient.run(client.getAccessToken, {
+        accountId: Stub.accessTokenJson.accountId as AccountId
+      }).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
+
+      // The one response in the library that carries a credential for another
+      // system. It is a string on the wire and `Redacted` the moment it is
+      // decoded, so a client that logs the whole result logs nothing.
+      assert.strictEqual(Redacted.value(tokens.accessToken), "provider-access-token")
+      assert.strictEqual(String(tokens.accessToken), "<redacted>")
+      assert.isFalse(JSON.stringify(tokens).includes("provider-access-token"))
+      assert.deepStrictEqual([...tokens.scopes], ["read:user", "user:email"])
+      assert.deepStrictEqual(stub.calls, ["POST /auth/get-access-token"])
+    }))
+
+  it.effect("updateUser invalidates the session atom, which refetches", () =>
+    Effect.gen(function*() {
+      const { client, reg, stub } = yield* harness({ signedIn: true })
+
+      yield* Atom.getResult(client.session).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
+      assert.strictEqual(stub.countOf("GET /auth/session"), 1)
+
+      yield* AuthClient.run(client.updateUser, { name: "Ada King" }).pipe(
+        Effect.provideService(AtomRegistry.AtomRegistry, reg)
+      )
+
+      // The session atom holds the user, so an edit to the profile has to move
+      // it without the caller invalidating anything by hand.
+      yield* waitFor(reg, client.session, () => stub.countOf("GET /auth/session") === 2)
+      assert.strictEqual(stub.countOf("POST /auth/update-user"), 1)
     }))
 
   it.effect("the client middleware attaches a bearer token when one is configured", () =>

@@ -224,6 +224,25 @@ export class Account extends Model.Class<Account>("effect-auth/Account")({
   updatedAt: Model.DateTimeUpdate
 }) {}
 
+/**
+ * The scopes an {@link Account} was granted, as a list.
+ *
+ * **Details**
+ *
+ * `accounts.scope` stays one `text` column holding whatever the provider said,
+ * because it is written verbatim from a token response and never queried by
+ * element. Splitting it is therefore a read-time concern, and this is the one
+ * place it happens: on whitespace or commas, because providers disagree — OAuth
+ * 2.0 specifies spaces, several providers send a comma-separated list anyway.
+ *
+ * A `null` column, and one holding only separators, are both the empty list.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const scopesOf = (scope: string | null): ReadonlyArray<string> =>
+  scope === null ? [] : scope.split(/[\s,]+/).filter((entry) => entry.length > 0)
+
 // -----------------------------------------------------------------------------
 // Verification
 // -----------------------------------------------------------------------------
