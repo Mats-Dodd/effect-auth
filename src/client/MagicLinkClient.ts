@@ -30,6 +30,7 @@ import type { Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import { Atom, AtomHttpApi } from "effect/unstable/reactivity"
 import type { InvalidToken, RateLimited } from "../domain/Errors.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
 import type { SessionWithUser } from "../domain/Schema.js"
 import type { Ok } from "../http/AuthApi.js"
 import type { MagicLinkExchangePayload, MagicLinkSignInPayload, SignUpDisabled } from "../magic-link/Api.js"
@@ -137,7 +138,7 @@ export interface MagicLinkClient {
   readonly exchange: Atom.AtomResultFn<
     Exchange,
     SessionWithUser,
-    InvalidToken | SignUpDisabled | RateLimited
+    InvalidToken | SignUpDisabled | PolicyRefused | RateLimited
   >
 
   /**

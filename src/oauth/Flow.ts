@@ -53,7 +53,8 @@ import { Accounts } from "../domain/Accounts.js"
 import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../domain/Errors.js"
 import { NotFound, OAuthStateMismatch, TokenRefreshFailed } from "../domain/Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "../domain/Events.js"
-import type { PolicyRefused } from "../domain/Hooks.js"
+import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import { AuthHooks } from "../domain/Hooks.js"
 import type { Account, AccountId, Session, User, UserId } from "../domain/Schema.js"
 import { scopesOf } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
@@ -495,7 +496,11 @@ export type CallbackOutcome =
   | {
     readonly _tag: "Failure"
     readonly error: CallbackError
-    /** The validated error URL, carrying `?error=<code>`. */
+    /**
+     * The validated error URL, carrying `?error=<code>` — and, when a
+     * deployment's own hook was what refused, `&code=<the hook's code>` beside
+     * it.
+     */
     readonly redirectTo: string
     /** The safe, closed-set error code that was appended. */
     readonly code: string
@@ -533,6 +538,24 @@ export const errorCode = (error: CallbackError): string => {
 
 const snakeCase = (value: string): string => value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase()
 
+/**
+ * The deployment's own classification, beside this library's.
+ *
+ * `?error=` stays the closed set {@link errorCode} answers with, and the hook's
+ * `code` travels next to it, so the page a refused browser lands on can say
+ * which rule it was rather than only that some rule was. It is carried
+ * verbatim: a hook that puts a secret in a code has published it, which is the
+ * rule `PolicyRefused` documents.
+ *
+ * `src/http/Handlers.ts` builds this same shape for the delete-account link;
+ * the two are deliberately identical, and are to be unified.
+ */
+const withPolicyCode = (target: string, error: PolicyRefused): string => {
+  const url = new URL(target)
+  url.searchParams.set("code", error.code)
+  return url.toString()
+}
+
 // -----------------------------------------------------------------------------
 // Service
 // -----------------------------------------------------------------------------
@@ -557,6 +580,11 @@ export interface OAuthFlowService {
   /**
    * Completes a callback: consumes the state, exchanges the code, verifies an
    * `id_token` where there is one, links the identity and creates the session.
+   *
+   * A deployment's hooks are consulted along the way — on the user this
+   * provisions, on the identity it attaches to an existing account, and on the
+   * session it is about to mint — so `PolicyRefused` is one of the failures,
+   * carrying the code whichever rule refused named itself with.
    */
   readonly callback: (
     options: CallbackOptions
@@ -680,6 +708,10 @@ export const make: () => Effect.Effect<
   const events = yield* AuthEvents
   const keySets = yield* Jwks
   const client = refuseRedirects(yield* HttpClient.HttpClient)
+  // A `Context.Reference` with a no-op default, so a deployment that installs
+  // nothing provides nothing — and, being read here, the set is fixed when the
+  // layer is built rather than looked up on every callback.
+  const hooks = yield* AuthHooks
 
   // `State` reads its services from the context. Capturing them once, when the
   // layer is built, keeps them out of every method's requirements.
@@ -905,6 +937,18 @@ export const make: () => Effect.Effect<
       } satisfies CallbackResult
     }
 
+    // After the identity has been resolved, deliberately. Only a browser that
+    // came back holding a state this deployment minted, with a code its own
+    // client credentials could exchange, ever reaches this line — so a refusal
+    // here tells whoever provoked it nothing the exchange had not established
+    // already. It travels out as the callback's redirect outcome, exactly as a
+    // failed exchange does, rather than as a page the browser cannot leave.
+    const beforeSession = hooks.beforeSessionCreate
+    if (beforeSession !== undefined) {
+      const source: ProvisionSource = { _tag: "OAuth", providerId: provider.id, info }
+      yield* beforeSession({ user: link.user, source })
+    }
+
     const created = yield* sessions.create({
       userId: link.user.id,
       ipAddress: options.ipAddress ?? null,
@@ -943,10 +987,11 @@ export const make: () => Effect.Effect<
 
   const failure = (error: CallbackError, errorURL: string | null): CallbackOutcome => {
     const code = errorCode(error)
+    const target = withErrorCode(resolveUrl(config, errorURL), code)
     return {
       _tag: "Failure",
       error,
-      redirectTo: withErrorCode(resolveUrl(config, errorURL), code),
+      redirectTo: error._tag === "PolicyRefused" ? withPolicyCode(target, error) : target,
       code
     }
   }

@@ -30,6 +30,10 @@ const contract = [
     errors: [
       "effect-auth/InvalidToken",
       "effect-auth/magic-link/SignUpDisabled",
+      // A deployment's own hook declining the account or the session. The
+      // browser endpoint beside it declares no such thing: it reports one as a
+      // redirect, because a person who followed a link has to land on a page.
+      "effect-auth/PolicyRefused",
       "effect-auth/RateLimited"
     ]
   }

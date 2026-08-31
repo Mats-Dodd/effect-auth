@@ -45,11 +45,14 @@ import { tokenUrl } from "../config/AuthEmails.js"
 import type { EmailDeliveryError } from "../domain/Errors.js"
 import { InvalidToken } from "../domain/Errors.js"
 import { AuthEvents, publishSafely } from "../domain/Events.js"
+import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import { AuthHooks } from "../domain/Hooks.js"
 import type { Session, User } from "../domain/Schema.js"
 import { normalizeEmail, User as UserModel } from "../domain/Schema.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { PersistenceError } from "../domain/Stores.js"
 import { AccountStore, isUniqueViolation, SessionStore, UserStore, WithAuthTransaction } from "../domain/Stores.js"
+import { Users } from "../domain/Users.js"
 import type { Claimed, TokenPurpose } from "../domain/Verifications.js"
 import { purpose, userSubjectPurposes, Verifications } from "../domain/Verifications.js"
 import { resolveUrl, validateUrl, withErrorCode } from "../http/OriginCheck.js"
@@ -85,6 +88,16 @@ export const magicLinkMethod = "magic-link"
  * @since 1.0.0
  */
 export const magicLinkPlugin = "magic-link"
+
+/**
+ * What every user this plugin provisions, and every session it mints, came
+ * from. One value rather than a literal per call site: a hook branching on the
+ * source must see the same tag from the provisioning as from the sign-in.
+ *
+ * It is `MagicLink` rather than `Plugin`, because this plugin is one the
+ * library ships and `ProvisionSource` names it — see `Hooks.ProvisionSource`.
+ */
+const magicLinkSource: ProvisionSource = { _tag: "MagicLink" }
 
 // -----------------------------------------------------------------------------
 // Tokens
@@ -349,7 +362,15 @@ export interface VerifyResult {
 }
 
 /**
- * Everything spending a link can fail with, apart from persistence.
+ * Everything spending a link can fail with that this plugin classifies itself,
+ * apart from persistence.
+ *
+ * **Gotchas**
+ *
+ * `PolicyRefused` is deliberately not a member. Its code is written by the
+ * deployment rather than chosen from {@link errorCode}'s closed set, so the two
+ * travel differently: this type is what a failed link is *reported* as, and a
+ * refusal is reported as itself — see {@link MagicLinkService.verify}.
  *
  * @category models
  * @since 1.0.0
@@ -383,6 +404,11 @@ export type VerifyOutcome =
  * echoed, and neither code says whether the address has an account:
  * `invalid_token` covers a link that was never minted, one already spent and one
  * that expired alike.
+ *
+ * A deployment's own refusal is *not* in this set — its code was written by the
+ * deployment rather than chosen here — and it leaves by the handler's
+ * `?error=policy_refused&code=…` redirect instead. See
+ * {@link MagicLinkService.complete}.
  *
  * @category combinators
  * @since 1.0.0
@@ -422,14 +448,21 @@ export interface MagicLinkService {
    *
    * **Details**
    *
-   * Every failure is one of two answers. `InvalidToken` covers a token that was
-   * never minted, one already spent, and one that expired — the claim is a single
-   * conditional delete, so there is nothing left to tell them apart with.
-   * `SignUpDisabled` is the deployment refusing to create an account.
+   * Every failure this plugin classifies is one of two answers. `InvalidToken`
+   * covers a token that was never minted, one already spent, and one that
+   * expired — the claim is a single conditional delete, so there is nothing left
+   * to tell them apart with. `SignUpDisabled` is the deployment refusing to
+   * create an account.
+   *
+   * `PolicyRefused` is a third, and it is the deployment's own: a
+   * `beforeUserCreate` or `afterUserCreate` declining the account this link
+   * would have created, or a `beforeSessionCreate` declining the session it
+   * would have started. It is raised only after the token has been claimed, so
+   * a refused link is spent rather than left replayable.
    */
   readonly verify: (
     options: VerifyOptions
-  ) => Effect.Effect<VerifyResult, VerifyError | PersistenceError>
+  ) => Effect.Effect<VerifyResult, VerifyError | PolicyRefused | PersistenceError>
 
   /**
    * {@link MagicLinkService.verify}, resolved into somewhere to send a browser.
@@ -440,8 +473,16 @@ export interface MagicLinkService {
    * their mailbox and has to land on a page, so a failure becomes a redirect to
    * the link's own `errorCallbackURL` carrying `?error=<code>` — see
    * {@link errorCode} — rather than an error body.
+   *
+   * **Gotchas**
+   *
+   * A `PolicyRefused` is *not* resolved here. Its code is the deployment's own
+   * rather than one of {@link errorCode}'s two, and where a refused browser
+   * lands is a decision this library makes in one place for every one of its
+   * redirect-shaped completions — so it stays a typed failure and the handler
+   * turns it into that redirect.
    */
-  readonly complete: (options: VerifyOptions) => Effect.Effect<VerifyOutcome, PersistenceError>
+  readonly complete: (options: VerifyOptions) => Effect.Effect<VerifyOutcome, PolicyRefused | PersistenceError>
 }
 
 /**
@@ -480,6 +521,7 @@ export type Requirements =
   | AuthEvents
   | Verifications
   | Sessions
+  | Users
   | UserStore
   | AccountStore
   | SessionStore
@@ -505,10 +547,17 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
     const events = yield* AuthEvents
     const verifications = yield* Verifications
     const sessions = yield* Sessions
+    const domain = yield* Users
     const users = yield* UserStore
     const accounts = yield* AccountStore
     const sessionStore = yield* SessionStore
     const transaction = yield* WithAuthTransaction
+    // A `Context.Reference` with a no-op default, so a deployment that installs
+    // nothing provides nothing — and, being read here, the set is fixed when the
+    // layer is built rather than looked up on every request. It has to be
+    // provided *under* this layer as well as under `Auth.layer`, which one
+    // `Layer.provide` over the composed plugin does.
+    const hooks = yield* AuthHooks
 
     /**
      * A caller-supplied redirect target, or `null` when it did not survive
@@ -562,15 +611,28 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      *
      * **Gotchas**
      *
-     * The row is built from the base user fields alone and stored through the
-     * base-typed `UserStore`, exactly as the OAuth flow provisions one. A
-     * deployment's own columns are filled in by the store from the model's
-     * declared defaults — which the provisionability rule on `makeUserModel`
-     * guarantees is always possible — so this plugin never has to know what they
-     * are.
+     * The row is built from the base user fields alone, exactly as the OAuth
+     * flow builds one, and handed to the base-typed `Users.provision`. A
+     * deployment's own columns are filled in from the model's declared
+     * defaults — which the provisionability rule on `makeUserModel` guarantees
+     * is always possible — so this plugin never has to know what they are.
+     *
+     * `Users.provision` rather than `UserStore.create`: that is where
+     * `beforeUserCreate` and `afterUserCreate` are consulted, and going through
+     * it is what makes them one choke point instead of three. This plugin can
+     * *call* it where `Passwords` and `Accounts` have to reimplement its
+     * sequence — `Users` reads `Passwords`, so those two would close a cycle in
+     * the layer graph, and a plugin layered over the whole deployment closes
+     * none.
+     *
+     * The transaction is this call's own, and it is what `provision` deliberately
+     * does not open: an `afterUserCreate` that cannot write its related row has
+     * to take the user down with it here as it does on the other two sources.
+     * The event is published outside it, after the commit, as `Events.ts`
+     * requires.
      */
     const create = Effect.fnUntraced(function*(email: string, name: string | null) {
-      const row = yield* insertRow(UserModel.insert, {
+      const candidate = yield* insertRow(UserModel.insert, {
         name: name ?? email,
         email,
         // The token was delivered to this address and came back: that is the
@@ -578,7 +640,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
         emailVerified: true,
         image: null
       })
-      const user = yield* users.create(row)
+      const user = yield* transaction.run(domain.provision({ candidate, source: magicLinkSource }))
       yield* publishSafely(events, {
         _tag: "UserCreated",
         userId: user.id,
@@ -705,6 +767,16 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
     ) {
       const { user, userCreated } = yield* resolve(email, payload)
 
+      // After the claim, deliberately: only somebody holding a token this
+      // deployment minted and mailed to the address reaches this line, so a
+      // refusal tells them nothing they had not already proved — and the link is
+      // spent whichever way it goes, rather than left replayable until the
+      // policy happens to allow it.
+      const beforeSession = hooks.beforeSessionCreate
+      if (beforeSession !== undefined) {
+        yield* beforeSession({ user, source: magicLinkSource })
+      }
+
       const created = yield* sessions.create({
         userId: user.id,
         ipAddress: options.ipAddress ?? null,
@@ -777,7 +849,13 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
         }
         const finished = yield* Effect.result(spend(claimed.success, options))
         if (finished._tag === "Failure") {
-          if (finished.failure._tag === "PersistenceError") return yield* Effect.fail(finished.failure)
+          // Neither of these two is one of the closed set of codes this plugin
+          // reports in a redirect: a fault is a `500` and a refusal is the
+          // deployment's own, carrying a code it wrote — see
+          // {@link MagicLinkService.complete}.
+          if (finished.failure._tag === "PersistenceError" || finished.failure._tag === "PolicyRefused") {
+            return yield* Effect.fail(finished.failure)
+          }
           // The error URL comes out of the claimed payload, which is the one
           // thing this path needs that `verify` does not.
           return failure(finished.failure, claimed.success.payload.errorCallbackURL)

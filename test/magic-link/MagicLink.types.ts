@@ -15,6 +15,7 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import type { Atom } from "effect/unstable/reactivity"
 import type { InvalidToken, RateLimited } from "../../src/domain/Errors.js"
+import type { PolicyRefused } from "../../src/domain/Hooks.js"
 import type { SessionWithUser } from "../../src/domain/Schema.js"
 import type { Ok } from "../../src/http/AuthApi.js"
 import { AuthApi } from "../../src/http/AuthApi.js"
@@ -90,9 +91,11 @@ handlers(HttpApi.make("app").addHttpApi(AuthApi))
 const client = MagicLinkClient.make({ baseUrl: "http://localhost:3000" })
 
 // The argument is the payload alone — the reactivity keys are baked in — and the
-// success and error channels are the endpoint's own. The user is the base
-// model's public projection: this group is not parameterized by a deployment's
-// custom user fields, and `GET /session` is where those are read.
+// success and error channels are the endpoint's own, `PolicyRefused` included:
+// a client branching on a deployment's own refusal reads it off the endpoint
+// type rather than being told about it. The user is the base model's public
+// projection: this group is not parameterized by a deployment's custom user
+// fields, and `GET /session` is where those are read.
 eq<
   Exact<
     typeof client.signIn,
@@ -105,7 +108,7 @@ eq<
     Atom.AtomResultFn<
       MagicLinkClient.Exchange,
       SessionWithUser,
-      InvalidToken | SignUpDisabled | RateLimited
+      InvalidToken | SignUpDisabled | PolicyRefused | RateLimited
     >
   >
 >(true)
