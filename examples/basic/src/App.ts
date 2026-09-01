@@ -7,8 +7,7 @@
  * deployment's own user field, a plugin, and the two seams an application owns.
  */
 import { PgliteClient } from "@effect/sql-pglite"
-import { Duration, Layer, Redacted } from "effect"
-import { FileSystem, Path } from "effect"
+import { Config, Duration, FileSystem, Layer, Path, Redacted } from "effect"
 import { Etag, FetchHttpClient, HttpPlatform } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Github, MagicLink } from "effect-auth"
@@ -18,13 +17,44 @@ import * as Mailer from "./Mailer.js"
 import * as Todos from "./Todos.js"
 
 /**
- * Where the example serves from. Plain HTTP, so the session cookie is written
- * without the `__Secure-` prefix; point `BASE_URL` at an `https:` origin and
- * the cookie, the `Secure` attribute and the prefix all change together.
+ * Where the example serves from.
+ *
+ * **Details**
+ *
+ * A `Config`, not a string: {@link AuthLive} below is built with
+ * `auth.layerConfig`, which takes the scalar settings as `Config` values and so
+ * turns a missing or malformed one into a single `ConfigError` when the layer is
+ * built. `main.ts` yields this same value for the port it binds, so the process
+ * and the deployment cannot disagree about where it is served.
+ *
+ * **Gotchas**
+ *
+ * Plain HTTP by default, so the session cookie is written without the
+ * `__Secure-` prefix; point `BASE_URL` at an `https:` origin and the cookie, the
+ * `Secure` attribute and the prefix all change together.
  */
-export const baseUrl = process.env["BASE_URL"] ?? "http://localhost:3000"
+export const baseUrl: Config.Config<string> = Config.string("BASE_URL").pipe(
+  Config.withDefault("http://localhost:3000")
+)
 
-const secret = Redacted.make(process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production")
+/**
+ * The key every token and cookie is signed with.
+ *
+ * `Config.redacted`, so it is a `Redacted<string>` from the moment it leaves the
+ * environment: never a log line, and never the body of a `ConfigError`. The
+ * default is here so the example runs with no environment at all — a deployment
+ * drops it, and gets a `ConfigError` at boot instead of a shared secret every
+ * reader of this file knows.
+ */
+const secret = Config.redacted("AUTH_SECRET").pipe(
+  Config.withDefault(Redacted.make("example-secret-please-replace-in-production"))
+)
+
+/**
+ * The one origin this example trusts: its own, derived from {@link baseUrl}
+ * rather than stated a second time.
+ */
+const trustedOrigins = baseUrl.pipe(Config.map((url) => [url]))
 
 /**
  * An in-memory PGlite database with the `effect-auth` tables created, plus the
@@ -54,6 +84,11 @@ export const DatabaseLive = auth.layerMigrations.pipe(Layer.provideMerge(PgliteC
  * somebody move or destroy their own account is a product decision. This example
  * serves both, so the end-to-end test can drive them.
  *
+ * `auth.layerConfig` rather than `auth.layer`: the same layer, with the scalar
+ * settings read from the environment through `Config`. The structured sections
+ * stay plain objects — `requireEmailVerification` is a decision this file makes,
+ * not a knob a deployment turns.
+ *
  * **When to use**
  *
  * To serve GitHub sign-in, swap this whole binding for the {@link AuthWithGithubLive}
@@ -61,12 +96,12 @@ export const DatabaseLive = auth.layerMigrations.pipe(Layer.provideMerge(PgliteC
  * you call is what decides whether the flow exists.
  */
 export const AuthLive = auth
-  .layer({
+  .layerConfig({
     baseUrl,
     secret,
     emailPassword: { enabled: true, requireEmailVerification: false },
     user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
-    trustedOrigins: [baseUrl]
+    trustedOrigins
   })
   .pipe(Layer.provide(DatabaseLive), Layer.provide(Mailer.layer))
 
@@ -83,18 +118,23 @@ export const AuthLive = auth
  * **Gotchas**
  *
  * The transport must not follow redirects. `FetchHttpClient.layer` does not.
+ *
+ * The credentials carry no default, unlike {@link secret}: `Github.makeConfig`
+ * reads them from the environment, so a deployment that forgets one is a
+ * `ConfigError` when this layer is built rather than a provider that answers
+ * every sign-in attempt with an OAuth error nobody sees until production.
  */
 export const AuthWithGithubLive = auth
-  .layerWithOAuth({
+  .layerConfigWithOAuth({
     baseUrl,
     secret,
     emailPassword: { enabled: true, requireEmailVerification: false },
     user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
-    trustedOrigins: [baseUrl],
+    trustedOrigins,
     providers: [
-      Github.make({
-        clientId: process.env["GITHUB_CLIENT_ID"] ?? "example-github-client-id",
-        clientSecret: Redacted.make(process.env["GITHUB_CLIENT_SECRET"] ?? "example-github-client-secret")
+      Github.makeConfig({
+        clientId: Config.string("GITHUB_CLIENT_ID"),
+        clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
       })
     ]
   })

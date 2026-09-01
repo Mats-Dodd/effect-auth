@@ -39,7 +39,7 @@ export const layer = HttpApiBuilder.group(AppApi, "todos", (handlers) =>
           // The deployment's own user field, decided in the application's own
           // handler. Upgrading is `POST /auth/update-user`.
           if (user.plan === "free" && mine.length >= freeTodoLimit) {
-            return yield* new TodoLimitReached({ limit: freeTodoLimit })
+            return yield* TodoLimitReached.make({ limit: freeTodoLimit })
           }
 
           const id = yield* Ref.getAndUpdate(nextId, (n) => n + 1)

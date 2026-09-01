@@ -17,7 +17,7 @@ import { auth } from "./Auth.js"
  * One item on somebody's list.
  */
 export const Todo = Schema.Struct({
-  id: Schema.Number,
+  id: Schema.Finite,
   ownerId: UserId,
   title: Schema.String,
   done: Schema.Boolean
@@ -38,7 +38,7 @@ export const CreateTodoPayload = Schema.Struct({
  */
 export class TodoLimitReached extends Schema.TaggedError<TodoLimitReached>("example/TodoLimitReached")(
   "TodoLimitReached",
-  { limit: Schema.Number },
+  { limit: Schema.Finite },
   { description: "A free-plan account may keep only so many todos", httpApiStatus: 402 }
 ) {}
 

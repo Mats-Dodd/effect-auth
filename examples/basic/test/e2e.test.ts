@@ -15,7 +15,7 @@
  * test. That is why every account below gets an address of its own.
  */
 import { assert, layer } from "@effect/vitest"
-import { Duration, Effect, Layer, Option, Redacted } from "effect"
+import { Duration, Effect, Layer, Option, Random, Redacted } from "effect"
 import { MagicLink, Stores } from "effect-auth"
 import { AuthTest, MagicLinkTest, TestHttpClient } from "effect-auth/testing"
 import { AppApi } from "../src/Api.js"
@@ -62,8 +62,16 @@ const makeClient = () => TestHttpClient.makeClient(AppApi)
 
 const cookieValue = TestHttpClient.sessionCookieValue
 
-/** An address no sibling test will use: the database is shared. */
-const uniqueEmail = (label: string) => `${label}-${globalThis.crypto.randomUUID()}@example.com`
+/**
+ * An address no sibling test will use: the database is shared, and the tests in
+ * this file run concurrently against it.
+ *
+ * An `Effect` rather than a plain function, because the randomness comes from
+ * Effect's `Random` — the same service a test can pin with `Random.withSeed`
+ * when it needs the run to repeat exactly.
+ */
+const uniqueEmail = (label: string) =>
+  Effect.map(Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER), (n) => `${label}-${n}@example.com`)
 
 const password = "correct horse battery staple"
 const newPassword = "a-much-longer-replacement-passphrase"
@@ -71,7 +79,7 @@ const newPassword = "a-much-longer-replacement-passphrase"
 layer(ServerLive)("examples/basic", (it) => {
   it.effect("sign-up, verify, sign-in, use a protected endpoint, change password, sign out", () =>
     Effect.gen(function* () {
-      const email = uniqueEmail("ada")
+      const email = yield* uniqueEmail("ada")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
@@ -161,8 +169,8 @@ layer(ServerLive)("examples/basic", (it) => {
 
   it.effect("a password reset revokes every session and installs the new password", () =>
     Effect.gen(function* () {
-      const email = uniqueEmail("grace")
-      const unknown = uniqueEmail("nobody")
+      const email = yield* uniqueEmail("grace")
+      const unknown = yield* uniqueEmail("nobody")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
@@ -209,7 +217,7 @@ layer(ServerLive)("examples/basic", (it) => {
 
   it.effect("the deployment's own user field reaches its own handler, and update-user changes it", () =>
     Effect.gen(function* () {
-      const email = uniqueEmail("katherine")
+      const email = yield* uniqueEmail("katherine")
       const { client } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 
@@ -252,7 +260,7 @@ layer(ServerLive)("examples/basic", (it) => {
 
   it.effect("an account with no password can be given one, and signs in with it afterwards", () =>
     Effect.gen(function* () {
-      const email = uniqueEmail("dorothy")
+      const email = yield* uniqueEmail("dorothy")
       const { client } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
       const accounts = yield* Stores.AccountStore
@@ -298,7 +306,7 @@ layer(ServerLive)("examples/basic", (it) => {
 
   it.effect("a magic link signs a stranger in, and provisions the account it names", () =>
     Effect.gen(function* () {
-      const email = uniqueEmail("mary")
+      const email = yield* uniqueEmail("mary")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
 

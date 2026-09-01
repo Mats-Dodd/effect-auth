@@ -180,7 +180,8 @@
       "files": ["scripts/**"],
       "rules": {
         "effecttsgo/global-console": "off",
-        "effecttsgo/strict-boolean-expressions": "off"
+        "effecttsgo/strict-boolean-expressions": "off",
+        "eslint/no-console": "off"
       }
     }
   ]

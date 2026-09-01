@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # `prepare` runs `effect-tsgo patch --oxlint`, which patches the TypeScript and
+      # oxlint binaries so the Effect rules are available to the linter below.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # oxlint --type-aware --type-check runs the TypeScript typecheck and every lint
+      # rule off one program, replacing a separate `tsc --noEmit` step.
+      - name: Check (typecheck + lint)
+        run: pnpm check
+
+      - name: Format
+        run: pnpm format:check
+
+      - name: Build
+        run: pnpm build
+
+      # --maxWorkers=2 is set in the `test` script: the PGlite-backed suites time out
+      # against the 10s tripwire when vitest runs at full concurrency.
+      - name: Test
+        run: pnpm test

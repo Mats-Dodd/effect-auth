@@ -11,7 +11,7 @@
 import { Effect, Layer, Redacted } from "effect"
 import { AuthEmails, MagicLink } from "effect-auth"
 
-const send = (subject: string, to: string, url: Redacted.Redacted<string>) =>
+const send = (subject: string, to: string, url: Redacted.Redacted) =>
   Effect.log(`${subject} for ${to}: ${Redacted.value(url)}`)
 
 const print = (subject: string) => (email: AuthEmails.AuthEmail) => send(subject, email.user.email, email.url)
