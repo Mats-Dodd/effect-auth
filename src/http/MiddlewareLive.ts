@@ -40,28 +40,105 @@
  *
  * @since 0.1.0
  */
-import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
+import { HttpServerResponse } from "effect/unstable/http"
 import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
-import { Unauthorized } from "../domain/Errors.js"
-import type { Session, UserFields, UserModel } from "../domain/Schema.js"
+import type { AssurancePolicy } from "../domain/Assurance.js"
+import type { AuthenticatorsService } from "../domain/Authenticators.js"
+import { Authenticators, list as listAuthenticators } from "../domain/Authenticators.js"
+import { StepUpRequired, Unauthorized } from "../domain/Errors.js"
+import type { Session, UserFields, UserId, UserModel, UserOf } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
-import { type Sessions, sessionsOf } from "../domain/Sessions.js"
+import { requireAssuranceFor, type Sessions, type SessionsService, sessionsOf } from "../domain/Sessions.js"
+import type { PersistenceError, SessionWithUser } from "../domain/Stores.js"
 import {
   expiredOAuthStateCookieOptions,
   expiredSessionCookieOptions,
   oauthStateCookieOptions,
   oauthStateCookieSecurity,
+  sessionCookieName,
   sessionCookieOptions,
   sessionCookieSecurity
 } from "./Cookies.js"
 import type { CurrentUser } from "./Middleware.js"
-import { Authenticated, AuthoritativeSession, CurrentSession, currentUserOf } from "./Middleware.js"
+import { Authenticated, AuthoritativeSession, CurrentSession, currentUserOf, RequireAssurance } from "./Middleware.js"
 import { checkOrigin } from "./OriginCheck.js"
 import { type SessionCache, sessionCacheOf } from "./SessionCache.js"
+
+// -----------------------------------------------------------------------------
+// The credential a request presented
+// -----------------------------------------------------------------------------
+
+/**
+ * The session token this request presented, on either transport the library
+ * accepts, or `None`.
+ *
+ * **Details**
+ *
+ * The cookie *this* deployment writes — only that name, so a TLS deployment
+ * does not honour the un-prefixed one — or an `Authorization: Bearer` header,
+ * for a client with no cookie jar. Exactly the pair `Authenticated` declares,
+ * read without requiring it.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const presentedToken = (
+  config: AuthConfigService,
+  request: HttpServerRequest.HttpServerRequest
+): Option.Option<Redacted.Redacted> => {
+  const cookie = request.cookies[sessionCookieName(config)]
+  if (cookie !== undefined && cookie.length > 0) return Option.some(Redacted.make(cookie))
+  const authorization = request.headers["authorization"]
+  if (authorization === undefined) return Option.none()
+  const [scheme, ...rest] = authorization.split(" ")
+  const token = rest.join(" ").trim()
+  return scheme?.toLowerCase() === "bearer" && token.length > 0 ? Option.some(Redacted.make(token)) : Option.none()
+}
+
+/**
+ * The session behind a request that was not required to have one.
+ *
+ * **When to use**
+ *
+ * On an *unauthenticated* endpoint that still wants to know who the browser
+ * already was — which is one question: a sign-in that arrives carrying somebody
+ * else's session is an upgrade, and `AuthHooks.beforeSessionMint` is where a
+ * deployment acts on it. Without this the anonymous plugin's merge is reachable
+ * only from a direct domain call, and every visitor who signs in to an existing
+ * account is silently orphaned.
+ *
+ * **Gotchas**
+ *
+ * It never fails and never refuses: an absent, unknown, expired or unreadable
+ * credential is all `None`, because none of them is a reason to turn away a
+ * caller who was not asked for one in the first place. A storage failure is
+ * `None` too — the sign-in proceeds without the merge rather than being taken
+ * down by it.
+ *
+ * It goes through `Sessions.verify`, so a live session's rolling refresh
+ * happens here exactly as it would anywhere else.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const optionalSession = <F extends UserFields>(options: {
+  readonly config: AuthConfigService
+  readonly sessions: SessionsService<F>
+  readonly request: HttpServerRequest.HttpServerRequest
+}): Effect.Effect<Option.Option<SessionWithUser<F>>> =>
+  Option.match(presentedToken(options.config, options.request), {
+    onNone: () => Effect.succeedNone,
+    onSome: (token) =>
+      Effect.match(options.sessions.verify(token), {
+        onFailure: () => Option.none<SessionWithUser<F>>(),
+        onSuccess: (verified) => Option.some({ session: verified.session, user: verified.user })
+      })
+  })
 
 // -----------------------------------------------------------------------------
 // Cookies
@@ -192,6 +269,111 @@ export const clearOAuthStateCookie = (
   )
 
 // -----------------------------------------------------------------------------
+// Assurance
+// -----------------------------------------------------------------------------
+
+/**
+ * The maximum age an endpoint's policy is measured against.
+ *
+ * **Details**
+ *
+ * A policy that names its own `maxAge` is taken literally — `Duration.infinity`
+ * is how an endpoint says "any age will do". A policy that names none is
+ * measured against `assurance.stepUpWindow` when it is a *step-up* policy, and
+ * against `session.freshAge` otherwise, which is the rule `requireFresh` used
+ * to state. Neither default is a second copy of the freshness *rule*: what
+ * happens to the resolved policy is `Sessions.requireAssuranceFor`'s, in one
+ * place, measured from `session.authenticatedAt`.
+ *
+ * A step-up policy is one asking for `aal2` **or** naming `methods`. Both are
+ * ways of spelling "a second factor is required", and the two spellings must
+ * get the same window: `{ methods: ["totp", "passkey"] }` is if anything
+ * stricter than `{ aal: "aal2" }`, so admitting a proof twenty hours old there
+ * while refusing it beside the other spelling would be backwards.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const resolveAssurancePolicy = (config: AuthConfigService, policy: AssurancePolicy): AssurancePolicy =>
+  policy.maxAge !== undefined
+    ? policy
+    : {
+        ...policy,
+        maxAge:
+          policy.aal === "aal2" || policy.methods !== undefined
+            ? config.assurance.stepUpWindow
+            : config.session.freshAge
+      }
+
+/**
+ * The kinds of factor a person could step up with, for
+ * `StepUpRequired.current.available`.
+ *
+ * **Details**
+ *
+ * The distinct `type`s of every authenticator the {@link Authenticators} seam
+ * reports that can either sign in or serve as a second factor, in the order the
+ * contributors listed them. It carries no identifier, no address and no secret
+ * — the names of kinds only — which is what lets a client prompt for the right
+ * factor, and degrade gracefully when the answer is an empty array, without the
+ * refusal becoming an oracle.
+ *
+ * **Gotchas**
+ *
+ * A deployment that installs no factor plugin answers `[]`. That is honest
+ * about the seam and not about the account: `POST /auth/reauthenticate` is
+ * still open to anybody whose account has a password.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const availableFactors = (
+  authenticators: AuthenticatorsService,
+  userId: UserId
+): Effect.Effect<ReadonlyArray<string>, PersistenceError> =>
+  Effect.map(listAuthenticators(authenticators, userId), (summaries) => {
+    const seen = new Set<string>()
+    const names: Array<string> = []
+    for (const summary of summaries) {
+      if (!summary.signIn && !summary.secondFactor) continue
+      if (seen.has(summary.type)) continue
+      seen.add(summary.type)
+      names.push(summary.type)
+    }
+    return names
+  })
+
+const encodeStepUp = Schema.encodeUnknownEffect(Schema.toCodecJson(StepUpRequired))
+
+/**
+ * A refusal for want of assurance, as the response the caller receives.
+ *
+ * **Details**
+ *
+ * The guard answers `403` directly instead of failing, and that is not a style
+ * choice. `HttpApiBuilder` runs a security middleware once per declared
+ * transport and treats *any* failure of one as "this transport did not
+ * authenticate; try the next" — keeping only the last transport's failure. The
+ * `bearer` scheme is last and answers `Unauthorized` for the empty credential a
+ * cookie request carries, so a `StepUpRequired` raised on the cookie transport
+ * would be silently replaced by a `401`. Returning the response makes the
+ * transport *succeed*, which is what stops the loop.
+ *
+ * The body is the error's own JSON encoding, which is what `HttpApiBuilder`
+ * would have written for it — the error is
+ * declared on {@link Authenticated}, so the generated client already holds a
+ * `403` decoder for it, and `test/http/StepUp.test.ts` pins the round trip
+ * through that client rather than trusting this comment.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const stepUpResponse = (error: StepUpRequired): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+  Effect.flatMap(Effect.orDie(encodeStepUp(error)), (body) =>
+    Effect.orDie(HttpServerResponse.json(body, { status: 403 }))
+  )
+
+// -----------------------------------------------------------------------------
 // Implementation
 // -----------------------------------------------------------------------------
 
@@ -213,11 +395,15 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
   const config = yield* AuthConfig
   const sessions = yield* sessionsOf(model)
   const cache = yield* sessionCacheOf(model)
+  const authenticators = yield* Authenticators
   const currentUser = currentUserOf(model)
 
   const authenticate = (transport: { readonly cookie: boolean }) =>
-    Effect.fnUntraced(function* <A, E, R>(
-      httpEffect: Effect.Effect<A, E, R>,
+    // `A` is fixed to `HttpServerResponse` rather than left generic because the
+    // assurance guard answers with one — see `stepUpResponse`. It is what every
+    // endpoint effect this middleware wraps already is.
+    Effect.fnUntraced(function* <E, R>(
+      httpEffect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
       options: {
         readonly credential: Redacted.Redacted
         readonly endpoint: HttpApiEndpoint.Top
@@ -233,11 +419,40 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
         yield* checkOrigin(config)
       }
 
+      const required = Context.get(options.endpoint.annotations, RequireAssurance)
+
+      // The assurance guard, run once for whichever path resolved the session,
+      // and always before the endpoint's own effect. `available` costs a read
+      // of the `Authenticators` seam and is paid only on the endpoints that
+      // declare a policy.
+      const guarded = (session: Session, user: UserOf<F>) =>
+        Effect.gen(function* () {
+          if (required !== undefined) {
+            const available = yield* Effect.orDie(availableFactors(authenticators, user.id))
+            const checked = yield* Effect.result(
+              requireAssuranceFor(session, resolveAssurancePolicy(config, required), available)
+            )
+            if (checked._tag === "Failure") {
+              return yield* stepUpResponse(checked.failure)
+            }
+          }
+          return yield* httpEffect.pipe(
+            Effect.provideService(currentUser, user),
+            Effect.provideService(CurrentSession, session)
+          )
+        })
+
       // The cache is a cookie-transport optimisation and nothing else: a bearer
       // client has no jar, and an endpoint that changes a credential or an
       // identity has to see the row rather than a snapshot of it — see
-      // `AuthoritativeSession`.
-      const cacheable = transport.cookie && !Context.get(options.endpoint.annotations, AuthoritativeSession)
+      // `AuthoritativeSession`. An endpoint that states an assurance policy is
+      // excluded for a second reason: a snapshot records the level the session
+      // held when it was written, so an elevation since would be invisible to
+      // it and the guard would refuse a session that has already stepped up —
+      // or, if the snapshot were the newer of the two, admit one that has been
+      // revoked. The decision is made against the row every time.
+      const cacheable =
+        transport.cookie && required === undefined && !Context.get(options.endpoint.annotations, AuthoritativeSession)
 
       if (cacheable) {
         const cached = yield* cache.read(options.credential)
@@ -245,10 +460,7 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
           // No touch and no `Set-Cookie`: a snapshot expires at the instant the
           // rolling refresh becomes due, so a session that needed either would
           // not have been served from here.
-          return yield* httpEffect.pipe(
-            Effect.provideService(currentUser, cached.value.user),
-            Effect.provideService(CurrentSession, cached.value.session)
-          )
+          return yield* guarded(cached.value.session, cached.value.user)
         }
       }
 
@@ -278,10 +490,7 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
         yield* cache.write(session, user)
       }
 
-      return yield* httpEffect.pipe(
-        Effect.provideService(currentUser, user),
-        Effect.provideService(CurrentSession, session)
-      )
+      return yield* guarded(session, user)
     })
 
   const cookie = authenticate({ cookie: true })
@@ -290,13 +499,14 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
   // A transport this deployment never writes is a transport it must not read.
   // See the module header: accepting the un-prefixed name on a TLS deployment
   // would nullify the `__Secure-` prefix.
-  const refused = <A, E, R>(
-    _httpEffect: Effect.Effect<A, E, R>,
+  const refused = <E, R>(
+    _httpEffect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
     _options: {
       readonly credential: Redacted.Redacted
       readonly endpoint: HttpApiEndpoint.Top
     }
-  ): Effect.Effect<A, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> => Effect.fail(Unauthorized.make())
+  ): Effect.Effect<HttpServerResponse.HttpServerResponse, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> =>
+    Effect.fail(Unauthorized.make())
 
   return Authenticated.of({
     secureSessionCookie: config.cookie.secure ? cookie : refused,

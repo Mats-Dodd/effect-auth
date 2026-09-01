@@ -25,7 +25,7 @@
 import type { Cause, DateTime } from "effect"
 import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
 import type { HttpClientError } from "effect/unstable/http"
-import { HttpClient, HttpClientRequest as Request } from "effect/unstable/http"
+import { HttpBody, HttpClient, HttpClientRequest as Request } from "effect/unstable/http"
 import type { OAuthProviderError } from "../domain/Errors.js"
 import { OAuthProviderError as ProviderError } from "../domain/Errors.js"
 import { oauthIssuer } from "../domain/Schema.js"
@@ -153,6 +153,34 @@ export interface UserInfoOptions {
 // -----------------------------------------------------------------------------
 
 /**
+ * Whether a provider is allowed to state that it verified an address.
+ *
+ * **Details**
+ *
+ * `"derived"` means the provider's own `userInfo` decides, from a claim it can
+ * point at — Google's `email_verified`, GitHub's `/user/emails` list. `"never"`
+ * means the identity is reported with `emailVerified: false` whatever the body
+ * said, which is the honest answer for the providers that hand back an address
+ * they have never checked, and for the ones that hand back a placeholder.
+ *
+ * **Gotchas**
+ *
+ * `emailVerified` is the single flag that gates *implicit linking*: an identity
+ * that claims a verified address is attached to a local account that already
+ * holds it. A provider declaring `"never"` can therefore never implicitly link,
+ * which is the intended consequence and not a limitation to work around — the
+ * person can still link deliberately, from a session they already hold.
+ *
+ * The policy is applied by {@link applyEmailVerifiedPolicy}, which
+ * {@link makeRegistry} runs over every provider it is given, so a provider
+ * cannot opt out of its own declaration by ignoring it in `userInfo`.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export type EmailVerifiedPolicy = "derived" | "never"
+
+/**
  * Everything the generic OAuth runner needs to talk to one provider.
  *
  * @category models
@@ -165,6 +193,12 @@ export interface OAuthProviderConfig {
    * entry in `AuthConfig.trustedProviders`.
    */
   readonly id: string
+  /**
+   * Whether this provider may report a verified address at all. Required: a new
+   * provider must decide, rather than fall into the permissive answer by saying
+   * nothing. See {@link EmailVerifiedPolicy}.
+   */
+  readonly emailVerified: EmailVerifiedPolicy
   /** The OAuth client id. Public by construction — it travels in a query string. */
   readonly clientId: string
   /**
@@ -192,6 +226,28 @@ export interface OAuthProviderConfig {
   readonly authorizationUrl: string
   /** The provider's token endpoint, where the code is exchanged server-side. */
   readonly tokenUrl: string
+  /**
+   * How the client authenticates at the token endpoint. Defaults to
+   * `client_secret_post`.
+   *
+   * **Details**
+   *
+   * RFC 6749 §2.3.1 lets a provider accept either the request body
+   * (`client_secret_post`) or HTTP Basic (`client_secret_basic`), and *requires*
+   * support for Basic. Most take both; some — X is the one this library ships —
+   * refuse the body outright.
+   *
+   * It is stated on the provider rather than solved in an `exchange` override
+   * because the choice belongs to *both* grants. An override covers the
+   * authorization code and nothing else, so a provider that took over the
+   * exchange to send Basic would still refresh with the secret in the body, and
+   * the refresh would fail two hours after a sign-in that worked — the failure
+   * being invisible until then.
+   *
+   * A public client with no secret sends neither, whatever this says: PKCE is
+   * what proves the exchange there.
+   */
+  readonly tokenAuth?: "client_secret_post" | "client_secret_basic" | undefined
   /** The scopes always requested. A caller may add more, never remove these. */
   readonly scopes: ReadonlyArray<string>
   /**
@@ -455,6 +511,35 @@ export const isOidc = (
 export const providerIssuer = (provider: OAuthProviderConfig): string =>
   provider.oidc?.issuer ?? oauthIssuer(provider.id)
 
+/**
+ * Enforces a provider's {@link OAuthProviderConfig.emailVerified} declaration
+ * on the identity its `userInfo` produced.
+ *
+ * **Details**
+ *
+ * A `"derived"` provider is handed back untouched. A `"never"` one gets its
+ * `userInfo` wrapped so the identity it answers with always carries
+ * `emailVerified: false` — the declaration is applied *after* the provider ran,
+ * so it holds whatever the provider read, wrote or forgot.
+ *
+ * **When to use**
+ *
+ * Nowhere by hand: {@link makeRegistry} runs it over every provider, which is
+ * how a declaration becomes a guarantee rather than a comment. It is exported
+ * because that guarantee is worth asserting on directly.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const applyEmailVerifiedPolicy = (provider: OAuthProviderConfig): OAuthProviderConfig =>
+  provider.emailVerified === "derived"
+    ? provider
+    : {
+        ...provider,
+        userInfo: (tokens, options) =>
+          Effect.map(provider.userInfo(tokens, options), (info) => ({ ...info, emailVerified: false }))
+      }
+
 // -----------------------------------------------------------------------------
 // Registry
 // -----------------------------------------------------------------------------
@@ -523,6 +608,10 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
  * at start-up, rather than starting a deployment in which one provider quietly
  * stopped working.
  *
+ * Every provider is put through {@link applyEmailVerifiedPolicy} on the way in,
+ * so what `find` and `get` answer with already honours the declaration — a
+ * provider value read straight out of an application's own array does not.
+ *
  * @category constructors
  * @since 0.1.0
  */
@@ -534,7 +623,9 @@ export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthPro
       throw new Error(`effect-auth: duplicate OAuth provider id ${JSON.stringify(provider.id)}`)
     }
     ids.push(provider.id)
-    byId[provider.id] = provider
+    // The single place every provider the flow can reach passes through, which
+    // is what turns `emailVerified: "never"` from a declaration into a rule.
+    byId[provider.id] = applyEmailVerifiedPolicy(provider)
   }
   const find = (id: string): Option.Option<OAuthProviderConfig> =>
     Object.hasOwn(byId, id) ? Option.some(byId[id]!) : Option.none()
@@ -740,6 +831,110 @@ export const fetchJson = (options: {
     }).pipe(Request.bearerToken(options.accessToken))
     const response = yield* Effect.mapError(resilient(client.execute(request)), () =>
       ProviderError.make({ providerId: options.providerId, reason: "ProviderUnavailable" })
+    )
+    if (response.status >= 400) return { status: response.status, body: null }
+    const body = yield* Effect.result(jsonWithin(response, providerRequestTimeout))
+    return { status: response.status, body: body._tag === "Success" ? body.success : null }
+  })
+
+/**
+ * The `POST` half of {@link fetchJson}, for the two things a provider module
+ * genuinely has to do for itself: a token request the generic one cannot
+ * describe, and a user-info endpoint that is not a `GET`.
+ *
+ * **Details**
+ *
+ * Same discipline as {@link fetchJson} — the redirect-refusing client out of the
+ * context, {@link resilient} around the request, a non-2xx reported as a status
+ * with a `null` body rather than as a transport failure. `basicAuth` is here
+ * because `client_secret_basic` is the one client-authentication method the
+ * generic exchange does not offer, and the providers that insist on it (X,
+ * Notion) would otherwise each unwrap a secret and build a header by hand.
+ *
+ * **Gotchas**
+ *
+ * An `exchange` override that uses this owns everything the flow was doing for
+ * it, secret resolution included — see `OAuthProviderConfig.exchange`. Nothing
+ * here filters {@link reservedTokenParams}, because the caller is writing the
+ * whole request rather than adding to one.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const postJson = (options: {
+  readonly providerId: string
+  readonly url: string
+  /** The request body, serialized as JSON. */
+  readonly body: unknown
+  readonly headers?: Readonly<Record<string, string>> | undefined
+  /** Sent as `Authorization: Bearer`. */
+  readonly accessToken?: Redacted.Redacted | undefined
+  /** Sent as `Authorization: Basic`, and never beside an access token. */
+  readonly basicAuth?: { readonly username: string; readonly password: Redacted.Redacted } | undefined
+}): Effect.Effect<JsonResponse, OAuthProviderError, HttpClient.HttpClient> =>
+  send(
+    options.providerId,
+    authorize(
+      Request.post(options.url, {
+        acceptJson: true,
+        headers: { "content-type": "application/json", ...options.headers },
+        body: HttpBody.text(JSON.stringify(options.body), "application/json")
+      }),
+      options
+    )
+  )
+
+/**
+ * A form-encoded `POST` that yields JSON — a token request written by a
+ * provider that needs `client_secret_basic`, or a body the generic exchange
+ * cannot produce. See {@link postJson}.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const postForm = (options: {
+  readonly providerId: string
+  readonly url: string
+  readonly form: Readonly<Record<string, string>>
+  readonly headers?: Readonly<Record<string, string>> | undefined
+  readonly accessToken?: Redacted.Redacted | undefined
+  readonly basicAuth?: { readonly username: string; readonly password: Redacted.Redacted } | undefined
+}): Effect.Effect<JsonResponse, OAuthProviderError, HttpClient.HttpClient> =>
+  send(
+    options.providerId,
+    authorize(
+      Request.post(options.url, {
+        acceptJson: true,
+        ...(options.headers === undefined ? {} : { headers: { ...options.headers } }),
+        body: HttpBody.urlParams(Object.entries(options.form))
+      }),
+      options
+    )
+  )
+
+/** Attaches whichever of the two credentials the caller asked for, and never both. */
+const authorize = (
+  request: Request.HttpClientRequest,
+  options: {
+    readonly accessToken?: Redacted.Redacted | undefined
+    readonly basicAuth?: { readonly username: string; readonly password: Redacted.Redacted } | undefined
+  }
+): Request.HttpClientRequest => {
+  if (options.basicAuth !== undefined) {
+    return Request.basicAuth(request, options.basicAuth.username, options.basicAuth.password)
+  }
+  return options.accessToken === undefined ? request : Request.bearerToken(request, options.accessToken)
+}
+
+/** {@link fetchJson}'s execution half, shared with the two `POST` helpers. */
+const send = (
+  providerId: string,
+  request: Request.HttpClientRequest
+): Effect.Effect<JsonResponse, OAuthProviderError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient
+    const response = yield* Effect.mapError(resilient(client.execute(request)), () =>
+      ProviderError.make({ providerId, reason: "ProviderUnavailable" })
     )
     if (response.status >= 400) return { status: response.status, body: null }
     const body = yield* Effect.result(jsonWithin(response, providerRequestTimeout))

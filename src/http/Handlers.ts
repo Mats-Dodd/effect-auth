@@ -32,7 +32,7 @@
  * @since 0.1.0
  */
 import type { Layer, Scope } from "effect"
-import { Effect, Option, Redacted } from "effect"
+import { DateTime, Duration, Effect, Option, Redacted } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { HttpServerResponse } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
@@ -40,7 +40,7 @@ import { type HttpApi, HttpApiBuilder, type HttpApiGroup, HttpApiSchema } from "
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
-import { NotFound, OAuthProviderError } from "../domain/Errors.js"
+import { InvalidCredentials, NotFound, OAuthProviderError } from "../domain/Errors.js"
 import { type Passwords, passwordsOf } from "../domain/Passwords.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
@@ -51,9 +51,16 @@ import type { AuthApiGroupOf } from "./AuthApi.js"
 import { AuthApiGroup } from "./AuthApi.js"
 import type { Authenticated } from "./Middleware.js"
 import { CurrentSession, currentUserOf } from "./Middleware.js"
-import { oauthStateCookieName } from "./Cookies.js"
-import { clearOAuthStateCookie, clearSessionCookie, setOAuthStateCookie, setSessionCookie } from "./MiddlewareLive.js"
-import { policyRefusedTarget, resolveUrl, validateUrl, withErrorCode } from "./OriginCheck.js"
+import type { PluginCookie } from "./Cookies.js"
+import { oauthStateCookieName, pluginCookieFor } from "./Cookies.js"
+import {
+  clearOAuthStateCookie,
+  clearSessionCookie,
+  optionalSession,
+  setOAuthStateCookie,
+  setSessionCookie
+} from "./MiddlewareLive.js"
+import { policyRefusedTarget, requireTrustedIfPresent, resolveUrl, validateUrl, withErrorCode } from "./OriginCheck.js"
 import type { Bucket } from "./RateLimits.js"
 import { clientAddress, consumeWith, credentials, email as emailBucket } from "./RateLimits.js"
 import type { SessionCacheService } from "./SessionCache.js"
@@ -238,6 +245,117 @@ export const clearSessionCookies = (
   Effect.andThen(clearSessionCookie(config), cache.clear)
 
 /**
+ * The name, before any prefix, of the cookie a pending authentication rides in.
+ *
+ * **Details**
+ *
+ * `__Host-effect_auth.pending` on a TLS deployment, the bare name on plain
+ * HTTP — {@link pendingCookie} makes that decision. It is the *only* place the
+ * pending-authentication token is ever written: a body a script can read is not
+ * where a credential belongs, and a response that carries this cookie never
+ * carries a session cookie.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const pendingCookieBaseName = "effect_auth.pending"
+
+/**
+ * The pending-authentication cookie for this deployment.
+ *
+ * **When to use**
+ *
+ * From a factor plugin that has to read the cookie's *name* — to pull the token
+ * off the incoming request — rather than write it. {@link setPendingCookie} and
+ * {@link clearPendingCookie} are the write side.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const pendingCookie = (config: AuthConfigService, maxAge: Duration.Duration): PluginCookie =>
+  pluginCookieFor(config, { baseName: pendingCookieBaseName, hostOnly: true, maxAge })
+
+/**
+ * Attaches the pending-authentication cookie to the response being built.
+ *
+ * **When to use**
+ *
+ * From any sign-in path whose result is a `Challenge`: the token travels here
+ * and nowhere else, browser-bound exactly as the OAuth `state` cookie is.
+ *
+ * **Gotchas**
+ *
+ * A response that sets this must not also set a session cookie. That is not an
+ * assertion this function can make — it is the caller's, and it is what the
+ * `getSetCookie()` test pins.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const setPendingCookie = (
+  config: AuthConfigService,
+  token: Redacted.Redacted,
+  options: { readonly maxAge: Duration.Duration }
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> => {
+  const cookie = pendingCookie(config, options.maxAge)
+  return HttpApiBuilder.securitySetCookie(cookie.security, token, cookie.options)
+}
+
+/**
+ * Expires the pending-authentication cookie on the response being built.
+ *
+ * **When to use**
+ *
+ * The moment the pending token is spent or refused — success or failure — so a
+ * single-use value never rides a second request. Repeats `path` and `domain`,
+ * as every expiry in this library does.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const clearPendingCookie = (
+  config: AuthConfigService
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> => {
+  const cookie = pendingCookie(config, Duration.zero)
+  return HttpApiBuilder.securitySetCookie(cookie.security, Redacted.make(""), cookie.expiredOptions)
+}
+
+/**
+ * The query parameter a redirect-shaped sign-in sets when a second factor is
+ * still owed.
+ *
+ * **Details**
+ *
+ * `?mfa=required` on the flow's own validated `redirectTo`. A browser that
+ * arrived by a top-level navigation has to leave by one, so an OAuth callback
+ * cannot answer a `202` — this is the same shape `?error=` already uses to tell
+ * the landing page what happened. The pending-authentication token is not in
+ * it: that is in the `__Host-` cookie, where a credential belongs.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const mfaRequiredParam = "mfa"
+
+/**
+ * Marks a redirect target as "signed in, but a second factor is owed".
+ *
+ * **Gotchas**
+ *
+ * The URL must already have been through `OriginCheck.resolveUrl`: this
+ * appends a parameter and validates nothing, exactly as
+ * `OriginCheck.withErrorCode` does.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const withMfaRequired = (url: string): string => {
+  const parsed = new URL(url)
+  parsed.searchParams.set(mfaRequiredParam, "required")
+  return parsed.toString()
+}
+
+/**
  * The `GET` callback this deployment serves, carrying everything a `form_post`
  * provider sent in its body as a query string.
  *
@@ -384,7 +502,7 @@ export const forGroup =
  * every call site.
  *
  * `layer` passes the *base* auth group rather than `AuthApiGroupOf<F>`, which is
- * what lets its twenty-eight handlers be type-checked once instead of once per
+ * what lets its twenty-nine handlers be type-checked once instead of once per
  * deployment. An endpoint whose payload type mentions `F` has a request shape
  * TypeScript cannot resolve — `HttpApiEndpoint`'s `RequestFromParts` branches on
  * the payload type, and a conditional over an unresolved `F` stays deferred, so
@@ -513,11 +631,42 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
       const rateLimit = (bucket: Bucket, request: HttpServerRequest.HttpServerRequest) =>
         consumeWith({ config, limiter, bucket, request })
 
+      /**
+       * `OriginCheck.requireTrustedIfPresent`, with this layer's configuration
+       * provided into it at build time so that no handler carries a
+       * request-time `AuthConfig` requirement.
+       *
+       * On the unauthenticated doors: an `Origin` or `Referer` that is present
+       * and untrusted is refused, and a request claiming neither — a server, a
+       * script — passes. Every plugin's unauthenticated POST already does this;
+       * the library's own were the half that did not, and a rule the plugins
+       * enforce and the core does not is not a rule.
+       *
+       * On `signInEmail` it closes login CSRF: a cross-site form post
+       * otherwise signs a visitor's browser into an account the attacker
+       * controls, and everything that person then does — a password saved, an
+       * address added, a purchase — happens in it. On the two mail-sending
+       * doors it is the same reach a plugin's send endpoint is guarded against.
+       */
+      const trustedOrigin = Effect.provideService(requireTrustedIfPresent, AuthConfig, config)
+
+      /**
+       * Who the browser already was, on a door that does not require anybody.
+       *
+       * A sign-in that arrives carrying a session is an *upgrade* — the
+       * anonymous visitor with a basket who now signs in to the account they
+       * had all along — and `AuthHooks.beforeSessionMint` is where a deployment
+       * acts on it. Nothing is required and nothing is refused: a caller with
+       * no credential, or a stale one, is the ordinary case and reads `None`.
+       */
+      const current = (request: HttpServerRequest.HttpServerRequest) => optionalSession({ config, sessions, request })
+
       const unknownProvider = (providerId: string) => OAuthProviderError.make({ providerId, reason: "UnknownProvider" })
 
       return handlers
         .handle("signUpEmail", ({ payload, request }) =>
           Effect.gen(function* () {
+            yield* trustedOrigin
             yield* rateLimit(credentials, request)
             if (!config.emailPassword.enabled) return notServed
             // `payload` carries whatever custom fields the deployment's model
@@ -545,6 +694,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
         )
         .handle("signInEmail", ({ payload, request }) =>
           Effect.gen(function* () {
+            yield* trustedOrigin
             yield* rateLimit(credentials, request)
             if (!config.emailPassword.enabled) return notServed
             const result = yield* passwords
@@ -552,14 +702,60 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 email: payload.email,
                 password: payload.password,
                 rememberMe: payload.rememberMe,
+                current: Option.getOrUndefined(yield* current(request)),
                 ...clientMeta(config, request)
               })
               .pipe(serverFault)
+
+            if (result._tag === "Challenge") {
+              // The pending token, and only the pending token: no session was
+              // minted, so no session cookie may be written here. A response
+              // that carried both would be a half-authenticated credential the
+              // second factor no longer gates.
+              const now = yield* DateTime.now
+              yield* setPendingCookie(config, result.token, {
+                maxAge: Duration.max(Duration.zero, DateTime.distance(now, result.expiresAt))
+              })
+              return { _tag: "MfaRequired" as const, available: result.available, expiresAt: result.expiresAt }
+            }
 
             yield* setSessionCookie(config, result.session, result.token, {
               persistent: payload.rememberMe !== false
             })
             return { user: model.toPublic(result.user), session: result.session }
+          })
+        )
+        .handle("reauthenticate", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(credentials, request)
+            if (!config.emailPassword.enabled) return notServed
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            // Exactly one hash verification runs whether or not this account
+            // has a password, so a wrong answer costs what a right one does —
+            // the same discipline `signIn` runs, through the same function.
+            const matches = yield* passwords.verifyPassword(user.id, payload.password).pipe(serverFault)
+            if (!matches) {
+              return yield* InvalidCredentials.make()
+            }
+            const elevated = yield* sessions
+              .elevate(session, {
+                method: "password",
+                factor: "knowledge",
+                phishingResistant: false,
+                restricted: false
+              })
+              .pipe(serverFault)
+            // `elevate` rotates the token, so the cookie has to carry the new
+            // one — the old one stops resolving the instant this returns.
+            yield* setSessionCookie(config, elevated.session, elevated.token, {
+              persistent: elevated.session.rememberMe
+            })
+            // And the snapshot beside it names the old token and the old
+            // level. Rewriting it is what keeps the very next request a hit;
+            // `write` is a no-op unless this request presented the cookie.
+            yield* cache.write(elevated.session, user)
+            return { user: model.toPublic(user), session: elevated.session }
           })
         )
         .handle("signOut", () =>
@@ -618,6 +814,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
         )
         .handle("requestPasswordReset", ({ payload, request }) =>
           Effect.gen(function* () {
+            yield* trustedOrigin
             yield* rateLimit(emailBucket, request)
             if (!config.emailPassword.enabled) return notServed
             // Answers the same whether or not the address has an account.
@@ -649,10 +846,6 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
             if (!config.emailPassword.enabled) return notServed
             const user = yield* CurrentUser
             const session = yield* CurrentSession
-            // A stolen but stale cookie must not be enough to take the
-            // account over permanently: the caller has to have signed in
-            // recently, as well as knowing the current password.
-            yield* sessions.requireFresh(session)
             yield* passwords
               .changePassword({
                 userId: user.id,
@@ -667,6 +860,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
         )
         .handle("sendVerificationEmail", ({ payload, request }) =>
           Effect.gen(function* () {
+            yield* trustedOrigin
             yield* rateLimit(emailBucket, request)
             if (!config.emailPassword.enabled) return notServed
             yield* passwords
@@ -753,10 +947,26 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 // and `userInfo` is the only thing that reads it. Unsigned and
                 // attacker-controllable — carried, never trusted.
                 ...(query.user === undefined ? {} : { params: { user: query.user } }),
+                // The same upgrade seam `signInEmail` carries: a callback that
+                // arrives in a browser already holding a session is somebody
+                // signing in to the account they had all along.
+                current: Option.getOrUndefined(yield* current(request)),
                 ...clientMeta(config, request)
               })
               .pipe(serverFault)
 
+            if (outcome._tag === "Success" && outcome.challenge !== null) {
+              // A challenge and a session cookie are mutually exclusive, and
+              // the flow has already made `session` and `token` null to say so.
+              // The browser leaves by the navigation it arrived on, carrying
+              // the pending token in its own `__Host-` cookie and a marker on
+              // the query string so the landing page knows to ask.
+              const now = yield* DateTime.now
+              yield* setPendingCookie(config, outcome.challenge.token, {
+                maxAge: Duration.max(Duration.zero, DateTime.distance(now, outcome.challenge.expiresAt))
+              })
+              return redirectTo(withMfaRequired(outcome.redirectTo))
+            }
             if (outcome._tag === "Success" && outcome.session !== null && outcome.token !== null) {
               // Null for a link flow: the person was already signed in, and a
               // second session would be a silent session upgrade.
@@ -801,8 +1011,6 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
         .handle("unlinkAccount", ({ payload }) =>
           Effect.gen(function* () {
             const user = yield* CurrentUser
-            const session = yield* CurrentSession
-            yield* sessions.requireFresh(session)
             yield* accounts.unlink(payload.accountId, user.id).pipe(serverFault)
             return acknowledged
           })
@@ -836,10 +1044,6 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
             yield* rateLimit(credentials, request)
             if (!config.user.changeEmail.enabled) return notServed
             const user = yield* CurrentUser
-            const session = yield* CurrentSession
-            // The address is the account's recovery path, so a stale cookie
-            // must not be enough to start moving it.
-            yield* sessions.requireFresh(session)
             yield* users
               .requestEmailChange({
                 user,
@@ -928,10 +1132,6 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
             yield* rateLimit(credentials, request)
             if (!config.emailPassword.enabled) return notServed
             const user = yield* CurrentUser
-            const session = yield* CurrentSession
-            // Adding a credential is adding a way in, so the same freshness
-            // rule as changing one.
-            yield* sessions.requireFresh(session)
             yield* passwords
               .setPassword({
                 userId: user.id,

@@ -22,12 +22,13 @@ import { Context, Effect, Layer, Option } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { insertRow, revalidateRewrite } from "../internal/effects.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
+import { Authenticators, list as listAuthenticators } from "./Authenticators.js"
 import { AccountAlreadyLinked, CannotUnlinkLastAccount, NotFound, UserNotFound } from "./Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "./Events.js"
 import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
 import { AuthHooks } from "./Hooks.js"
 import type { AccountId, User, UserId, UserInsertOf } from "./Schema.js"
-import { Account, normalizeEmail, User as UserModel, UserModelRef } from "./Schema.js"
+import { Account, CredentialIssuer, normalizeEmail, User as UserModel, UserModelRef } from "./Schema.js"
 import type { AccountTokens, PersistenceError } from "./Stores.js"
 import { AccountStore, isUniqueViolation, UserStore, WithAuthTransaction } from "./Stores.js"
 
@@ -223,12 +224,24 @@ export interface AccountsService {
    * Refuses with `CannotUnlinkLastAccount` when it would leave the user unable
    * to sign in at all.
    *
+   * "Unable to sign in" counts more than `accounts` rows. An `accounts` row is
+   * a way in only if it can actually authenticate somebody — an OAuth identity,
+   * or a `local:credential` row that carries a hash; the credential row a
+   * `setPassword` has not filled in yet is not one. Everything else a person can
+   * sign in with — a passkey, and whatever else a factor plugin holds — is
+   * counted through the `Authenticators` seam, whose contributors answer
+   * `signIn: true` for the ones that stand alone. Without that a passkey-only
+   * user would be refused the unlink of a provider they no longer use, and a
+   * user whose only real credential is a passkey would be allowed to delete
+   * the one `accounts` row while keeping a way in that nothing counted.
+   *
    * The count and the delete run in one transaction, and the count is taken
    * with `AccountStore.listByUserIdForUpdate`, which holds a write lock on the
-   * user's rows for the rest of it. The lock is the part that matters: a plain
-   * `BEGIN` is READ COMMITTED on PostgreSQL, under which two concurrent
-   * unlinks would each see two methods, each delete a different one, and both
-   * commit — leaving a user with no way to sign in.
+   * user's rows for the rest of it — the authenticator count is taken inside
+   * the same transaction, under the same lock, for the same reason. The lock is
+   * the part that matters: a plain `BEGIN` is READ COMMITTED on PostgreSQL,
+   * under which two concurrent unlinks would each see two methods, each delete
+   * a different one, and both commit — leaving a user with no way to sign in.
    */
   readonly unlink: (
     accountId: AccountId,
@@ -273,6 +286,9 @@ export const make: Effect.Effect<
   // nothing provides nothing — and, being read here, the set is fixed when the
   // layer is built rather than looked up on every request.
   const hooks = yield* AuthHooks
+  // The factor plugins installed, if any. A `Context.Reference` with an empty
+  // default, read once when the layer is built, exactly as the hooks are.
+  const authenticators = yield* Authenticators
   // The deployment's own model, behind a reference whose default is the base
   // one. This module is base-typed on purpose — an identity carries base fields
   // and nothing else — but a hook may not be, so the model is what completes
@@ -305,7 +321,7 @@ export const make: Effect.Effect<
    * **Gotchas**
    *
    * The insert takes a `FOR UPDATE` lock on the *user* row first, in one
-   * transaction. The magic-link takeover defence deletes an unverified
+   * transaction. The email-otp takeover defence deletes an unverified
    * account's sign-in methods under that same lock; without it, a row this flow
    * inserts is a phantom the defence's `FOR UPDATE` on the account rows cannot
    * see under READ COMMITTED, and a pre-registrant could re-attach a method the
@@ -507,6 +523,16 @@ export const make: Effect.Effect<
     return { user: owner, account, userCreated: false, accountCreated: true } satisfies LinkResult
   })
 
+  /**
+   * Whether an `accounts` row can actually authenticate somebody.
+   *
+   * Every provider row can. The `local:credential` row can only when it carries
+   * a hash — the one a `setPassword` has not filled in is a placeholder, and
+   * counting it as a way in is how a user ends up locked out by an unlink that
+   * was allowed.
+   */
+  const canSignIn = (account: Account): boolean => account.issuer !== CredentialIssuer || account.passwordHash !== null
+
   const unlink = Effect.fnUntraced(function* (accountId: AccountId, userId: UserId) {
     const removed = yield* transaction.run(
       Effect.gen(function* () {
@@ -517,7 +543,13 @@ export const make: Effect.Effect<
         if (target === undefined) {
           return yield* NotFound.make()
         }
-        if (held.length <= 1) {
+        const remainingAccounts = held.filter((account) => account.id !== accountId && canSignIn(account)).length
+        // Inside the lock, deliberately: a passkey being deleted concurrently
+        // must not be counted by this transaction as the way in it leaves
+        // behind.
+        const factors = yield* listAuthenticators(authenticators, userId)
+        const remainingFactors = factors.filter((factor) => factor.signIn).length
+        if (remainingAccounts + remainingFactors === 0) {
           return yield* CannotUnlinkLastAccount.make()
         }
         const deleted = yield* accounts.deleteById(accountId, userId)

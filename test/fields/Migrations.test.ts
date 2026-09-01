@@ -121,7 +121,14 @@ layer(layerDatabase)("fields/Migrations", (it) => {
       const rows = yield* sql<{ readonly name: string }>`SELECT name FROM effect_auth_migrations ORDER BY migration_id`
       assert.deepStrictEqual(
         rows.map((row) => row.name),
-        ["create_users", "create_sessions", "create_accounts", "create_verifications", "session_remember_me"]
+        [
+          "create_users",
+          "create_sessions",
+          "create_accounts",
+          "create_verifications",
+          "session_remember_me",
+          "session_assurance"
+        ]
       )
     })
   )

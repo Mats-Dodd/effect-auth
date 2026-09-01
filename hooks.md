@@ -8,6 +8,11 @@ would close a layer cycle. They instead carry literally-parallel copies of the s
 cross-source suites in test/domain/Hooks.test.ts and test/fields/Hooks.test.ts failing if one
 drifts. Unblocks the next plugin wave (email OTP, TOTP, passkeys).
 
+Update 2026-09-01 (Phase 1, SPEC Amendment 19): the magic-link plugin was folded into
+`src/email-otp/`, which carries the same `Users.provision` call and the unproven-account rule
+forward; every mention of magic-link below is historical and the file:line references describe
+the tree at b2b9efb. The three-copy provisioning sequence is unchanged.
+
 ## Why
 
 Consumers and plugins need to veto or enrich core operations — "reject sign-up from this

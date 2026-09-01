@@ -313,6 +313,9 @@ const readString = (record: Readonly<Record<string, unknown>>, key: string): str
  */
 export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthProviderConfig => ({
   id: "mock",
+  // The stub reads `email_verified` out of its user-info body, so the claim
+  // decides — a test of the `"never"` policy overrides this field.
+  emailVerified: "derived",
   clientId: "mock-client-id",
   clientSecret: Redacted.make("mock-client-secret"),
   authorizationUrl: authorizeUrl,

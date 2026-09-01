@@ -19,6 +19,31 @@ import { assert } from "@effect/vitest"
 import { Effect, Option, Redacted } from "effect"
 import type { AuthEvent } from "../src/domain/Events.js"
 import { Passwords } from "../src/domain/Passwords.js"
+import type { UserFields } from "../src/domain/Schema.js"
+import type { SignInResult } from "../src/domain/SignIn.js"
+
+/**
+ * Narrows a sign-in to the half that produced a session.
+ *
+ * **Details**
+ *
+ * `SignIn.complete`'s success is a union: a deployment with a factor plugin
+ * installed can answer a challenge rather than a session. A suite that installs
+ * no such plugin can never see one, so a challenge is a failure of the test
+ * rather than a case it handles — and this is where that is said once, instead
+ * of an `if` at every call site that would quietly pass if the shape changed.
+ *
+ * The HTTP equivalent, over the wire union, is `completeSignIn` in
+ * `test/http/helpers.ts`.
+ */
+export const completed = <F extends UserFields>(
+  result: SignInResult<F>
+): Extract<SignInResult<F>, { readonly _tag: "Complete" }> => {
+  if (result._tag !== "Complete") {
+    return assert.fail(`expected a completed sign-in, got ${result._tag}`)
+  }
+  return result
+}
 
 /**
  * An address no other test will use.

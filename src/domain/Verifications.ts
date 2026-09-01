@@ -16,10 +16,9 @@
  * a plugin — a magic link, a change-email confirmation — mint tokens of its own
  * without a second copy of this module and without a table of its own.
  *
- * Nothing here stores a secret. The 43-character random half is hashed with
- * SHA-256 and only the digest reaches the database; claiming is a single
- * `DELETE ... RETURNING` guarded by the expiry, which is the whole of the
- * single-use and replay story.
+ * Nothing here stores a secret. The random half is hashed with SHA-256 and only
+ * the digest reaches the database; claiming is a single `DELETE ... RETURNING`
+ * guarded by the expiry, which is the whole of the single-use and replay story.
  *
  * **Gotchas**
  *
@@ -61,7 +60,7 @@ export const subjectTokenSeparator = "."
 export interface SubjectToken {
   /** The user id, normalized e-mail address, or whatever else names the row. */
   readonly subject: string
-  /** The 43-character random half, the only part that is hashed and stored. */
+  /** The random half, the only part that is hashed and stored. */
   readonly secret: Redacted.Redacted
 }
 
@@ -179,7 +178,19 @@ export function purpose(name: string): TokenPurpose<null>
 export function purpose<S extends PurposePayload>(name: string, payload: S): TokenPurpose<S["Type"]>
 export function purpose(name: string, payload?: PurposePayload): TokenPurpose<unknown> {
   if (payload === undefined) {
-    return { name, payload: null, decodePayload: () => Effect.succeed(null) }
+    return {
+      name,
+      payload: null,
+      // A payload-less purpose refuses a row that carries one. Two purposes
+      // that share a name are the same rows, and a purpose declaring no payload
+      // that answered `null` for any row at all would redeem a row some other
+      // purpose wrote with state in it — a challenge row, whose payload holds
+      // the code's digest and its attempt budget — as though it were a bare
+      // link. The handle would then be the credential and the mailed code would
+      // never be needed. See `Challenges.codeNamespace` for the second, wholly
+      // independent half of that defence.
+      decodePayload: (stored) => (stored === null ? Effect.succeed(null) : Effect.fail(InvalidToken.make()))
+    }
   }
   const json = Schema.fromJsonString(payload)
   const decode = Schema.decodeEffect(json)
@@ -337,7 +348,7 @@ export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
  * **When to use**
  *
  * Wherever an account stops being the account those tokens were minted against:
- * a deletion, a password reset, a magic-link takeover defence. See
+ * a deletion, a password reset, an email-otp takeover defence. See
  * {@link userSubjectPurposes} for what each of those has to destroy, and for
  * why `email-verify` is not among them.
  *
@@ -369,6 +380,27 @@ export interface IssueOptions<P> {
   readonly ttl: Duration.Duration
   /** What travels with it, `null` for a purpose that declares no payload. */
   readonly payload: P
+  /**
+   * The secret half to mint the token under, instead of a fresh one.
+   *
+   * **When to use**
+   *
+   * To re-issue a token somebody is already holding: `Challenges` spends one
+   * attempt of a code budget by claiming the row and writing it back under the
+   * *same* handle with one attempt fewer, so the handle in the caller's cookie
+   * goes on naming the challenge across a wrong guess. There is no other
+   * reason to pass one.
+   *
+   * **Gotchas**
+   *
+   * Omit it and the secret is 32 bytes from `Token.generateToken` — 43
+   * base64url characters of `effect/Crypto` randomness, which is the entropy
+   * every guarantee in this module rests on. Pass one and that guarantee is
+   * yours to keep: a secret with less entropy than that, or one derived from
+   * anything an attacker can influence, makes the token guessable, and hashing
+   * it does not help.
+   */
+  readonly secret?: Redacted.Redacted
 }
 
 /**
@@ -471,7 +503,9 @@ export const make: Effect.Effect<VerificationsService, never, Token | Verificati
   const store = yield* VerificationStore
 
   const issue = Effect.fnUntraced(function* <P>(options: IssueOptions<P>) {
-    const secret = yield* tokens.generateToken
+    // The default path is where the "43 random characters" guarantee lives; an
+    // override is the caller's promise instead. See `IssueOptions.secret`.
+    const secret = options.secret ?? (yield* tokens.generateToken)
     const valueHash = yield* tokens.hashToken(secret)
     const now = yield* DateTime.now
     const expiresAt = DateTime.addDuration(now, options.ttl)

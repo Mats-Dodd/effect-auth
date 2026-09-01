@@ -98,7 +98,34 @@ export const annotateAuthLogs = <A, E, R>(effect: Effect.Effect<A, E, R>): Effec
  * oracle those flows are shaped to avoid. The failure is therefore logged and
  * dropped, and the caller's response is the one it would have given anyway.
  *
+ * `to`, when given, is checked against {@link isUndeliverable} first: an
+ * address in a reserved domain is never handed to the mailer at all. What the
+ * caller observes is unchanged, because a skipped delivery and a failed one are
+ * already the same thing here.
+ *
  * @internal
  */
-export const deliverEmail = <E>(email: Effect.Effect<void, E>, message: string): Effect.Effect<void> =>
-  annotateAuthLogs(Effect.ignore(email, { log: "Warn", message }))
+export const deliverEmail = <E>(email: Effect.Effect<void, E>, message: string, to?: string): Effect.Effect<void> =>
+  to !== undefined && isUndeliverable(to)
+    ? annotateAuthLogs(Effect.logDebug("skipped a message to a reserved domain", { message }))
+    : annotateAuthLogs(Effect.ignore(email, { log: "Warn", message }))
+
+/**
+ * Whether an address is one nothing could ever deliver to.
+ *
+ * **Details**
+ *
+ * RFC 2606 reserves `.invalid` precisely so that a system with no real address
+ * for somebody can hold a well-formed one that is guaranteed not to resolve.
+ * The anonymous plugin mints `anon-<id>@anonymous.invalid` for exactly that
+ * reason, and an anonymous visitor can reach several endpoints that send mail —
+ * `sendVerificationEmail`, the first hop of a change of address, a password
+ * reset — none of which knows the plugin exists.
+ *
+ * Handing such an address to a real relay is a bounce per request and a cost to
+ * the deployment's sending reputation, so it is refused here rather than
+ * registered by whichever plugin happened to mint it.
+ *
+ * @internal
+ */
+export const isUndeliverable = (address: string): boolean => address.trim().toLowerCase().endsWith(".invalid")

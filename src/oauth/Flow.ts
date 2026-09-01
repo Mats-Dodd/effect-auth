@@ -61,11 +61,18 @@ import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../
 import { NotFound, OAuthStateMismatch, TokenRefreshFailed } from "../domain/Errors.js"
 import { AuthEvents, oauthMethod, publishSafely } from "../domain/Events.js"
 import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
-import { AuthHooks } from "../domain/Hooks.js"
 import type { Account, AccountId, Session, User, UserId } from "../domain/Schema.js"
 import { scopesOf } from "../domain/Schema.js"
-import { Sessions } from "../domain/Sessions.js"
-import { AccountStore, type AccountTokens, type PersistenceError, type VerificationStore } from "../domain/Stores.js"
+import type { SignInChallenge } from "../domain/SignIn.js"
+import { SignIn } from "../domain/SignIn.js"
+import type { Evidence } from "../domain/Sessions.js"
+import {
+  AccountStore,
+  type AccountTokens,
+  type PersistenceError,
+  type SessionWithUser,
+  type VerificationStore
+} from "../domain/Stores.js"
 import { redirectFailure, resolveUrl } from "../http/OriginCheck.js"
 import { trimTrailingSlashes } from "../internal/url.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
@@ -381,6 +388,13 @@ export interface CallbackOptions {
   readonly params?: Readonly<Record<string, string>> | undefined
   readonly ipAddress?: string | null | undefined
   readonly userAgent?: string | null | undefined
+  /**
+   * The session the browser already carried, when it carried one — the seam an
+   * anonymous visitor is adopted or merged through. Handed to
+   * `beforeSessionCreate` and to the sign-in pipeline, and ignored on a link
+   * flow, which mints no session.
+   */
+  readonly current?: SessionWithUser | undefined
 }
 
 /**
@@ -458,6 +472,20 @@ export interface CallbackResult {
   readonly account: Account
   readonly session: Session | null
   readonly token: Redacted.Redacted | null
+  /**
+   * What the sign-in pipeline asked for before it would allow a session, or
+   * `null` when it asked for nothing.
+   *
+   * **Gotchas**
+   *
+   * A challenge and a session are mutually exclusive: when this is present,
+   * `session` and `token` are both `null` and the HTTP layer writes the
+   * challenge's own `__Host-` cookie and sends the browser to the deployment's
+   * second-factor page rather than to `redirectTo`. A response that carried
+   * both would be a session cookie handed out for a sign-in that never
+   * finished.
+   */
+  readonly challenge: SignInChallenge | null
   /** The validated URL the browser is to be sent to. */
   readonly redirectTo: string
   readonly userCreated: boolean
@@ -676,7 +704,7 @@ export const make: Effect.Effect<
   | VerificationStore
   | Accounts
   | AccountStore
-  | Sessions
+  | SignIn
   | AuthEvents
   | Jwks
   | HttpClient.HttpClient
@@ -685,15 +713,11 @@ export const make: Effect.Effect<
   const registry = yield* OAuthProviders
   const accounts = yield* Accounts
   const accountStore = yield* AccountStore
-  const sessions = yield* Sessions
+  // The one choke point every sign-in in this library goes through.
+  const { complete: completeSignIn } = yield* SignIn
   const events = yield* AuthEvents
   const keySets = yield* Jwks
   const client = refuseRedirects(yield* HttpClient.HttpClient)
-  // A `Context.Reference` with a no-op default, so a deployment that installs
-  // nothing provides nothing — and, being read here, the set is fixed when the
-  // layer is built rather than looked up on every callback.
-  const hooks = yield* AuthHooks
-
   // `State` reads its services from the context. Capturing them once, when the
   // layer is built, keeps them out of every method's requirements.
   const stateServices = yield* Effect.context<AuthConfig | Token | VerificationStore>()
@@ -763,14 +787,20 @@ export const make: Effect.Effect<
     }
     for (const [key, value] of Object.entries(params)) form.set(key, value)
     form.set("client_id", provider.clientId)
-    // The one place the secret is unwrapped. `client_secret_post`: it goes in
-    // the body of this single request and nowhere else.
-    if (Option.isSome(secret)) form.set("client_secret", Redacted.value(secret.value))
+    // The one place the secret is unwrapped, and it is unwrapped once, for this
+    // single request. Which of the two RFC 6749 §2.3.1 forms it takes is the
+    // provider's own statement, and it governs *both* grants — a provider that
+    // sent Basic for the code and the body for a refresh would sign people in
+    // and then fail to refresh them two hours later.
+    const basic = provider.tokenAuth === "client_secret_basic"
+    if (Option.isSome(secret) && !basic) form.set("client_secret", Redacted.value(secret.value))
 
-    const request = HttpClientRequest.post(provider.tokenUrl, {
+    const posted = HttpClientRequest.post(provider.tokenUrl, {
       acceptJson: true,
       body: HttpBody.urlParams([...form])
     })
+    const request =
+      basic && Option.isSome(secret) ? HttpClientRequest.basicAuth(posted, provider.clientId, secret.value) : posted
 
     // This is the one request that carries the client secret, and the one a
     // provider outage can hang forever: it gets a deadline, and a couple of
@@ -911,6 +941,23 @@ export const make: Effect.Effect<
     return { provider, payload }
   })
 
+  /**
+   * What a completed provider round trip proves.
+   *
+   * Possession of an account at the provider, and nothing more: the ceremony
+   * happened in the provider's origin rather than this one, so it is not
+   * phishing-resistant however the person authenticated over there, and this
+   * library never sees which factors they used. `oauth:<providerId>` has no
+   * registered `amr` value, which is exactly why the evidence is stored rather
+   * than translated.
+   */
+  const providerEvidence = (providerId: string): Evidence => ({
+    method: oauthMethod(providerId),
+    factor: "possession",
+    phishingResistant: false,
+    restricted: false
+  })
+
   const finish = Effect.fnUntraced(function* (
     provider: OAuthProviderConfig,
     payload: StatePayload,
@@ -973,6 +1020,7 @@ export const make: Effect.Effect<
         account: link.account,
         session: null,
         token: null,
+        challenge: null,
         redirectTo: resolveUrl(config, payload.callbackURL),
         userCreated: link.userCreated,
         accountCreated: link.accountCreated,
@@ -987,37 +1035,43 @@ export const make: Effect.Effect<
     // here tells whoever provoked it nothing the exchange had not established
     // already. It travels out as the callback's redirect outcome, exactly as a
     // failed exchange does, rather than as a page the browser cannot leave.
-    const beforeSession = hooks.beforeSessionCreate
-    if (beforeSession !== undefined) {
-      const source: ProvisionSource = { _tag: "OAuth", providerId: provider.id, info }
-      yield* beforeSession({ user: link.user, source })
-    }
-
-    const created = yield* sessions.create({
-      userId: link.user.id,
-      ipAddress: options.ipAddress ?? null,
-      userAgent: options.userAgent ?? null,
-      rememberMe: payload.rememberMe
-    })
-    yield* publishSafely(events, {
-      _tag: "SignedIn",
-      userId: link.user.id,
-      sessionId: created.session.id,
-      method: oauthMethod(provider.id)
+    const source: ProvisionSource = { _tag: "OAuth", providerId: provider.id, info }
+    const completed = yield* completeSignIn({
+      user: link.user,
+      source,
+      evidence: [providerEvidence(provider.id)],
+      current: Option.fromNullishOr(options.current),
+      request: {
+        ipAddress: options.ipAddress ?? null,
+        userAgent: options.userAgent ?? null,
+        rememberMe: payload.rememberMe
+      }
     })
 
-    return {
+    const redirectTo = resolveUrl(config, payload.callbackURL)
+    const settled = {
       providerId: provider.id,
       user: link.user,
       account: link.account,
-      session: created.session,
-      token: created.token,
-      redirectTo: resolveUrl(config, payload.callbackURL),
+      redirectTo,
       userCreated: link.userCreated,
       accountCreated: link.accountCreated,
       linked: false,
       rememberMe: payload.rememberMe
-    } satisfies CallbackResult
+    }
+    // A challenge carries no session and no token out of here. The handler owns
+    // what to do with it — the pending cookie, and the redirect to the
+    // deployment's own second-factor page — because only the HTTP layer can
+    // write a cookie, and this module reads no configuration it does not
+    // already need.
+    return completed._tag === "Challenge"
+      ? ({ ...settled, session: null, token: null, challenge: completed } satisfies CallbackResult)
+      : ({
+          ...settled,
+          session: completed.session,
+          token: completed.token,
+          challenge: null
+        } satisfies CallbackResult)
   })
 
   const callback = Effect.fnUntraced(
@@ -1211,7 +1265,7 @@ export const layer: Layer.Layer<
   | VerificationStore
   | Accounts
   | AccountStore
-  | Sessions
+  | SignIn
   | AuthEvents
   | HttpClient.HttpClient
 > = Layer.effect(OAuthFlow, make).pipe(Layer.provide(layerJwks.pipe(Layer.provide(layerSafeClient))))

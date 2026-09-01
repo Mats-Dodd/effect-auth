@@ -85,6 +85,10 @@ describe("fields/AuthClient", () => {
         password: testPassword
       }).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
+      // Sign-in answers a union: a session, or the 202 a factor plugin owes a
+      // second factor with. This deployment installs none.
+      assert.isFalse("_tag" in signedIn)
+      if ("_tag" in signedIn) return
       assert.strictEqual(signedIn.user.plan, "pro")
     })
   )

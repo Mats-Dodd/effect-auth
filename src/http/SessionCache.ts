@@ -62,12 +62,12 @@
  *
  * @since 0.1.0
  */
-import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, type Redacted, Result, Schema } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Option, type Redacted, Schema } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
-import { Hmac } from "../crypto/Hmac.js"
+import { Hmac, signedValueSeparator } from "../crypto/Hmac.js"
 import { Token } from "../crypto/Token.js"
 import type { Session, User, UserFields, UserModel, UserOf, UserRow } from "../domain/Schema.js"
 import { baseUserModel, Session as SessionModel } from "../domain/Schema.js"
@@ -91,10 +91,17 @@ import {
  * The separator between the payload and its tag. Neither half can contain it:
  * both are base64url.
  *
+ * **Details**
+ *
+ * `Hmac.signedValueSeparator`, restated here because it is part of *this*
+ * cookie's format as well as of the envelope's. The snapshot is written and
+ * read through `Hmac.signedValue` / `Hmac.verifySignedValue`, which is where
+ * both halves of the envelope now live.
+ *
  * @category constructors
  * @since 0.1.0
  */
-export const cacheCookieSeparator = "."
+export const cacheCookieSeparator: string = signedValueSeparator
 
 /**
  * The largest cookie value this module will write.
@@ -321,6 +328,9 @@ export const sessionCacheOf = <F extends UserFields>(
 // Implementation
 // -----------------------------------------------------------------------------
 
+/** The snapshot's payload is UTF-8 JSON; a byte string that is not becomes a miss. */
+const utf8Decoder = new TextDecoder()
+
 const encodeSessionJson = Schema.encodeUnknownEffect(SessionModel.json)
 const decodeSession = Schema.decodeUnknownEffect(SessionModel)
 const encodeEnvelope = Schema.encodeEffect(CacheEnvelopeJson)
@@ -396,25 +406,23 @@ export const make: <F extends UserFields>(
         user: yield* Effect.orDie(encodeUser(model.toPublic(payload.user)))
       })
     )
-    const mac = yield* hmac.sign(encodeUtf8(`${macContext}${json}`))
-    return `${Encoding.encodeBase64Url(json)}${cacheCookieSeparator}${Encoding.encodeBase64Url(mac)}`
+    // Byte-identical to what this module built by hand before `Hmac` grew the
+    // envelope: `base64url(payload) "." base64url(mac over macContext ‖ payload)`.
+    // Moving it did not move the format, so every outstanding snapshot still
+    // decodes — which is exactly what the pinned test asserts.
+    return yield* hmac.signedValue(macContext, encodeUtf8(json))
   })
 
   const decode = Effect.fnUntraced(function* (value: string) {
-    const at = value.indexOf(cacheCookieSeparator)
-    if (at <= 0 || at === value.length - 1) return Option.none<SessionCachePayload<F>>()
-
-    const json = Encoding.decodeBase64UrlString(value.slice(0, at))
-    const mac = Encoding.decodeBase64Url(value.slice(at + 1))
-    if (Result.isFailure(json) || Result.isFailure(mac)) return Option.none<SessionCachePayload<F>>()
-
     // The tag is checked before anything is parsed: everything below trusts the
     // payload to be one this deployment wrote *as a cache snapshot* — hence the
-    // context prefix, which is what "as a cache snapshot" is made of.
-    const authentic = yield* hmac.verify(encodeUtf8(`${macContext}${json.success}`), mac.success)
-    if (!authentic) return Option.none<SessionCachePayload<F>>()
+    // context prefix, which is what "as a cache snapshot" is made of. A
+    // malformed envelope, a payload that is not base64url and a tag that does
+    // not verify are one answer, `None`, which is a cache miss and never a 401.
+    const signed = yield* hmac.verifySignedValue(macContext, value)
+    if (Option.isNone(signed)) return Option.none<SessionCachePayload<F>>()
 
-    const envelope = yield* Effect.option(decodeEnvelope(json.success))
+    const envelope = yield* Effect.option(decodeEnvelope(utf8Decoder.decode(signed.value)))
     if (Option.isNone(envelope)) return Option.none<SessionCachePayload<F>>()
 
     const session = yield* Effect.option(

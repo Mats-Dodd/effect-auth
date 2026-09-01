@@ -45,14 +45,17 @@ import {
 import { AuthEvents, passwordMethod, publishSafely } from "./Events.js"
 import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
 import { AuthHooks } from "./Hooks.js"
-import type { Session, SessionId, UserExtras, UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
+import type { SessionId, UserExtras, UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 import { Account, baseUserModel, CredentialIssuer, normalizeEmail, UserId } from "./Schema.js"
-import type { CreatedSession } from "./Sessions.js"
+import type { SignIn, SignInResult } from "./SignIn.js"
+import { signInOf } from "./SignIn.js"
+import type { CreatedSession, Evidence } from "./Sessions.js"
 import { Sessions } from "./Sessions.js"
 import {
   AccountStore,
   isUniqueViolation,
   type PersistenceError,
+  type SessionWithUser,
   SessionStore,
   type UserStore,
   userStoreOf,
@@ -231,18 +234,39 @@ export interface SignInOptions {
   readonly ipAddress?: string | null | undefined
   readonly userAgent?: string | null | undefined
   readonly rememberMe?: boolean | undefined
+  /**
+   * The session the request already carried, when it carried one.
+   *
+   * **Details**
+   *
+   * Handed to `beforeSessionCreate` and to the sign-in pipeline, which is how a
+   * policy sees "this browser is signed in as A and is about to become B" and
+   * can merge or adopt the first account inside the mint. Absent on every
+   * ordinary sign-in.
+   */
+  readonly current?: SessionWithUser | undefined
 }
 
 /**
- * A completed sign-in: the user, the session, and the session's raw token.
+ * What a verified password proves, as `Sessions.elevate` and `SignIn.complete`
+ * take it.
  *
- * @category models
- * @since 0.1.0
+ * **Details**
+ *
+ * A knowledge factor, and neither phishing-resistant nor restricted: a password
+ * can be typed into anybody's page, and nothing about the channel it arrived
+ * on is limited. One value rather than a literal per call site, so the sign-in
+ * path and the re-authentication path cannot describe the same proof
+ * differently.
+ *
+ * @category constructors
+ * @since 0.2.0
  */
-export interface SignInResult<F extends UserFields = {}> {
-  readonly user: UserOf<F>
-  readonly session: Session
-  readonly token: Redacted.Redacted
+export const passwordEvidence: Evidence = {
+  method: passwordMethod,
+  factor: "knowledge",
+  phishingResistant: false,
+  restricted: false
 }
 
 /**
@@ -344,6 +368,30 @@ export interface PasswordsService<F extends UserFields = {}> {
     SignInResult<F>,
     InvalidCredentials | EmailNotVerified | PasswordHashError | PolicyRefused | PersistenceError
   >
+
+  /**
+   * Re-verifies a signed-in person's password and answers what that proves.
+   *
+   * **Details**
+   *
+   * The same single constant-cost verification `signIn` runs — one hash check
+   * on every path, against the dummy hash when the user has no credential — so
+   * "you have no password" and "that is the wrong password" are one answer,
+   * `InvalidCredentials`, at one cost.
+   *
+   * It mints nothing and changes nothing. What comes back is the
+   * {@link passwordEvidence} the caller hands to `Sessions.elevate`, which is
+   * what turns a re-authentication into a session that may do the sensitive
+   * thing. Keeping the two apart is deliberate: the credential check belongs to
+   * `Passwords` and the session belongs to `Sessions`, and a factor plugin's
+   * step-up endpoint is the same two lines with its own evidence.
+   *
+   * @since 0.2.0
+   */
+  readonly reauthenticate: (
+    userId: UserId,
+    password: Redacted.Redacted
+  ) => Effect.Effect<Evidence, InvalidCredentials | PasswordHashError | PersistenceError>
 
   /**
    * Mints a password reset token and hands it to the `AuthEmails` seam.
@@ -522,6 +570,7 @@ export const make: <F extends UserFields>(
   | PasswordHasher
   | Verifications
   | Sessions
+  | SignIn
   | UserStore
   | SessionStore
   | AccountStore
@@ -536,6 +585,10 @@ export const make: <F extends UserFields>(
   const transaction = yield* WithAuthTransaction
   const emails = yield* AuthEmails
   const sessions = yield* Sessions
+  // Every session this module mints goes through the one choke point, which
+  // runs `beforeSessionCreate`, consults the sign-in pipeline and publishes
+  // `SignedIn`.
+  const { complete: completeSignIn } = yield* signInOf(model)
   const events = yield* AuthEvents
   // A `Context.Reference` with a no-op default, so a deployment that installs
   // nothing provides nothing — and, being read here, the set is fixed when the
@@ -554,7 +607,8 @@ export const make: <F extends UserFields>(
     const url = withCallbackUrl(config, verifyEmailUrl(config, issued.token), callbackURL)
     yield* deliverEmail(
       emails.sendVerification({ user, token: issued.token, url }),
-      "verification e-mail delivery failed"
+      "verification e-mail delivery failed",
+      user.email
     )
   })
 
@@ -692,40 +746,61 @@ export const make: <F extends UserFields>(
       return { user, session: Option.none() } satisfies SignUpResult<F>
     }
 
-    // The last thing asked, and the only hook whose refusal does not undo the
+    // The last thing asked, and the only refusal that does not undo the
     // registration: the user row and its credential committed before this ran,
     // and `beforeUserCreate` — the hook that decides whether somebody may have
     // an account at all — already said yes. So a refusal here answers the way
     // `autoSignIn: false` already does, with an account that exists and no
-    // session, rather than deleting somebody who was accepted a moment ago.
-    const beforeSession = hooks.beforeSessionCreate
-    if (beforeSession !== undefined) {
-      const decided = yield* Effect.result(beforeSession({ user, source: passwordSource }))
-      if (decided._tag === "Failure") {
-        // The refusal does not reach the caller, so it is written down: an
-        // operator asking why a registration produced no session should not
-        // have to guess between this and the two configuration switches above.
-        // `code` is deployment-authored and documented as carrying no secret.
-        yield* annotateAuthLogs(
-          Effect.logDebug("a policy refused the session a sign-up would have started", decided.failure)
-        )
-        return { user, session: Option.none() } satisfies SignUpResult<F>
-      }
+    // session, rather than deleting somebody who was accepted a moment ago. A
+    // challenge answers the same way, for the same reason: nothing was minted.
+    const completed = yield* Effect.result(
+      completeSignIn({
+        user,
+        source: passwordSource,
+        evidence: [passwordEvidence],
+        current: Option.none(),
+        request: {
+          ipAddress: options.ipAddress ?? null,
+          userAgent: options.userAgent ?? null,
+          rememberMe: options.rememberMe
+        }
+      })
+    )
+    if (completed._tag === "Failure") {
+      if (completed.failure._tag === "PersistenceError") return yield* completed.failure
+      // The refusal does not reach the caller, so it is written down: an
+      // operator asking why a registration produced no session should not have
+      // to guess between this and the two configuration switches above. `code`
+      // is deployment-authored and documented as carrying no secret.
+      yield* annotateAuthLogs(
+        Effect.logDebug("a policy refused the session a sign-up would have started", completed.failure)
+      )
+      return { user, session: Option.none() } satisfies SignUpResult<F>
     }
-
-    const created = yield* sessions.create({
-      userId: user.id,
-      ipAddress: options.ipAddress ?? null,
-      userAgent: options.userAgent ?? null,
-      rememberMe: options.rememberMe
-    })
-    yield* publishSafely(events, {
-      _tag: "SignedIn",
-      userId: user.id,
-      sessionId: created.session.id,
-      method: passwordMethod
-    })
-    return { user, session: Option.some(created) } satisfies SignUpResult<F>
+    const result = completed.success
+    if (result._tag === "Challenge") {
+      // A brand-new account holds no second factor, so a decider that
+      // challenges a sign-up has asked for something nobody can answer.
+      // `SignUpResult` has no shape for a challenge and this endpoint has no
+      // pending cookie, so the answer is the one `autoSignIn: false` already
+      // gives — an account, and no session — and whatever the decider issued on
+      // the way is stranded. That is the *contract*, stated in
+      // `SignInPipeline`: a decider must `Proceed` on an `EmailPassword`
+      // sign-up. It is logged at `Warn` rather than `Debug` because a decider
+      // that reaches here is misconfigured, not merely strict.
+      yield* annotateAuthLogs(
+        Effect.logWarning(
+          "the sign-in pipeline challenged a sign-up; a decider must Proceed on EmailPassword sign-ups, " +
+            "because a new account has no second factor to answer with and no session was minted",
+          { kind: result.kind }
+        )
+      )
+      return { user, session: Option.none() } satisfies SignUpResult<F>
+    }
+    return {
+      user,
+      session: Option.some({ session: result.session, token: result.token } satisfies CreatedSession)
+    } satisfies SignUpResult<F>
   })
 
   const signIn = Effect.fnUntraced(function* (options: SignInOptions) {
@@ -755,28 +830,22 @@ export const make: <F extends UserFields>(
     }
 
     // After the verification above, deliberately. Only somebody who presented
-    // the right password ever reaches this line, so a refusal tells them
-    // nothing they had not already proved they knew — and, because the one
-    // constant-cost verify is behind us rather than in front of us, a suspended
-    // account still costs exactly what an ordinary one does.
-    const beforeSession = hooks.beforeSessionCreate
-    if (beforeSession !== undefined) {
-      yield* beforeSession({ user, source: passwordSource })
-    }
-
-    const created = yield* sessions.create({
-      userId: user.id,
-      ipAddress: options.ipAddress ?? null,
-      userAgent: options.userAgent ?? null,
-      rememberMe: options.rememberMe
+    // the right password ever reaches this line, so a refusal — or a demand for
+    // a second factor — tells them nothing they had not already proved they
+    // knew, and, because the one constant-cost verify is behind us rather than
+    // in front of us, a suspended account still costs exactly what an ordinary
+    // one does.
+    return yield* completeSignIn({
+      user,
+      source: passwordSource,
+      evidence: [passwordEvidence],
+      current: Option.fromNullishOr(options.current),
+      request: {
+        ipAddress: options.ipAddress ?? null,
+        userAgent: options.userAgent ?? null,
+        rememberMe: options.rememberMe
+      }
     })
-    yield* publishSafely(events, {
-      _tag: "SignedIn",
-      userId: user.id,
-      sessionId: created.session.id,
-      method: passwordMethod
-    })
-    return { user, session: created.session, token: created.token } satisfies SignInResult<F>
   })
 
   const requestReset = Effect.fnUntraced(function* (options: {
@@ -798,7 +867,8 @@ export const make: <F extends UserFields>(
     const url = withCallbackUrl(config, resetPasswordUrl(config, issued.token), options.redirectTo)
     yield* deliverEmail(
       emails.sendPasswordReset({ user, token: issued.token, url }),
-      "password reset e-mail delivery failed"
+      "password reset e-mail delivery failed",
+      user.email
     )
     yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: user.id })
   })
@@ -832,7 +902,7 @@ export const make: <F extends UserFields>(
           // fix here.
           //
           // The insert takes the user-row lock first, in this same transaction,
-          // so the credential row is not a phantom a concurrent magic-link
+          // so the credential row is not a phantom a concurrent email-otp
           // reclaim's `FOR UPDATE` sweep could miss. Not attacker-reachable here
           // (the reset token was mailed to the reclaimed address), but kept
           // consistent with `setPassword` and `Accounts.linkExisting`.
@@ -874,6 +944,17 @@ export const make: <F extends UserFields>(
     return storedHash !== null && matches
   })
 
+  const reauthenticate = Effect.fnUntraced(function* (userId: UserId, password: Redacted.Redacted) {
+    // The one verification `verifyPassword` already runs, and no second branch
+    // in front of it: the caller is signed in, so nothing is being enumerated
+    // here, but the cost stays flat anyway rather than depending on whether
+    // this account happens to have a password at all.
+    if (!(yield* verifyPassword(userId, password))) {
+      return yield* InvalidCredentials.make()
+    }
+    return passwordEvidence
+  })
+
   const setPassword = Effect.fnUntraced(function* (options: SetPasswordOptions) {
     yield* checkPolicy(options.newPassword, config)
 
@@ -894,7 +975,7 @@ export const make: <F extends UserFields>(
     // thing the check would have told it.
     //
     // The insert runs under a `FOR UPDATE` lock on the user row, in one
-    // transaction, mirroring `Accounts.linkExisting`. The magic-link takeover
+    // transaction, mirroring `Accounts.linkExisting`. The email-otp takeover
     // defence sweeps an unverified account's sign-in methods under that same
     // lock; without it, this not-yet-committed credential row is a phantom the
     // reclaim's `FOR UPDATE` cannot see under READ COMMITTED, so a
@@ -1000,6 +1081,7 @@ export const make: <F extends UserFields>(
     resetPassword,
     changePassword,
     verifyPassword,
+    reauthenticate,
     setPassword,
     sendVerificationEmail,
     verifyEmail
@@ -1025,6 +1107,7 @@ export const layerFor = <F extends UserFields>(
   | PasswordHasher
   | Verifications
   | Sessions
+  | SignIn
   | UserStore
   | SessionStore
   | AccountStore
@@ -1046,6 +1129,7 @@ export const layer: Layer.Layer<
   | PasswordHasher
   | Verifications
   | Sessions
+  | SignIn
   | UserStore
   | SessionStore
   | AccountStore

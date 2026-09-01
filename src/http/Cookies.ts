@@ -1,21 +1,26 @@
 /**
- * The session cookie contract.
+ * The cookie contract: the session cookie, the two flow cookies beside it, and
+ * the shape a plugin's own cookie takes.
  *
- * One place decides what the session cookie is called, what attributes it is
- * written with, and which header names must never appear in a log line. The
- * middleware declaration, its implementation, and the handlers all read from
- * here so a deployment can never end up setting a cookie under one name and
- * reading it under another.
+ * One place decides what a cookie is called, what attributes it is written
+ * with, and which header names must never appear in a log line. The middleware
+ * declaration, its implementation, and the handlers all read from here so a
+ * deployment can never end up setting a cookie under one name and reading it
+ * under another, and {@link pluginCookie} hands a plugin the same three
+ * decisions — the `__Host-`/`__Secure-` prefix, the `SameSite` cap, and the
+ * rule that an expiry repeats the attributes the cookie was set with — rather
+ * than leaving each plugin to re-derive them.
  *
  * @since 0.1.0
  */
 import type { Duration } from "effect"
-import { Layer } from "effect"
+import { Effect, Layer } from "effect"
 import type { Cookies } from "effect/unstable/http"
 import { Headers } from "effect/unstable/http"
 import { HttpApiSecurity } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import {
+  AuthConfig,
   cacheCookieName as resolveCacheCookieName,
   cookieName as resolveCookieName,
   defaultCacheCookieName,
@@ -450,3 +455,157 @@ export const redactedHeaderNames: ReadonlyArray<string | RegExp> = [
  */
 export const layerRedactedHeaders = (additional: ReadonlyArray<string | RegExp> = []): Layer.Layer<never> =>
   Layer.succeed(Headers.CurrentRedactedNames)([...redactedHeaderNames, ...additional])
+
+// -----------------------------------------------------------------------------
+// Plugin cookies
+// -----------------------------------------------------------------------------
+
+/**
+ * What a plugin has to decide about a cookie of its own.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PluginCookieOptions {
+  /**
+   * The cookie's name before any prefix — `"effect_auth.pending"`,
+   * `"effect_auth.trusted_device"`.
+   *
+   * **Gotchas**
+   *
+   * Bare: {@link pluginCookie} adds the prefix the deployment's configuration
+   * calls for, so a name written with one here would be double-prefixed and the
+   * browser would reject it.
+   */
+  readonly baseName: string
+  /**
+   * Whether the cookie is pinned to the exact host that set it.
+   *
+   * `true` for anything that is a credential or binds a flow to one browser —
+   * the pending-authentication token, a trusted-device marker — because a
+   * sibling subdomain can set a `Domain`-scoped cookie of any name onto the
+   * host that reads it. `__Host-` forbids `Domain` and closes that, at the
+   * price of the deployment's own `cookie.path` and `cookie.domain`, which the
+   * prefix does not permit.
+   */
+  readonly hostOnly: boolean
+  /** How long the browser should keep it — the lifetime of whatever it carries. */
+  readonly maxAge: Duration.Duration
+}
+
+/**
+ * Everything needed to write, read and expire one plugin cookie.
+ *
+ * @category models
+ * @since 0.1.0
+ */
+export interface PluginCookie {
+  /** The name the cookie is actually written under, prefix included. */
+  readonly name: string
+  /**
+   * The scheme {@link name} comes from.
+   *
+   * `HttpApiBuilder.securitySetCookie` — the one way to attach a `Set-Cookie`
+   * from inside a handler — takes the cookie's name from a security scheme, so
+   * a plugin needs one whether or not any middleware declares it.
+   */
+  readonly security: HttpApiSecurity.ApiKey
+  /** The attributes it is written with. */
+  readonly options: NonNullable<Cookies.Cookie["options"]>
+  /** The attributes it is expired with. See {@link expiredSessionCookieOptions}. */
+  readonly expiredOptions: NonNullable<Cookies.Cookie["options"]>
+}
+
+/**
+ * The `SameSite` a flow cookie is written with: the deployment's own, capped
+ * away from `Strict`.
+ *
+ * A `"none"` deployment serves its frontend on a different site than the auth
+ * server, so the response that sets the cookie is a cross-site subresource
+ * response and a `SameSite=Lax` `Set-Cookie` on it is dropped by the browser.
+ * `"strict"` is excluded in the other direction: a flow that resumes through a
+ * top-level navigation — back from a provider, out of a mail client — would not
+ * carry a `Strict` cookie on the request that completes it. The security of
+ * these cookies is the value they hold, not the attribute.
+ */
+const flowSameSite = (config: AuthConfigService): "lax" | "none" => (config.cookie.sameSite === "none" ? "none" : "lax")
+
+/**
+ * One plugin cookie, decided by the deployment's configuration.
+ *
+ * **When to use**
+ *
+ * From a plugin that needs a cookie of its own — the pending-authentication
+ * token a second factor is answered against, a trusted-device marker. Every
+ * such cookie goes through here, so the `__Host-`/`__Secure-` decision, the
+ * `SameSite` cap and the rule that an expiry must repeat the attributes the
+ * cookie was set with are made once, in the module that already makes them for
+ * the session, the cache and the OAuth state cookie.
+ *
+ * **Details**
+ *
+ * `httpOnly` is not a parameter: a plugin cookie is a credential or a binding,
+ * and script-readable is the one thing neither may be.
+ *
+ * On a TLS deployment the name carries `__Host-` when `hostOnly`, `__Secure-`
+ * otherwise; on plain HTTP — local development — it is the bare `baseName`,
+ * because both prefixes require the `Secure` attribute that deployment cannot
+ * set. A `__Host-` cookie is written with `Path=/` and no `Domain`, which the
+ * prefix requires, in place of the deployment's `cookie.path` and
+ * `cookie.domain`.
+ *
+ * **Example**
+ *
+ * ```ts skip-type-checking
+ * const pending = yield* AuthCookies.pluginCookie({
+ *   baseName: "effect_auth.pending",
+ *   hostOnly: true,
+ *   maxAge: Duration.minutes(10)
+ * })
+ * yield* HttpApiBuilder.securitySetCookie(pending.security, token, pending.options)
+ * ```
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const pluginCookie = (options: PluginCookieOptions): Effect.Effect<PluginCookie, never, AuthConfig> =>
+  Effect.map(AuthConfig, (config) => pluginCookieFor(config, options))
+
+/**
+ * {@link pluginCookie} against a configuration already in hand.
+ *
+ * **When to use**
+ *
+ * Where the configuration is a value rather than something to be read from the
+ * context — a plugin's layer that already holds it, and the tests that pin the
+ * attributes. {@link pluginCookie} is the same decision for a handler.
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const pluginCookieFor = (config: AuthConfigService, options: PluginCookieOptions): PluginCookie => {
+  const prefix = config.cookie.secure ? (options.hostOnly ? "__Host-" : "__Secure-") : ""
+  const name = `${prefix}${options.baseName}`
+  // A `__Host-` cookie may not carry `Domain` and must be `Path=/`; the
+  // attributes are fixed whether or not the prefix is on the name, so that
+  // a development deployment and a TLS one differ in the prefix alone.
+  const path = options.hostOnly ? "/" : config.cookie.path
+  const domain = options.hostOnly ? undefined : config.cookie.domain
+  const sameSite = flowSameSite(config)
+  return {
+    name,
+    security: HttpApiSecurity.apiKey({ key: name, in: "cookie" }),
+    options: { path, domain, sameSite, secure: config.cookie.secure, httpOnly: true, maxAge: options.maxAge },
+    // A browser replaces a cookie only when the name, `path` and `domain` all
+    // match, so the expiry repeats what the cookie was set with.
+    expiredOptions: {
+      path,
+      domain,
+      sameSite,
+      secure: config.cookie.secure,
+      httpOnly: true,
+      // oxlint-disable-next-line effecttsgo/global-date -- epoch constant, not a clock read
+      expires: new Date(0)
+    }
+  }
+}

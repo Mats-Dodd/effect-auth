@@ -29,6 +29,7 @@ import type * as AuthConfig from "../../src/config/AuthConfig.js"
 import type { EmailNotVerified, InvalidCredentials, RateLimited } from "../../src/domain/Errors.js"
 import type { AuthHooksOf, AuthHooksService, hooksOf, PolicyRefused, ProvisionSource } from "../../src/domain/Hooks.js"
 import type { PasswordsService, SignUpOptions } from "../../src/domain/Passwords.js"
+import type { OriginNotAllowed } from "../../src/http/OriginCheck.js"
 import type * as Passwords from "../../src/domain/Passwords.js"
 import type {
   baseUserModel,
@@ -212,11 +213,11 @@ const notAHookSet: AuthHooksOf<Fields> = wrongAnswer
 eq<
   Exact<
     Atom.Failure<AuthClient.AuthClient<Fields>["signIn"]>,
-    InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited
+    InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited | OriginNotAllowed
   >
 >(true)
 eq<Exact<Atom.Failure<AuthClient.AuthClient<Fields>["signIn"]>, Atom.Failure<AuthClient.AuthClient["signIn"]>>>(true)
-eq<Exact<Atom.Success<AuthClient.AuthClient<Fields>["signIn"]>, SessionWithUserOf<Fields>>>(true)
+eq<Exact<Atom.Success<AuthClient.AuthClient<Fields>["signIn"]>, AuthClient.SignInResult<Fields>>>(true)
 
 /**
  * The four `layerFor`s. Each of these is the assertion that carrying custom

@@ -120,7 +120,7 @@ const mintSession = Effect.fnUntraced(function* (email: string) {
   const sessions = yield* Sessions
   const user = Option.getOrThrow(yield* users.findByEmail(email))
   const account = (yield* accounts.listByUserId(user.id))[0]!
-  const created = yield* sessions.create({ userId: user.id })
+  const created = yield* sessions.createUnchecked({ userId: user.id })
   return { user, account, session: created.session, token: created.token }
 })
 
@@ -230,6 +230,7 @@ describe.sequential("http/Handlers OAuth", () => {
           token: minted.token,
           redirectTo: "http://localhost:3000/welcome",
           userCreated: false,
+          challenge: null,
           accountCreated: true,
           linked: false,
           rememberMe: true
@@ -299,6 +300,7 @@ describe.sequential("http/Handlers OAuth", () => {
           token: minted.token,
           redirectTo: "http://localhost:3000/welcome",
           userCreated: false,
+          challenge: null,
           accountCreated: true,
           linked: false,
           rememberMe: true
@@ -339,6 +341,7 @@ describe.sequential("http/Handlers OAuth", () => {
           token: null,
           redirectTo: "http://localhost:3000/settings",
           userCreated: false,
+          challenge: null,
           accountCreated: true,
           linked: true,
           rememberMe: true
@@ -372,6 +375,7 @@ describe.sequential("http/Handlers OAuth", () => {
           token: minted.token,
           redirectTo: "http://localhost:3000/welcome",
           userCreated: false,
+          challenge: null,
           accountCreated: true,
           linked: false,
           rememberMe: false

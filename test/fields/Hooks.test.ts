@@ -32,8 +32,8 @@ import { hooksOf, PolicyRefused } from "../../src/domain/Hooks.js"
 import { passwordsOf } from "../../src/domain/Passwords.js"
 import { oauthIssuer } from "../../src/domain/Schema.js"
 import { userStoreOf } from "../../src/domain/Stores.js"
-import { MagicLink } from "../../src/magic-link/MagicLink.js"
-import { AuthTest, MagicLinkTest } from "../../src/testing/index.js"
+import { EmailOtp } from "../../src/email-otp/index.js"
+import { AuthTest, EmailOtpTest } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
 import type { Fields } from "./model.js"
 import { model } from "./model.js"
@@ -157,7 +157,7 @@ layer(deployment)("fields/Hooks", (it) => {
  * **Details**
  *
  * A sign-up builds its candidate with `model.makeInsert`, so the custom columns
- * are on it before any hook is consulted. The OAuth flow and the magic-link
+ * are on it before any hook is consulted. The OAuth flow and the email-otp
  * plugin cannot: `Accounts` is base-typed on purpose (a provider identity
  * carries base fields and nothing else) and a plugin never knows what a
  * deployment declared. Completing the candidate from the model's own defaults
@@ -170,7 +170,7 @@ layer(deployment)("fields/Hooks", (it) => {
  * layered over the deployment and the deployment itself resolve the very same
  * one.
  */
-const everySource = MagicLinkTest.layerMagicLink().pipe(
+const everySource = EmailOtpTest.layerEmailOtp().pipe(
   Layer.provideMerge(AuthTest.layer({ user: { model }, trustedProviders: ["github"] })),
   Layer.provide(Layer.succeed(hooksOf(model))(planHooks))
 )
@@ -207,18 +207,20 @@ describe.sequential("fields/Hooks — every source", () => {
       })
     )
 
-    it.effect("hands a magic link's first sign-in the same candidate", () =>
+    it.effect("hands an e-mail code's first sign-in the same candidate", () =>
       Effect.gen(function* () {
         const store = yield* users
-        const magic = yield* MagicLink
-        const emails = yield* AuthTest.TestEmails
-        const email = uniqueEmail("hooks-fields-magic")
+        const otp = yield* EmailOtp
+        const email = uniqueEmail("hooks-fields-otp")
 
-        yield* magic.request({ email, name: testName })
-        const verified = yield* magic.verify({
-          token: yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email)
+        const issued = yield* otp.send({ email, name: testName, purpose: "signIn" })
+        const verified = yield* otp.verify({
+          handle: issued.handle,
+          code: yield* EmailOtpTest.awaitCode(email)
         })
 
+        assert.strictEqual(verified._tag, "SignedIn")
+        if (verified._tag !== "SignedIn") return
         assert.strictEqual(verified.user.email, email)
         const stored = yield* expectSome(yield* store.findByEmail(email), "the provisioned row")
         assert.strictEqual(stored.plan, "free")

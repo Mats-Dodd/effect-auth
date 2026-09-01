@@ -26,7 +26,7 @@ import {
   PasswordAlreadySet,
   PasswordPolicyViolation,
   RateLimited,
-  SessionNotFresh,
+  StepUpRequired,
   TokenRefreshFailed,
   UserAlreadyExists,
   UserNotFound
@@ -44,7 +44,8 @@ import {
   SessionId,
   SessionPublic
 } from "../domain/Schema.js"
-import { Authenticated, AuthoritativeSession } from "./Middleware.js"
+import { Authenticated, AuthoritativeSession, freshSession, RequireAssurance } from "./Middleware.js"
+import { OriginNotAllowed } from "./OriginCheck.js"
 
 // -----------------------------------------------------------------------------
 // Shared schemas
@@ -126,6 +127,45 @@ export const OAuthRedirect = Schema.Struct({
  * @since 0.1.0
  */
 export type OAuthRedirect = typeof OAuthRedirect.Type
+
+/**
+ * The second half of a sign-in's success: the credential was accepted and a
+ * further factor is owed before a session exists.
+ *
+ * **Details**
+ *
+ * Answered on **202**, not as an error, because nothing went wrong — the caller
+ * asked to sign in and is being told what remains. A deployment with no factor
+ * plugin installed never produces it, so its wire is byte-identical to `0.1.0`'s.
+ *
+ * The pending-authentication token travels in the `__Host-effect_auth.pending`
+ * cookie and nowhere else: it is a credential, and a body a script can read is
+ * not where a credential belongs. A response carrying this **never** carries a
+ * session cookie.
+ *
+ * `available` names kinds of factor — `"totp"`, `"passkey"` — and carries no
+ * identifier, no address and no secret, so a 202 tells an attacker who guessed
+ * a password nothing they could not already infer. There is no user id and no
+ * e-mail address in it for the same reason.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export const MfaRequired = Schema.Struct({
+  _tag: Schema.tag("MfaRequired"),
+  /** The kinds of second factor this person can answer with. */
+  available: Schema.Array(Schema.String),
+  /** When the pending-authentication token stops being accepted. */
+  expiresAt: Schema.DateTimeUtcFromString
+}).pipe(HttpApiSchema.status(202))
+
+/**
+ * The type of an {@link MfaRequired} response.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export type MfaRequired = typeof MfaRequired.Type
 
 /**
  * A `302` response carrying a `Location` header and no body.
@@ -263,6 +303,16 @@ export const ChangePasswordPayload = Schema.Struct({
   newPassword: Secret,
   /** Sign every other device out. Defaults to `true` in the handler. */
   revokeOtherSessions: Schema.optional(Schema.Boolean)
+})
+
+/**
+ * The body of `POST /auth/reauthenticate`.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export const ReauthenticatePayload = Schema.Struct({
+  password: Secret
 })
 
 /**
@@ -617,7 +667,7 @@ export const UnlinkAccountPayload = Schema.Struct({
  * **Gotchas**
  *
  * The return type is inferred rather than annotated — a group's type *is* the
- * union of its twenty-eight endpoint types, and writing that down would be a second
+ * union of its twenty-nine endpoint types, and writing that down would be a second
  * copy of this declaration to keep in step. {@link AuthApiGroupOf} names it, and
  * is the one `ReturnType` in the library.
  *
@@ -630,7 +680,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("signUpEmail", "/sign-up/email", {
         payload: makeSignUpEmailPayload(model),
         success: makeSignUpResponse(model),
-        error: [UserAlreadyExists, PasswordPolicyViolation, PolicyRefused, RateLimited]
+        error: [UserAlreadyExists, PasswordPolicyViolation, PolicyRefused, RateLimited, OriginNotAllowed]
       }).annotateMerge(
         OpenApi.annotations({
           summary: "Create an account with an e-mail address and password",
@@ -640,15 +690,31 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       ),
       HttpApiEndpoint.post("signInEmail", "/sign-in/email", {
         payload: SignInEmailPayload,
-        success: makeSessionWithUser(model),
-        error: [InvalidCredentials, EmailNotVerified, PolicyRefused, RateLimited]
+        success: [makeSessionWithUser(model), MfaRequired],
+        error: [InvalidCredentials, EmailNotVerified, PolicyRefused, RateLimited, OriginNotAllowed]
       }).annotateMerge(
         OpenApi.annotations({
           summary: "Sign in with an e-mail address and password",
           description:
-            "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it. PolicyRefused is a deployment's own hook declining the session — a suspension, say — and is raised only after the password has been verified, so it is never an answer somebody guessing an address can obtain."
+            "An Origin or Referer that is present and untrusted is refused with OriginNotAllowed: this is an unauthenticated POST that mints a session, so without it a cross-site form post signs a visitor's browser into an account the attacker controls. A request claiming neither header — a server, a script — passes. Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it. PolicyRefused is a deployment's own hook declining the session — a suspension, say — and is raised only after the password has been verified, so it is never an answer somebody guessing an address can obtain. Success is a two-status union: 200 with the session and its user, or 202 with MfaRequired when a factor plugin owes a second factor, in which case the pending-authentication token is set in the __Host-effect_auth.pending cookie and no session cookie is written."
         })
       ),
+      HttpApiEndpoint.post("reauthenticate", "/reauthenticate", {
+        payload: ReauthenticatePayload,
+        success: makeSessionWithUser(model),
+        error: [InvalidCredentials, RateLimited]
+      })
+        .middleware(Authenticated)
+        // The password is checked against the stored hash and the session row
+        // is rewritten: neither may be decided from a snapshot.
+        .annotate(AuthoritativeSession, true)
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Prove the password again, raising the session's assurance",
+            description:
+              "The one step-up method this library ships; a factor plugin adds its own. It appends a password entry to the session's methods, recomputes its level, re-stamps authenticatedAt and rotates the opaque token — the session id is kept, so open tabs and the session list survive, while a token captured before the step-up does not inherit it. The cookie is re-set with the new token. Runs the same one-verification-per-call discipline as sign-in, so a wrong password costs exactly what a right one does. It carries no RequireAssurance annotation of its own: this is the endpoint that satisfies them."
+          })
+        ),
       HttpApiEndpoint.post("signOut", "/sign-out", {
         success: Ok
       })
@@ -717,11 +783,12 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("requestPasswordReset", "/request-password-reset", {
         payload: RequestPasswordResetPayload,
         success: Ok,
-        error: RateLimited
+        error: [RateLimited, OriginNotAllowed]
       }).annotateMerge(
         OpenApi.annotations({
           summary: "Send a password reset link",
-          description: "Always succeeds for a well-formed address, whether or not it has an account."
+          description:
+            "Always succeeds for a well-formed address, whether or not it has an account. An Origin or Referer that is present and untrusted is refused with OriginNotAllowed."
         })
       ),
       HttpApiEndpoint.post("resetPassword", "/reset-password", {
@@ -738,26 +805,32 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("changePassword", "/change-password", {
         payload: ChangePasswordPayload,
         success: Ok,
-        error: [InvalidCredentials, SessionNotFresh, PasswordPolicyViolation]
+        error: [InvalidCredentials, PasswordPolicyViolation]
       })
         .middleware(Authenticated)
         // The password it checks has to be the one in the database, not one a
         // snapshot remembered: see `AuthoritativeSession`.
         .annotate(AuthoritativeSession, true)
+        // A stolen but stale cookie must not be enough to take the account over
+        // permanently: the caller has to have authenticated recently as well as
+        // knowing the current password.
+        .annotate(RequireAssurance, freshSession)
         .annotateMerge(
           OpenApi.annotations({
             summary: "Change the caller's password",
-            description: "Requires the current password and a session no older than the configured freshAge."
+            description:
+              "Requires the current password, and a session that authenticated within the deployment's session.freshAge — POST /auth/reauthenticate, or a factor plugin's own step-up, is how a stale one is raised. StepUpRequired names the policy that was not met and what the session actually holds."
           })
         ),
       HttpApiEndpoint.post("sendVerificationEmail", "/send-verification-email", {
         payload: SendVerificationEmailPayload,
         success: Ok,
-        error: RateLimited
+        error: [RateLimited, OriginNotAllowed]
       }).annotateMerge(
         OpenApi.annotations({
           summary: "Send an e-mail verification link",
-          description: "Always succeeds for a well-formed address, whether or not it has an account."
+          description:
+            "Always succeeds for a well-formed address, whether or not it has an account. An Origin or Referer that is present and untrusted is refused with OriginNotAllowed."
         })
       ),
       HttpApiEndpoint.get("verifyEmail", "/verify-email", {
@@ -818,15 +891,18 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("unlinkAccount", "/unlink-account", {
         payload: UnlinkAccountPayload,
         success: Ok,
-        error: [CannotUnlinkLastAccount, NotFound, SessionNotFresh]
+        error: [CannotUnlinkLastAccount, NotFound]
       })
         .middleware(Authenticated)
         // Unlinking counts the sign-in methods a user has *now*.
         .annotate(AuthoritativeSession, true)
+        // Removing a way in is as permanent as changing one.
+        .annotate(RequireAssurance, freshSession)
         .annotateMerge(
           OpenApi.annotations({
             summary: "Remove one of the caller's sign-in methods",
-            description: "Refuses to remove the last one, and requires a fresh session."
+            description:
+              "Refuses to remove the last one, and requires a session that authenticated within session.freshAge."
           })
         ),
       HttpApiEndpoint.post("updateUser", "/update-user", {
@@ -845,17 +921,20 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("changeEmail", "/change-email", {
         payload: ChangeEmailPayload,
         success: Ok,
-        error: [EmailUnchanged, PolicyRefused, SessionNotFresh, RateLimited]
+        error: [EmailUnchanged, PolicyRefused, RateLimited]
       })
         .middleware(Authenticated)
         // The current address decides which hop is sent, and whether it is
         // verified is a fact about the row, not about a snapshot.
         .annotate(AuthoritativeSession, true)
+        // The address is the account's recovery path, so a stale cookie must
+        // not be enough to start moving it.
+        .annotate(RequireAssurance, freshSession)
         .annotateMerge(
           OpenApi.annotations({
             summary: "Start moving the account to another e-mail address",
             description:
-              "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns. PolicyRefused is a deployment's own hook declining the change, and carries the code that hook chose."
+              "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a session that authenticated within session.freshAge. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns. PolicyRefused is a deployment's own hook declining the change, and carries the code that hook chose."
           })
         ),
       HttpApiEndpoint.get("confirmEmailChange", "/change-email/confirm", {
@@ -883,17 +962,23 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("deleteUser", "/delete-user", {
         payload: DeleteUserPayload,
         success: DeleteUserResponse,
-        error: [InvalidCredentials, PolicyRefused, SessionNotFresh, RateLimited]
+        // `StepUpRequired` is restated here, though `Authenticated` declares
+        // it for every endpoint it wraps: `Users.requestDeletion` raises it
+        // itself, and an endpoint's own union should name what its handler can
+        // do. The other four assurance-annotated endpoints do not, because the
+        // refusal there is the middleware's alone.
+        error: [InvalidCredentials, PolicyRefused, StepUpRequired, RateLimited]
       })
         .middleware(Authenticated)
         // A password is verified against the stored hash, and the row is about
         // to be destroyed: neither may be decided from a snapshot.
         .annotate(AuthoritativeSession, true)
+        .annotate(RequireAssurance, freshSession)
         .annotateMerge(
           OpenApi.annotations({
             summary: "Delete the caller's own account",
             description:
-              "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed. PolicyRefused is a deployment's own hook declining the deletion, and is raised only once the caller has proved who they are."
+              "With user.deleteUser.confirmByEmail off this needs a session that authenticated within session.freshAge and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed. PolicyRefused is a deployment's own hook declining the deletion, and is raised only once the caller has proved who they are."
           })
         ),
       HttpApiEndpoint.get("deleteUserCallback", "/delete-user/callback", {
@@ -913,17 +998,20 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       HttpApiEndpoint.post("setPassword", "/set-password", {
         payload: SetPasswordPayload,
         success: Ok,
-        error: [PasswordAlreadySet, PasswordPolicyViolation, SessionNotFresh, RateLimited]
+        error: [PasswordAlreadySet, PasswordPolicyViolation, RateLimited]
       })
         .middleware(Authenticated)
         // Whether a credential already exists is exactly what this endpoint
         // branches on.
         .annotate(AuthoritativeSession, true)
+        // Adding a credential is adding a way in, so the same rule as changing
+        // one.
+        .annotate(RequireAssurance, freshSession)
         .annotateMerge(
           OpenApi.annotations({
             summary: "Give an account without one its first password",
             description:
-              "For an account provisioned through a provider. It can never replace an existing password — that is change-password, or the reset flow — and requires a fresh session. Nothing is revoked: no credential was invalidated."
+              "For an account provisioned through a provider. It can never replace an existing password — that is change-password, or the reset flow — and requires a session that authenticated within session.freshAge. Nothing is revoked: no credential was invalidated."
           })
         ),
       HttpApiEndpoint.post("getAccessToken", "/get-access-token", {

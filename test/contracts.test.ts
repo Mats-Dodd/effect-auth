@@ -2,7 +2,8 @@ import { assert, describe, it } from "@effect/vitest"
 import { DateTime, Duration, Effect, Redacted, Schema } from "effect"
 import * as AuthConfig from "../src/config/AuthConfig.js"
 import { changeEmailVerifyUrl, deleteAccountUrl, verifyEmailUrl } from "../src/config/AuthEmails.js"
-import { InvalidCredentials, PasswordPolicyViolation } from "../src/domain/Errors.js"
+import { policyToJson } from "../src/domain/Assurance.js"
+import { InvalidCredentials, PasswordPolicyViolation, StepUpRequired } from "../src/domain/Errors.js"
 import { normalizeEmail, scopesOf, Session, User } from "../src/domain/Schema.js"
 import { timingSafeEqualUint8 } from "../src/crypto/PasswordHasher.js"
 
@@ -49,8 +50,10 @@ describe("domain/Schema", () => {
     })
   )
 
-  it.effect("keeps the session token hash out of the JSON variant", () =>
+  it.effect("keeps the session token hash out of the JSON variant, and the assurance in it", () =>
     Effect.gen(function* () {
+      const methods =
+        '[{"method":"password","completedAt":"2024-01-01T00:00:00.000Z","factor":"knowledge","phishingResistant":false,"restricted":false}]'
       const session = yield* Schema.decodeEffect(Session)({
         id: "0193f6f0-0000-7000-8000-000000000002",
         tokenHash: "R6dLdCTLmDbLDGe3AMv1M4L2GcTF7bpx6bnO2vFO8lM",
@@ -58,16 +61,28 @@ describe("domain/Schema", () => {
         expiresAt: "2024-01-08T00:00:00.000Z",
         ipAddress: null,
         userAgent: null,
+        authenticatedAt: "2024-01-01T00:00:00.000Z",
+        aal: "aal1",
+        methods,
         rememberMe: true,
         createdAt: "2024-01-01T00:00:00.000Z",
         updatedAt: "2024-01-01T00:00:00.000Z"
       })
 
       assert.strictEqual(session.tokenHash, "R6dLdCTLmDbLDGe3AMv1M4L2GcTF7bpx6bnO2vFO8lM")
+      assert.strictEqual(session.methods.length, 1)
+      assert.strictEqual(session.methods[0]?.method, "password")
 
       const json = yield* Schema.encodeEffect(Session.json)(session)
       assert.strictEqual(Object.hasOwn(json, "tokenHash"), false)
       assert.strictEqual(Object.hasOwn(json, "id"), true)
+      // How a session was authenticated is not a secret — a client that is told
+      // to step up has to be able to see what it currently holds — and the
+      // cookie cache reads a snapshot back through the *stored* variant, so the
+      // JSON form of these three has to be the stored one.
+      assert.strictEqual(json["aal"], "aal1")
+      assert.strictEqual(json["authenticatedAt"], "2024-01-01T00:00:00.000Z")
+      assert.strictEqual(json["methods"], methods)
     })
   )
 
@@ -99,6 +114,33 @@ describe("domain/Errors", () => {
     Effect.gen(function* () {
       const failure = yield* Effect.flip(Effect.fail(InvalidCredentials.make()))
       assert.strictEqual(failure._tag, "InvalidCredentials")
+    })
+  )
+
+  it.effect("states a step-up requirement in the shape RFC 9470 renders", () =>
+    Effect.gen(function* () {
+      const error = StepUpRequired.make({
+        required: policyToJson({ aal: "aal2", maxAge: Duration.minutes(5), methods: ["passkey", "totp"] }),
+        current: {
+          aal: "aal1",
+          authenticatedAt: DateTime.makeUnsafe("2024-01-01T00:00:00.000Z"),
+          available: ["totp", "recoveryCode"]
+        }
+      })
+      const encoded = yield* Schema.encodeEffect(StepUpRequired)(error)
+
+      assert.deepStrictEqual(encoded, {
+        _tag: "StepUpRequired",
+        // `maxAge` is seconds on the wire — `max_age=300` in a
+        // `WWW-Authenticate` challenge — and a member the policy did not state
+        // stays absent rather than becoming null.
+        required: { aal: "aal2", maxAge: 300, methods: ["passkey", "totp"] },
+        current: {
+          aal: "aal1",
+          authenticatedAt: "2024-01-01T00:00:00.000Z",
+          available: ["totp", "recoveryCode"]
+        }
+      })
     })
   )
 })

@@ -41,6 +41,14 @@ export const sessionJson = {
   ipAddress: null,
   userAgent: null,
   rememberMe: true,
+  // The assurance a session carries, in the shape `Session.json` encodes it:
+  // `methods` is a JSON *string* on the wire, because the cookie cache reads a
+  // snapshot written through `Session.json` back through the stored schema.
+  authenticatedAt: now,
+  aal: "aal1",
+  methods: JSON.stringify([
+    { method: "password", factor: "knowledge", phishingResistant: false, restricted: false, completedAt: now }
+  ]),
   createdAt: now,
   updatedAt: now
 }
@@ -100,8 +108,6 @@ export interface Stub {
   readonly signedIn: () => boolean
   /** Makes `signInEmail` answer `401 InvalidCredentials`. */
   readonly rejectCredentials: () => void
-  /** Makes the magic link `exchange` answer `400 InvalidToken`, as a spent link does. */
-  readonly rejectMagicLink: () => void
   /** Makes every request fail at the transport, the way a dead network does. */
   readonly breakTransport: () => void
 }
@@ -123,7 +129,6 @@ export const make = (options?: {
   const sessionWithUser = { user, session: sessionJson }
   let signedIn = options?.signedIn ?? false
   let credentialsValid = true
-  let magicLinkValid = true
   let transportBroken = false
   let authorization: string | undefined
 
@@ -157,12 +162,6 @@ export const make = (options?: {
       return json(200, { success: true, status: "Deleted" })
     },
     "POST /auth/set-password": () => (signedIn ? json(200, { success: true }) : unauthorized()),
-    "POST /auth/magic-link/sign-in": () => json(200, { success: true }),
-    "POST /auth/magic-link/exchange": () => {
-      if (!magicLinkValid) return json(400, { _tag: "InvalidToken" })
-      signedIn = true
-      return json(200, sessionWithUser)
-    },
     "POST /auth/get-access-token": () => (signedIn ? json(200, accessTokenJson) : unauthorized()),
     "POST /auth/refresh-token": () =>
       signedIn
@@ -205,9 +204,6 @@ export const make = (options?: {
     signedIn: () => signedIn,
     rejectCredentials: () => {
       credentialsValid = false
-    },
-    rejectMagicLink: () => {
-      magicLinkValid = false
     },
     breakTransport: () => {
       transportBroken = true

@@ -70,6 +70,7 @@ import {
   VerificationStore,
   WithAuthTransaction
 } from "../domain/Stores.js"
+import { AuthenticationMethodsJson } from "../domain/Assurance.js"
 import type { AccountId, UserFields, UserModel, UserOf, UserRow } from "../domain/Schema.js"
 import { Account, baseUserModel, CredentialIssuer, Session, Verification } from "../domain/Schema.js"
 
@@ -77,13 +78,13 @@ import { Account, baseUserModel, CredentialIssuer, Session, Verification } from 
 // Column projections
 // -----------------------------------------------------------------------------
 
-const sessionColumns = `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", remember_me AS "rememberMe", created_at AS "createdAt", updated_at AS "updatedAt"`
+const sessionColumns = `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", authenticated_at AS "authenticatedAt", aal, methods, remember_me AS "rememberMe", created_at AS "createdAt", updated_at AS "updatedAt"`
 
 const accountColumns = `id, issuer, account_id AS "accountId", provider_id AS "providerId", user_id AS "userId", access_token AS "accessToken", refresh_token AS "refreshToken", id_token AS "idToken", access_token_expires_at AS "accessTokenExpiresAt", refresh_token_expires_at AS "refreshTokenExpiresAt", scope, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"`
 
 const verificationColumns = `id, identifier, value_hash AS "valueHash", payload, expires_at AS "expiresAt", created_at AS "createdAt", updated_at AS "updatedAt"`
 
-const sessionJoinColumns = `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.remember_me AS "s_rememberMe", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
+const sessionJoinColumns = `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.authenticated_at AS "s_authenticatedAt", s.aal AS "s_aal", s.methods AS "s_methods", s.remember_me AS "s_rememberMe", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
 
 // -----------------------------------------------------------------------------
 // User columns, derived from the model
@@ -397,6 +398,7 @@ const makeSessionStore: <F extends UserFields>(
 
   const decodeSession = Schema.decodeUnknownEffect(Session)
   const encodeInsert = Schema.encodeUnknownEffect(Session.insert)
+  const encodeMethods = Schema.encodeUnknownEffect(AuthenticationMethodsJson)
 
   /**
    * `sessions.remember_me` is the one boolean the session table stores, so —
@@ -406,6 +408,15 @@ const makeSessionStore: <F extends UserFields>(
    */
   const readSession = (row: UserRow): Effect.Effect<Session, Schema.SchemaError> =>
     decodeSession({ ...row, rememberMe: decodeBoolean(row["rememberMe"]) })
+
+  /**
+   * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
+   * already, so the plain read is the same guarantee there.
+   */
+  const sessionLock = sql.onDialectOrElse({
+    orElse: () => sql.literal(" FOR UPDATE"),
+    sqlite: () => sql.literal("")
+  })
 
   const firstSession = (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<Session>, Schema.SchemaError> =>
     Option.match(Array.head(rows), {
@@ -420,6 +431,9 @@ const makeSessionStore: <F extends UserFields>(
     expiresAt: row["s_expiresAt"],
     ipAddress: row["s_ipAddress"],
     userAgent: row["s_userAgent"],
+    authenticatedAt: row["s_authenticatedAt"],
+    aal: row["s_aal"],
+    methods: row["s_methods"],
     rememberMe: decodeBoolean(row["s_rememberMe"]),
     createdAt: row["s_createdAt"],
     updatedAt: row["s_updatedAt"]
@@ -447,8 +461,8 @@ const makeSessionStore: <F extends UserFields>(
         // failure here is a defect rather than something a caller can act on.
         const row = yield* Effect.orDie(encodeInsert(session))
         const rows =
-          yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, remember_me, created_at, updated_at)
-        VALUES (${row.id}, ${row.tokenHash}, ${row.userId}, ${row.expiresAt}, ${row.ipAddress}, ${row.userAgent}, ${boolean.encode(
+          yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, authenticated_at, aal, methods, remember_me, created_at, updated_at)
+        VALUES (${row.id}, ${row.tokenHash}, ${row.userId}, ${row.expiresAt}, ${row.ipAddress}, ${row.userAgent}, ${row.authenticatedAt}, ${row.aal}, ${row.methods}, ${boolean.encode(
           row.rememberMe
         )}, ${row.createdAt}, ${row.updatedAt})
         RETURNING ${sessionCols}`
@@ -497,6 +511,45 @@ const makeSessionStore: <F extends UserFields>(
           RETURNING ${sessionCols}`
           return yield* firstSession(rows)
         })
+      ),
+
+    // A step-up as a read-modify-write, under a lock on the row and inside one
+    // transaction: the stored log is read, the caller's `append` decides what
+    // the new log and level are, and the log, the level, the stamp and the
+    // digest of the new token are written together. No reader can observe a row
+    // whose `aal` disagrees with its `methods`, the old token stops resolving
+    // at the same instant the new one starts, and — because the log appended to
+    // is the one in the row rather than the one the caller was holding — a
+    // stale `Session` value or a concurrent elevation cannot silently drop what
+    // the session had already proved.
+    elevate: (id, patch) =>
+      persist("SessionStore.elevate")(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const now = yield* DateTime.now
+            const locked = yield* sql<UserRow>`SELECT ${sessionCols} FROM sessions WHERE id = ${id}${sessionLock}`
+            const current = Array.head(locked)
+            // Concurrently revoked. `None` rather than a failure, exactly as
+            // `touch` answers for the same situation.
+            if (Option.isNone(current)) return Option.none<Session>()
+
+            const stored = yield* readSession(current.value)
+            const next = patch.append(stored.methods)
+            // The array is derived from the row's own, already typed; a failure
+            // to encode it is this library's bug rather than something a caller
+            // can act on.
+            const methods = yield* Effect.orDie(encodeMethods(next.methods))
+            const rows = yield* sql<UserRow>`UPDATE sessions
+          SET methods = ${methods},
+              aal = ${next.aal},
+              authenticated_at = ${DateTime.formatIso(patch.authenticatedAt)},
+              token_hash = ${patch.tokenHash},
+              updated_at = ${DateTime.formatIso(now)}
+          WHERE id = ${id}
+          RETURNING ${sessionCols}`
+            return yield* firstSession(rows)
+          })
+        )
       ),
 
     deleteById: (id, userId) =>

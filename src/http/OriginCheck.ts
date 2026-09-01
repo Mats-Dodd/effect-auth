@@ -8,7 +8,9 @@
  *   or not the person meant to send it. `SameSite=lax` already blocks the
  *   dangerous shapes, and {@link checkOrigin} is the second lock: a
  *   state-changing request authenticated by a cookie must not claim an `Origin`
- *   we do not trust.
+ *   we do not trust. {@link requireTrustedIfPresent} is the same question asked
+ *   by a handler rather than by the middleware, for the unauthenticated posts
+ *   that no cookie-shaped defence covers.
  * - **Where may we send this person next?** Every `callbackURL`, `redirectTo`
  *   and `errorCallbackURL` in the API is attacker-supplied. {@link resolveUrl}
  *   turns one into a URL that is either relative to `baseUrl` or on a trusted
@@ -17,9 +19,10 @@
  *
  * @since 0.1.0
  */
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
+import { AuthConfig } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
 import type { PolicyRefused } from "../domain/Hooks.js"
 import * as InternalOrigins from "../internal/origins.js"
@@ -390,3 +393,83 @@ export const checkOrigin = (
     if (Option.isNone(claimed)) return Effect.void
     return isTrustedOrigin(config, claimed.value) ? Effect.void : Effect.fail(Unauthorized.make())
   })
+
+/**
+ * The request claimed an origin this deployment does not trust.
+ *
+ * **Details**
+ *
+ * Raised by {@link requireTrustedIfPresent}, on the *unauthenticated* endpoints
+ * that spend money or write rows. It is a `403` and it carries nothing: the
+ * caller supplied the origin, so there is nothing to tell them about it that
+ * they did not already know, and a body that echoed it back would be one more
+ * reflected value on an endpoint reachable without a credential.
+ *
+ * **Gotchas**
+ *
+ * Distinct from the `Unauthorized` that {@link checkOrigin} raises, and
+ * deliberately: that one refuses a *cookie-authenticated* request, where the
+ * relevant answer is "your credential does not count here". This one refuses a
+ * request that presented no credential at all, so `401` would invite a client
+ * to go and get one.
+ *
+ * It is declared here rather than in `domain/Errors.ts`, beside the guard that
+ * is the only thing able to raise it — the same arrangement as `PolicyRefused`
+ * in `domain/Hooks.ts`.
+ *
+ * @category errors
+ * @since 0.1.0
+ */
+export class OriginNotAllowed extends Schema.TaggedError<OriginNotAllowed>("effect-auth/OriginNotAllowed")(
+  "OriginNotAllowed",
+  {},
+  {
+    description: "The request claimed an origin this deployment does not trust",
+    httpApiStatus: 403
+  }
+) {}
+
+/**
+ * Fails {@link OriginNotAllowed} when a request claims an origin this
+ * deployment does not trust, and passes when it claims none.
+ *
+ * **When to use**
+ *
+ * From every *unauthenticated* endpoint that sends mail or an SMS, or writes a
+ * row: a magic link or one-time code being asked for, an anonymous sign-in. The
+ * `Authenticated` middleware applies {@link checkOrigin} to the cookie
+ * transports it serves, and these endpoints are behind no middleware at all —
+ * a cross-origin form post reaches them carrying no cookie, which is exactly
+ * why the cookie-shaped defence does not see them, and it still costs the
+ * deployment a message per submission.
+ *
+ * **Details**
+ *
+ * The same three-way answer as {@link checkOrigin}, and the reasoning in its
+ * "Gotchas" applies unchanged: a browser attaches `Origin` to every
+ * cross-origin state-changing request, so *absent* means a non-browser caller —
+ * a server-to-server integration, `curl` — for which no cross-site defence is
+ * relevant. `Origin: null` is not absent: it is a positive signal from
+ * something browser-shaped (a sandboxed iframe, a `data:` document) and is
+ * refused, because it parses as no origin and therefore as an untrusted one.
+ *
+ * Unlike {@link checkOrigin} this makes no exception for `GET`, `HEAD` and
+ * `OPTIONS`: it is called by a handler rather than applied to everything a
+ * middleware covers, so the method is already decided by the endpoint that
+ * called it.
+ *
+ * @category combinators
+ * @since 0.1.0
+ */
+export const requireTrustedIfPresent: Effect.Effect<
+  void,
+  OriginNotAllowed,
+  HttpServerRequest.HttpServerRequest | AuthConfig
+> = Effect.gen(function* () {
+  const config = yield* AuthConfig
+  const request = yield* HttpServerRequest.HttpServerRequest
+  const claimed = claimedOrigin(request.headers)
+  if (Option.isNone(claimed)) return
+  if (isTrustedOrigin(config, claimed.value)) return
+  return yield* OriginNotAllowed.make()
+})

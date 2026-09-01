@@ -147,6 +147,46 @@ const addSessionRememberMe = Effect.gen(function* () {
   })
 })
 
+const addSessionAssurance = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+
+  // Three `text` columns on both dialects — the levels are literal strings and
+  // the log is a JSON array in a text column, so nothing here diverges the way
+  // a boolean would. They are added separately because SQLite has no
+  // multi-column `ADD COLUMN`.
+  //
+  // `authenticated_at` is backfilled from `created_at`: before step-up existed,
+  // a session's creation *was* the moment its owner authenticated, so that is
+  // the honest value, and it keeps every existing session exactly as fresh as
+  // it was rather than silently re-freshening the table.
+  //
+  // It has no `DEFAULT`, because only the writer knows when a person actually
+  // authenticated and any constant here would be a lie. That is also why it is
+  // added nullable and backfilled before the constraint goes on: a `NOT NULL`
+  // column with no default cannot be added to a table that has rows. SQLite
+  // cannot tighten a column afterwards, so there the `NOT NULL` is the model's
+  // to enforce — the backfill still leaves no NULL behind, and `Session.insert`
+  // always states the value.
+  yield* sql.onDialectOrElse({
+    pg: () =>
+      Effect.gen(function* () {
+        yield* sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS authenticated_at text`
+        yield* sql`UPDATE sessions SET authenticated_at = created_at WHERE authenticated_at IS NULL`
+        yield* sql`ALTER TABLE sessions ALTER COLUMN authenticated_at SET NOT NULL`
+        yield* sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS aal text NOT NULL DEFAULT 'aal1'`
+        yield* sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS methods text NOT NULL DEFAULT '[]'`
+      }),
+    sqlite: () =>
+      Effect.gen(function* () {
+        yield* sql`ALTER TABLE sessions ADD COLUMN authenticated_at text`
+        yield* sql`UPDATE sessions SET authenticated_at = created_at`
+        yield* sql`ALTER TABLE sessions ADD COLUMN aal text NOT NULL DEFAULT 'aal1'`
+        yield* sql`ALTER TABLE sessions ADD COLUMN methods text NOT NULL DEFAULT '[]'`
+      }),
+    orElse: () => unsupportedDialect
+  })
+})
+
 // -----------------------------------------------------------------------------
 // Custom user fields
 // -----------------------------------------------------------------------------
@@ -389,14 +429,14 @@ export interface MigrationSet {
  * import { SqlClient } from "effect/unstable/sql"
  * import { Migrations } from "effect-auth"
  *
- * const createLinks = Effect.flatMap(
+ * const createInvites = Effect.flatMap(
  *   SqlClient.SqlClient,
- *   (sql) => sql`CREATE TABLE IF NOT EXISTS magic_links (id text PRIMARY KEY)`
+ *   (sql) => sql`CREATE TABLE IF NOT EXISTS invites (id text PRIMARY KEY)`
  * )
  *
  * export const Migrations$ = Migrations.make({
- *   table: "effect_auth_magic_link_migrations",
- *   migrations: { "0001_create_links": createLinks }
+ *   table: "effect_auth_invites_migrations",
+ *   migrations: { "0001_create_invites": createInvites }
  * })
  * ```
  *
@@ -439,7 +479,7 @@ export const make = (options: {
  *
  * The numeric prefixes are part of the contract: `Migrator` orders and records
  * migrations by that id, so renumbering them in a deployed application replays
- * or skips migrations. Number your own migrations above `0004`.
+ * or skips migrations. Number your own migrations above `0006`.
  *
  * @category models
  * @since 0.1.0
@@ -449,7 +489,8 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
   "0002_create_sessions": createSessions,
   "0003_create_accounts": createAccounts,
   "0004_create_verifications": createVerifications,
-  "0005_session_remember_me": addSessionRememberMe
+  "0005_session_remember_me": addSessionRememberMe,
+  "0006_session_assurance": addSessionAssurance
 }
 
 /**

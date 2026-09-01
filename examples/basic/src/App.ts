@@ -10,7 +10,7 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { Config, Duration, FileSystem, Layer, Path, Redacted } from "effect"
 import { Etag, FetchHttpClient, HttpPlatform } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { Github, MagicLink } from "effect-auth"
+import { EmailOtp, Github } from "effect-auth"
 import { AppApi } from "./Api.js"
 import { auth } from "./Auth.js"
 import * as Mailer from "./Mailer.js"
@@ -141,22 +141,23 @@ export const AuthWithGithubLive = auth
   .pipe(Layer.provide(DatabaseLive), Layer.provide(Mailer.layer), Layer.provide(FetchHttpClient.layer))
 
 /**
- * The magic link plugin, over the configured library.
+ * The e-mail one-time-code plugin, over the configured library.
  *
  * **Details**
  *
  * The whole of what installing a plugin costs. `Layer.provideMerge(AuthLive)`
  * discharges everything it needs from the deployment — `Verifications`,
- * `Sessions`, the stores, the transaction runner — and republishes them, so what
- * comes out is the deployment *and* the plugin. The one thing it asks of the
- * application is a mailer of its own, and forgetting it is a compile error.
+ * `Challenges`, `SignIn`, the stores, the transaction runner — and republishes
+ * them, so what comes out is the deployment *and* the plugin. The one thing it
+ * asks of the application is a mailer of its own, and forgetting it is a
+ * compile error.
  *
- * The plugin owns no table: a link is a `Verifications` row, so
- * {@link DatabaseLive} needs nothing added to it.
+ * The plugin owns no table: a code and the link beside it are both
+ * `Verifications` rows, so {@link DatabaseLive} needs nothing added to it.
  */
-export const MagicLinkLive = MagicLink.layer({ ttl: Duration.minutes(10) }).pipe(
+export const EmailOtpLive = EmailOtp.layer({ ttl: Duration.minutes(10) }).pipe(
   Layer.provideMerge(AuthLive),
-  Layer.provide(Mailer.magicLinkLayer)
+  Layer.provide(Mailer.emailOtpLayer)
 )
 
 /**
@@ -170,17 +171,17 @@ const PlatformLive = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.lay
  * All three groups of handlers, over one build of the deployment.
  *
  * `auth.handlers(AppApi)` is `AuthHandlers.layer(AppApi, auth.model)` with the
- * model already applied, and `MagicLink.handlers(AppApi)` is
- * `AuthHandlers.forGroup(MagicLinkApiGroup, …)` applied to the same API. Both
- * are provided the same `MagicLinkLive`, so the plugin and the core read one
+ * model already applied, and `EmailOtp.handlers(AppApi)` is
+ * `AuthHandlers.forGroup(EmailOtpApiGroup, …)` applied to the same API. Both
+ * are provided the same `EmailOtpLive`, so the plugin and the core read one
  * `Sessions`, one `UserStore` and one rate limiter.
  */
-export const HandlersLive = Layer.mergeAll(auth.handlers(AppApi), MagicLink.handlers(AppApi), Todos.layer).pipe(
-  Layer.provide(MagicLinkLive)
+export const HandlersLive = Layer.mergeAll(auth.handlers(AppApi), EmailOtp.handlers(AppApi), Todos.layer).pipe(
+  Layer.provide(EmailOtpLive)
 )
 
 /**
- * The router: `effect-auth`'s twenty-eight endpoints, the plugin's three, and
- * the application's two.
+ * The router: `effect-auth`'s endpoints, the plugin's seven, and the
+ * application's two.
  */
 export const AppLive = HttpApiBuilder.layer(AppApi).pipe(Layer.provide(HandlersLive), Layer.provideMerge(PlatformLive))

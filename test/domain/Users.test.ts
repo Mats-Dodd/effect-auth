@@ -25,7 +25,7 @@ import {
   Verifications
 } from "../../src/domain/Verifications.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, forUser, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { completed, expectSome, forUser, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * Registers a user whose address is already verified — the branch of
@@ -406,7 +406,10 @@ layer(AuthTest.layer())("domain/Users", (it) => {
 
         // The credential moved with the row: the new address signs in, the old
         // one is nobody's.
-        assert.strictEqual((yield* passwords.signIn({ email: newEmail, password: testPassword })).user.id, user.id)
+        assert.strictEqual(
+          completed(yield* passwords.signIn({ email: newEmail, password: testPassword })).user.id,
+          user.id
+        )
         const gone = yield* Effect.flip(passwords.signIn({ email, password: testPassword }))
         assert.strictEqual(gone._tag, "InvalidCredentials")
       })
@@ -562,7 +565,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
           // and a stolen cookie must not be enough to destroy an account.
           yield* TestClock.adjust(Duration.days(2))
           const failure = yield* Effect.flip(users.requestDeletion({ user, session }))
-          assert.strictEqual(failure._tag, "SessionNotFresh")
+          assert.strictEqual(failure._tag, "StepUpRequired")
 
           assert.isTrue(Option.isSome(yield* store.findById(user.id)))
         })
@@ -601,8 +604,8 @@ layer(AuthTest.layer())("domain/Users", (it) => {
             users.requestDeletion({ user, session, password: Redacted.make("not the password") })
           )
           const right = yield* Effect.flip(users.requestDeletion({ user, session, password: testPassword }))
-          assert.strictEqual(wrong._tag, "SessionNotFresh")
-          assert.strictEqual(right._tag, "SessionNotFresh")
+          assert.strictEqual(wrong._tag, "StepUpRequired")
+          assert.strictEqual(right._tag, "StepUpRequired")
           assert.isTrue(Option.isSome(yield* store.findById(user.id)))
         })
       )

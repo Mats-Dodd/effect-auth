@@ -49,12 +49,16 @@ import type {
 import { layer as authConfigLayer } from "../config/AuthConfig.js"
 import type { ScryptOptions } from "../crypto/PasswordHasher.js"
 import { layerScrypt, makeScrypt, PasswordHasher } from "../crypto/PasswordHasher.js"
+import type { AuthenticatorsService } from "../domain/Authenticators.js"
+import * as Authenticators from "../domain/Authenticators.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents } from "../domain/Events.js"
 import type { AuthHooksService } from "../domain/Hooks.js"
 import * as Hooks from "../domain/Hooks.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
+import type { SignInPipelineService } from "../domain/SignIn.js"
+import { SignInPipeline } from "../domain/SignIn.js"
 import type { AuthStores, SessionStoreService } from "../domain/Stores.js"
 import { SessionStore } from "../domain/Stores.js"
 import type { AuthApiGroupOf } from "../http/AuthApi.js"
@@ -83,6 +87,8 @@ export {
   deleteAccountKind,
   layerEmails,
   resetKind,
+  sms,
+  smsKind,
   TestEmails,
   verificationKind
 } from "./TestEmails.js"
@@ -188,6 +194,42 @@ export interface Settings {
    * belongs in a `describe.sequential` or in a block of its own.
    */
   readonly hooks?: AuthHooksService | undefined
+  /**
+   * The authenticator contributors the deployment is built with — what a factor
+   * plugin would have appended.
+   *
+   * **When to use**
+   *
+   * For the core decisions that count *every* way into an account rather than
+   * only the `accounts` rows: `Accounts.unlink` refusing to remove the last one,
+   * and the reclaim path revoking them all. Absent is `Authenticators`'s own
+   * default — no contributors — which is what a deployment with no factor
+   * plugins has, and what every test that is not about them gets.
+   *
+   * **Gotchas**
+   *
+   * Provided *underneath* the deployment, on the same terms as
+   * {@link Settings.hooks}: the reference is read when the services that consult
+   * it are built, so it is fixed for the block.
+   */
+  readonly authenticators?: AuthenticatorsService | undefined
+  /**
+   * The sign-in pipeline the deployment is built with — the one interposition
+   * point at which a second factor, a trusted device or a policy can turn a
+   * proven credential into a challenge instead of a session.
+   *
+   * **When to use**
+   *
+   * To test what a factor plugin's decider does to sign-in without installing
+   * the plugin. Absent is `SignInPipeline`'s own default — no deciders, so every
+   * verified credential proceeds — which is what every test that is not about
+   * step-up gets.
+   *
+   * **Gotchas**
+   *
+   * Provided underneath the deployment, exactly as {@link Settings.hooks} is.
+   */
+  readonly signInPipeline?: SignInPipelineService | undefined
 }
 
 /**
@@ -267,6 +309,36 @@ const hooksOf = (options?: Settings): Layer.Layer<never> =>
   options?.hooks === undefined ? Layer.empty : Hooks.layer(options.hooks)
 
 /**
+ * Installs `options.authenticators`, or leaves the `Authenticators` reference on
+ * its own default — the empty set, which is the deployment every test that says
+ * nothing about factors is meant to be running against.
+ */
+const authenticatorsOf = (options?: Settings): Layer.Layer<never> =>
+  options?.authenticators === undefined ? Layer.empty : Authenticators.layer(options.authenticators)
+
+/**
+ * Installs `options.signInPipeline`, or leaves the `SignInPipeline` reference on
+ * its own default.
+ *
+ * `Layer.succeed` on the reference itself rather than an installer from
+ * `domain/SignIn.ts`: that module's own `layer` belongs to the `SignIn`
+ * service, not to the pipeline, and this is the "replace" case anyway — a test
+ * that wants two deciders composes them itself and passes the result.
+ */
+const signInPipelineOf = (options?: Settings): Layer.Layer<never> =>
+  options?.signInPipeline === undefined ? Layer.empty : Layer.succeed(SignInPipeline)(options.signInPipeline)
+
+/**
+ * The three references a deployment reads at build time, as one layer.
+ *
+ * All three default to "nothing installed", and all three are provided
+ * *underneath* the deployment, because the services that consult them read them
+ * when they are built rather than per request.
+ */
+const seams = (options?: Settings): Layer.Layer<never> =>
+  Layer.mergeAll(hooksOf(options), authenticatorsOf(options), signInPipelineOf(options))
+
+/**
  * Everything above the database, built on a memo map of its own.
  *
  * `Layer.fresh` is what makes a nested `it.layer` variant mean anything.
@@ -289,10 +361,10 @@ const composed = <F extends UserFields>(options: Settings | undefined, model: Us
       user: { ...options?.user, model }
     }).pipe(
       Layer.provideMerge(layerEmails(options?.emailDelivery)),
-      // Underneath the deployment: `AuthHooks` is a reference the domain
-      // services read when they are built, so a set provided above them would
-      // never be seen.
-      Layer.provide(hooksOf(options))
+      // Underneath the deployment: `AuthHooks`, `Authenticators` and
+      // `SignInPipeline` are references the domain services read when they are
+      // built, so a set provided above them would never be seen.
+      Layer.provide(seams(options))
     )
   )
 
@@ -527,7 +599,7 @@ const flowDeployment = <F extends UserFields>(
     }).pipe(
       Layer.provideMerge(layerEmails(options.emailDelivery)),
       Layer.provide(layerFetch(options.fetch)),
-      Layer.provide(hooksOf(options))
+      Layer.provide(seams(options))
     )
   ).pipe(Layer.provideMerge(layerDatabaseFor(model)))
 
@@ -572,7 +644,7 @@ type TestHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F
  * **Example**
  *
  * ```ts skip-type-checking
- * const TestLayer = AuthTest.layerHttpApi(MagicLinkTest.TestApi, options, MagicLink.handlers(MagicLinkTest.TestApi))
+ * const TestLayer = AuthTest.layerHttpApi(EmailOtpTest.TestApi, options, EmailOtp.handlers(EmailOtpTest.TestApi))
  * ```
  *
  * **Gotchas**

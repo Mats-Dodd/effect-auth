@@ -7,7 +7,7 @@
  * its console mailers for an in-memory database and a capturing outbox, because
  * a test has to be able to read the token out of the e-mail the way a person
  * reads it out of their inbox. The example's own `Mailer.layer` and
- * `Mailer.magicLinkLayer` print those links instead, which is the only reason
+ * `Mailer.emailOtpLayer` print those credentials instead, which is the only reason
  * they are not the ones under test here.
  *
  * The whole file runs on one deployment: `layer()` builds the stack once, in
@@ -16,11 +16,27 @@
  */
 import { assert, layer } from "@effect/vitest"
 import { Duration, Effect, Layer, Option, Random, Redacted } from "effect"
-import { MagicLink, Stores } from "effect-auth"
-import { AuthTest, MagicLinkTest, TestHttpClient } from "effect-auth/testing"
+import { EmailOtp, Stores } from "effect-auth"
+import { AuthTest, EmailOtpTest, TestHttpClient } from "effect-auth/testing"
 import { AppApi } from "../src/Api.js"
 import { auth, freeTodoLimit } from "../src/Auth.js"
 import * as Todos from "../src/Todos.js"
+
+/**
+ * The completed half of a sign-in's two-status success.
+ *
+ * `signInEmail` answers `SessionWithUser` on 200 or `MfaRequired` on 202. This
+ * deployment installs no factor plugin, so the second is unreachable — saying
+ * so turns it into a failed assertion rather than an `undefined` two lines on.
+ */
+const completeSignIn = <S, U>(
+  result: { readonly _tag: "MfaRequired" } | { readonly user: U; readonly session: S }
+): { readonly user: U; readonly session: S } => {
+  if ("_tag" in result) {
+    throw new Error("expected a completed sign-in; the deployment answered MfaRequired")
+  }
+  return result
+}
 
 const baseUrl = AuthTest.testBaseUrl
 
@@ -49,7 +65,7 @@ const ServerLive = Todos.layer.pipe(
         },
         trustedOrigins: [baseUrl]
       },
-      MagicLink.handlers(AppApi).pipe(Layer.provide(MagicLinkTest.layerMagicLink({ ttl: Duration.minutes(10) })))
+      EmailOtp.handlers(AppApi).pipe(Layer.provide(EmailOtpTest.layerEmailOtp({ ttl: Duration.minutes(10) })))
     )
   )
 )
@@ -108,9 +124,11 @@ layer(ServerLive)("examples/basic", (it) => {
       assert.strictEqual(verified.success, true)
 
       // 4. Now sign-in works, and sets the session cookie.
-      const signedIn = yield* client.auth.signInEmail({
-        payload: { email, password: Redacted.make(password) }
-      })
+      const signedIn = completeSignIn(
+        yield* client.auth.signInEmail({
+          payload: { email, password: Redacted.make(password) }
+        })
+      )
       assert.strictEqual(signedIn.user.email, email)
       const cookie = yield* cookieValue(cookies)
       assert.notStrictEqual(cookie, "<absent>")
@@ -147,9 +165,11 @@ layer(ServerLive)("examples/basic", (it) => {
       assert.strictEqual(afterSignOut._tag, "Unauthorized")
 
       // 9. The new password is the one that works now.
-      const again = yield* client.auth.signInEmail({
-        payload: { email, password: Redacted.make(newPassword) }
-      })
+      const again = completeSignIn(
+        yield* client.auth.signInEmail({
+          payload: { email, password: Redacted.make(newPassword) }
+        })
+      )
       assert.strictEqual(again.user.id, signedIn.user.id)
 
       const stale = yield* Effect.flip(
@@ -208,9 +228,11 @@ layer(ServerLive)("examples/basic", (it) => {
       )
       assert.strictEqual(replayed._tag, "InvalidToken")
 
-      const signedIn = yield* client.auth.signInEmail({
-        payload: { email, password: Redacted.make(newPassword) }
-      })
+      const signedIn = completeSignIn(
+        yield* client.auth.signInEmail({
+          payload: { email, password: Redacted.make(newPassword) }
+        })
+      )
       assert.strictEqual(signedIn.user.email, email)
     })
   )
@@ -270,9 +292,11 @@ layer(ServerLive)("examples/basic", (it) => {
       })
       const verification = yield* emails.tokenFor("verification", email)
       yield* client.auth.verifyEmail({ query: { token: Redacted.value(verification) } })
-      const signedIn = yield* client.auth.signInEmail({
-        payload: { email, password: Redacted.make(password) }
-      })
+      const signedIn = completeSignIn(
+        yield* client.auth.signInEmail({
+          payload: { email, password: Redacted.make(password) }
+        })
+      )
 
       // The shape `POST /auth/set-password` exists for is an account provisioned
       // through a provider: a session, and no credential to sign in with. The
@@ -297,14 +321,16 @@ layer(ServerLive)("examples/basic", (it) => {
       const again = yield* Effect.flip(client.auth.setPassword({ payload: { newPassword: Redacted.make(password) } }))
       assert.strictEqual(again._tag, "PasswordAlreadySet")
 
-      const back = yield* client.auth.signInEmail({
-        payload: { email, password: Redacted.make(newPassword) }
-      })
+      const back = completeSignIn(
+        yield* client.auth.signInEmail({
+          payload: { email, password: Redacted.make(newPassword) }
+        })
+      )
       assert.strictEqual(back.user.id, signedIn.user.id)
     })
   )
 
-  it.effect("a magic link signs a stranger in, and provisions the account it names", () =>
+  it.effect("an e-mailed code signs a stranger in, and provisions the account it names", () =>
     Effect.gen(function* () {
       const email = yield* uniqueEmail("mary")
       const { client, cookies } = yield* makeClient()
@@ -312,39 +338,43 @@ layer(ServerLive)("examples/basic", (it) => {
 
       // The plugin's endpoint, on the application's own composed API. It answers
       // 200 for every well-formed address — this one has no account at all.
-      const acknowledged = yield* client.magicLink.signIn({
-        payload: { email, name: "Mary Jackson", callbackURL: "/welcome" }
+      const acknowledged = yield* client.emailOtp.send({
+        payload: { email, name: "Mary Jackson", purpose: "signIn", callbackURL: "/welcome" }
       })
       assert.strictEqual(acknowledged.success, true)
 
       // The message went to the address, with no user behind it: that `null` is
       // why the plugin carries a mailer of its own instead of a method on
       // `AuthEmails`.
-      const sent = yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email)
-      const delivered = yield* emails.last(MagicLinkTest.magicLinkKind, email)
+      const code = yield* EmailOtpTest.awaitCode(email)
+      const delivered = yield* emails.last(EmailOtpTest.emailOtpKind, email)
       assert.strictEqual(Option.isSome(delivered), true)
       if (Option.isSome(delivered)) assert.strictEqual(delivered.value.user, null)
 
-      // `exchange` is the JSON twin of the link's own `verify`: it claims the
-      // token, creates the account, answers a session and sets the cookie.
-      const exchanged = yield* client.magicLink.exchange({ payload: { token: sent } })
-      assert.strictEqual(exchanged.user.email, email)
-      // Followed a link that was delivered to the address, so it is proven.
-      assert.strictEqual(exchanged.user.emailVerified, true)
+      // `verify` claims the challenge, creates the account, answers a session
+      // and sets the cookie. The handle rode in a cookie of its own, which the
+      // jar carried back for us.
+      const verified = yield* client.emailOtp.verify({ payload: { code } })
+      assert.strictEqual(verified._tag, "SignedIn")
+      if (verified._tag !== "SignedIn") return
+      assert.strictEqual(verified.user.email, email)
+      // Answered a code that was delivered to the address, so it is proven.
+      assert.strictEqual(verified.user.emailVerified, true)
       assert.notStrictEqual(yield* cookieValue(cookies), "<absent>")
 
       // The plugin's group is not parameterized by this deployment's user fields,
-      // so `exchange` answers the base projection — the custom column is one
+      // so `verify` answers the base projection — the custom column is one
       // `GET /auth/session` away, and the cookie it just set works immediately.
       // The account was provisioned through the base-typed `UserStore`, and the
       // model's default filled `plan` in anyway.
       const session = yield* client.auth.getSession()
-      assert.strictEqual(session.user.id, exchanged.user.id)
+      assert.strictEqual(session.user.id, verified.user.id)
       assert.strictEqual(session.user.plan, "free")
 
-      // The token was single-use.
-      const replayed = yield* Effect.flip(client.magicLink.exchange({ payload: { token: sent } }))
-      assert.strictEqual(replayed._tag, "InvalidToken")
+      // A code is spendable exactly once, and the link minted beside it went
+      // with it: both are the same row's two doors.
+      const replayed = yield* Effect.flip(client.emailOtp.verify({ payload: { code } }))
+      assert.strictEqual(replayed._tag, "InvalidCode")
     })
   )
 })

@@ -330,10 +330,96 @@ export const consumeWith = (options: {
   readonly bucket: Bucket
   readonly request: HttpServerRequest.HttpServerRequest
 }): Effect.Effect<void, RateLimited> =>
+  spend({
+    config: options.config,
+    limiter: options.limiter,
+    bucket: options.bucket,
+    key: keyFor(options.bucket, requestPath(options.request), clientAddress(options.config, options.request))
+  })
+
+/**
+ * The key a bucket counted against an identifier is spent under:
+ * `<bucket>:<identifier>`.
+ *
+ * **Details**
+ *
+ * No path and no client address. That is the whole difference from
+ * {@link keyFor}, and it is the point: a resend cooldown belongs to the address
+ * being mailed and a lockout to the account being guessed at, so neither may be
+ * escaped by rotating an IP or by asking through a second endpoint that shares
+ * the policy.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const keyedKeyFor = (bucket: Bucket, key: string): string => `effect-auth:${bucket.name}:${key}`
+
+/**
+ * Consumes one token from a bucket counted against an arbitrary identifier
+ * rather than against the caller's address.
+ *
+ * **When to use**
+ *
+ * For the limits whose subject is a *thing* and not a caller: the cooldown
+ * between two codes sent to one address, the lockout after a run of wrong codes
+ * against one account. {@link consumeWith} is still the right helper for
+ * "three attempts per ten seconds per client"; this one is for "one mail per
+ * minute per address", which an attacker with a thousand addresses of their own
+ * must not be able to sidestep.
+ *
+ * **Gotchas**
+ *
+ * The identifier is part of a shared counter's key, so hash or normalise
+ * anything that is a secret or a person's own text before passing it —
+ * a normalised e-mail address or a `UserId` is the intended shape.
+ *
+ * A bucket spent through here and the same bucket spent through
+ * {@link consumeWith} share the *policy* and never the counter: the keys differ
+ * in shape, which is what {@link keyedKeyFor} exists to guarantee.
+ *
+ * `always` spends the bucket whether or not `rateLimit.enabled` is set. Reach
+ * for it when the bucket is not a throttle but a *security control* — the
+ * lockout after a run of wrong second-factor codes against one account is the
+ * one this library ships. `rateLimit.enabled` is documented as whether the
+ * built-in limits are applied, and a deployment turns it off because it has its
+ * own edge limiter in front — which throttles by address and knows nothing
+ * about how many times one account has been guessed at. Letting that switch
+ * silently remove a brute-force bound on a six-digit code is a foot-gun, so a
+ * control that must not be switched off says so at the call site.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const consumeKeyed = (options: {
+  readonly config: AuthConfigService
+  readonly limiter: RateLimiter.RateLimiter
+  readonly bucket: Bucket
+  readonly key: string
+  /**
+   * Spend the bucket even when `rateLimit.enabled` is `false`. For a bucket
+   * that is a security control rather than a throttle.
+   */
+  readonly always?: boolean | undefined
+}): Effect.Effect<void, RateLimited> =>
+  spend({
+    config: options.config,
+    limiter: options.limiter,
+    bucket: options.bucket,
+    key: keyedKeyFor(options.bucket, options.key),
+    ...(options.always === undefined ? {} : { always: options.always })
+  })
+
+/** The arithmetic both consumers share, over a key that is already built. */
+const spend = (options: {
+  readonly config: AuthConfigService
+  readonly limiter: RateLimiter.RateLimiter
+  readonly bucket: Bucket
+  readonly key: string
+  readonly always?: boolean | undefined
+}): Effect.Effect<void, RateLimited> =>
   Effect.gen(function* () {
-    const { bucket, config, limiter, request } = options
-    if (!config.rateLimit.enabled) return
-    const key = keyFor(bucket, requestPath(request), clientAddress(config, request))
+    const { bucket, config, key, limiter } = options
+    if (!config.rateLimit.enabled && options.always !== true) return
 
     const result = yield* Effect.result(
       limiter.consume({

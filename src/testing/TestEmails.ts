@@ -88,6 +88,23 @@ export const changeEmailVerificationKind: EmailKind = "change-email-verification
 export const deleteAccountKind: EmailKind = "delete-account"
 
 /**
+ * The kind recorded for a message delivered as an SMS rather than an e-mail.
+ *
+ * **Details**
+ *
+ * One outbox for both, because the assertions are the same ones: what was sent,
+ * to whom, and what single-use value it carried. A phone plugin's sender is a
+ * service of its own shape, exactly as a mailer is, and it records through
+ * {@link TestEmailsService.record} like everything else — with `to` set to the
+ * phone number, so `emails.tokenFor(smsKind, phone)` reads a code the way its
+ * recipient would. {@link sms} builds the record.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const smsKind: EmailKind = "sms"
+
+/**
  * One e-mail the application asked to have delivered.
  *
  * @category models
@@ -113,6 +130,38 @@ export interface SentEmail {
   /** The link itself. */
   readonly url: Redacted.Redacted
 }
+
+/**
+ * One SMS, as {@link TestEmailsService.record} takes it.
+ *
+ * **When to use**
+ *
+ * From a phone plugin's test sender: `emails.record(TestEmails.sms({ to:
+ * phone, code }))` is the whole implementation, and the outbox then answers
+ * `to(phone)`, `last(smsKind, phone)` and `tokenFor(smsKind, phone)` about it.
+ *
+ * **Details**
+ *
+ * A code has no link, so `url` repeats the code rather than being absent: the
+ * outbox is one shape for both transports, and a test that reads either field
+ * gets the value the message actually carried. `user` is `null` unless the
+ * caller knows one — a code sent to an unknown number must look exactly like a
+ * code sent to a known one.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const sms = (options: {
+  readonly to: string
+  readonly code: Redacted.Redacted
+  readonly user?: User | null | undefined
+}): SentEmail => ({
+  kind: smsKind,
+  to: options.to,
+  user: options.user ?? null,
+  token: options.code,
+  url: options.code
+})
 
 /**
  * Whether the mailer accepts what it is handed, or records it and then reports

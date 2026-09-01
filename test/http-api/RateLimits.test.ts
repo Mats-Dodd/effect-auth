@@ -8,9 +8,11 @@ import { RateLimited } from "../../src/domain/Errors.js"
 import {
   clientAddress,
   consume,
+  consumeKeyed,
   consumeWith,
   credentials,
   email,
+  keyedKeyFor,
   keyFor,
   layer as rateLimiterLayer,
   limit,
@@ -166,6 +168,22 @@ describe("http/RateLimits", () => {
       )
     })
 
+    it("keys an identifier bucket on the bucket and the identifier alone", () => {
+      // No path and no client address: a resend cooldown belongs to the address
+      // being mailed, and a lockout to the account being guessed at, so neither
+      // is escaped by rotating an IP or by asking through a sibling endpoint.
+      assert.strictEqual(keyedKeyFor(email, "ada@example.com"), "effect-auth:email:ada@example.com")
+    })
+
+    it("never collides an identifier key with an address key of the same bucket", () => {
+      // Both start `effect-auth:<bucket>:`, and there the shapes part: the
+      // address key carries a path segment that an identifier key never has.
+      assert.notStrictEqual(
+        keyedKeyFor(credentials, "203.0.113.7"),
+        keyFor(credentials, "/auth/sign-in/email", Option.some("203.0.113.7"))
+      )
+    })
+
     it("falls into one shared bucket when the caller cannot be identified", () => {
       assert.strictEqual(
         keyFor(email, "/auth/request-password-reset", Option.none()),
@@ -255,6 +273,98 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
 
       const other = yield* attempt(credentials, { path: "/auth/sign-up/email", headers })
       assert.strictEqual(other._tag, "Success")
+    })
+  )
+
+  it.effect("counts an identifier's own bucket, whatever address asks", () =>
+    Effect.gen(function* () {
+      const config = yield* AuthConfig.AuthConfig
+      const limiter = yield* RateLimiter.RateLimiter
+      const spend = (address: string) =>
+        Effect.result(consumeKeyed({ config, limiter, bucket: email, key: "cooldown-subject@example.com" })).pipe(
+          Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            request({ headers: { "x-forwarded-for": address } })
+          )
+        )
+
+      // A different claimed address every time, and the counter does not care:
+      // the subject of this limit is the address being mailed.
+      for (let i = 0; i < email.limit; i++) {
+        assert.strictEqual((yield* spend(`198.51.100.${i}`))._tag, "Success", `attempt ${i + 1}`)
+      }
+      const refused = yield* spend("198.51.100.200")
+      assert.strictEqual(refused._tag, "Failure")
+      if (refused._tag === "Failure") {
+        assert.instanceOf(refused.failure, RateLimited)
+        assert.isAtLeast(refused.failure.retryAfterSeconds, 1)
+      }
+
+      // And a different subject is a different counter.
+      const other = yield* Effect.result(
+        consumeKeyed({ config, limiter, bucket: email, key: "someone-else@example.com" })
+      )
+      assert.strictEqual(other._tag, "Success")
+    })
+  )
+
+  it.effect("shares the policy with the per-caller helper and never its counter", () =>
+    Effect.gen(function* () {
+      const config = yield* AuthConfig.AuthConfig
+      const limiter = yield* RateLimiter.RateLimiter
+      const headers = { "x-forwarded-for": "198.51.100.250" }
+
+      for (let i = 0; i < credentials.limit; i++) {
+        assert.strictEqual((yield* attempt(credentials, { headers }))._tag, "Success")
+      }
+      assert.strictEqual((yield* attempt(credentials, { headers }))._tag, "Failure")
+
+      // The same bucket, spent against an identifier, still has its whole
+      // allowance: the two keys cannot collide.
+      const keyed = yield* Effect.result(consumeKeyed({ config, limiter, bucket: credentials, key: "198.51.100.250" }))
+      assert.strictEqual(keyed._tag, "Success")
+    })
+  )
+
+  it.effect("does nothing when rate limiting is switched off", () =>
+    Effect.gen(function* () {
+      const limiter = yield* RateLimiter.RateLimiter
+      const off = AuthConfig.make({
+        baseUrl,
+        secret: Redacted.make("test-secret-at-least-32-bytes-long"),
+        rateLimit: { enabled: false }
+      })
+      for (let i = 0; i < credentials.limit + 2; i++) {
+        yield* consumeKeyed({ config: off, limiter, bucket: credentials, key: "switched-off" })
+      }
+    })
+  )
+
+  it.effect("`always` spends the bucket even when rate limiting is switched off", () =>
+    Effect.gen(function* () {
+      const limiter = yield* RateLimiter.RateLimiter
+      const off = AuthConfig.make({
+        baseUrl,
+        secret: Redacted.make("test-secret-at-least-32-bytes-long"),
+        rateLimit: { enabled: false }
+      })
+
+      // `rateLimit.enabled` says whether the built-in *throttles* are applied,
+      // and a deployment turns it off because its edge limits by address. An
+      // edge limiter knows nothing about how many times one account has been
+      // guessed at, so a per-account lockout on a six-digit code has to survive
+      // it — otherwise switching off a throttle silently removes the only bound
+      // there is on brute force.
+      for (let i = 0; i < credentials.limit; i++) {
+        yield* consumeKeyed({ config: off, limiter, bucket: credentials, key: "locked-out", always: true })
+      }
+      const refused = yield* Effect.flip(
+        consumeKeyed({ config: off, limiter, bucket: credentials, key: "locked-out", always: true })
+      )
+      assert.instanceOf(refused, RateLimited)
+
+      // Still per subject: another account has its whole allowance.
+      yield* consumeKeyed({ config: off, limiter, bucket: credentials, key: "somebody-else", always: true })
     })
   )
 

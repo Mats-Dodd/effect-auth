@@ -18,6 +18,7 @@
  */
 import { Schema } from "effect"
 import { HttpApiError } from "effect/unstable/httpapi"
+import { AssurancePolicyJson, CurrentAssurance } from "./Assurance.js"
 import type { PolicyRefused } from "./Hooks.js"
 import { AccountId } from "./Schema.js"
 import type { PersistenceError } from "./Stores.js"
@@ -237,24 +238,41 @@ export class SessionExpired extends Schema.TaggedError<SessionExpired>("effect-a
 ) {}
 
 /**
- * The session is valid but too old for a sensitive operation.
+ * The session is valid, and does not meet the assurance this operation
+ * requires.
  *
  * **Details**
  *
- * Raised by the `requireFresh` guard that changing a password or unlinking an
- * account runs first. The caller must re-authenticate; `freshAgeSeconds` is the
- * configured window a session must have been created within.
+ * The one step-up error. `required` is the policy that was not met — a level, a
+ * maximum age in seconds, the method names that would satisfy it, whether a
+ * recovery code counts — and `current` is what the session actually holds,
+ * including the factors this person could step up with, so a client can prompt
+ * for the right one instead of guessing and can degrade gracefully when the
+ * answer is "none of them".
+ *
+ * The shape is RFC 9470's: a bearer transport renders the same refusal as
+ * `WWW-Authenticate: Bearer error="insufficient_user_authentication",
+ * acr_values="aal2", max_age=300`.
+ *
+ * **Gotchas**
+ *
+ * No challenge is pre-issued here. Doing so would mean any guarded request an
+ * attacker could provoke sends the account's owner a code.
+ *
+ * `available` names kinds of factor and nothing else — no identifier, no
+ * address, no secret.
  *
  * @category errors
- * @since 0.1.0
+ * @since 0.2.0
  */
-export class SessionNotFresh extends Schema.TaggedError<SessionNotFresh>("effect-auth/SessionNotFresh")(
-  "SessionNotFresh",
+export class StepUpRequired extends Schema.TaggedError<StepUpRequired>("effect-auth/StepUpRequired")(
+  "StepUpRequired",
   {
-    freshAgeSeconds: Schema.Finite
+    required: AssurancePolicyJson,
+    current: CurrentAssurance
   },
   {
-    description: "The session is not fresh enough for this operation",
+    description: "The session does not meet the assurance this operation requires",
     httpApiStatus: 403
   }
 ) {}
@@ -281,6 +299,31 @@ export class InvalidToken extends Schema.TaggedError<InvalidToken>("effect-auth/
   {
     description: "The verification token is invalid or has already been used",
     httpApiStatus: 400
+  }
+) {}
+
+/**
+ * A short code — a mailed OTP, a TOTP, a recovery code — did not match.
+ *
+ * **Details**
+ *
+ * One error for every way a code can fail: wrong, expired, already used,
+ * issued for another purpose, or out of attempts. They are deliberately
+ * indistinguishable, because telling them apart tells an attacker whether a
+ * code was ever issued and how much of the attempt budget is left.
+ *
+ * `401` rather than `400`: a code is a credential, and a caller that presents a
+ * bad one has failed to authenticate.
+ *
+ * @category errors
+ * @since 0.2.0
+ */
+export class InvalidCode extends Schema.TaggedError<InvalidCode>("effect-auth/InvalidCode")(
+  "InvalidCode",
+  {},
+  {
+    description: "The code is invalid, has expired, or has no attempts left",
+    httpApiStatus: 401
   }
 ) {}
 
@@ -665,8 +708,9 @@ export type AuthError =
   | EmailUnchanged
   | PasswordAlreadySet
   | SessionExpired
-  | SessionNotFresh
+  | StepUpRequired
   | InvalidToken
+  | InvalidCode
   | TokenExpired
   | OAuthStateMismatch
   | OAuthProviderError

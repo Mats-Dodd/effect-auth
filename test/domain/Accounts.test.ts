@@ -1,6 +1,8 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { DateTime, Effect } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import { Accounts, canLinkImplicitly } from "../../src/domain/Accounts.js"
+import type { AuthenticatorSummary } from "../../src/domain/Authenticators.js"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
 import { CredentialIssuer, oauthIssuer, UserId } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
@@ -44,6 +46,24 @@ const localUser = Effect.fnUntraced(function* (email: string, emailVerified: boo
   if (!emailVerified) return user
   return yield* expectSome(yield* users.update(user.id, { emailVerified: true }), "expected the updated user")
 })
+
+/**
+ * What a passkey plugin would contribute: a credential this person can sign in
+ * with all by itself.
+ */
+const passkey: AuthenticatorSummary = {
+  type: "passkey",
+  id: "passkey-1",
+  name: "MacBook",
+  verifiedAt: null,
+  lastUsedAt: null,
+  signIn: true,
+  secondFactor: true,
+  restricted: false
+}
+
+/** What a TOTP plugin would contribute: a factor that raises a sign-in, never one that is one. */
+const secondFactorOnly: AuthenticatorSummary = { ...passkey, type: "totp", id: "totp-1", signIn: false }
 
 // -----------------------------------------------------------------------------
 // The gate, in isolation
@@ -325,6 +345,61 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
         const failure = yield* Effect.flip(accounts.unlink(held[0]!.id, user.id))
         assert.strictEqual(failure._tag, "CannotUnlinkLastAccount")
       })
+    )
+
+    it.effect("a credential row with no password is not a way in", () =>
+      Effect.gen(function* () {
+        const accounts = yield* Accounts
+        const sql = yield* SqlClient.SqlClient
+        const email = uniqueEmail("hashless")
+        const user = yield* localUser(email, true)
+        const linked = yield* accounts.linkOAuth(identity({ email }))
+        // A credential row that carries no hash — nothing this library writes,
+        // but a migration might. It is a label, not a credential.
+        yield* sql`update accounts set password_hash = null where issuer = ${CredentialIssuer} and user_id = ${user.id}`
+
+        const failure = yield* Effect.flip(accounts.unlink(linked.account.id, user.id))
+
+        // Two rows, one way in: allowing this is how a user ends up locked out
+        // by an unlink the old count permitted.
+        assert.strictEqual((yield* accounts.listForUser(user.id)).length, 2)
+        assert.strictEqual(failure._tag, "CannotUnlinkLastAccount")
+      })
+    )
+
+    it.layer(AuthTest.layer({ authenticators: { list: () => Effect.succeed([passkey]) } }))(
+      "with a factor plugin that holds a passkey",
+      (it) => {
+        it.effect("lets a passkey user unlink their last account", () =>
+          Effect.gen(function* () {
+            const accounts = yield* Accounts
+            const linked = yield* accounts.linkOAuth(identity())
+
+            // Counting `accounts` rows alone would falsely refuse this: the
+            // person still has a way in, it is simply not a row in this table.
+            yield* accounts.unlink(linked.account.id, linked.user.id)
+
+            assert.deepStrictEqual(yield* accounts.listForUser(linked.user.id), [])
+          })
+        )
+      }
+    )
+
+    it.layer(AuthTest.layer({ authenticators: { list: () => Effect.succeed([secondFactorOnly]) } }))(
+      "with a factor plugin that holds a second factor only",
+      (it) => {
+        it.effect("still refuses: a second factor is not a way in by itself", () =>
+          Effect.gen(function* () {
+            const accounts = yield* Accounts
+            const linked = yield* accounts.linkOAuth(identity())
+
+            const failure = yield* Effect.flip(accounts.unlink(linked.account.id, linked.user.id))
+
+            assert.strictEqual(failure._tag, "CannotUnlinkLastAccount")
+            assert.strictEqual((yield* accounts.listForUser(linked.user.id)).length, 1)
+          })
+        )
+      }
     )
 
     it.effect("refuses to unlink an account that belongs to another user", () =>

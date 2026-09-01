@@ -3,6 +3,7 @@ import { DateTime, Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { OAuthProviderError, OAuthStateMismatch } from "../../src/domain/Errors.js"
 import { oauthIssuer, User } from "../../src/domain/Schema.js"
+import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { decodeTokens, errorCode, OAuthFlow } from "../../src/oauth/Flow.js"
 import { withErrorCode } from "../../src/http/OriginCheck.js"
@@ -78,8 +79,18 @@ const extras = MockProvider.mockProvider({
 /** A public PKCE client: there is no secret, so none is sent. */
 const publicClient = MockProvider.mockProvider({ id: "public", clientSecret: undefined })
 
+/** One that authenticates with HTTP Basic, as X does. */
+const basic = MockProvider.mockProvider({ id: "basic", tokenAuth: "client_secret_basic" })
+
+/** A public client that *also* declares Basic: it still has no secret to send. */
+const basicPublic = MockProvider.mockProvider({
+  id: "basic-public",
+  tokenAuth: "client_secret_basic",
+  clientSecret: undefined
+})
+
 const flowLayer = AuthTest.layerFlow({
-  providers: [provider, other, extras, publicClient],
+  providers: [provider, other, extras, publicClient, basic, basicPublic],
   fetch: server.fetch,
   baseUrl: appOrigin,
   trustedOrigins: ["https://console.example.com"]
@@ -91,6 +102,26 @@ const trustingLayer = AuthTest.layerFlow({
   fetch: server.fetch,
   baseUrl: appOrigin,
   trustedProviders: ["mock"]
+})
+
+/**
+ * The same deployment with a factor plugin's decider installed — one that always
+ * asks for a second factor, so the callback can never mint a session.
+ */
+const challengingLayer = AuthTest.layerFlow({
+  providers: [provider, other, extras],
+  fetch: server.fetch,
+  baseUrl: appOrigin,
+  signInPipeline: {
+    decide: () =>
+      Effect.succeed({
+        _tag: "Challenge",
+        kind: "mfa",
+        available: ["totp"],
+        token: Redacted.make("pending-auth"),
+        expiresAt: DateTime.makeUnsafe(0)
+      })
+  }
 })
 
 /** A local account, registered by e-mail rather than through a provider. */
@@ -335,6 +366,71 @@ describe.sequential("oauth/Flow", () => {
         })
       )
 
+      it.effect("authenticates with HTTP Basic on both grants when the provider says so", () =>
+        Effect.gen(function* () {
+          const who = someone("basic-auth")
+          yield* wellBehaved(who)
+          const flow = yield* OAuthFlow
+          const accounts = yield* AccountStore
+
+          const started = yield* flow.start({ providerId: "basic" })
+          const done = yield* flow.callback({
+            providerId: "basic",
+            code: "authorization-code",
+            state: Redacted.value(started.state)
+          })
+          assert.isNotNull(done.user)
+          const expected = `Basic ${btoa("mock-client-id:mock-client-secret")}`
+
+          // The code exchange.
+          const exchange = server.to(MockProvider.tokenUrl)[0]
+          assert.isDefined(exchange)
+          assert.strictEqual(exchange?.headers.authorization, expected)
+          // The secret is in the header, and nowhere else: a provider that
+          // refuses `client_secret_post` refuses the whole request when it is
+          // in the body.
+          assert.isNull(MockProvider.formOf(exchange).get("client_secret"))
+          assert.strictEqual(MockProvider.formOf(exchange).get("client_id"), "mock-client-id")
+
+          // And the refresh — the half an `exchange` override cannot reach.
+          // `offline.access`-style scopes make a refresh token exist, so a
+          // provider that got this wrong would sign somebody in and fail to
+          // refresh them an hour later, with nothing before then to say so.
+          const [linked] = yield* accounts.listByUserId(done.user.id)
+          assert.isDefined(linked)
+          yield* flow.refreshTokens({ accountId: linked.id, userId: done.user.id })
+
+          const refresh = server.to(MockProvider.tokenUrl)[1]
+          assert.isDefined(refresh)
+          assert.strictEqual(refresh?.headers.authorization, expected)
+          const refreshForm = MockProvider.formOf(refresh)
+          assert.strictEqual(refreshForm.get("grant_type"), "refresh_token")
+          assert.isNull(refreshForm.get("client_secret"))
+        })
+      )
+
+      it.effect("sends no credential at all for a public client, whatever tokenAuth says", () =>
+        Effect.gen(function* () {
+          const who = someone("basic-public")
+          yield* wellBehaved(who)
+          const flow = yield* OAuthFlow
+
+          const started = yield* flow.start({ providerId: "basic-public" })
+          const done = yield* flow.callback({
+            providerId: "basic-public",
+            code: "authorization-code",
+            state: Redacted.value(started.state)
+          })
+          assert.isNotNull(done.user)
+
+          // There is no secret to send in either form. PKCE is what proves it.
+          const exchange = server.to(MockProvider.tokenUrl)[0]
+          assert.isDefined(exchange)
+          assert.isUndefined(exchange?.headers.authorization)
+          assert.isNull(MockProvider.formOf(exchange).get("client_secret"))
+        })
+      )
+
       it.effect("signs an existing identity in rather than provisioning a second user", () =>
         Effect.gen(function* () {
           yield* wellBehaved(someone("returning"))
@@ -382,7 +478,40 @@ describe.sequential("oauth/Flow", () => {
 
           assert.deepStrictEqual(AuthTest.tagsOf(events), ["UserCreated", "AccountLinked", "SignedIn"])
           const signedIn = events.find((event) => event._tag === "SignedIn")
-          assert.strictEqual(signedIn?._tag === "SignedIn" ? signedIn.method : "", "oauth:mock")
+          if (signedIn === undefined || signedIn._tag !== "SignedIn") {
+            return assert.fail("expected a SignedIn event")
+          }
+          assert.strictEqual(signedIn.method, "oauth:mock")
+          // The evidence travels with it: a completed provider round trip is
+          // possession of an account over there, and nothing more.
+          assert.deepStrictEqual(
+            signedIn.methods.map((entry) => ({
+              method: entry.method,
+              factor: entry.factor,
+              phishingResistant: entry.phishingResistant,
+              restricted: entry.restricted
+            })),
+            [{ method: "oauth:mock", factor: "possession", phishingResistant: false, restricted: false }]
+          )
+        })
+      )
+
+      it.effect("records the evidence on the session the callback minted", () =>
+        Effect.gen(function* () {
+          yield* wellBehaved(someone("evidence"))
+          const flow = yield* OAuthFlow
+
+          const started = yield* flow.start({ providerId: "mock" })
+          const result = yield* flow.callback({
+            providerId: "mock",
+            code: "authorization-code",
+            state: Redacted.value(started.state)
+          })
+
+          assert.strictEqual(result.challenge, null)
+          assert.deepStrictEqual(result.session?.methods.map((entry) => entry.method) ?? [], ["oauth:mock"])
+          // One possession factor.
+          assert.strictEqual(result.session?.aal, "aal1")
         })
       )
 
@@ -727,6 +856,31 @@ describe.sequential("oauth/Flow", () => {
           assert.strictEqual(outcome.redirectTo, `${appOrigin}/sign-in?error=account_already_linked`)
         })
       )
+
+      // A configuration variant: everything above the database is rebuilt with
+      // a factor plugin's decider installed.
+      it.layer(challengingLayer)("with a second factor owed", (it) => {
+        it.effect("hands the challenge to the caller and mints no session", () =>
+          Effect.gen(function* () {
+            const who = someone("challenged")
+            yield* wellBehaved(who)
+            const sessions = yield* Sessions
+
+            const outcome = yield* attempt()
+
+            assert.strictEqual(outcome._tag, "Success")
+            if (outcome._tag !== "Success") return
+            const result = outcome.success
+            // The user exists and the identity is linked — only the session is
+            // owed, and a redirect that carried one would be the bypass.
+            assert.strictEqual(result.session, null)
+            assert.strictEqual(result.token, null)
+            assert.strictEqual(result.challenge?.kind, "mfa")
+            assert.deepStrictEqual(result.challenge?.available, ["totp"])
+            assert.deepStrictEqual(yield* sessions.list(result.user.id), [])
+          })
+        )
+      })
 
       // A configuration variant: everything above the database is rebuilt with
       // `mock` trusted, and the database itself is the block's.

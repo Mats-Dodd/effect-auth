@@ -23,6 +23,7 @@
  */
 import type { DateTime, Effect, Option } from "effect"
 import { Context, Schema } from "effect"
+import type { Aal, AuthenticationMethod } from "./Assurance.js"
 import type {
   Account,
   AccountId,
@@ -279,6 +280,50 @@ export interface SessionStoreService<F extends UserFields = {}> {
    * row, or `None` when the session was concurrently revoked.
    */
   readonly touch: (id: SessionId, expiresAt: DateTime.Utc) => Effect.Effect<Option.Option<Session>, PersistenceError>
+
+  /**
+   * Raises a session's assurance and rotates its token, atomically, appending
+   * to the log the row actually holds. `None` when the session was concurrently
+   * revoked.
+   *
+   * **Details**
+   *
+   * The whole of what a step-up changes — the authentication log, the level
+   * derived from it, the interactive-authentication stamp, and the digest of a
+   * freshly minted token — is written together, under a lock on the row, in one
+   * transaction with the read that produced it.
+   *
+   * The read is the point. The caller holds a `Session` value, and that value
+   * can be *stale*: it may have come from the cookie-cache snapshot on an
+   * endpoint that did not ask for the row, or from a request that raced another
+   * elevation. Writing `caller.methods + evidence` would then silently drop
+   * whatever the row had learned in between — the password entry an earlier
+   * `reauthenticate` recorded, the factor a parallel request just proved — and
+   * the level, being derived from the log, would move the wrong way. So `append`
+   * is handed the log *as stored* and the result of it is what is written.
+   *
+   * The token is replaced rather than kept because a token captured while the
+   * session was at `aal1` must not inherit the level it has now. The session's
+   * `id` does not change, so open tabs and the session list survive.
+   *
+   * **Gotchas**
+   *
+   * `append` runs inside the transaction, under the row lock, so it must be
+   * pure and must not do IO. It is where `Assurance.deriveAal` is called, which
+   * keeps the one function that computes a level in the domain rather than in a
+   * store implementation.
+   */
+  readonly elevate: (
+    id: SessionId,
+    patch: {
+      readonly append: (stored: ReadonlyArray<AuthenticationMethod>) => {
+        readonly methods: ReadonlyArray<AuthenticationMethod>
+        readonly aal: Aal
+      }
+      readonly authenticatedAt: DateTime.Utc
+      readonly tokenHash: string
+    }
+  ) => Effect.Effect<Option.Option<Session>, PersistenceError>
 
   /**
    * Deletes one session belonging to `userId`. Returns whether a row was

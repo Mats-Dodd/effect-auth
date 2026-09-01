@@ -21,7 +21,7 @@ import type { AuthHooksService } from "../../src/domain/Hooks.js"
 import { PolicyRefused } from "../../src/domain/Hooks.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testPassword, uniqueEmail } from "../fixtures.js"
-import { makeClient, signedUp } from "./helpers.js"
+import { completeSignIn, makeClient, signedUp } from "./helpers.js"
 
 /** The deployment these tests run against: both opt-in flows switched on. */
 const served: AuthTest.Options = {
@@ -129,7 +129,9 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
 
       // The credential moved with the row.
       yield* client.auth.signOut()
-      const back = yield* client.auth.signInEmail({ payload: { email: newEmail, password: testPassword } })
+      const back = completeSignIn(
+        yield* client.auth.signInEmail({ payload: { email: newEmail, password: testPassword } })
+      )
       assert.strictEqual(back.user.email, newEmail)
     })
   )
@@ -424,7 +426,7 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
           const refused = yield* Effect.flip(
             client.auth.changeEmail({ payload: { newEmail: uniqueEmail("stale-change-new") } })
           )
-          assert.strictEqual(refused._tag, "SessionNotFresh")
+          assert.strictEqual(refused._tag, "StepUpRequired")
         })
       )
 
@@ -434,7 +436,7 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
 
           yield* TestClock.adjust(Duration.days(2))
           const refused = yield* Effect.flip(client.auth.deleteUser({ payload: {} }))
-          assert.strictEqual(refused._tag, "SessionNotFresh")
+          assert.strictEqual(refused._tag, "StepUpRequired")
           // And the account is still there — the session simply has to be renewed.
           yield* client.auth.getSession()
         })

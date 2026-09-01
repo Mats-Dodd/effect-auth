@@ -19,6 +19,8 @@ import { Context, Effect, Option, Schema, Struct } from "effect"
 import { Model, type VariantSchema } from "effect/unstable/schema"
 import { insertRow } from "../internal/effects.js"
 import { camelToSnake, pickKeys } from "../internal/records.js"
+import { Aal, AuthenticationMethodsJson } from "./Assurance.js"
+import type { AuthenticationMethod } from "./Assurance.js"
 
 // -----------------------------------------------------------------------------
 // Identifiers
@@ -157,6 +159,14 @@ export class User extends Model.Class<User>("effect-auth/User")({
 // -----------------------------------------------------------------------------
 
 /**
+ * The empty authentication log, as the `methods` column defaults to on insert.
+ *
+ * A module-level constant so the constructor default is one value rather than
+ * one per row.
+ */
+const noMethods: ReadonlyArray<AuthenticationMethod> = []
+
+/**
  * An authenticated session.
  *
  * **Details**
@@ -165,6 +175,13 @@ export class User extends Model.Class<User>("effect-auth/User")({
  * SHA-256 digest of the opaque token, is stored, and it is declared
  * `Model.Sensitive` so it is absent from every JSON variant. A lookup hashes
  * the presented token and matches on the digest.
+ *
+ * `authenticatedAt`, `aal` and `methods` are how the session was established —
+ * OIDC's `auth_time`, the level it reached, and the append-only log both are
+ * derived from. They are deliberately *not* sensitive: a client that is told
+ * "step up" has to be able to see what it currently holds, and the cookie cache
+ * reconstructs a session from `Session.json`, so a field the projection omits
+ * is a field a cached read cannot answer with.
  *
  * @category models
  * @since 0.1.0
@@ -176,6 +193,37 @@ export class Session extends Model.Class<Session>("effect-auth/Session")({
   expiresAt: Schema.DateTimeUtcFromString,
   ipAddress: Schema.NullOr(Schema.String),
   userAgent: Schema.NullOr(Schema.String),
+  // When the person last *interactively* authenticated, which is what
+  // freshness and step-up are measured from. The rolling refresh moves
+  // `expiresAt` and `updatedAt` and never this, so browsing does not keep a
+  // sensitive operation authorized for ever. Defaulted to the insert's clock,
+  // which is what every session minted before step-up existed had.
+  authenticatedAt: Model.Field({
+    select: Schema.DateTimeUtcFromString,
+    insert: Model.DateTimeWithNow,
+    update: Schema.DateTimeUtcFromString,
+    json: Schema.DateTimeUtcFromString
+  }),
+  // Materialised rather than derived on read: the cookie cache carries the
+  // column, and a policy comparing levels gets a value the compiler can
+  // exhaust. `Assurance.deriveAal` is the only thing that computes it.
+  aal: Model.Field({
+    select: Aal,
+    insert: Aal.pipe(Schema.withConstructorDefault(Effect.succeed("aal1" as const))),
+    update: Aal,
+    json: Aal
+  }),
+  // The honest, append-only log of how the session was established. One JSON
+  // array in a `text` column, because the set of method names is open — the
+  // precedent is `accounts.scope`, a text column that stays text on the wire.
+  // The same codec is used by every variant so a cookie-cache snapshot written
+  // through `Session.json` reads back through the stored variant.
+  methods: Model.Field({
+    select: AuthenticationMethodsJson,
+    insert: AuthenticationMethodsJson.pipe(Schema.withConstructorDefault(Effect.succeed(noMethods))),
+    update: AuthenticationMethodsJson,
+    json: AuthenticationMethodsJson
+  }),
   // Whether the person asked to be remembered. Recorded so the HTTP layer can
   // re-issue a cookie with the right `Max-Age` on the rolling refresh — a
   // `rememberMe: false` session's short lifetime must survive being touched —

@@ -21,7 +21,11 @@ const contract = [
       "effect-auth/UserAlreadyExists",
       "effect-auth/PasswordPolicyViolation",
       "effect-auth/PolicyRefused",
-      "effect-auth/RateLimited"
+      "effect-auth/RateLimited",
+      // Unauthenticated, and it writes a row and sends mail: an Origin or
+      // Referer that is present has to be trusted. The plugins' send endpoints
+      // have always said so; this is the library's own door saying it too.
+      "effect-auth/OriginNotAllowed"
     ]
   },
   {
@@ -33,8 +37,19 @@ const contract = [
       "effect-auth/InvalidCredentials",
       "effect-auth/EmailNotVerified",
       "effect-auth/PolicyRefused",
-      "effect-auth/RateLimited"
+      "effect-auth/RateLimited",
+      // Login CSRF: without this a cross-site form post signs a visitor's
+      // browser into an account the attacker controls, and everything the
+      // person then does happens in it.
+      "effect-auth/OriginNotAllowed"
     ]
+  },
+  {
+    identifier: "reauthenticate",
+    method: "POST",
+    path: "/auth/reauthenticate",
+    authenticated: true,
+    errors: ["effect-auth/InvalidCredentials", "effect-auth/RateLimited"]
   },
   { identifier: "signOut", method: "POST", path: "/auth/sign-out", authenticated: true, errors: [] },
   { identifier: "getSession", method: "GET", path: "/auth/session", authenticated: true, errors: [] },
@@ -59,7 +74,7 @@ const contract = [
     method: "POST",
     path: "/auth/request-password-reset",
     authenticated: false,
-    errors: ["effect-auth/RateLimited"]
+    errors: ["effect-auth/RateLimited", "effect-auth/OriginNotAllowed"]
   },
   {
     identifier: "resetPassword",
@@ -73,14 +88,14 @@ const contract = [
     method: "POST",
     path: "/auth/change-password",
     authenticated: true,
-    errors: ["effect-auth/InvalidCredentials", "effect-auth/SessionNotFresh", "effect-auth/PasswordPolicyViolation"]
+    errors: ["effect-auth/InvalidCredentials", "effect-auth/PasswordPolicyViolation"]
   },
   {
     identifier: "sendVerificationEmail",
     method: "POST",
     path: "/auth/send-verification-email",
     authenticated: false,
-    errors: ["effect-auth/RateLimited"]
+    errors: ["effect-auth/RateLimited", "effect-auth/OriginNotAllowed"]
   },
   {
     identifier: "verifyEmail",
@@ -119,7 +134,7 @@ const contract = [
     method: "POST",
     path: "/auth/unlink-account",
     authenticated: true,
-    errors: ["effect-auth/CannotUnlinkLastAccount", "effect/HttpApiError/NotFound", "effect-auth/SessionNotFresh"]
+    errors: ["effect-auth/CannotUnlinkLastAccount", "effect/HttpApiError/NotFound"]
   },
   {
     identifier: "updateUser",
@@ -133,12 +148,7 @@ const contract = [
     method: "POST",
     path: "/auth/change-email",
     authenticated: true,
-    errors: [
-      "effect-auth/EmailUnchanged",
-      "effect-auth/PolicyRefused",
-      "effect-auth/SessionNotFresh",
-      "effect-auth/RateLimited"
-    ]
+    errors: ["effect-auth/EmailUnchanged", "effect-auth/PolicyRefused", "effect-auth/RateLimited"]
   },
   {
     identifier: "confirmEmailChange",
@@ -162,7 +172,7 @@ const contract = [
     errors: [
       "effect-auth/InvalidCredentials",
       "effect-auth/PolicyRefused",
-      "effect-auth/SessionNotFresh",
+      "effect-auth/StepUpRequired",
       "effect-auth/RateLimited"
     ]
   },
@@ -178,12 +188,7 @@ const contract = [
     method: "POST",
     path: "/auth/set-password",
     authenticated: true,
-    errors: [
-      "effect-auth/PasswordAlreadySet",
-      "effect-auth/PasswordPolicyViolation",
-      "effect-auth/SessionNotFresh",
-      "effect-auth/RateLimited"
-    ]
+    errors: ["effect-auth/PasswordAlreadySet", "effect-auth/PasswordPolicyViolation", "effect-auth/RateLimited"]
   },
   {
     identifier: "getAccessToken",
@@ -218,6 +223,7 @@ const contract = [
  * order, which is the order the assertion compares against.
  */
 const authoritative = [
+  "reauthenticate",
   "revokeSession",
   "revokeOtherSessions",
   "changePassword",
@@ -273,7 +279,7 @@ describe("http/AuthApi", () => {
       Object.keys(endpoints),
       contract.map((entry) => entry.identifier)
     )
-    assert.strictEqual(contract.length, 28)
+    assert.strictEqual(contract.length, 29)
   })
 
   it("serves every endpoint at its specified method and path", () => {
@@ -288,7 +294,7 @@ describe("http/AuthApi", () => {
     const expected = contract.filter((entry) => entry.authenticated).map((entry) => entry.identifier)
     const actual = Object.keys(endpoints).filter((identifier) => endpointOf(identifier).middlewares.has(Authenticated))
     assert.deepStrictEqual(actual, expected)
-    assert.strictEqual(expected.length, 17)
+    assert.strictEqual(expected.length, 18)
   })
 
   it("marks exactly the credential- and identity-changing endpoints authoritative", () => {
@@ -338,7 +344,7 @@ describe("http/AuthApi", () => {
     it("merges into an application HttpApi via addHttpApi", () => {
       const api = HttpApi.make("app").addHttpApi(AuthApi)
       assert.deepStrictEqual(Object.keys(api.groups), ["auth"])
-      assert.strictEqual(Object.keys(api.groups.auth.endpoints).length, 28)
+      assert.strictEqual(Object.keys(api.groups.auth.endpoints).length, 29)
     })
 
     it("generates an OpenAPI document without throwing", () => {
@@ -349,6 +355,7 @@ describe("http/AuthApi", () => {
       assert.deepStrictEqual(Object.keys(spec.paths), [
         "/auth/sign-up/email",
         "/auth/sign-in/email",
+        "/auth/reauthenticate",
         "/auth/sign-out",
         "/auth/session",
         "/auth/sessions",

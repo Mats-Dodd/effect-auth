@@ -18,6 +18,7 @@ import { AtomHttpApi } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
 import type * as E from "../../src/domain/Errors.js"
 import type * as Hooks from "../../src/domain/Hooks.js"
+import type { OriginNotAllowed } from "../../src/http/OriginCheck.js"
 import { AuthApi, type AuthApiGroup } from "../../src/http/AuthApi.js"
 
 const S = AtomHttpApi.Service()("x", {
@@ -37,26 +38,26 @@ type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
  */
 const eq = <T extends true>(_: T): T => _
 
-eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "signOut">>>, E.Unauthorized>>(true)
+eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "signOut">>>, E.StepUpRequired | E.Unauthorized>>(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "signUpEmail">>>,
-    E.UserAlreadyExists | E.PasswordPolicyViolation | Hooks.PolicyRefused | E.RateLimited
+    E.UserAlreadyExists | E.PasswordPolicyViolation | Hooks.PolicyRefused | E.RateLimited | OriginNotAllowed
   >
 >(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "unlinkAccount">>>,
-    E.CannotUnlinkLastAccount | E.NotFound | E.SessionNotFresh | E.Unauthorized
+    E.CannotUnlinkLastAccount | E.NotFound | E.StepUpRequired | E.Unauthorized
   >
 >(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "changePassword">>>,
-    E.InvalidCredentials | E.SessionNotFresh | E.PasswordPolicyViolation | E.Unauthorized
+    E.InvalidCredentials | E.StepUpRequired | E.PasswordPolicyViolation | E.Unauthorized
   >
 >(true)
-eq<Exact<Atom.Failure<ReturnType<typeof S.query<"auth", "getSession">>>, E.Unauthorized>>(true)
+eq<Exact<Atom.Failure<ReturnType<typeof S.query<"auth", "getSession">>>, E.StepUpRequired | E.Unauthorized>>(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "signInSocial">>>,
@@ -66,16 +67,26 @@ eq<
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "linkSocial">>>,
-    E.OAuthProviderError | Hooks.PolicyRefused | E.Unauthorized
+    E.OAuthProviderError | Hooks.PolicyRefused | E.StepUpRequired | E.Unauthorized
   >
 >(true)
 eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "verifyEmail">>>, E.InvalidToken>>(true)
-eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "revokeSession">>>, E.NotFound | E.Unauthorized>>(true)
-eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "updateUser">>>, E.UserNotFound | E.Unauthorized>>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "revokeSession">>>,
+    E.NotFound | E.StepUpRequired | E.Unauthorized
+  >
+>(true)
+eq<
+  Exact<
+    Atom.Failure<ReturnType<typeof S.mutation<"auth", "updateUser">>>,
+    E.UserNotFound | E.StepUpRequired | E.Unauthorized
+  >
+>(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "changeEmail">>>,
-    E.EmailUnchanged | Hooks.PolicyRefused | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+    E.EmailUnchanged | Hooks.PolicyRefused | E.StepUpRequired | E.RateLimited | E.Unauthorized
   >
 >(true)
 eq<
@@ -84,25 +95,25 @@ eq<
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "deleteUser">>>,
-    E.InvalidCredentials | Hooks.PolicyRefused | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+    E.InvalidCredentials | Hooks.PolicyRefused | E.StepUpRequired | E.RateLimited | E.Unauthorized
   >
 >(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "setPassword">>>,
-    E.PasswordAlreadySet | E.PasswordPolicyViolation | E.SessionNotFresh | E.RateLimited | E.Unauthorized
+    E.PasswordAlreadySet | E.PasswordPolicyViolation | E.StepUpRequired | E.RateLimited | E.Unauthorized
   >
 >(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "getAccessToken">>>,
-    E.NotFound | E.TokenRefreshFailed | E.Unauthorized
+    E.NotFound | E.TokenRefreshFailed | E.StepUpRequired | E.Unauthorized
   >
 >(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "refreshToken">>>,
-    E.NotFound | E.TokenRefreshFailed | E.Unauthorized
+    E.NotFound | E.TokenRefreshFailed | E.StepUpRequired | E.Unauthorized
   >
 >(true)
 

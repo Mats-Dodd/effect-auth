@@ -16,7 +16,13 @@
  *
  * @since 0.1.0
  */
-export * as MagicLinkTest from "./MagicLinkTest.js"
+export * as AnonymousTest from "./AnonymousTest.js"
+export * as EmailOtpTest from "./EmailOtpTest.js"
+export * as OneTapTest from "./OneTapTest.js"
+export * as PasskeysTest from "./PasskeysTest.js"
+export * as PhoneTest from "./PhoneTest.js"
+export * as TwoFactorTest from "./TwoFactorTest.js"
+export * as UsernameTest from "./UsernameTest.js"
 export * as MockProvider from "./MockProvider.js"
 export * as TestEmails from "./TestEmails.js"
 export * as TestHttpClient from "./TestHttpClient.js"

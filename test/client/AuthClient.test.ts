@@ -1,7 +1,8 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Redacted, Result } from "effect"
+import { DateTime, Effect, Redacted, Result } from "effect"
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
+import { StepUpRequired, Unauthorized } from "../../src/domain/Errors.js"
 import { AccountId } from "../../src/domain/Schema.js"
 import { testName, testPassword } from "../fixtures.js"
 import * as Stub from "./stub.js"
@@ -112,6 +113,11 @@ describe("AuthClient", () => {
       const signedIn = yield* AuthClient.run(client.signIn, credentials).pipe(
         Effect.provideService(AtomRegistry.AtomRegistry, reg)
       )
+      // Sign-in answers a union now: a session, or the 202 a deployment with a
+      // factor plugin owes a second factor with. `"_tag" in result` is the
+      // narrowing, because only the pending half carries one.
+      assert.isFalse("_tag" in signedIn)
+      if ("_tag" in signedIn) return
       assert.strictEqual(signedIn.user.email, "ada@example.com")
 
       // Nothing refreshed the session atom by hand: the "auth.session"
@@ -271,6 +277,76 @@ describe("AuthClient", () => {
       assert.strictEqual(stub.lastAuthorization(), undefined)
     })
   )
+
+  describe("withStepUp", () => {
+    /** The refusal an assurance-guarded endpoint answers with. */
+    const refusal = StepUpRequired.make({
+      required: { aal: "aal2" },
+      current: { aal: "aal1", authenticatedAt: DateTime.makeUnsafe(0), available: ["totp"] }
+    })
+
+    it.effect("runs the callback and retries once, then succeeds", () =>
+      Effect.gen(function* () {
+        let attempts = 0
+        let elevated = 0
+        const guarded = Effect.suspend(() => {
+          attempts += 1
+          return elevated === 0 ? Effect.fail(refusal) : Effect.succeed("changed")
+        })
+
+        const answer = yield* AuthClient.withStepUp(guarded, () =>
+          Effect.sync(() => {
+            elevated += 1
+          })
+        )
+
+        assert.strictEqual(answer, "changed")
+        assert.strictEqual(attempts, 2)
+        assert.strictEqual(elevated, 1)
+      })
+    )
+
+    it.effect("answers a second refusal rather than looping", () =>
+      Effect.gen(function* () {
+        let attempts = 0
+        const guarded = Effect.suspend(() => {
+          attempts += 1
+          return Effect.fail(refusal)
+        })
+
+        // The retry re-runs the effect, so a step-up that did not actually
+        // raise the level puts the refusal straight back in the error channel:
+        // the caller sees it, and the browser is not stuck in a prompt loop.
+        const failed = yield* Effect.flip(AuthClient.withStepUp(guarded, () => Effect.void))
+        assert.strictEqual(failed._tag, "StepUpRequired")
+        assert.strictEqual(attempts, 2)
+      })
+    )
+
+    it.effect("passes every other failure through untouched, callback unrun", () =>
+      Effect.gen(function* () {
+        let elevated = 0
+        const failed = yield* Effect.flip(
+          AuthClient.withStepUp(Effect.fail(Unauthorized.make()), () =>
+            Effect.sync(() => {
+              elevated += 1
+            })
+          )
+        )
+        assert.strictEqual(failed._tag, "Unauthorized")
+        assert.strictEqual(elevated, 0)
+      })
+    )
+
+    it.effect("carries the callback's own failure", () =>
+      Effect.gen(function* () {
+        const failed = yield* Effect.flip(
+          AuthClient.withStepUp(Effect.fail(refusal), () => Effect.fail(Unauthorized.make()))
+        )
+        assert.strictEqual(failed._tag, "Unauthorized")
+      })
+    )
+  })
 
   it.effect("mutations are shared per client, so two reads see one in-flight request", () =>
     Effect.gen(function* () {

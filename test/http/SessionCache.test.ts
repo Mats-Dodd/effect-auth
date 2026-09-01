@@ -4,7 +4,14 @@ import { AuthConfig } from "../../src/config/AuthConfig.js"
 import * as HmacCrypto from "../../src/crypto/Hmac.js"
 import { baseUserModel, Session, SessionId, UserId } from "../../src/domain/Schema.js"
 import { refreshDueAt } from "../../src/domain/Sessions.js"
-import { cacheExpiry, make as makeSessionCache, SessionCache, sessionSnapshot } from "../../src/http/SessionCache.js"
+import {
+  cacheCookieSeparator,
+  cacheExpiry,
+  macContext,
+  make as makeSessionCache,
+  SessionCache,
+  sessionSnapshot
+} from "../../src/http/SessionCache.js"
 import { ambientCrypto, encodeUtf8 } from "../../src/internal/crypto.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, signUpUser, uniqueEmail } from "../fixtures.js"
@@ -29,6 +36,38 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
       assert.strictEqual(decoded.session.tokenHash, session.tokenHash)
       assert.strictEqual(decoded.user.id, user.id)
       assert.strictEqual(decoded.user.email, user.email)
+    })
+  )
+
+  it.effect("writes the envelope this module built by hand before Hmac grew one", () =>
+    Effect.gen(function* () {
+      const cache = yield* SessionCache
+      const hmac = yield* HmacCrypto.Hmac
+      const { session, user } = yield* signUpUser(uniqueEmail("cache-envelope"))
+      const now = yield* DateTime.now
+
+      const value = yield* cache.encode({
+        version: "",
+        tokenHash: session.tokenHash,
+        expiresAt: DateTime.addDuration(now, Duration.minutes(5)),
+        session,
+        user
+      })
+
+      // The construction this module wrote inline until `Hmac.signedValue`
+      // took it over: `base64url(payload) "." base64url(mac over context ‖
+      // payload)`. Recomputed here from the payload the envelope carries, so
+      // this fails the moment the format moves — which would silently make
+      // every outstanding snapshot in every browser a miss.
+      const at = value.indexOf(cacheCookieSeparator)
+      const json = Result.getOrThrow(Encoding.decodeBase64UrlString(value.slice(0, at)))
+      const mac = yield* hmac.sign(encodeUtf8(`${macContext}${json}`))
+      assert.strictEqual(
+        value,
+        `${Encoding.encodeBase64Url(json)}${cacheCookieSeparator}${Encoding.encodeBase64Url(mac)}`
+      )
+      // And the separator is the envelope's own, not a second spelling of it.
+      assert.strictEqual(cacheCookieSeparator, HmacCrypto.signedValueSeparator)
     })
   )
 
@@ -110,6 +149,9 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
         ipAddress: null,
         userAgent: null,
         rememberMe: true,
+        authenticatedAt: now,
+        aal: "aal1",
+        methods: [],
         createdAt: now,
         updatedAt: now
       })

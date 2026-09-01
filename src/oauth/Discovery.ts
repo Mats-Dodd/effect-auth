@@ -227,6 +227,12 @@ export interface Options {
   readonly userInfo?: OAuthProviderConfig["userInfo"]
   /** Projects the stable subject out of the identity. Defaults to the `sub`. */
   readonly accountId?: OAuthProviderConfig["accountId"]
+  /**
+   * Whether this provider may report a verified address at all.
+   *
+   * @default "derived"
+   */
+  readonly emailVerified?: OAuthProviderConfig["emailVerified"]
 }
 
 /**
@@ -348,6 +354,10 @@ export const make: (options: Options) => Effect.Effect<OAuthProviderConfig, Disc
 
     return {
       id: options.id,
+      // An OIDC provider states `email_verified` in a signed token, so the
+      // default is that the claim decides; a deployment that does not believe
+      // this issuer's claim says so.
+      emailVerified: options.emailVerified ?? "derived",
       clientId: options.clientId,
       ...(options.clientSecret === undefined ? {} : { clientSecret: options.clientSecret }),
       authorizationUrl,

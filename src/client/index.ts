@@ -30,16 +30,40 @@
 export * as AuthClient from "./AuthClient.js"
 
 /**
- * The magic link plugin's client, for a deployment that serves
- * `MagicLink.MagicLinkApiGroup`.
+ * The wrappers this package's own clients build their atoms with, and the
+ * `fetch` transport under them.
  *
- * It is a client of its own rather than members on `AuthClient`, exactly as the
- * plugin is a module of its own on the server: an application that does not serve
- * magic links never imports it, and never ships it to a browser.
+ * A plugin's client is a generated client of its own over the plugin's own
+ * group, and these are what make it read like `AuthClient` at the call site:
+ * `AuthAtoms.withPayload<P>()(client.mutation(…), keys)` turns an atom that
+ * takes a whole client request into one an application drives with the payload
+ * alone. `AuthAtoms.layerFetch` is the transport both clients share, so an
+ * application holding two of them cannot end up with two different opinions
+ * about cookies.
  *
  * @since 0.1.0
  */
-export * as MagicLinkClient from "./MagicLinkClient.js"
+export * as AuthAtoms from "./Atoms.js"
+
+/**
+ * A client per plugin, for a deployment that serves that plugin's group.
+ *
+ * Each is a client of its own rather than members on `AuthClient`, exactly as
+ * the plugin is a module of its own on the server: an application that does not
+ * serve passkeys never imports `PasskeysClient`, and never ships it to a
+ * browser. They share `AuthClient`'s reactivity keys, so an application holding
+ * two of them sees its session atom refetch by itself after a sign-in through
+ * either.
+ *
+ * @since 0.2.0
+ */
+export * as AnonymousClient from "./AnonymousClient.js"
+export * as EmailOtpClient from "./EmailOtpClient.js"
+export * as OneTapClient from "./OneTapClient.js"
+export * as PasskeysClient from "./PasskeysClient.js"
+export * as PhoneClient from "./PhoneClient.js"
+export * as TwoFactorClient from "./TwoFactorClient.js"
+export * as UsernameClient from "./UsernameClient.js"
 
 /**
  * The reactivity primitives the client's atoms are built from, re-exported so

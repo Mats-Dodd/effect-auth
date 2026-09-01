@@ -230,6 +230,11 @@ Implementation layer verifies via `Sessions.verify`, re-sets the cookie on rolli
 `requireFresh` — an `Effect` guard (`Effect<void, SessionNotFresh, CurrentSession>`) handlers call
 for sensitive ops (change-password, unlink); simpler than a second middleware.
 
+> **Superseded by Amendment 19.5.** `requireFresh` and `SessionNotFresh` are deleted. Freshness is
+> one member of one `AssurancePolicy` — `{ maxAge }`, measured from the session's `authenticatedAt`
+> — stated on an endpoint as the `RequireAssurance` annotation and refused with `StepUpRequired`
+> (403). Every `SessionNotFresh` in the sections below reads as `StepUpRequired`.
+
 Cookie: name `effect_auth.session` (`__Secure-` prefix + `secure` when baseUrl is https),
 httpOnly, sameSite=lax, path=/, maxAge = session expiry. Set via `HttpApiBuilder.securitySetCookie`
 or response cookie APIs. Register the cookie/header names with `Headers.CurrentRedactedNames`.
@@ -535,6 +540,11 @@ src/
   testing/      MagicLinkTest.ts
 ```
 
+> **Superseded by Amendment 19.** `src/magic-link/`, `src/client/MagicLinkClient.ts` and
+> `src/testing/MagicLinkTest.ts` were deleted in the Phase 1 wave. `src/email-otp/` is the reference
+> plugin §9 and §10 describe, and it carries magic link's link flow with it. The map as it stands
+> after that wave is Amendment 19's, below.
+
 ### 8. The typed-view kernel: a deployment's own user fields
 
 A deployment declares extra user columns once, as a field map, and every schema, store, endpoint,
@@ -733,6 +743,12 @@ The purposes in this library: `email-verify`, `password-reset`, `magic-link`,
 minted by `oauth/State.ts` directly, because state carries a code verifier and a link target rather
 than a subject.
 
+> **Amendment 19.** `magic-link` is gone with its module. The purposes the Phase 1 plugins add:
+> `email-otp:{sign-in, verify-email, reset-password, step-up, change-email}`, `pending-auth`,
+> `passkey-challenge`, and `phone:{verify, signIn, stepUp}`. Every purpose a `Challenges` code is
+> issued under **must** declare a payload schema — see 19.7 for why a payload-less one leaves the
+> challenge row redeemable as a link token.
+
 #### 9.4 `Services` widened
 
 Amendment 6 narrowed `Auth.Services` to what a consumer composes against. A plugin composes against
@@ -790,6 +806,13 @@ read one `Sessions`, one `UserStore` and one rate limiter. `AuthTest.countingSes
 two `TestHttpClient` cookie helpers exist for §12.
 
 ### 10. Magic link — the first plugin
+
+> **Superseded by Amendment 19.9.** This module was deleted in the Phase 1 wave and `src/email-otp/`
+> took its place as the reference plugin — the single-use link included, at
+> `GET /auth/email-otp/link?token=`. The section is kept because everything it establishes still
+> holds: the enumeration rules of §10.1, the unproven-account rule of §10.2 (which now runs on three
+> purposes and also sweeps contributed authenticators), and the five recorded deviations of §10.3.
+> Read the endpoint table below as history; 19.9 says what replaced it and why.
 
 `src/magic-link/` is the worked example of §9 and a feature in its own right: passwordless sign-in
 by a single-use link. It owns **no table** — a link is a `Verifications` token — so a deployment
@@ -1626,3 +1649,564 @@ wall-clock defect. The genuinely clock-dependent path in this area,
 `MiddlewareLive.remainingLifetime`, was already on the injected clock (`DateTime.now`) and was never
 touched. Both sites are back to `new Date(0)` with a one-line
 `// oxlint-disable-next-line effecttsgo/global-date -- epoch constant, not a clock read`.
+
+### 19. Phase 1 — human authentication
+
+The wave `phase1.md` specifies: a session that records *how* it was authenticated, one choke point
+every sign-in goes through, a challenge primitive, and seven plugins built on the seams those three
+create. It is the largest change since §8. This amendment does not restate `phase1.md` — read Part D
+there for the locked decisions — it records what was built, what the build learned that the plan did
+not know, and every place the result is not what a reader of §§8–18 would predict.
+
+Magic link is gone. §10 describes a module that no longer exists; **email-otp supersedes it**, and
+`src/email-otp/` is the reference plugin §9 points at. Everything §10 established survives the move
+and is restated in 19.9 where it changed.
+
+#### 19.1 The session records how it was authenticated
+
+`sessions` gains three columns (`0006_session_assurance`): `authenticated_at` (no `DEFAULT` — only
+the writer knows when a person actually authenticated, and any constant would be a lie; added
+nullable, backfilled from `created_at`, then `SET NOT NULL` on PostgreSQL), `aal` (`DEFAULT 'aal1'`)
+and `methods` (`DEFAULT '[]'`). Consumers merging `Migrations.migrations` number their own above
+`0006`, and any hand-written `INSERT INTO sessions` must now state `authenticated_at`.
+
+`Assurance.deriveAal` is the whole derivation, and it is deliberately small: entries with
+`factor: "none"` are struck out first; nothing left is `aal0`; one entry that reports the WebAuthn
+UV bit is `aal2` on its own; two or more *distinct* `factor` values are `aal2`; anything else is
+`aal1`. Distinctness is what stops a TOTP code and a mailed code adding up to `aal2` — they are both
+possession, and two of the same kind is one kind. **`aal3` is never derived**, and `amrOf` never
+emits `hwk`: both would be claims about hardware this library does not verify attestation for.
+
+Three consequences that surprised the build and are worth stating plainly:
+
+1. **Possession + possession is `aal1`.** A sign-in whose first factor is OAuth, email-otp, SMS,
+   One Tap or a passkey the authenticator did not verify a person for, completed with a TOTP or a
+   recovery code, lands at `aal1` — correctly. Two things you *have* are not two factors. Anything
+   that reads a level to decide whether a second factor was answered is therefore wrong, and 19.6
+   is where that bit the two-factor plugin twice.
+2. **`Session.methods` is a JSON string on the wire**, not a nested array. `SessionCache` encodes a
+   snapshot through `Session.json` and decodes it back through the *stored* variant, so a `json`
+   variant that encoded to a real array would make every cache read fail to decode and silently
+   disable the cookie cache. The `accounts.scope` column is the precedent. All three columns are
+   json-visible on purpose (§12.1); `tokenHash` stays `Model.Sensitive`.
+3. **The insert defaults and the mint defaults disagree, deliberately.** The model's insert defaults
+   are `aal1` / `[]` / the insert clock — what a row written before this wave should read as. The
+   mint defaults to `[]` / `deriveAal([]) === "aal0"` / now: a mint that recorded no evidence is
+   `aal0`, which fails every policy that asks for a level. The model's default is history; the
+   service's default is honesty.
+
+`Sessions.create` is renamed **`createUnchecked`**, and the name is the documentation. It writes a
+row and consults nothing — no hook, no pipeline, no event — so a plugin that calls it is a sign-in
+door with no policy on it, which is exactly the bypass 19.2 exists to make unrepresentable.
+`SignIn.complete` is its only sanctioned caller, and a test asserts that `src/` calls it in exactly
+one place.
+
+`Sessions.elevate(session, evidence)` appends to the log, re-derives the level, re-stamps
+`authenticated_at` and rotates `token_hash` **together**, under a lock on the row, in one
+transaction with the read that produced it. The rotation is part of it so a token captured at `aal1`
+cannot inherit `aal2`; the session id does not change, so open tabs and the session list survive.
+
+**The read is the point, and the store's signature is shaped to force it.** `SessionStore.elevate`
+takes an `append` callback rather than a finished array, and hands it the log *as stored*. A caller
+holds a `Session` *value*, and that value can be stale — it may have come from a cookie-cache
+snapshot on an endpoint that did not ask for the row, or from a request that raced another
+elevation. Writing `caller.methods + evidence` would silently drop whatever the row had learned in
+between (the password entry an earlier `reauthenticate` recorded, the factor a parallel request just
+proved) and the level, being derived from the log, would move the wrong way. `append` runs inside
+the transaction under the row lock, so it must be pure and must not do IO; it is where `deriveAal`
+is called, which keeps the one function that computes a level in the domain rather than in a store
+implementation. `None` means the session was concurrently revoked.
+
+**One precision on that rotation.** "The old token stops resolving the instant the new one starts"
+is true *of the row*. A cookie-cache snapshot bound to the old token keeps serving endpoints that
+carry neither `RequireAssurance` nor `AuthoritativeSession` until the snapshot expires — the same
+class of lag §12.4 already records for revocation, and no assurance is gained by it, because every
+endpoint that states a policy reads the row. This is why "every step-up and factor-management
+endpoint carries `AuthoritativeSession`" is a rule and not a preference.
+
+`Sessions.touch` — the rolling refresh — moves `expires_at` and provably never
+`authenticated_at`, `aal` or `methods`.
+
+#### 19.2 One choke point: `SignIn.complete` and the `SignInPipeline`
+
+Every path that mints a session goes through `SignIn.complete`: password sign-up and sign-in, the
+OAuth callback, email-otp, username, anonymous, phone, One Tap and the passkey ceremony. It runs
+`beforeSessionCreate`, then consults the `SignInPipeline`, then — on `Proceed` — runs
+`beforeSessionMint`, then mints.
+
+**There are two hook points, and the pipeline is what put them there.** `AuthHooks` gained
+`beforeSessionMint` in this wave, and the split is the whole reason:
+
+- `beforeSessionCreate` asks *may this person sign in at all*. It runs first, so a deployment that
+  has withdrawn access refuses before a factor plugin issues a pending row, sends an SMS or writes
+  anything on that person's behalf.
+- `beforeSessionMint` asks *what has to happen as this session is minted*. A second factor may still
+  be owed when the first runs, and a challenged sign-in mints nothing — so a merge, a migration of
+  somebody's data, or a `DELETE` of the account being merged away must run here or they run for a
+  sign-in that never completed.
+
+The anonymous plugin's merge hangs on the second, and that is not a preference. Deleting the visitor
+at the earlier point deletes them even when the person then abandons the second-factor prompt,
+mistypes their codes, or is refused — leaving a browser holding a dead cookie for an account that no
+longer exists and signed in as nobody. A `PolicyRefused` from either aborts the mint; note that the
+credential the caller presented is already spent by then, because it was checked before either hook
+ran, so refuse there only for something the caller cannot retry past. Neither hook runs inside the
+transaction that writes the session row — `SignIn` holds no transaction runner — so a hook that must
+be atomic with something opens its own, as the anonymous plugin does.
+
+`SignInPipeline` is a `Context.Reference` monoid on the `AuthHooks` pattern: `combine` gives the
+first `Challenge` the decision and never enters the decider behind it, so two factor plugins cannot
+both write a pending row for one ceremony; `PolicyRefused` short-circuits identically; `{}` is a
+true identity, which keeps "no decider" distinguishable from "a decider that always proceeds".
+
+Because the pipeline is consulted inside `complete`, **there is no route list to forget an entry
+from**. That is the entire point: the prior art this is modelled on gated three named sign-in paths
+and let a TOTP user in through the fourth with no second factor at all.
+
+#### 19.3 A pending authentication is not a session
+
+**A `Challenge` mints nothing** — no session row, no token, no `SignedIn` event. The pending state
+is whatever the decider issued: a single-use `Verifications` row carrying the stamped first-factor
+evidence, the interrupted sign-in's `rememberMe` and its original method, addressed by a token that
+rides only `__Host-effect_auth.pending`.
+
+This is not a stylistic choice. A `sessions` row is a working credential everywhere in this library:
+`Sessions.verify` accepts it, the middleware admits it, the cookie cache will snapshot it. One that
+had cleared only the first factor would be a total bypass of every endpoint that forgot to check its
+level — and "every endpoint remembers to check" is exactly the property this library declines to
+depend on. Half-authenticated state therefore lives somewhere that cannot authenticate anything.
+
+The pending token is never in a response body, and a response that carries the pending cookie
+carries **no** session cookie. Both halves are asserted by reading the response's own `Set-Cookie`
+rather than the jar.
+
+#### 19.4 The two-status success union — and what the spike found
+
+`POST /auth/sign-in/email` answers `SessionWithUser` on **200** or `MfaRequired` on **202**. A
+half-hour spike established that rc.112 supports this properly, and it is used rather than
+worked around:
+
+- `HttpApiEndpoint.make`'s `Success` accepts an array; `validateSuccessResponse` refuses two members
+  only when they share a status *and* a content type.
+- Server side, `HttpApiBuilder.makeSuccessSchema` builds a union of response encoders, so the member
+  is selected by which schema encodes — the two are disjoint (`MfaRequired` has `_tag`,
+  `SessionWithUser` has `session`/`user`).
+- Client side, `HttpApiClient` builds its decode map from status, and the endpoint's success type is
+  a real TypeScript union that narrows on `"_tag" in result`.
+
+A deployment with no factor plugin never produces the 202, so its wire is byte-identical to 0.1.0's.
+`POST /auth/phone/sign-in/verify`, `POST /auth/username/sign-in`, `POST /auth/email-otp/verify` and
+`POST /auth/passkeys/authenticate/verify` all answer the same union.
+
+**A security middleware may not raise a non-`Unauthorized` error, and this is a standing
+constraint.** `HttpApiBuilder`'s security loop runs the middleware once per declared scheme and, on
+a failure, records it and tries the *next* transport, returning the last one's failure. `bearer` is
+declared last and answers `Unauthorized` for the empty credential a cookie request carries, so a
+`StepUpRequired` raised on the cookie transport was silently replaced by a 401 — observed, not
+theorised. `MiddlewareLive.stepUpResponse` therefore encodes the refusal and returns a 403
+`HttpServerResponse` as the middleware's *success*, which stops the loop. Every future guard living
+inside `Authenticated` must answer with a response or move into the handler.
+
+#### 19.5 `StepUpRequired`, `RequireAssurance`, and what "fresh" now means
+
+`SessionNotFresh` is deleted. `StepUpRequired` (403, `{ required: AssurancePolicyJson, current:
+{ aal, authenticatedAt, available } }`) replaces it and is declared on the `Authenticated`
+middleware, so it appears on **every** authenticated endpoint's union and OpenAPI 403 — an
+annotation is erased from the endpoint's type and the error has nowhere else to live. `InvalidCode`
+(401) is added: one indistinguishable answer for a code that is wrong, expired, replayed,
+cross-purpose or out of budget.
+
+`requireFresh` is gone, and with it the duplicated freshness rule that lived in both `Sessions` and
+`Middleware`. Freshness is now one member of one policy: `{ maxAge }` measured as
+`now − authenticatedAt`, which is what "fresh" always meant and never quite was.
+
+`AssurancePolicy` members are **conjunctive**, evaluated once in `Sessions.meetsAssurance`:
+`allowRecovery: false` strikes `recoveryCode` entries out of the log *first*, so one filter serves
+both the level and the method list; `aal` compares against `deriveAal` of what is left, on the
+frozen ordering `aal0 < aal1 < aal2`; `maxAge` measures from `authenticatedAt`; `methods` is
+satisfied by any one live entry whose name is listed. A policy that states nothing admits every
+session. `current.aal` reports the session's *stored* level — what it has — while the comparison
+uses the level *under this policy*.
+
+`RequireAssurance` is an endpoint annotation (`Context.Reference<AssurancePolicy | undefined>`),
+read in `MiddlewareLive` as `AuthoritativeSession` is. An absent `maxAge` resolves to
+`assurance.stepUpWindow` (12 h) for a policy naming `aal2` and to `session.freshAge` (1 day)
+otherwise; a stated one is taken literally, `Duration.infinity` included. **An annotated endpoint is
+never served from the cookie cache** — a snapshot records the level a session held when it was
+written, so an elevation since would be invisible and a revocation could be admitted.
+
+`current.available` is the distinct `type`s of the `Authenticators` summaries that can sign in or
+serve as a second factor. A deployment with no factor plugin answers `[]`, which is honest about the
+seam and not about the account: `POST /auth/reauthenticate` is still open to anybody with a
+password.
+
+#### 19.6 A level is not evidence that a factor was answered
+
+Two defects in the two-factor plugin, found in review, both from asking `deriveAal` a question it
+does not answer. They are recorded together because they are one mistake.
+
+1. **The decider's idempotence test.** It short-circuited on `deriveAal(evidence) === "aal2"`, which
+   is true for a password sign-in completed with TOTP (knowledge + possession) and **false** for
+   every possession-only first factor completed the same way (19.1). So a TOTP-enrolled user signing
+   in through OAuth, email-otp, SMS, One Tap or a UV=0 passkey was challenged, answered correctly,
+   and was challenged *again* on completion — which `verify` has no shape for, so it failed
+   `PolicyRefused("mfa_required")` with the pending row spent and the code burned. Every
+   non-password sign-in path was a lockout. The test is now "is one of *this plugin's own* factors
+   already on the evidence", which is the question that was always meant.
+2. **The factor-management endpoints.** `totp/disable` and `recovery/regenerate` required
+   `{ aal: "aal2" }`, which a possession-only account can never reach: no sequence of calls this
+   library serves would satisfy it, so such an account could enrol an authenticator app and then
+   never disable it. They now carry `TwoFactor.provedSecondFactor` — `{ methods: ["totp",
+   "recoveryCode"] }` — which says what the endpoint means (*prove you still hold the thing you are
+   about to remove*), says it for every account shape, and is no weaker against the threat the guard
+   exists for. It states no `maxAge` and so resolves against `session.freshAge`;
+   `allowRecovery` is left unstated on purpose, because somebody whose authenticator is gone is
+   exactly who needs to disable the enrolment.
+
+**The general rule this leaves:** a level answers *how strong is this session*. It never answers
+*was this particular factor answered*. Name the method.
+
+#### 19.7 Challenges: short codes without a table
+
+`Challenges` layers short codes over `Verifications` and adds no table. The row's secret is a
+high-entropy **handle** the guesser must hold; the payload carries an `Hmac`-peppered `codeHash`
+(domain-separated by `codeHashContext = "effect-auth/challenge-code/v1\n"`, which is part of the
+stored format) and `attemptsLeft`. `verifyCode` claims the row atomically, compares in the storage
+domain, and on a mismatch re-issues the *same* handle with one attempt fewer and what is left of the
+original lifetime — so a typo costs an attempt and never the ceremony, and guessing cannot extend
+the window. At zero nothing is written back, so an exhausted handle names nothing.
+
+The pepper is not decoration: `Hmac` is a published service, so without a domain separator a plugin
+signing caller-chosen bytes would be an oracle producing valid code hashes for all 10⁶ codes. Same
+discipline as `SessionCache.macContext`.
+
+Three properties fall out and are pinned by test: a fault between the claim and the comparison
+restores the budget untouched; a budget that will not decode reads as exhausted; and the losers of
+the atomic claim never charge an attempt, so N simultaneous wrong guesses spend at most N.
+
+**A purpose shared between `Challenges` and `Verifications` must declare a payload schema.** A
+payload-less purpose leaves a challenge row redeemable as an ordinary link token. With one, a handle
+presented to `Verifications.claim` consumes the row and then fails payload decode — it burns itself
+and reveals nothing, and a link token presented to `verifyCode` fails the same way.
+
+**A budget key is never a value the caller chose.** The phone plugin's cross-challenge counter was
+keyed on the number decoded out of the caller's *own* handle cookie, so ten forged handles naming a
+stranger's number locked that number out of answering its own code — a denial of service anyone
+could run from anywhere and renew every window. The counter now runs on the authenticated paths,
+where the key is the caller's own id, and the unauthenticated sign-in path relies on the bounds it
+actually has: five attempts per challenge and three codes an hour to a number.
+
+#### 19.8 The `Authenticators` seam, and the hole it closes
+
+`Authenticators` is a `Context.Reference` monoid modelled on `AuthHooks`: `list` concatenates
+left-to-right, `revokeAll` sums, both sequentially because they run inside the caller's transaction
+under its existing row lock — so an implementation may not do IO of its own. Absent members answer
+`[]` and `0`, stated once in the module rather than at each call site, because a call site that got
+the fallback wrong would fail *open* on exactly the two decisions below.
+
+It closes a hole that predates this wave. `Accounts.unlink` refused to remove the last `accounts`
+row; it could not see that a person's only remaining way in was a passkey, and it could not see that
+a `local:credential` row carrying no hash is not a way in at all. Both are now counted, inside the
+existing lock. And the email-otp takeover defence — §10's unproven-account rule, now running on
+sign-in, address-verification *and* password-reset — sweeps contributed authenticators inside the
+transaction, under the user-row lock, rather than after the commit: a sweep after the commit leaves
+a window in which the pre-registrant's passkey still works.
+
+`AuthenticatorSummary.restricted` is the SMS flag: a restricted factor may never be a person's only
+second factor and never contributes a phishing-resistant level.
+
+**The sum has to be complete on both sides.** `Passkeys.remove` had no symmetric check, so a
+passwordless account whose only credential was one passkey could delete it and be locked out —
+while `Accounts.unlink` was busy counting that same passkey as the reason an unlink was safe. It now
+refuses `CannotRemoveLastAuthenticator` (409). The count is currently written twice, here and in
+`Accounts.unlink`; it should be one exported helper, and the two spellings must not drift until it
+is.
+
+#### 19.9 Email-otp supersedes magic link
+
+`src/magic-link/`, `MagicLinkClient` and `MagicLinkTest` are deleted. §10 is superseded: its
+enumeration rules, its unproven-account rule and its five recorded deviations all carry forward,
+with these changes.
+
+**The hybrid.** A sign-in issuance mints the challenge *and* a plain `Verifications` link token at
+the **same identifier**, so retiring by identifier retires both: consuming the code kills the link,
+and following the link kills the code. Ordering is load-bearing — a link minted before `issueCode`
+would be swept away by its own issuance. The link is the magic link reborn, at
+`GET /auth/email-otp/link?token=`.
+
+**There is no `signUp` purpose.** A caller-declared sign-in/sign-up split is only useful if the two
+behave differently, and behaving differently for a known and an unknown address is precisely the
+enumeration oracle §10.1 closes. Signing up is what a sign-in code *does* when the address turns out
+to have no account and `disableSignUp` is off. `disableSignUp` surfaces at `verify` as
+`SignUpDisabled`, never as `UserNotFound`.
+
+**There is no `exchange`.** Magic link needed a non-redirect twin because a link was the only
+credential. The code *is* that twin, and it is also the cross-device story: read it on the handset,
+type it into the laptop.
+
+**Enumeration safety is structural, not prose.** The address lookup, both row writes and the handle
+cookie happen on *every* path; where a code could never do anything the rows are minted and then
+discarded, so the write cost matches and a handle is still returned. Delivery is forked into the
+layer's own scope, off the request's clock, because a mail awaited only on the known-address branch
+is a timing oracle whatever else the endpoint equalises.
+
+**A challenged sign-in is answered, not refused.** Magic link failed closed with
+`PolicyRefused("mfa_required")` because a redirect has nowhere to prompt. Email-otp's JSON `verify`
+answers 202 `MfaRequired`; its link redirects to `?mfa=required`. Both set the pending cookie and no
+session cookie.
+
+#### 19.10 A plugin owns its tables, and its own migration set
+
+No plugin adds a column to a core table. Each ships `Migrations.make` numbered from `0001` in a
+bookkeeping table of its own — `effect_auth_username_migrations`,
+`effect_auth_anonymous_migrations`, `effect_auth_passkey_migrations`,
+`effect_auth_two_factor_migrations`, `effect_auth_phone_migrations` — with varchar-bounded ids and
+hashes so the `db-expansion.md` MySQL port stays mechanical, foreign keys `ON DELETE CASCADE`, and
+both dialects through `sql.onDialectOrElse`. None is registered globally: the consumer composes it
+and sequences it after this library's own, because every one of them references `users`.
+
+Email-otp and One Tap own no table at all.
+
+The SQLite branch of every migration added in this wave is unexercised — the suite is PGlite-only,
+the same gap `0005_session_remember_me` already had.
+
+**Anonymous is the exception on marking, and says why.** A visitor is a real `users` row at
+`anon-<uuidv7>@anonymous.invalid` (RFC 2606 reserves `.invalid`), marked in a table of the plugin's
+own and **never** by an `is_anonymous` core column: adoption is a `DELETE`, which no `UPDATE` on a
+shared row can be rolled back around. Exclusion is `aal0` and one guard —
+`requireAssurance({ aal: "aal1" })` — so no endpoint needs an `isAnonymous` check and none should
+grow one.
+
+#### 19.11 Passkeys, and the one optional dependency
+
+`effect-auth/passkeys` is the only subpath a plugin gets, and it exists so that nothing reachable
+from `effect-auth`, `effect-auth/client` or `effect-auth/testing` names `@simplewebauthn/server`.
+That package is an **optional peer dependency** reached only through `WebAuthn.layerSimple`'s
+dynamic `import`; a deployment that composed the plugin without installing it fails to *boot*
+(`WebAuthnUnavailable`) rather than answering 500 at the first ceremony. Every other plugin in this
+wave reaches consumers from the root barrel.
+
+The `WebAuthn` seam is delegation with the policy kept back. What the dependency verifies is
+signatures. What `Passkeys` owns is everything the verifier cannot know: the mandatory ceremony tag
+(`registration` | `authentication`, which closes a real bug in the prior art), configured
+`rpId`/`origin` **never** read from a request header, the bound-user check, the `userHandle` check
+on discoverable sign-in, a credential-id unique index across the whole table, and the sign-count
+policy.
+
+Two sign-count decisions are worth the space. `layerSimple` passes `counter: 0` to the dependency
+so that its own hard-fail policy is not applied — the policy is this library's: skip when both
+counters are zero (a synced passkey never counts), otherwise publish
+`PasskeyCounterRegression` and refuse only under `rejectCounterRegression`. And when a regression is
+*tolerated*, the stored counter keeps the **high-water mark**. Writing the lower presented value
+back erased the clone signal after a single event: with the row rewritten downwards the real
+device's next ceremony and the clone's next one both look clean, so a deployment watching for
+exactly that alternation would see one blip and then silence.
+
+Evidence is read off the authenticator's real UV bit and never off the requested
+`userVerification`, so a UV=1 ceremony reaches `aal2` in one step with no second prompt and a UV=0
+tap is `aal1`. The per-user handle is 32 random bytes, never the user id: WebAuthn's `user.id` is
+stored by the authenticator, synced, and shown to the person, and a database key is not opaque in
+the privacy sense.
+
+#### 19.12 Trusted devices and recovery codes, and where they sit
+
+A recovery code is `possession`, recorded under its own name rather than dressed up as a TOTP code,
+so `allowRecovery: false` can refuse it on the endpoints where a printed code is not good enough —
+and the recovery path answers a real session, so that policy decides rather than a silent refusal
+locking somebody out of the page where they would repair their second factor.
+
+A **trusted-device skip is not a factor**: `factor: "none"`, so `deriveAal` gives it no weight. NIST
+does not recognise device trust as a factor and RFC 8176 has no value for it.
+
+Two limitations are recorded rather than hidden:
+
+- **The skip is not on the session's log.** `SignInDecision`'s `Proceed` carries no evidence, and
+  only `SignIn.complete` mints, so a decider has nowhere to put it. A session established through a
+  remembered browser is therefore indistinguishable from one where no second factor was ever
+  required. Consequently `Options.trustedDeviceSatisfies: "aal2"` **cannot be honoured**; it warns
+  when the layer is built and behaves as `"none"`, which fails closed. One optional `evidence`
+  member on `Proceed`, appended by `SignIn.complete` before `sessions.create`, closes both.
+- **The revoke-on matrix is now wired, and was not.** `TwoFactor.layer` runs the subscription
+  itself, forked into the plugin's own scope: password change (both `viaReset` values), address
+  change, and sign-out-everywhere forget every remembered browser, as do enrolling, disabling,
+  spending a recovery code and regenerating the set. Left as a five-line recipe in a README, the
+  shipped default was that a browser phished into being trusted survived a password reset for thirty
+  days — the exact permanent bypass the absolute expiry was written to bound. Deliberately **not**
+  swept: `SessionRevoked` with scope `single` or `others`, and `PasswordResetRequested` (a request is
+  not a change). A `PluginEvent` naming no user sweeps nobody.
+
+A deployment running another factor plugin states the extra rule through `Options.alsoSweepOn`
+rather than this plugin naming another's event strings: a plugin is seams, not a registry of the
+others.
+
+#### 19.13 One Tap reuses the verifier that exists
+
+One Tap is not a verification path. It checks the browser bindings, then hands the credential to the
+existing `oauth/IdToken.verifyIdToken` with the registered provider's own issuer, audience and key
+source, then to that provider's own `userInfo` — which is where the `hd` hosted-domain rule lives —
+then to the existing `Accounts.linkOAuth` and `SignIn.complete`. It reads no claim itself. A
+grep-level test asserts that nothing under `src/one-tap/` imports a JWS library or fetches a key set
+of its own.
+
+It stores **no provider tokens**: a One Tap credential is not an OAuth grant, and writing an empty
+token set would wipe what a real authorization-code flow stored for the same account.
+
+The nonce is minted by this server into `__Host-effect_auth.onetap_nonce`, echoed through Google,
+and compared *inside* `IdToken.verify` against what Google signed; the page's own copy, if it sends
+one, must also agree with the cookie. Redirect mode additionally requires `g_csrf_token` to equal its
+cookie.
+
+#### 19.14 Toll fraud is a money question, so the defaults are closed
+
+`Phone.allowedCountries` defaults to `[]`, and an empty list refuses **every** number before a
+message, a row or a rate-limit token is spent. An SMS is the one thing this library does that costs
+money per request.
+
+Both capabilities that make a number a *factor* are off by default — `signIn` and `stepUp` — because
+the PSTN is the channel NIST 800-63B §3.2.9 restricts. The shipped configuration keeps a number as a
+contact detail: `summaryOf` reports `secondFactor: false` and nothing about an account's assurance
+moves when one is attached. Turning `stepUp` on turns `requireAlternateSecondFactor` on with it
+unless that is stated, so the rule that a restricted channel may not be somebody's only second
+factor arrives at the moment the channel becomes one. A deployment that genuinely wants SMS to stand
+alone says `false` and means it.
+
+Four buckets guard a send: destination number, destination **prefix** (country code + 3 digits),
+authenticated subject, and client address. The prefix bucket is the one that sees the actual attack —
+premium-rate fraud pays for traffic to a *range*, not to one handset — which is why a step-up send
+spends it too, and why a number the current allowlist no longer names is bucketed by its own calling
+code rather than let through uncounted.
+
+#### 19.15 Cross-cutting decisions this wave settled
+
+**The origin guard.** Every unauthenticated POST that mints a session or sends a message calls
+`OriginCheck.requireTrustedIfPresent`: present-and-untrusted is `OriginNotAllowed` (403 — 401 would
+invite a caller that presented no credential to go and get one), absent passes, `Origin: null` is
+refused, and `Referer` is the fallback.
+
+The published guard reads `AuthConfig` from the *request* context, which would leave a plugin's
+whole handler layer with a request-time requirement that `AuthTest.layerHttpApi`'s `extra` parameter
+cannot discharge — which is why the first plugins written in this wave each composed the rule by
+hand from `claimedOrigin` and `isTrustedOrigin`. They should not have.
+`Effect.provideService(requireTrustedIfPresent, AuthConfig, config)` at layer build discharges the
+configuration and leaves only the request, which a handler already has. That is the one way to
+reach it; a hand-composed copy is a second spelling of "which origins are trusted", which is the
+bug `OriginCheck` exists to prevent.
+
+**It applies to core's own doors too, and that was not true when the wave started.** For most of
+this wave every plugin's unauthenticated POST called the guard while core's `signUpEmail`,
+`signInEmail`, `requestPasswordReset` and `sendVerificationEmail` did not — login-CSRF refused at a
+plugin door and accepted at the library's own. The four now carry it and declare `OriginNotAllowed`,
+which is wire-visible on each. There is no unauthenticated POST left in this library that mints a
+session or sends a message without it, and a new one is not finished until it does.
+
+**Service keys.** Amendment 17's scheme holds, including its elision rule: a key is
+`effect-auth/<module path>/<Identifier>`, with `<Identifier>` dropped when it only repeats the file
+name. Several keys added in this wave stuttered it. Four were collapsed —
+`effect-auth/passkeys/WebAuthn`, `effect-auth/two-factor/TwoFactor`, `effect-auth/phone/Phone`,
+`effect-auth/one-tap/OneTap` — and `WebAuthnClient`'s was corrected to name the module it actually
+lives in (`effect-auth/client/internal/webauthn/WebAuthnClient`). Keys whose identifier genuinely
+differs from the file name keep both segments: `phone/Phone/SmsSender`,
+`two-factor/TwoFactor/TwoFactorEmails`, `passkeys/Store/PasskeyStore`.
+
+**Two are still stuttering and should be collapsed together:**
+`effect-auth/domain/SignIn/SignIn` and `effect-auth/domain/Challenges/Challenges`. `SignIn.ts`
+restates its own literal in `signInOf`, which is Amendment 17's consequence 1 exactly — a typed view
+reads the *same* context slot through a narrower shape, so the class declaration and the `…Of`
+helper must be renamed in one edit or the helper silently becomes a second, unprovided service. That
+is the failure mode Amendment 17 was written against, and it is why this is worth doing in one
+commit rather than opportunistically.
+
+These keys are process-local context slots and are never serialized, so nothing that moved here
+moved a wire format.
+
+**A plugin installs at two depths when its seams are references.** `SignInPipeline`, `Authenticators`
+and `AuthHooks` are read when the services that consult them are built, so a contributor must be
+provided **underneath** `Auth.layer` while the plugin's service goes over it. Two-factor
+(`layerSeams` / `layer`) and anonymous (`layerHooks` / `layer`) both do this, and both take the same
+options twice. It is the least surprising arrangement available and it is still surprising; a
+deployment that installs only one half gets a coherent deployment with a seam missing and no
+warning.
+
+**Deferred, and named so it is not rediscovered.** Both hook points gained
+`current: Option<SessionWithUser>` — the merge seam anonymous conversion needs — but no HTTP handler
+populates it yet, so merge-on-sign-in is reachable only from a direct domain call. The *ordering*
+hazard it used to carry is gone (19.2): the merge now hangs on `beforeSessionMint`, behind the
+decision, so a challenged sign-in can no longer leave a visitor deleted with no session minted.
+
+**The per-account two-factor lockout is not switchable by `rateLimit.enabled`.** `TwoFactor` spends
+its lockout bucket through `RateLimits.consumeKeyed({ always: true })`: `rateLimit.enabled` is the
+IP-throttling switch a deployment turns off because it has an edge limiter, which is an address
+concern and not an account one, and a brute-force bound on a six-digit code must not ride it. Every
+other keyed bucket this library ships is a throttle and still honours the flag.
+
+#### 19.16 Breaking-change ledger
+
+Every observable break this wave makes, in one list. `CHANGELOG.md` carries the same set with the
+call-site detail; this is the reviewer's checklist.
+
+**Wire and endpoints**
+
+1. `Session` gains `authenticatedAt`, `aal` and `methods` in every variant including `json`, so
+   `GET /auth/session` and `/auth/sessions` bodies change, and `methods` is carried as a JSON
+   *string*. Every outstanding cookie-cache snapshot misses once — safe, the `rememberMe`
+   precedent (§16.2).
+2. `POST /auth/sign-in/email` answers a two-status union, 200 or 202.
+3. `SessionNotFresh` is removed from the wire. `StepUpRequired` (403) replaces it and, being
+   declared on `Authenticated`, appears on **every** authenticated endpoint. `InvalidCode` (401) is
+   new.
+4. `POST /auth/delete-user` is now guarded on every path, including `confirmByEmail` with no
+   password, where a stale session could previously ask for the confirmation mail.
+5. `POST /auth/reauthenticate` is new.
+6. `signUpEmail`, `signInEmail`, `requestPasswordReset` and `sendVerificationEmail` declare
+   `OriginNotAllowed` (403) and refuse a present-and-untrusted `Origin` or `Referer`.
+7. Every magic-link endpoint is gone: `POST /auth/magic-link/sign-in`,
+   `GET /auth/magic-link/verify`, `POST /auth/magic-link/exchange`.
+8. New cookies: `__Host-effect_auth.pending`, `__Host-effect_auth.email_otp_handle`,
+   `__Host-effect_auth.passkey`, `__Host-effect_auth.tdev`, `__Host-effect_auth.onetap_nonce`, and
+   the three phone handle cookies.
+
+**Services and types**
+
+9. `SessionStoreService` gains `elevate`; `SessionsService` gains `elevate`, loses `requireFresh`,
+   and renames `create` to `createUnchecked`. A replacement implementation must follow.
+10. `PasswordsService.signIn`'s success is `SignIn.SignInResult`; `Passwords.SignInResult` is deleted.
+11. `AuthHooks` gains `beforeSessionMint`, and both session hooks' context gains `current`.
+    `AuthEvent` gains `SessionElevated`, and `SignedIn` gains `methods` — an exhaustive match must
+    add both.
+12. `AuthConfigService` gains `assurance.stepUpWindow`; a hand-built configuration must supply it,
+    as it must `trustedOriginSet` (§14).
+13. `OAuthProviderConfig.emailVerified` is **required** (`"derived" | "never"`), enforced by
+    `makeRegistry`; every hand-written provider must state one. A `"never"` provider can never
+    implicitly link onto a local account holding the same address.
+14. `OAuthFlow.CallbackResult` gains `challenge`; when it is present `session` and `token` are null.
+    `OAuthFlow.make`/`layer` no longer require `Sessions`.
+15. `Accounts.unlink` counts authenticators as well as accounts, and no longer counts a
+    `local:credential` row with no hash. A user with one provider row and a hashless credential row
+    can no longer unlink themselves into a lockout.
+16. `TokenService` gains `generateNumericCode`; `HmacService` gains `signedValue` /
+    `verifySignedValue`. Breaking for implementors, not for consumers.
+17. The client's atom wrappers moved from `client/internal/atoms.ts` to `client/Atoms.ts` and are
+    public as `AuthAtoms`. `AuthClient.signIn`'s success is a union; every authenticated atom's
+    error union gains `StepUpRequired`.
+18. `AuthTest.Settings` gains `authenticators` and `signInPipeline`; `TestEmails` gains `smsKind`
+    and `sms`.
+
+**Database**
+
+19. Core migration `0006_session_assurance`. Consumers merging `Migrations.migrations` number their
+    own above `0006`, and any hand-written `INSERT INTO sessions` must state `authenticated_at`,
+    which has no `DEFAULT`.
+20. Five new plugin migration sets, each in its own bookkeeping table, none registered globally.
+
+**Behaviour, at unchanged signatures**
+
+21. A person with a confirmed second factor is challenged on **every** sign-in path.
+22. `Phone` ships refusing every number (`allowedCountries: []`) and with both factor capabilities
+    off; turning `stepUp` on turns `requireAlternateSecondFactor` on with it.
+23. `Passkeys.remove` refuses `CannotRemoveLastAuthenticator` (409) rather than allowing a
+    passwordless account to delete its only credential.
+24. `TwoFactor.layer` now runs the trusted-device sweep subscription itself.
+25. The two-factor factor-management endpoints ask for a named method rather than `aal2`, so a
+    session that reached `aal2` without answering *this* plugin's factor no longer passes them.
+26. `SessionCache` writes its envelope through `Hmac.signedValue` — byte-identical, no snapshot
+    invalidated by the move itself.

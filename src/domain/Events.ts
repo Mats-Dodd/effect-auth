@@ -40,6 +40,7 @@
 import type { Scope } from "effect"
 import { Context, Effect, Layer, PubSub, Schema, Stream } from "effect"
 import { annotateAuthLogs } from "../internal/effects.js"
+import { AuthenticationMethod } from "./Assurance.js"
 import { AccountId, SessionId, UserId } from "./Schema.js"
 
 // -----------------------------------------------------------------------------
@@ -99,7 +100,16 @@ export const SignedIn = Schema.TaggedStruct("SignedIn", {
   userId: UserId,
   sessionId: SessionId,
   /** {@link passwordMethod}, or {@link oauthMethod} of the provider used. */
-  method: Schema.String
+  method: Schema.String,
+  /**
+   * Everything the ceremony proved, in the order it was proved — the same log
+   * that was written to `sessions.methods`.
+   *
+   * `method` above names the *entry point* and is unchanged; this is the
+   * evidence, and it is what a subscriber reads to tell a password sign-in from
+   * a password sign-in that also cleared a second factor.
+   */
+  methods: Schema.Array(AuthenticationMethod)
 })
 
 /**
@@ -172,6 +182,34 @@ export const SessionRevoked = Schema.TaggedStruct("SessionRevoked", {
  * @since 0.1.0
  */
 export type SessionRevoked = typeof SessionRevoked.Type
+
+/**
+ * A live session proved something more and was raised to a higher assurance.
+ *
+ * **Details**
+ *
+ * The session id does not change — open tabs and the device list survive a
+ * step-up — but the opaque token does, so a token captured before the
+ * elevation cannot inherit it. `method` names the single factor that was just
+ * proved, not the whole log; the log is on the session row.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export const SessionElevated = Schema.TaggedStruct("SessionElevated", {
+  userId: UserId,
+  sessionId: SessionId,
+  /** The one method this elevation added — `"password"`, `"totp"`, `"passkey"`. */
+  method: Schema.String
+})
+
+/**
+ * The type of a {@link SessionElevated} event.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export type SessionElevated = typeof SessionElevated.Type
 
 /**
  * A user's password hash was replaced — through `changePassword` or through a
@@ -403,7 +441,7 @@ export type AccountUnlinked = typeof AccountUnlinked.Type
  *
  * The event union is closed — a subscriber matches on `_tag` exhaustively — so a
  * plugin cannot add a member of its own. This is the door instead: `plugin` names
- * the module (`"magic-link"`, `"two-factor"`), `event` names what happened
+ * the module (`"email-otp"`, `"two-factor"`), `event` names what happened
  * (`"requested"`, `"verified"`), `userId` is present when the flow knows one, and
  * `data` carries whatever else is worth recording.
  *
@@ -453,6 +491,7 @@ export const AuthEvent = Schema.Union([
   UserCreated,
   SignedIn,
   SignedOut,
+  SessionElevated,
   SessionRevoked,
   PasswordChanged,
   PasswordResetRequested,

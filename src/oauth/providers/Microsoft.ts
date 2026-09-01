@@ -369,6 +369,8 @@ export const make = (options: Options): OAuthProviderConfig => {
 
   return {
     id,
+    // Every one of these reads a claim it can point at; see `EmailVerifiedPolicy`.
+    emailVerified: "derived",
     clientId: options.clientId,
     ...(options.clientSecret === undefined ? {} : { clientSecret: options.clientSecret }),
     authorizationUrl: endpoints.authorizationUrl,

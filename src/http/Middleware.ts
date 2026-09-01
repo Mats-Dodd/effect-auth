@@ -10,11 +10,12 @@
  *
  * @since 0.1.0
  */
-import { Context, DateTime, Duration, Effect } from "effect"
+import { Context } from "effect"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
-import { AuthConfig } from "../config/AuthConfig.js"
-import { SessionNotFresh, Unauthorized } from "../domain/Errors.js"
-import type { Session, User, UserFields, UserModel, UserOf } from "../domain/Schema.js"
+import type { AssurancePolicy } from "../domain/Assurance.js"
+import { StepUpRequired, Unauthorized } from "../domain/Errors.js"
+import type { User, UserFields, UserModel, UserOf } from "../domain/Schema.js"
+import { CurrentSession } from "../domain/Sessions.js"
 import { bearerSecurity, insecureSessionCookieSecurity, secureSessionCookieSecurity } from "./Cookies.js"
 
 // -----------------------------------------------------------------------------
@@ -28,19 +29,19 @@ import { bearerSecurity, insecureSessionCookieSecurity, secureSessionCookieSecur
  *
  * Provided by {@link Authenticated} to every endpoint that declares it. This is
  * the persisted session row, so `id`, `userId`, `createdAt` and `expiresAt` are
- * all available — enough for the freshness guard and for "revoke every session
+ * all available — enough for an assurance guard and for "revoke every session
  * but this one".
  *
- * The interface-split convention is already satisfied without a
- * `CurrentSessionService` alias: the shape is the exported `Session` model, so
- * the class here is nothing but the key.
+ * Declared in `domain/Sessions.ts` and re-exported here, which is where a
+ * handler imports it from. A principal is a domain concept —
+ * `Sessions.requireAssurance` reads it — and `domain` does not name `http`,
+ * even in a type position, so the declaration lives on the domain side and the
+ * transport that provides it re-exports it.
  *
  * @category services
  * @since 0.1.0
  */
-export class CurrentSession extends Context.Service<CurrentSession, Session>()(
-  "effect-auth/http/Middleware/CurrentSession"
-) {}
+export { CurrentSession }
 
 /**
  * The user behind the request being handled.
@@ -149,7 +150,7 @@ export class Authenticated extends HttpApiMiddleware.Service<
     sessionCookie: insecureSessionCookieSecurity,
     bearer: bearerSecurity
   },
-  error: Unauthorized
+  error: [Unauthorized, StepUpRequired]
 }) {}
 
 // -----------------------------------------------------------------------------
@@ -201,46 +202,81 @@ export const AuthoritativeSession: Context.Reference<boolean> = Context.Referenc
   { defaultValue: () => false }
 )
 
-// -----------------------------------------------------------------------------
-// Guards
-// -----------------------------------------------------------------------------
-
 /**
- * Fails with `SessionNotFresh` unless the current session was established
- * within `session.freshAge`.
+ * The assurance an endpoint requires of the session behind the request.
  *
  * **When to use**
  *
- * Run it first in any handler whose effect would let a session takeover become
- * permanent: changing a password, unlinking the last-but-one sign-in method.
- * An attacker holding a stolen but stale cookie is then forced to produce the
- * current password, which they do not have.
+ * On every endpoint whose effect would let a session takeover become permanent
+ * or would add a way into the account: changing or setting a password,
+ * unlinking a sign-in method, moving the address, deleting the account,
+ * enrolling or removing a second factor. Annotate it, and the `Authenticated`
+ * middleware refuses the request with `StepUpRequired` unless the session meets
+ * the policy — before the handler runs, and without the handler having to
+ * remember a guard.
  *
- * It is a plain `Effect` rather than a second middleware because freshness is a
- * property of a handful of operations, not of a transport.
+ * It is an endpoint annotation rather than a second middleware for the same two
+ * reasons {@link AuthoritativeSession} is one: the middleware can read the
+ * annotations of the endpoint it wraps, and a plugin opts in with one line on
+ * its own endpoint instead of composing a different middleware. That is also
+ * why `StepUpRequired` is declared on {@link Authenticated} itself and appears
+ * in every authenticated endpoint's error union — an annotation is erased from
+ * the endpoint's *type*, so the error has nowhere else to be declared.
+ *
+ * **Details**
+ *
+ * A policy that states no `maxAge` is measured against the deployment's
+ * `session.freshAge`, which is what the library's own credential-changing
+ * endpoints ask for — see {@link freshSession}. An endpoint that wants a level
+ * and no age bound at all states `maxAge: Duration.infinity` explicitly.
+ *
+ * An endpoint carrying this annotation is **never** served from the session
+ * cookie cache, whether or not it also carries {@link AuthoritativeSession}: a
+ * snapshot records the assurance the session had when it was written, and an
+ * elevation that happened since would be invisible to it. The decision is made
+ * against the row every time.
  *
  * **Example**
  *
  * ```ts
- * import { Effect } from "effect"
- * import { CurrentSession, requireFresh } from "effect-auth"
+ * import { Duration, Schema } from "effect"
+ * import { HttpApiEndpoint } from "effect/unstable/httpapi"
+ * import { Authenticated, AuthoritativeSession, RequireAssurance } from "effect-auth"
  *
- * const changePassword = Effect.gen(function*() {
- *   yield* requireFresh
- *   const session = yield* CurrentSession
- *   return session.userId
+ * const removeFactor = HttpApiEndpoint.post("removeFactor", "/factors/remove", {
+ *   success: Schema.Struct({ success: Schema.Boolean })
  * })
+ *   .middleware(Authenticated)
+ *   .annotate(AuthoritativeSession, true)
+ *   .annotate(RequireAssurance, { aal: "aal2", maxAge: Duration.minutes(5) })
  * ```
  *
- * @category combinators
- * @since 0.1.0
+ * **Gotchas**
+ *
+ * The default is `undefined`, so an endpoint that says nothing requires
+ * nothing. As with {@link AuthoritativeSession}, that is the right default and
+ * it means a new sensitive endpoint has to remember this line.
+ *
+ * @category services
+ * @since 0.2.0
  */
-export const requireFresh: Effect.Effect<void, SessionNotFresh, CurrentSession | AuthConfig> = Effect.gen(function* () {
-  const session = yield* CurrentSession
-  const config = yield* AuthConfig
-  const freshUntil = DateTime.addDuration(session.createdAt, config.session.freshAge)
-  if (yield* DateTime.isFuture(freshUntil)) return
-  return yield* SessionNotFresh.make({
-    freshAgeSeconds: Duration.toSeconds(config.session.freshAge)
-  })
-})
+export const RequireAssurance: Context.Reference<AssurancePolicy | undefined> = Context.Reference<
+  AssurancePolicy | undefined
+>("effect-auth/RequireAssurance", { defaultValue: () => undefined })
+
+/**
+ * The policy the library's own credential-changing endpoints carry: "signed in
+ * recently enough", where "enough" is the deployment's `session.freshAge`.
+ *
+ * **Details**
+ *
+ * The empty policy, and deliberately so: {@link RequireAssurance} resolves an
+ * absent `maxAge` against `session.freshAge`, so this is the whole of the rule
+ * `requireFresh` used to state — measured, since `0.2.0`, from
+ * `session.authenticatedAt` rather than from `session.createdAt`, so that a
+ * re-authentication satisfies it and a rolling refresh does not.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const freshSession: AssurancePolicy = {}

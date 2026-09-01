@@ -33,7 +33,7 @@ import type { HttpClient } from "effect/unstable/http"
 import { FetchHttpClient, Headers } from "effect/unstable/http"
 import { Auth, AuthConfig, AuthCookies, Github, OAuthFlow, Passwords, Sessions } from "../../src/index.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { completed, newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 it("rejects insecure configuration at startup", () => {
   assert.throws(
@@ -82,7 +82,7 @@ layer(AuthTest.layer())("config/Auth assembly", (it) => {
       assert.strictEqual(Option.isSome(result.session), true)
 
       // And the row is really in the database: signing in reads it back.
-      const signedIn = yield* passwords.signIn({ email, password: testPassword })
+      const signedIn = completed(yield* passwords.signIn({ email, password: testPassword }))
       assert.strictEqual(signedIn.user.id, result.user.id)
     })
   )
@@ -124,7 +124,7 @@ layer(AuthTest.layer())("config/Auth assembly", (it) => {
 
       yield* passwords.resetPassword({ token, newPassword })
 
-      const signedIn = yield* passwords.signIn({ email, password: newPassword })
+      const signedIn = completed(yield* passwords.signIn({ email, password: newPassword }))
       assert.strictEqual(signedIn.user.email, email)
     })
   )
@@ -196,7 +196,7 @@ layer(AuthTest.layer())("config/Auth cleanupExpired", (it) => {
       yield* passwords.requestReset({ email })
       // A second session that outlives the first, so the sweep has to be
       // selective rather than a truncate.
-      yield* sessions.create({ userId: user.id })
+      yield* sessions.createUnchecked({ userId: user.id })
 
       // Past the one-hour reset TTL, and past the sign-up session's own life:
       // `rememberMe` defaults on, so both sessions run seven days.

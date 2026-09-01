@@ -2,10 +2,44 @@ import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { AuthConfig, make as makeAuthConfig } from "../../src/config/AuthConfig.js"
-import { grantedLifetime, isFreshAt, refreshDueAt, Sessions } from "../../src/domain/Sessions.js"
+import { deriveAal } from "../../src/domain/Assurance.js"
+import type { Evidence } from "../../src/domain/Sessions.js"
+import {
+  grantedLifetime,
+  isFreshAt,
+  meetsAssurance,
+  recoveryCodeMethod,
+  refreshDueAt,
+  requireAssurance,
+  requireAssuranceFor,
+  Sessions
+} from "../../src/domain/Sessions.js"
 import { SessionStore } from "../../src/domain/Stores.js"
+import { CurrentSession } from "../../src/http/Middleware.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { forUser, signUpUser, uniqueEmail } from "../fixtures.js"
+
+/** A knowledge factor, as the password path records one. */
+const password: Evidence = { method: "password", factor: "knowledge", phishingResistant: false, restricted: false }
+
+/** A possession factor, as an authenticator app records one. */
+const totp: Evidence = { method: "totp", factor: "possession", phishingResistant: false, restricted: false }
+
+/** A recovery code: possession, and the one method `allowRecovery: false` strikes out. */
+const recovery: Evidence = {
+  method: recoveryCodeMethod,
+  factor: "possession",
+  phishingResistant: false,
+  restricted: false
+}
+
+/** A trusted-device skip: a true statement that proves nothing. */
+const trustedDevice: Evidence = {
+  method: "trustedDevice",
+  factor: "none",
+  phishingResistant: false,
+  restricted: false
+}
 
 layer(AuthTest.layer())("domain/Sessions", (it) => {
   describe("create", () => {
@@ -15,7 +49,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         const config = yield* AuthConfig
         const { user } = yield* signUpUser(uniqueEmail("create"))
 
-        const { session, token } = yield* sessions.create({
+        const { session, token } = yield* sessions.createUnchecked({
           userId: user.id,
           ipAddress: "203.0.113.7",
           userAgent: "vitest"
@@ -47,7 +81,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         const config = yield* AuthConfig
         const { user } = yield* signUpUser(uniqueEmail("remember-me"))
 
-        const { session, token } = yield* sessions.create({ userId: user.id, rememberMe: false })
+        const { session, token } = yield* sessions.createUnchecked({ userId: user.id, rememberMe: false })
 
         // The choice is stored, not just consumed for the lifetime …
         assert.strictEqual(session.rememberMe, false)
@@ -82,7 +116,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
           const sessions = yield* Sessions
           const config = yield* AuthConfig
           const { user } = yield* signUpUser(uniqueEmail("update-age"))
-          const created = yield* sessions.create({ userId: user.id })
+          const created = yield* sessions.createUnchecked({ userId: user.id })
 
           // One millisecond before the refresh is due: read-only.
           yield* TestClock.adjust(Duration.subtract(config.session.updateAge, Duration.millis(1)))
@@ -121,7 +155,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
           const store = yield* SessionStore
           const config = yield* AuthConfig
           const { user } = yield* signUpUser(uniqueEmail("expiry"))
-          const created = yield* sessions.create({ userId: user.id })
+          const created = yield* sessions.createUnchecked({ userId: user.id })
 
           yield* TestClock.adjust(Duration.sum(config.session.expiresIn, Duration.millis(1)))
 
@@ -146,7 +180,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
             const sessions = yield* Sessions
             const config = yield* AuthConfig
             const { user } = yield* signUpUser(uniqueEmail("short-refresh"))
-            const created = yield* sessions.create({ userId: user.id, rememberMe: false })
+            const created = yield* sessions.createUnchecked({ userId: user.id, rememberMe: false })
 
             yield* TestClock.adjust(config.session.updateAge)
             const refreshed = yield* sessions.verify(created.token)
@@ -179,16 +213,18 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
   })
 
   describe("freshness", () => {
-    it.effect("is fresh until freshAge has elapsed since creation", () =>
+    it.effect("is fresh until freshAge has elapsed since the last interactive authentication", () =>
       AuthTest.freshClock(
         Effect.gen(function* () {
           const sessions = yield* Sessions
           const config = yield* AuthConfig
           const { user } = yield* signUpUser(uniqueEmail("fresh"))
-          const created = yield* sessions.create({ userId: user.id })
+          const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+          // The maxAge-only policy is exactly what `requireFresh` used to be.
+          const stillFresh = { maxAge: config.session.freshAge }
 
           assert.strictEqual(yield* sessions.isFresh(created.session), true)
-          yield* sessions.requireFresh(created.session)
+          yield* requireAssuranceFor(created.session, stillFresh, [])
 
           yield* TestClock.adjust(Duration.subtract(config.session.freshAge, Duration.millis(1)))
           assert.strictEqual(yield* sessions.isFresh(created.session), true)
@@ -196,29 +232,334 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
           yield* TestClock.adjust(Duration.millis(1))
           assert.strictEqual(yield* sessions.isFresh(created.session), false)
 
-          const failure = yield* Effect.flip(sessions.requireFresh(created.session))
-          assert.strictEqual(failure._tag, "SessionNotFresh")
-          assert.strictEqual(failure.freshAgeSeconds, Duration.toSeconds(config.session.freshAge))
+          const failure = yield* Effect.flip(requireAssuranceFor(created.session, stillFresh, ["totp"]))
+          assert.strictEqual(failure._tag, "StepUpRequired")
+          assert.deepStrictEqual(failure.required, { maxAge: Duration.toSeconds(config.session.freshAge) })
+          assert.strictEqual(failure.current.aal, "aal1")
+          assert.deepStrictEqual(failure.current.available, ["totp"])
+          assert.strictEqual(
+            DateTime.toEpochMillis(failure.current.authenticatedAt),
+            DateTime.toEpochMillis(created.session.authenticatedAt)
+          )
         })
       )
     )
 
-    it.effect("a rolling refresh does not restore freshness", () =>
+    it.effect("a rolling refresh moves the expiry and never authenticatedAt", () =>
       AuthTest.freshClock(
         Effect.gen(function* () {
-          // Freshness tracks createdAt on purpose: a month of ordinary browsing is
-          // not evidence that the account's owner is at the keyboard.
+          // Freshness tracks `authenticatedAt` on purpose: a month of ordinary
+          // browsing is not evidence that the account's owner is at the keyboard.
           const sessions = yield* Sessions
           const config = yield* AuthConfig
           const { user } = yield* signUpUser(uniqueEmail("stale"))
-          const created = yield* sessions.create({ userId: user.id })
+          const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
 
           yield* TestClock.adjust(Duration.sum(config.session.freshAge, Duration.millis(1)))
           const refreshed = yield* sessions.verify(created.token)
           assert.strictEqual(refreshed.refreshed, true)
           assert.strictEqual(yield* sessions.isFresh(refreshed.session), false)
+
+          // The invariant this whole wave rests on.
+          assert.strictEqual(
+            DateTime.toEpochMillis(refreshed.session.authenticatedAt),
+            DateTime.toEpochMillis(created.session.authenticatedAt)
+          )
+          assert.strictEqual(refreshed.session.aal, created.session.aal)
+          assert.deepStrictEqual(refreshed.session.methods, created.session.methods)
+          assert.notStrictEqual(
+            DateTime.toEpochMillis(refreshed.session.expiresAt),
+            DateTime.toEpochMillis(created.session.expiresAt)
+          )
         })
       )
+    )
+  })
+
+  describe("evidence", () => {
+    it.effect("records the log it was given and the level derived from it", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("evidence"))
+
+        const { session } = yield* sessions.createUnchecked({ userId: user.id, methods: [password, totp] })
+
+        assert.deepStrictEqual(
+          session.methods.map((entry) => entry.method),
+          ["password", "totp"]
+        )
+        // Two distinct factors, so `deriveAal` — the only thing in this library
+        // that computes a level — reaches aal2.
+        assert.strictEqual(session.aal, "aal2")
+        assert.strictEqual(session.aal, deriveAal(session.methods))
+        const now = yield* DateTime.now
+        for (const entry of session.methods) {
+          assert.strictEqual(DateTime.toEpochMillis(entry.completedAt), DateTime.toEpochMillis(now))
+        }
+        assert.strictEqual(DateTime.toEpochMillis(session.authenticatedAt), DateTime.toEpochMillis(now))
+      })
+    )
+
+    it.effect("a mint that states no evidence says so, and reaches aal0", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("no-evidence"))
+
+        // Fail closed: a session nobody described is not credited with a level
+        // it did not earn.
+        const { session } = yield* sessions.createUnchecked({ userId: user.id })
+
+        assert.deepStrictEqual(session.methods, [])
+        assert.strictEqual(session.aal, "aal0")
+      })
+    )
+
+    it.effect("evidence that states when it completed keeps it", () =>
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          const { user } = yield* signUpUser(uniqueEmail("replayed"))
+          const earlier = yield* DateTime.now
+          yield* TestClock.adjust(Duration.minutes(5))
+
+          // The first factor, carried through a pending second one: it happened
+          // five minutes ago and the log must not claim otherwise.
+          const { session } = yield* sessions.createUnchecked({
+            userId: user.id,
+            methods: [{ ...password, completedAt: earlier }, totp]
+          })
+
+          assert.strictEqual(DateTime.toEpochMillis(session.methods[0]!.completedAt), DateTime.toEpochMillis(earlier))
+          assert.strictEqual(
+            DateTime.toEpochMillis(session.methods[1]!.completedAt),
+            DateTime.toEpochMillis(yield* DateTime.now)
+          )
+        })
+      )
+    )
+  })
+
+  describe("assurance", () => {
+    it.effect("a policy that states nothing admits every session", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("open-policy"))
+        const { session } = yield* sessions.createUnchecked({ userId: user.id })
+        const now = yield* DateTime.now
+
+        assert.strictEqual(meetsAssurance(session, {}, now), true)
+        yield* requireAssuranceFor(session, {}, [])
+      })
+    )
+
+    it.effect("aal is compared on the frozen ordering", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("levels"))
+        const anonymous = yield* sessions.createUnchecked({ userId: user.id })
+        const single = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+        const both = yield* sessions.createUnchecked({ userId: user.id, methods: [password, totp] })
+        const now = yield* DateTime.now
+
+        assert.strictEqual(meetsAssurance(anonymous.session, { aal: "aal1" }, now), false)
+        assert.strictEqual(meetsAssurance(single.session, { aal: "aal1" }, now), true)
+        assert.strictEqual(meetsAssurance(single.session, { aal: "aal2" }, now), false)
+        assert.strictEqual(meetsAssurance(both.session, { aal: "aal2" }, now), true)
+        // A level below what the session reached still passes.
+        assert.strictEqual(meetsAssurance(both.session, { aal: "aal0" }, now), true)
+      })
+    )
+
+    it.effect("a method requirement is met by a live entry only", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("methods-policy"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password, trustedDevice] })
+        const now = yield* DateTime.now
+
+        assert.strictEqual(meetsAssurance(created.session, { methods: ["password"] }, now), true)
+        assert.strictEqual(meetsAssurance(created.session, { methods: ["passkey"] }, now), false)
+        // A skip proves nothing, so it satisfies nothing — even by name.
+        assert.strictEqual(meetsAssurance(created.session, { methods: ["trustedDevice"] }, now), false)
+      })
+    )
+
+    it.effect("allowRecovery: false strikes recovery codes out before judging", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("recovery"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password, recovery] })
+        const now = yield* DateTime.now
+
+        // Password plus recovery code is two distinct factors, so the session
+        // really is aal2 …
+        assert.strictEqual(created.session.aal, "aal2")
+        assert.strictEqual(meetsAssurance(created.session, { aal: "aal2" }, now), true)
+        // … but an endpoint that refuses recovery sees only the password.
+        assert.strictEqual(meetsAssurance(created.session, { aal: "aal2", allowRecovery: false }, now), false)
+        assert.strictEqual(meetsAssurance(created.session, { aal: "aal1", allowRecovery: false }, now), true)
+        assert.strictEqual(
+          meetsAssurance(created.session, { methods: [recoveryCodeMethod], allowRecovery: false }, now),
+          false
+        )
+      })
+    )
+
+    it.effect("maxAge is measured from authenticatedAt and members are conjunctive", () =>
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          const { user } = yield* signUpUser(uniqueEmail("max-age"))
+          const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password, totp] })
+
+          yield* TestClock.adjust(Duration.minutes(4))
+          const inside = yield* DateTime.now
+          assert.strictEqual(
+            meetsAssurance(created.session, { aal: "aal2", maxAge: Duration.minutes(5) }, inside),
+            true
+          )
+
+          yield* TestClock.adjust(Duration.minutes(2))
+          const outside = yield* DateTime.now
+          // The level still holds; the age no longer does, and both must.
+          assert.strictEqual(meetsAssurance(created.session, { aal: "aal2" }, outside), true)
+          assert.strictEqual(
+            meetsAssurance(created.session, { aal: "aal2", maxAge: Duration.minutes(5) }, outside),
+            false
+          )
+        })
+      )
+    )
+
+    it.effect("the refusal reports what the session has and what could raise it", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("refusal"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+
+        const failure = yield* Effect.flip(
+          requireAssuranceFor(created.session, { aal: "aal2", methods: ["totp", "passkey"] }, ["totp", "recoveryCode"])
+        )
+
+        assert.strictEqual(failure._tag, "StepUpRequired")
+        assert.deepStrictEqual(failure.required, { aal: "aal2", methods: ["totp", "passkey"] })
+        assert.strictEqual(failure.current.aal, "aal1")
+        assert.deepStrictEqual(failure.current.available, ["totp", "recoveryCode"])
+      })
+    )
+
+    it.effect("requireAssurance reads the session behind the request", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("current"))
+        const weak = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+        const strong = yield* sessions.createUnchecked({ userId: user.id, methods: [password, totp] })
+
+        yield* Effect.provideService(requireAssurance({ aal: "aal2" }, []), CurrentSession, strong.session)
+        const failure = yield* Effect.flip(
+          Effect.provideService(requireAssurance({ aal: "aal2" }, []), CurrentSession, weak.session)
+        )
+        assert.strictEqual(failure._tag, "StepUpRequired")
+      })
+    )
+  })
+
+  describe("elevate", () => {
+    it.effect("appends the evidence, re-derives the level and re-stamps the moment", () =>
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions
+          const { user } = yield* signUpUser(uniqueEmail("elevate"))
+          const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+          assert.strictEqual(created.session.aal, "aal1")
+
+          yield* TestClock.adjust(Duration.minutes(30))
+          const { session } = yield* sessions.elevate(created.session, totp)
+
+          assert.strictEqual(session.id, created.session.id)
+          assert.deepStrictEqual(
+            session.methods.map((entry) => entry.method),
+            ["password", "totp"]
+          )
+          assert.strictEqual(session.aal, "aal2")
+          assert.strictEqual(session.aal, deriveAal(session.methods))
+          // The first factor keeps the moment it was actually proved …
+          assert.strictEqual(
+            DateTime.toEpochMillis(session.methods[0]!.completedAt),
+            DateTime.toEpochMillis(created.session.methods[0]!.completedAt)
+          )
+          // … and the session is freshly authenticated as of the second one.
+          const now = yield* DateTime.now
+          assert.strictEqual(DateTime.toEpochMillis(session.authenticatedAt), DateTime.toEpochMillis(now))
+          assert.strictEqual(DateTime.toEpochMillis(session.methods[1]!.completedAt), DateTime.toEpochMillis(now))
+        })
+      )
+    )
+
+    it.effect("rotates the token: the old one stops resolving and the new one works", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("rotate"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+
+        const elevated = yield* sessions.elevate(created.session, totp)
+
+        assert.notStrictEqual(Redacted.value(elevated.token), Redacted.value(created.token))
+        // A token captured at aal1 does not inherit aal2 — it stops working.
+        assert.strictEqual((yield* Effect.flip(sessions.verify(created.token)))._tag, "Unauthorized")
+        const verified = yield* sessions.verify(elevated.token)
+        assert.strictEqual(verified.session.id, created.session.id)
+        assert.strictEqual(verified.session.aal, "aal2")
+        // One row, still: the device list and every open tab survive.
+        assert.strictEqual((yield* sessions.list(user.id)).length, 2)
+      })
+    )
+
+    it.effect("publishes SessionElevated naming the one factor that was added", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("elevated-event"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+
+        const recorded = yield* AuthTest.recordingEvents(sessions.elevate(created.session, totp))
+
+        const events = forUser(recorded.events, user.id)
+        assert.deepStrictEqual(AuthTest.tagsOf(events), ["SessionElevated"])
+        const elevated = events[0]
+        if (elevated === undefined || elevated._tag !== "SessionElevated") {
+          return assert.fail("expected a SessionElevated event")
+        }
+        assert.strictEqual(elevated.method, "totp")
+        assert.strictEqual(elevated.sessionId, created.session.id)
+        assert.strictEqual(elevated.userId, user.id)
+      })
+    )
+
+    it.effect("a trusted-device skip is recorded and weighs nothing", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("skip"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+
+        const { session } = yield* sessions.elevate(created.session, trustedDevice)
+
+        assert.strictEqual(session.methods.length, 2)
+        assert.strictEqual(session.aal, "aal1")
+      })
+    )
+
+    it.effect("elevating a session that has been revoked writes nothing", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Sessions
+        const { user } = yield* signUpUser(uniqueEmail("gone"))
+        const created = yield* sessions.createUnchecked({ userId: user.id, methods: [password] })
+        yield* sessions.revoke(created.session.id, user.id)
+
+        const failure = yield* Effect.flip(sessions.elevate(created.session, totp))
+
+        assert.strictEqual(failure._tag, "PersistenceError")
+        assert.strictEqual((yield* sessions.list(user.id)).length, 1)
+      })
     )
   })
 
@@ -245,9 +586,9 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
       Effect.gen(function* () {
         const sessions = yield* Sessions
         const { user } = yield* signUpUser(uniqueEmail("devices"))
-        const laptop = yield* sessions.create({ userId: user.id })
-        const phone = yield* sessions.create({ userId: user.id })
-        const tablet = yield* sessions.create({ userId: user.id })
+        const laptop = yield* sessions.createUnchecked({ userId: user.id })
+        const phone = yield* sessions.createUnchecked({ userId: user.id })
+        const tablet = yield* sessions.createUnchecked({ userId: user.id })
 
         // Four: the one sign-up established, plus three.
         assert.strictEqual((yield* sessions.list(user.id)).length, 4)
@@ -270,7 +611,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
           const sessions = yield* Sessions
           const config = yield* AuthConfig
           const { user } = yield* signUpUser(uniqueEmail("listing"))
-          yield* sessions.create({ userId: user.id, rememberMe: false })
+          yield* sessions.createUnchecked({ userId: user.id, rememberMe: false })
 
           assert.strictEqual((yield* sessions.list(user.id)).length, 2)
 
@@ -287,7 +628,7 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         const sessions = yield* Sessions
         const config = yield* AuthConfig
         const { user } = yield* signUpUser(uniqueEmail("arithmetic"))
-        const { session } = yield* sessions.create({ userId: user.id })
+        const { session } = yield* sessions.createUnchecked({ userId: user.id })
 
         const expected = DateTime.addDuration(
           DateTime.subtractDuration(session.expiresAt, config.session.expiresIn),

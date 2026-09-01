@@ -5,9 +5,9 @@ import { AuthConfig } from "../../src/config/AuthConfig.js"
 import { Accounts } from "../../src/domain/Accounts.js"
 import { Passwords } from "../../src/domain/Passwords.js"
 import { oauthIssuer } from "../../src/domain/Schema.js"
-import { Sessions } from "../../src/domain/Sessions.js"
+import { requireAssuranceFor, Sessions } from "../../src/domain/Sessions.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { completed, newPassword, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * These three keep a deployment each.
@@ -47,12 +47,14 @@ layer(AuthTest.layer({ emailPassword: { requireEmailVerification: true } }))(
           assert.strictEqual(verified.emailVerified, true)
 
           // --- sign in -------------------------------------------------------
-          const signedIn = yield* passwords.signIn({
-            email,
-            password: testPassword,
-            ipAddress: "203.0.113.7",
-            userAgent: "vitest"
-          })
+          const signedIn = completed(
+            yield* passwords.signIn({
+              email,
+              password: testPassword,
+              ipAddress: "203.0.113.7",
+              userAgent: "vitest"
+            })
+          )
           assert.strictEqual(signedIn.user.id, user.id)
 
           // --- a fortnight of ordinary use -----------------------------------
@@ -72,10 +74,16 @@ layer(AuthTest.layer({ emailPassword: { requireEmailVerification: true } }))(
           // it was kept alive; it is no longer fresh, though.
           const current = yield* sessions.verify(signedIn.token)
           assert.strictEqual(yield* sessions.isFresh(current.session), false)
-          assert.strictEqual((yield* Effect.flip(sessions.requireFresh(current.session)))._tag, "SessionNotFresh")
+          // Freshness is now one policy among several: `{ maxAge: freshAge }`
+          // is exactly what `requireFresh` meant, and the refusal is the 403
+          // every assurance-guarded endpoint answers with.
+          const stale = yield* Effect.flip(
+            requireAssuranceFor(current.session, { maxAge: config.session.freshAge }, [])
+          )
+          assert.strictEqual(stale._tag, "StepUpRequired")
 
           // --- change the password on a second device ------------------------
-          const phone = yield* sessions.create({ userId: user.id })
+          const phone = yield* sessions.createUnchecked({ userId: user.id })
           yield* passwords.changePassword({
             userId: user.id,
             currentPassword: testPassword,
@@ -92,7 +100,7 @@ layer(AuthTest.layer({ emailPassword: { requireEmailVerification: true } }))(
           assert.strictEqual((yield* sessions.list(user.id)).length, 0)
 
           // --- and back in with the new password -----------------------------
-          const again = yield* passwords.signIn({ email, password: newPassword })
+          const again = completed(yield* passwords.signIn({ email, password: newPassword }))
           assert.strictEqual(yield* sessions.isFresh(again.session), true)
 
           const expected = DateTime.addDuration(yield* DateTime.now, config.session.expiresIn)
@@ -148,7 +156,7 @@ layer(AuthTest.layer())("domain/lifecycle — OAuth link and unlink", (it) => {
       // A second callback is an ordinary sign-in through the same identity.
       const returning = yield* accounts.linkOAuth(identity)
       assert.strictEqual(returning.accountCreated, false)
-      const oauthSession = yield* sessions.create({ userId: returning.user.id })
+      const oauthSession = yield* sessions.createUnchecked({ userId: returning.user.id })
       assert.strictEqual((yield* sessions.verify(oauthSession.token)).user.id, user.id)
 
       // Unlinking leaves the password behind, and then refuses to go further.
@@ -158,7 +166,7 @@ layer(AuthTest.layer())("domain/lifecycle — OAuth link and unlink", (it) => {
       assert.strictEqual((yield* Effect.flip(accounts.unlink(held[0]!.id, user.id)))._tag, "CannotUnlinkLastAccount")
 
       // The password still works.
-      const signedIn = yield* passwords.signIn({ email, password: testPassword })
+      const signedIn = completed(yield* passwords.signIn({ email, password: testPassword }))
       assert.strictEqual(signedIn.user.id, user.id)
     })
   )
@@ -174,7 +182,7 @@ layer(AuthTest.layer())("domain/lifecycle — password reset", (it) => {
       const email = uniqueEmail("recovery")
 
       const { token: laptopToken, user } = yield* signUpUser(email)
-      const phone = yield* sessions.create({ userId: user.id })
+      const phone = yield* sessions.createUnchecked({ userId: user.id })
 
       // A day passes; the link is requested and used within its hour.
       yield* TestClock.adjust(Duration.days(1))
@@ -187,7 +195,7 @@ layer(AuthTest.layer())("domain/lifecycle — password reset", (it) => {
       assert.strictEqual((yield* Effect.flip(sessions.verify(laptopToken)))._tag, "Unauthorized")
       assert.strictEqual((yield* Effect.flip(sessions.verify(phone.token)))._tag, "Unauthorized")
 
-      const recovered = yield* passwords.signIn({ email, password: newPassword })
+      const recovered = completed(yield* passwords.signIn({ email, password: newPassword }))
       assert.strictEqual(recovered.user.id, user.id)
       assert.strictEqual((yield* sessions.list(user.id)).length, 1)
     })

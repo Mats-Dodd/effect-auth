@@ -8,7 +8,7 @@
  * client bound to `AuthTest.TestApi`, an account already signed in on one, and
  * the `Max-Age` a response wrote a cookie with.
  *
- * A suite whose deployment serves an API of its own — the magic-link tests, the
+ * A suite whose deployment serves an API of its own — the email-otp tests, the
  * custom-field ones — builds its own client from `TestHttpClient.makeClient`,
  * because {@link makeClient} names this library's test API. {@link maxAgeSeconds}
  * still serves them: a cookie is a cookie whichever API wrote it.
@@ -57,4 +57,24 @@ export const maxAgeSeconds = (
   if (Option.isNone(cookie)) return undefined
   const maxAge = cookie.value.options?.maxAge
   return maxAge === undefined ? undefined : Duration.toSeconds(Duration.fromInputUnsafe(maxAge))
+}
+
+/**
+ * The completed half of a sign-in's two-status success.
+ *
+ * **Details**
+ *
+ * `signInEmail` answers `SessionWithUser` on 200 or `MfaRequired` on 202, so a
+ * test that means "sign in" has to say which one it expected. Every suite here
+ * runs a deployment with no factor plugin installed, where 202 is unreachable —
+ * this turns the unreachable branch into a failed assertion instead of an
+ * `undefined` two lines later.
+ */
+export const completeSignIn = <S, U>(
+  result: { readonly _tag: "MfaRequired" } | { readonly user: U; readonly session: S }
+): { readonly user: U; readonly session: S } => {
+  if ("_tag" in result) {
+    throw new Error("expected a completed sign-in; the deployment answered MfaRequired")
+  }
+  return result
 }

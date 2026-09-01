@@ -27,11 +27,18 @@ layer(database())("sql/Migrations", (it) => {
 
       assert.deepStrictEqual(
         applied.map(([id]) => id),
-        [1, 2, 3, 4, 5]
+        [1, 2, 3, 4, 5, 6]
       )
       assert.deepStrictEqual(
         applied.map(([, name]) => name),
-        ["create_users", "create_sessions", "create_accounts", "create_verifications", "session_remember_me"]
+        [
+          "create_users",
+          "create_sessions",
+          "create_accounts",
+          "create_verifications",
+          "session_remember_me",
+          "session_assurance"
+        ]
       )
 
       const sql = yield* SqlClient.SqlClient
@@ -76,12 +83,97 @@ layer(database())("sql/Migrations", (it) => {
       // as a NULL the model cannot decode.
       yield* sql`INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
         VALUES ('u-remember', 'Ada', 'remember@example.com', false, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
-      yield* sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, created_at, updated_at)
-        VALUES ('s-remember', 'hash-remember', 'u-remember', '2999-01-01T00:00:00.000Z', NULL, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
+      // `authenticated_at` has no DEFAULT on purpose — only the writer knows
+      // when the person actually authenticated — so it is stated here, while
+      // `remember_me`, `aal` and `methods` are the ones being left to theirs.
+      yield* sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, authenticated_at, created_at, updated_at)
+        VALUES ('s-remember', 'hash-remember', 'u-remember', '2999-01-01T00:00:00.000Z', NULL, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
 
       const rows = yield* sql<{ readonly rememberMe: unknown }>`SELECT remember_me AS "rememberMe"
         FROM sessions WHERE id = 's-remember'`
       assert.strictEqual(rows[0]?.rememberMe, true)
+    })
+  )
+})
+
+layer(database())("sql/Migrations", (it) => {
+  it.effect("backfills sessions.authenticated_at from created_at, and defaults the derived columns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+
+      // The `sessions` table as an existing deployment has it — every column
+      // through `0005` and none of this migration's — with a row already in
+      // it. What the migration does to *that* row is the whole point, and it is
+      // unobservable if the row is written afterwards. The migrator's own
+      // `CREATE TABLE IF NOT EXISTS` then finds this table and leaves it alone.
+      yield* sql`CREATE TABLE users (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        email text NOT NULL,
+        email_verified boolean NOT NULL DEFAULT false,
+        image text,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      )`
+      yield* sql`CREATE TABLE sessions (
+        id text PRIMARY KEY,
+        token_hash text NOT NULL,
+        user_id text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+        expires_at text NOT NULL,
+        ip_address text,
+        user_agent text,
+        remember_me boolean NOT NULL DEFAULT true,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      )`
+
+      yield* sql`INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
+        VALUES ('u-assurance', 'Ada', 'assurance@example.com', false, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
+      yield* sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, created_at, updated_at)
+        VALUES ('s-assurance', 'hash-assurance', 'u-assurance', '2999-01-01T00:00:00.000Z', NULL, NULL, '2024-03-04T05:06:07.000Z', '2024-03-04T05:06:07.000Z')`
+
+      const applied = yield* Migrations.run
+      assert.include(
+        applied.map(([, name]) => name),
+        "session_assurance"
+      )
+
+      const rows = yield* sql<{
+        readonly authenticatedAt: unknown
+        readonly aal: unknown
+        readonly methods: unknown
+      }>`SELECT authenticated_at AS "authenticatedAt", aal, methods FROM sessions WHERE id = 's-assurance'`
+
+      // Before step-up existed, a session's creation *was* the moment its owner
+      // authenticated, so that is what an existing row is worth — not "now",
+      // which would silently re-freshen every session in the table.
+      assert.strictEqual(rows[0]?.authenticatedAt, "2024-03-04T05:06:07.000Z")
+      assert.strictEqual(rows[0]?.aal, "aal1")
+      assert.strictEqual(rows[0]?.methods, "[]")
+    })
+  )
+})
+
+layer(database())("sql/Migrations", (it) => {
+  it.effect("leaves sessions.authenticated_at NOT NULL", () =>
+    Effect.gen(function* () {
+      yield* Migrations.run
+
+      const sql = yield* SqlClient.SqlClient
+      const columns = yield* sql<{ readonly name: string; readonly nullable: string }>`SELECT column_name AS "name",
+          is_nullable AS "nullable"
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sessions' AND column_name IN ('authenticated_at', 'aal', 'methods')
+        ORDER BY column_name`
+
+      assert.deepStrictEqual(
+        columns.map((row) => [row.name, row.nullable]),
+        [
+          ["aal", "NO"],
+          ["authenticated_at", "NO"],
+          ["methods", "NO"]
+        ]
+      )
     })
   )
 })

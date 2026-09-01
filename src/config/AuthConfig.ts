@@ -57,6 +57,28 @@ export interface SessionConfig {
 }
 
 /**
+ * Step-up authentication knobs.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export interface AssuranceConfig {
+  /**
+   * How long a second-factor ceremony keeps a session at `aal2`. Default 12
+   * hours.
+   *
+   * **Details**
+   *
+   * NIST 800-63B rev 3 made 12 hours a SHALL for AAL2 reauthentication; rev 4
+   * relaxed it to a 24-hour SHOULD, which is a federal floor rather than a
+   * library default. It is what an endpoint annotated `RequireAssurance({ aal:
+   * "aal2" })` measures against when the policy states no `maxAge` of its own;
+   * `session.freshAge` is the same default for a policy that names no level.
+   */
+  readonly stepUpWindow: Duration.Duration
+}
+
+/**
  * E-mail and password sign-in knobs.
  *
  * @category models
@@ -409,6 +431,7 @@ export interface AuthConfigService {
    */
   readonly trustedProviders: ReadonlyArray<string>
   readonly session: SessionConfig
+  readonly assurance: AssuranceConfig
   readonly emailPassword: EmailPasswordConfig
   readonly cookie: CookieConfig
   readonly tokens: TokenConfig
@@ -444,6 +467,7 @@ export interface AuthConfigOptions {
   readonly trustedOrigins?: ReadonlyArray<string> | undefined
   readonly trustedProviders?: ReadonlyArray<string> | undefined
   readonly session?: PartialOptions<SessionConfig> | undefined
+  readonly assurance?: PartialOptions<AssuranceConfig> | undefined
   readonly emailPassword?: PartialOptions<EmailPasswordConfig> | undefined
   readonly cookie?: PartialOptions<CookieConfig> | undefined
   readonly tokens?: PartialOptions<TokenConfig> | undefined
@@ -468,6 +492,16 @@ export const defaultSession: SessionConfig = {
   updateAge: Duration.days(1),
   freshAge: Duration.days(1),
   rememberMeDisabledExpiresIn: Duration.days(1)
+}
+
+/**
+ * The default step-up window: twelve hours.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const defaultAssurance: AssuranceConfig = {
+  stepUpWindow: Duration.hours(12)
 }
 
 /**
@@ -690,6 +724,7 @@ const validate = (config: AuthConfigService): AuthConfigService => {
   positiveDuration("session.updateAge", config.session.updateAge)
   positiveDuration("session.freshAge", config.session.freshAge)
   positiveDuration("session.rememberMeDisabledExpiresIn", config.session.rememberMeDisabledExpiresIn)
+  positiveDuration("assurance.stepUpWindow", config.assurance.stepUpWindow)
   // Both bounds say the same thing: the refresh window has to fit inside the
   // *shortest* session this deployment mints, or that session would expire
   // without the rolling refresh ever applying to it. `rememberMeDisabledExpiresIn`
@@ -758,6 +793,7 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
     trustedOriginSet: trustedOriginSet({ baseUrl: options.baseUrl, trustedOrigins: origins }),
     trustedProviders: options.trustedProviders ?? [],
     session: withDefaults(defaultSession, options.session),
+    assurance: withDefaults(defaultAssurance, options.assurance),
     emailPassword: withDefaults(defaultEmailPassword, options.emailPassword),
     cookie: withDefaults(defaultCookie(options.baseUrl), options.cookie),
     tokens: withDefaults(defaultTokens, options.tokens),

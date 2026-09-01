@@ -24,6 +24,8 @@ import type { HttpClient } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
 import type { RateLimiter } from "effect/unstable/persistence"
 import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
+import type { AuthCipher } from "../crypto/Cipher.js"
+import { layer as cipherLayer } from "../crypto/Cipher.js"
 import type { Hmac } from "../crypto/Hmac.js"
 import { layer as hmacLayer } from "../crypto/Hmac.js"
 import type { PasswordHasher } from "../crypto/PasswordHasher.js"
@@ -31,6 +33,7 @@ import { layerScrypt } from "../crypto/PasswordHasher.js"
 import type { Token } from "../crypto/Token.js"
 import { layer as tokenLayer } from "../crypto/Token.js"
 import { type Accounts, layer as accountsLayer } from "../domain/Accounts.js"
+import { type Challenges, layer as challengesLayer } from "../domain/Challenges.js"
 import type { DiscoveryError } from "../domain/Errors.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents, layer as eventsLayer } from "../domain/Events.js"
@@ -56,6 +59,7 @@ import {
   makeUserResponse,
   UserModelRef
 } from "../domain/Schema.js"
+import { layerFor as signInLayerFor, type SignIn } from "../domain/SignIn.js"
 import { layerFor as sessionsLayerFor, type Sessions, sessionsOf, type SessionsService } from "../domain/Sessions.js"
 import {
   type AccountStore,
@@ -87,6 +91,7 @@ import { OAuthProviders } from "../oauth/Provider.js"
 import * as Migrations from "../sql/Migrations.js"
 import * as SqlStores from "../sql/SqlStores.js"
 import type {
+  AssuranceConfig,
   AuthConfigOptions,
   AuthConfigService,
   CookieCacheConfig,
@@ -340,6 +345,7 @@ export interface ConfigSettings extends Extras {
   readonly trustedOrigins?: Config.Config<ReadonlyArray<string>> | undefined
   readonly trustedProviders?: Config.Config<ReadonlyArray<string>> | undefined
   readonly session?: PartialOptions<SessionConfig> | undefined
+  readonly assurance?: PartialOptions<AssuranceConfig> | undefined
   readonly emailPassword?: PartialOptions<EmailPasswordConfig> | undefined
   readonly cookie?: PartialOptions<CookieConfig> | undefined
   readonly tokens?: PartialOptions<TokenConfig> | undefined
@@ -441,8 +447,11 @@ export type Services =
   | Token
   | Hmac
   | Verifications
+  | Challenges
+  | AuthCipher
   | SessionCache
   | Sessions
+  | SignIn
   | Accounts
   | Passwords
   | Users
@@ -497,6 +506,26 @@ export type OAuthRequirements = Requirements | HttpClient.HttpClient
  * nothing to wait for: the secret is already resolved by the time `compose`
  * runs.
  */
+/**
+ * The HKDF `info` the stack's own {@link AuthCipher} derives its key from.
+ *
+ * **Details**
+ *
+ * `AuthCipher` is keyed by secret *class*: two classes derive different keys
+ * from the same deployment secret and fail each other's tag check. The stack
+ * publishes one, under this class, so that a plugin with a single kind of
+ * secret to encrypt needs no wiring at all. A plugin that wants a class of its
+ * own provides `AuthCipher.layer("<its info>")` above the stack, which shadows
+ * this one for everything built over it.
+ *
+ * It is part of the stored format: changing it makes every ciphertext written
+ * under it unreadable.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const defaultCipherKeyInfo = "effect-auth/cipher/v1"
+
 const secretTier = (config: AuthConfigService): Layer.Layer<Token | Hmac> =>
   Layer.mergeAll(
     tokenLayer.pipe(Layer.provide(layerWebCrypto)),
@@ -570,6 +599,15 @@ const compose = <A, RIn, F extends UserFields>(
     // `Passwords` — which is what `top` provides — and because both of the two
     // entry points want it.
     Layer.provideMerge(top),
+    // The seams every sign-in path and every factor plugin converges on.
+    // `SignIn` is what `Passwords` and the OAuth flow in `top` mint through, so
+    // it sits underneath them; `Challenges` and `AuthCipher` are what a plugin
+    // above the stack reaches for. The two `Context.Reference` seams —
+    // `AuthHooks`, `Authenticators` and `SignInPipeline` — are deliberately not
+    // installed here: a reference resolves to its own default, and providing
+    // one inside the stack would silently discard whatever a plugin appended
+    // underneath it.
+    Layer.provideMerge(Layer.mergeAll(signInLayerFor(model), challengesLayer, cipherLayer(defaultCipherKeyInfo))),
     Layer.provideMerge(
       Layer.mergeAll(sessionsLayerFor(model), accountsLayer, verificationsLayer, sessionCacheLayerFor(model))
     ),
@@ -609,6 +647,7 @@ const oauthTop = <F extends UserFields>(
   | AuthEmails
   | Accounts
   | Sessions
+  | SignIn
   | Verifications
   | Token
   | PasswordHasher
@@ -666,6 +705,7 @@ const resolveConfig = <F extends UserFields>(
       makeAuthConfig({
         ...settings,
         session: options.session,
+        assurance: options.assurance,
         emailPassword: options.emailPassword,
         cookie: options.cookie,
         tokens: options.tokens,

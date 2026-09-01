@@ -6,8 +6,10 @@ tour. This file does not restate them; it tells you how to think and what to run
 
 ## What this is
 
-An Effect-native authentication library for Effect v4: sessions, email/password, OAuth/OIDC,
-magic link, policy hooks, a cookie cache, a typed client and a shipped test harness. Inspired by
+An Effect-native authentication library for Effect v4: sessions with a recorded assurance level,
+email/password, OAuth/OIDC across fourteen providers, and seven plugins — e-mail codes, passkeys,
+TOTP, phone, username, anonymous visitors, One Tap. Policy hooks, step-up, a cookie cache, a typed
+client per plugin and a shipped test harness. Inspired by
 better-auth's semantics; shares none of its code. Pinned to `effect@4.0.0-rc.112` and built on its
 `unstable/` namespace, so an `effect` bump is a deliberate event, never a drive-by.
 
@@ -43,20 +45,32 @@ Three entry points: `effect-auth` (server), `effect-auth/client`, `effect-auth/t
 | Directory | Owns |
 |---|---|
 | `src/config/` | `Auth.layer` / `Auth.layerWithOAuth` — the two static entry points; `AuthConfig`; e-mail composition |
-| `src/domain/` | `Users`, `Sessions`, `Passwords`, `Accounts`, `Verifications`; the four `Stores` interfaces; `Events`; `Hooks`; `Schema` (the typed-view kernel for custom user fields) |
-| `src/sql/` | The four stores over `@effect/sql`; `Migrations` |
+| `src/domain/` | `Users`, `Sessions`, `Passwords`, `Accounts`, `Verifications`, `Challenges`, `SignIn`; `Assurance` (aal, methods, policies); the `Hooks`, `Authenticators` and `SignInPipeline` seams; the `Stores` interfaces; `Events`; `Schema` (the typed-view kernel for custom user fields) |
+| `src/sql/` | The stores over `@effect/sql`; `Migrations` |
 | `src/http/` | The `HttpApi` group, `Handlers`, `Middleware` (+`Live`), `Cookies`, `OriginCheck`, `RateLimits`, `SessionCache` |
-| `src/oauth/` | `Flow`, `Provider`, `State`, `IdToken`, `Discovery`; `providers/` are plain values |
-| `src/magic-link/` | The reference plugin — copy its shape for the next one |
-| `src/crypto/` | `PasswordHasher`, `Token`, `Hmac` |
-| `src/client/` | The `AtomHttpApi` client |
-| `src/testing/` | The shipped harness (`AuthTest`, `MockProvider`, `TestHttpClient`) — public API, treat it as such |
+| `src/oauth/` | `Flow`, `Provider`, `State`, `IdToken`, `Discovery`; `providers/` are plain values (fourteen of them) |
+| `src/email-otp/` | The reference plugin — copy its shape for the next one. A code and a link over one row |
+| `src/username/` | A lookup key over the password credential |
+| `src/anonymous/` | A real `users` row at `aal0`, and the two halves of conversion |
+| `src/passkeys/` | WebAuthn, on the `effect-auth/passkeys` subpath (it has a peer dependency) |
+| `src/two-factor/` | TOTP, recovery codes, trusted devices — and the `SignInPipeline` decider |
+| `src/phone/` | SMS codes, with the toll-fraud limits that go with them |
+| `src/one-tap/` | Google One Tap over the existing id-token verifier |
+| `src/crypto/` | `PasswordHasher`, `Token`, `Hmac`, `Totp`, `AuthCipher` |
+| `src/client/` | The `AtomHttpApi` clients — `AuthClient`, one per plugin, and the `AuthAtoms` wrappers they share |
+| `src/Plugin.ts` | `withDefaults`: the options-section resolver every plugin uses |
+| `src/testing/` | The shipped harness (`AuthTest`, `MockProvider`, `TestHttpClient`, one `*Test` per plugin) — public API, treat it as such |
 | `src/internal/` | Not exported; helpers with no opinion |
 
 Layering: `domain` never imports `http`; `http` never touches SQL; `oauth` owns flow policy and
-its helpers own mechanics. A plugin is seams, not a registry: an `HttpApiGroup`, a Layer, a
-migrations record, a client function, and the `AuthHooks` / `Verifications` primitives — never a
-column on a core table.
+its helpers own mechanics. A plugin is seams, not a registry: an `HttpApiGroup`, a Layer, its own
+migrations from `0001`, a client, and the `AuthHooks` / `SignInPipeline` / `Authenticators` /
+`Verifications` primitives — never a column on a core table.
+
+One sign-in door: every session this library mints goes through `SignIn.complete`, which runs
+`beforeSessionCreate`, consults the `SignInPipeline` (where a second factor interposes), mints, and
+publishes `SignedIn`. `SessionsService.createUnchecked` is the raw mint and is named so you notice;
+`test/domain/ChokePoint.test.ts` asserts `src/` calls it in exactly one place.
 
 ## Conventions that are not obvious from the code
 

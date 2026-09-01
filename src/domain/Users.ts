@@ -64,7 +64,7 @@ import {
 import { resolveUrl, validateUrl } from "../http/OriginCheck.js"
 import { annotateAuthLogs, deliverEmail, revalidateRewrite } from "../internal/effects.js"
 import { omitUndefined, pickKeys } from "../internal/records.js"
-import type { SessionNotFresh } from "./Errors.js"
+import type { StepUpRequired } from "./Errors.js"
 import { EmailUnchanged, InvalidCredentials, InvalidToken, UserAlreadyExists, UserNotFound } from "./Errors.js"
 import type { UpdatedUserField } from "./Events.js"
 import { AuthEvents, publishSafely } from "./Events.js"
@@ -73,7 +73,7 @@ import { AuthHooks } from "./Hooks.js"
 import { Passwords } from "./Passwords.js"
 import type { Session, UserExtras, UserFields, UserId, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 import { baseUserModel, normalizeEmail } from "./Schema.js"
-import { Sessions } from "./Sessions.js"
+import { requireAssuranceFor } from "./Sessions.js"
 import {
   isUniqueViolation,
   type PersistenceError,
@@ -383,7 +383,7 @@ export interface UsersService<F extends UserFields = {}> {
    */
   readonly requestDeletion: (
     options: RequestDeletionOptions<F>
-  ) => Effect.Effect<DeletionOutcome, InvalidCredentials | SessionNotFresh | PolicyRefused | PersistenceError>
+  ) => Effect.Effect<DeletionOutcome, InvalidCredentials | StepUpRequired | PolicyRefused | PersistenceError>
 
   /**
    * Claims a deletion token presented by a signed-in caller and deletes the
@@ -469,7 +469,6 @@ export type Requirements =
   | UserStore
   | VerificationStore
   | WithAuthTransaction
-  | Sessions
   | Passwords
 
 /**
@@ -502,7 +501,6 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     const verifications = yield* Verifications
     const users = yield* userStoreOf(model)
     const transaction = yield* WithAuthTransaction
-    const sessions = yield* Sessions
     const passwords = yield* Passwords
 
     /**
@@ -531,7 +529,8 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
           token: issued.token,
           url: withCallbackUrl(config, changeEmailVerifyUrl(config, issued.token), callbackURL)
         }),
-        "change-email verification e-mail delivery failed"
+        "change-email verification e-mail delivery failed",
+        newEmail
       )
     })
 
@@ -570,7 +569,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     const provision = Effect.fnUntraced(function* (options: ProvisionOptions<F>) {
       // The deployment's own columns are filled in *before* the hook is asked, not
-      // after it. A base-typed caller — the magic-link plugin, a plugin of
+      // after it. A base-typed caller — the email-otp plugin, a plugin of
       // somebody's own — builds its candidate out of the base fields alone, and a
       // policy installed through `hooksOf` is promised a row that really does
       // carry the extra columns: without this it would read `undefined` for every
@@ -692,7 +691,8 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
           token: issued.token,
           url: withCallbackUrl(config, changeEmailConfirmUrl(config, issued.token), options.callbackURL)
         }),
-        "change-email confirmation e-mail delivery failed"
+        "change-email confirmation e-mail delivery failed",
+        user.email
       )
       return taken ? ("Ignored" as const) : ("ConfirmationSent" as const)
     })
@@ -785,7 +785,15 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // not be enough to *test* one — `InvalidCredentials` versus anything else
       // would make this endpoint a password oracle for whoever stole the cookie.
       if (options.password !== undefined || !config.user.deleteUser.confirmByEmail) {
-        yield* sessions.requireFresh(options.session)
+        // `{ maxAge: freshAge }` is exactly what `requireFresh` meant. The
+        // endpoint carries `RequireAssurance(freshSession)` too and the
+        // middleware refuses first, but the rule lives on the write path as
+        // well: a caller reaching this service directly is held to it.
+        //
+        // `available` is empty because `Users` holds no `Authenticators`
+        // reference — the middleware's refusal, which is the one a browser
+        // sees, reports the real list.
+        yield* requireAssuranceFor(options.session, { maxAge: config.session.freshAge }, [])
       }
 
       if (options.password !== undefined) {
@@ -826,7 +834,8 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
             token: issued.token,
             url: deleteAccountUrl(config, issued.token)
           }),
-          "delete-account confirmation e-mail delivery failed"
+          "delete-account confirmation e-mail delivery failed",
+          options.user.email
         )
         return "ConfirmationSent" as const
       }

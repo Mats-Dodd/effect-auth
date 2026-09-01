@@ -1,6 +1,7 @@
 # effect-auth
 
-Authentication for Effect applications: sessions, e-mail/password and OAuth, built on
+Authentication for Effect applications: sessions, e-mail/password, OAuth, and a plugin each for
+e-mail codes, passkeys, TOTP, phone, usernames, anonymous visitors and Google One Tap. Built on
 [Effect](https://effect.website) v4 primitives — `Context.Service`, `Layer`, `Schema`, `HttpApi`.
 
 ```ts
@@ -12,8 +13,9 @@ const AuthLive = Auth.layerWithOAuth({
 }).pipe(Layer.provide(PgLive), Layer.provide(MyMailer), Layer.provide(FetchHttpClient.layer))
 ```
 
-That is the whole installation. Twenty-eight endpoints, an OpenAPI document, a typed client and a
-`CurrentUser` in your own handlers' context.
+That is the whole installation. Twenty-nine endpoints, an OpenAPI document, a typed client and a
+`CurrentUser` in your own handlers' context. Every plugin is another layer beside it and nothing
+in the core changes to admit one — see [Plugins](#plugins).
 
 ## Why
 
@@ -204,9 +206,14 @@ SQLite deployments must enable `PRAGMA foreign_keys = ON` for the cascade delete
 
 ## Endpoints
 
-Twenty-eight, all under `/auth`. Seventeen of them carry the `Authenticated` middleware (✓) and answer
-`401` without a session; six of those bypass the cookie cache in both directions (▲, see
-[Cookie cache](#cookie-cache)).
+Twenty-nine, all under `/auth`. Eighteen of them carry the `Authenticated` middleware (✓) and answer
+`401` without a session; several of those bypass the cookie cache in both directions (▲, see
+[Cookie cache](#cookie-cache)) and five demand a recently-authenticated session (⧗, see
+[Step-up](#step-up)).
+
+Every authenticated endpoint can also answer `403 StepUpRequired`, because the guard is declared on
+the middleware rather than per endpoint. A plugin's endpoints live under its own prefix and are
+listed with the plugin.
 
 **Sessions**
 
@@ -214,6 +221,7 @@ Twenty-eight, all under `/auth`. Seventeen of them carry the `Authenticated` mid
 |---|---|---|
 | `signUpEmail` | `POST /sign-up/email` | |
 | `signInEmail` | `POST /sign-in/email` | |
+| `reauthenticate` | `POST /reauthenticate` | ✓ ▲ |
 | `signOut` | `POST /sign-out` | ✓ |
 | `getSession` | `GET /session` | ✓ |
 | `listSessions` | `GET /sessions` | ✓ |
@@ -227,8 +235,8 @@ Twenty-eight, all under `/auth`. Seventeen of them carry the `Authenticated` mid
 |---|---|---|
 | `requestPasswordReset` | `POST /request-password-reset` | |
 | `resetPassword` | `POST /reset-password` | |
-| `changePassword` | `POST /change-password` | ✓ ▲ |
-| `setPassword` | `POST /set-password` | ✓ ▲ |
+| `changePassword` | `POST /change-password` | ✓ ▲ ⧗ |
+| `setPassword` | `POST /set-password` | ✓ ▲ ⧗ |
 | `sendVerificationEmail` | `POST /send-verification-email` | |
 | `verifyEmail` | `GET /verify-email?token=` | |
 
@@ -237,10 +245,10 @@ Twenty-eight, all under `/auth`. Seventeen of them carry the `Authenticated` mid
 | Endpoint | Method / path | Auth |
 |---|---|---|
 | `updateUser` | `POST /update-user` | ✓ |
-| `changeEmail` | `POST /change-email` | ✓ ▲ |
+| `changeEmail` | `POST /change-email` | ✓ ▲ ⧗ |
 | `confirmEmailChange` | `GET /change-email/confirm?token=` | |
 | `verifyEmailChange` | `GET /change-email/verify?token=` | |
-| `deleteUser` | `POST /delete-user` | ✓ ▲ |
+| `deleteUser` | `POST /delete-user` | ✓ ▲ ⧗ |
 | `deleteUserCallback` | `GET /delete-user/callback?token=` | ✓ ▲ |
 
 **OAuth**
@@ -252,7 +260,7 @@ Twenty-eight, all under `/auth`. Seventeen of them carry the `Authenticated` mid
 | `oauthCallbackForm` | `POST /callback/:providerId` | |
 | `listAccounts` | `GET /accounts` | ✓ |
 | `linkSocial` | `POST /link-social` | ✓ |
-| `unlinkAccount` | `POST /unlink-account` | ✓ ▲ |
+| `unlinkAccount` | `POST /unlink-account` | ✓ ▲ ⧗ |
 | `getAccessToken` | `POST /get-access-token` | ✓ |
 | `refreshToken` | `POST /refresh-token` | ✓ |
 
@@ -295,6 +303,104 @@ refreshing first only when the stored one is absent or about to expire and the p
 access token is no good. An account that is not the caller's is `NotFound`, exactly as one that does
 not exist. Tokens cross the wire as `Redacted<string>`; the granted `scope` is never overwritten by
 a refresh.
+
+## Assurance
+
+Every session records *how* the person authenticated, not just that they did. Three columns:
+`methods` — the log of what they proved and when — `aal`, derived from it, and `authenticatedAt`,
+the moment the last ceremony completed.
+
+`aal` is never written by hand. `Assurance.deriveAal` is the only thing that computes it, from the
+log alone, on one rule:
+
+| Level | What it means |
+|---|---|
+| `aal0` | nothing was proved. An anonymous visitor's session, and the honest answer for a mint that recorded no evidence |
+| `aal1` | one factor |
+| `aal2` | two factors of *different kinds*, or one ceremony that was itself multi-factor |
+
+"Different kinds" is what makes the table short. A password (knowledge) and a TOTP code
+(possession) are two kinds, so together they are `aal2`. Two possession factors — a TOTP code and a
+code by e-mail — are one kind, and stay `aal1`. And a user-verified passkey is a single ceremony
+that proved possession *and* inherence, so it reaches `aal2` on its own with no second prompt.
+
+What each method contributes:
+
+| Method | Factor | Phishing-resistant | Notes |
+|---|---|---|---|
+| `password` | knowledge | no | |
+| `passkey` | inherence when the authenticator verified the person, else possession | **yes** | `aal2` in one ceremony when user-verified |
+| `totp` | possession | no | |
+| `emailOtp`, `magic-link` | possession | no | mailbox control |
+| `sms` | possession | no | **restricted** — never somebody's only second factor |
+| `recoveryCode` | possession | no | struck out first by `allowRecovery: false` |
+| `oauth:<provider>` | possession | no | |
+| `trustedDevice` | `none` | no | a skip, not a factor: it weighs nothing |
+
+`Assurance.amrOf` renders the log as RFC 8176 `amr` values, for a deployment issuing tokens of its
+own. It never claims `hwk`, because this library does not verify attestation.
+
+## Step-up
+
+An endpoint says what it needs; the middleware decides; one function evaluates the rule.
+
+```ts
+import { RequireAssurance, freshSession } from "effect-auth"
+
+HttpApiEndpoint.post("deleteEverything", "/delete-everything")
+  .middleware(Authenticated)
+  .annotate(RequireAssurance, { aal: "aal2" })            // a second factor, recently
+  .annotate(RequireAssurance, freshSession)               // …or just "recently", the empty policy
+  .annotate(RequireAssurance, { methods: ["passkey"] })   // …or a named factor
+```
+
+A policy states any of `aal`, `methods`, `maxAge` and `allowRecovery`, and the members are
+conjunctive; a policy that states nothing admits every session. An unstated `maxAge` resolves to
+`assurance.stepUpWindow` (12 hours) for a step-up policy — one asking for `aal2` or naming
+`methods` — and to `session.freshAge` (1 day) otherwise, which is the rule the old `requireFresh`
+stated. `Duration.infinity` is how an endpoint says "any age will do".
+
+An annotated endpoint is **never** served from the cookie cache: a snapshot records the assurance
+the session had when it was written, so an elevation since would be invisible and a revocation could
+be admitted. The decision is made against the row every time.
+
+The refusal is `403 StepUpRequired`, and it tells the client what to do:
+
+```json
+{
+  "_tag": "StepUpRequired",
+  "required": { "aal": "aal2", "maxAge": 43200 },
+  "current": { "aal": "aal1", "authenticatedAt": "…", "available": ["totp", "passkey"] }
+}
+```
+
+`available` is the kinds of factor this person actually holds, from the `Authenticators` seam — so a
+client prompts for the right one instead of guessing, and degrades gracefully when the answer is an
+empty array. It carries no identifier, no address and no secret.
+
+Because the guard is declared on the `Authenticated` middleware, **every** authenticated endpoint
+can answer it, and a client handles it in one place:
+
+```ts
+import { AuthClient } from "effect-auth/client"
+
+const change = AuthClient.withStepUp(
+  AuthClient.run(auth.changePassword, { currentPassword, newPassword }),
+  (refused) => promptFor(refused.current.available)   // run a step-up, then it retries once
+)
+```
+
+`withStepUp` catches the refusal, runs your callback, and retries the effect **once**. A second
+refusal is returned rather than looping, so a step-up that did not actually raise the level surfaces
+instead of trapping the browser in a prompt.
+
+The step-up itself is whatever the person holds. `POST /auth/reauthenticate { password }` is the one
+this library ships: it runs exactly one hash verification, appends a password entry to the session's
+log, re-stamps `authenticatedAt`, rotates the opaque token *keeping the session id*, and re-sets the
+cookie. Two knowledge entries are still one factor, so it raises the age and not the level — which
+is exactly what a `maxAge` policy wants, and what an `{ aal: "aal2" }` policy correctly still
+refuses. A factor plugin's own verify endpoint is the other kind: `Sessions.elevate` appends to the
+log the *row* holds, re-derives the level, and rotates the token in one locked write.
 
 ## Custom user fields
 
@@ -388,7 +494,7 @@ on it for the client and hand the same map to `Auth.define` on the server.
 
 ### The one rule
 
-**Every field must be constructible without a value.** OAuth provisioning, a magic link and any
+**Every field must be constructible without a value.** OAuth provisioning, an e-mailed code and any
 plugin create users from the base fields alone, so a field with no default has nothing to be set to.
 `makeUserModel` checks this when it builds — at module scope — and throws a message naming the
 offending field, so a mistake is a start-up failure rather than a sign-in that fails in production.
@@ -705,7 +811,8 @@ const AuthLive = Auth.layer(options).pipe(Layer.provide(Policy), Layer.provide(P
 Every member is optional and absent means "allow, unchanged", so installing nothing is the default
 and costs nothing. `source` tells `beforeUserCreate` which door the person came through —
 `EmailPassword`, `OAuth` (carrying the verified profile, so one hook covers every provider),
-`MagicLink`, or a plugin naming itself — which is what lets one policy cover every flow you serve.
+or a plugin naming itself (`Plugin("email-otp")`, `Plugin("anonymous")`) — which is what lets one
+policy cover every flow you serve.
 The candidate always arrives complete: your own columns are filled in from the model's declared
 defaults before the hook is asked, on every source, so a policy reads the same row whichever door
 the person came through. A rewrite is re-validated through the user model, so a hook cannot store a
@@ -742,9 +849,10 @@ redirected to. Make it a short stable classification a client can branch on — 
 policy in it. `detail` is under the same rule.
 
 How a refusal reaches the caller depends on the shape of what it refused. `signUpEmail`,
-`signInEmail`, `signInSocial`, `linkSocial`, `changeEmail`, `deleteUser` and the magic link's
-`exchange` answer the typed `403`. The completions a browser arrives at by a top-level navigation —
-the OAuth callback, a magic link, the delete-account link — have nowhere to put an error, so they
+`signInEmail`, `signInSocial`, `linkSocial`, `changeEmail`, `deleteUser` and a plugin's own
+request/response verify answer the typed `403`. The completions a browser arrives at by a top-level
+navigation — the OAuth callback, an e-mailed link, the delete-account link — have nowhere to put an
+error, so they
 redirect carrying `?error=policy_refused&code=<yours>`, to the same error URL every other failure of
 that flow lands on when the flow has one in hand; a link is spent either way, because the hook is
 asked after the token has been claimed. And one case is neither: refusing the session a **sign-up**
@@ -777,18 +885,18 @@ does, and a consumer composes them with plain layers.
 ```ts
 const AuthLive = Auth.layer(options).pipe(Layer.provide(PgLive), Layer.provide(MyMailer))
 
-const MagicLinkLive = MagicLink.layer({ ttl: Duration.minutes(10) }).pipe(
+const EmailOtpLive = EmailOtp.layer({ ttl: Duration.minutes(10) }).pipe(
   Layer.provideMerge(AuthLive),          // the plugin reads the deployment's own services
-  Layer.provide(MyMagicLinkMailer)       // …and one seam of its own
+  Layer.provide(MyCodeMailer)            // …and one seam of its own
 )
 
-const AppApi = HttpApi.make("app").addHttpApi(AuthApi).add(MagicLink.MagicLinkApiGroup).add(Todos)
+const AppApi = HttpApi.make("app").addHttpApi(AuthApi).add(EmailOtp.EmailOtpApiGroup).add(Todos)
 
 const HandlersLive = Layer.mergeAll(
   AuthHandlers.layer(AppApi),
-  MagicLink.handlers(AppApi),
+  EmailOtp.handlers(AppApi),
   Todos.layer
-).pipe(Layer.provide(MagicLinkLive))
+).pipe(Layer.provide(EmailOtpLive))
 ```
 
 `AuthHandlers.forGroup(group, build)` is what makes the third line possible. `HttpApiBuilder.group`
@@ -809,8 +917,8 @@ The rest of the seams a plugin uses:
   your infrastructural failures out of your endpoints' error unions, exactly as `serverFault` keeps
   this library's two out of its own.
 - **Mail.** A service of your own in your `Requirements`, not a method on `AuthEmails`: a plugin
-  cannot widen an interface every deployment implements, and the shapes differ (a magic link may
-  have no user behind the address). Forgetting it is a compile error.
+  cannot widen an interface every deployment implements, and the shapes differ (a code sent to an
+  address that has no account has no user behind it). Forgetting it is a compile error.
 - **Events.** `PluginEvent { plugin, event, userId, data }` on the closed `AuthEvent` union. No
   secrets in `data` — events reach log sinks and webhooks.
 - **Tables.** `Migrations.make({ table, migrations })` gives a plugin its own bookkeeping table and
@@ -825,76 +933,345 @@ The rest of the seams a plugin uses:
   deployment build the auth handlers get, so both groups read one `Sessions` and one rate limiter.
   `TestEmails.record` is the seam your mailer's test layer implements over.
 
-### Magic link
+### Composing them all
 
-The first plugin, and the worked example of all of the above. Passwordless sign-in by a single-use
-link. It owns no table — a link is a `Verifications` token — so a deployment that has run this
-library's migrations needs no new ones.
-
-| Endpoint | Method / path |
-|---|---|
-| `signIn` | `POST /auth/magic-link/sign-in` |
-| `verify` | `GET /auth/magic-link/verify?token=` |
-| `exchange` | `POST /auth/magic-link/exchange` |
+Every plugin is the same four things and composes the same way. Two of the seams —
+`Authenticators` and `SignInPipeline` — are `Context.Reference`s that the domain services read
+*when they are built*, so a plugin contributing to one provides it **underneath** `Auth.layer`;
+everything else goes over the top.
 
 ```ts
-MagicLink.layer({
-  ttl: Duration.minutes(5),        // how long a link may be followed for
-  disableSignUp: false,            // refuse an address that has no account
-  path: "/auth/magic-link/verify", // where the e-mailed link points
-  revokeUnprovenAccounts: true     // the takeover defence below
+// 1. Under the deployment: the seams that must exist before the services do.
+const SeamsLive = Layer.mergeAll(
+  TwoFactor.layerSeams(twoFactorOptions),   // the SignInPipeline decider, and its authenticators
+  Passkeys.layerAuthenticators,             // "a passkey is a way into this account"
+  Phone.authenticators(phoneOptions),
+  Anonymous.layerHooks(anonymousOptions)    // the merge-on-sign-in hook
+).pipe(Layer.provide(PgLive), Layer.provide(Auth.layerConfigOnly(options)))
+
+const AuthLive = Auth.layerWithOAuth(options).pipe(
+  Layer.provide(PgLive),
+  Layer.provide(MyMailer),
+  Layer.provide(FetchHttpClient.layer),
+  Layer.provide(SeamsLive)
+)
+
+// 2. Over it: the plugins' own services.
+const PluginsLive = Layer.mergeAll(
+  EmailOtp.layer({ digits: 8 }).pipe(Layer.provide(MyCodeMailer)),
+  Username.layer(),
+  Anonymous.layer(anonymousOptions),
+  Passkeys.layer({ rpId: "example.com", origin: "https://app.example.com" }).pipe(
+    Layer.provide(WebAuthn.layerSimple),
+    Layer.provide(PasskeyStore.layer)
+  ),
+  TwoFactor.layer(twoFactorOptions).pipe(Layer.provide(MyTwoFactorMailer)),
+  Phone.layer(phoneOptions).pipe(Layer.provide(MySmsSender)),
+  OneTap.layer({ providerId: "google" })
+).pipe(Layer.provideMerge(AuthLive))
+
+// 3. One API: this library's group, each plugin's, and your own.
+const AppApi = HttpApi.make("app")
+  .addHttpApi(AuthApi)
+  .add(EmailOtp.EmailOtpApiGroup)
+  .add(Username.UsernameApiGroup)
+  .add(Anonymous.AnonymousApiGroup)
+  .add(PasskeysApiGroup)
+  .add(TwoFactor.TwoFactorApiGroup)
+  .add(Phone.PhoneApiGroup)
+  .add(OneTap.OneTapApiGroup)
+  .add(Todos)
+
+// 4. One build of the deployment, under every group's handlers.
+const HandlersLive = Layer.mergeAll(
+  AuthHandlers.layer(AppApi),
+  EmailOtp.handlers(AppApi),
+  Username.handlers(AppApi),
+  Anonymous.handlers(AppApi),
+  PasskeyHandlers.handlers(AppApi),
+  TwoFactor.handlers(AppApi),
+  Phone.handlers(AppApi),
+  OneTap.handlers(AppApi),
+  Todos.layer
+).pipe(Layer.provide(PluginsLive))
+```
+
+**Migrations sequence, they do not merge.** This library's own set runs first; each plugin owns a
+bookkeeping table and ids from `0001`, and its foreign keys point at `users`, so each is provided
+*under* the core set. Never merge a plugin's migrations into `Migrations.migrations`: the migrator
+orders globally, so an id added later that sorts lower never runs.
+
+```ts
+const DatabaseLive = Layer.mergeAll(
+  UsernameMigrations.layer,
+  AnonymousMigrations.layer,
+  PasskeyMigrations.layer,
+  TwoFactor.Migrations.layer,
+  Phone.Migrations.layer
+).pipe(Layer.provide(Migrations.layer), Layer.provideMerge(PgClientLive))
+```
+
+`EmailOtp` and `OneTap` are absent from that list on purpose: neither owns a table. A code, the link
+beside it and a One Tap nonce are all `Verifications` rows.
+
+### E-mail OTP
+
+The reference plugin. A one-time code by e-mail, and — on the sign-in purpose — a single-use link
+beside it backed by the *same* row: answering the code kills the link, following the link kills the
+code. It owns no table.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `send` | `POST /auth/email-otp/send` | |
+| `verify` | `POST /auth/email-otp/verify` | |
+| `link` | `GET /auth/email-otp/link?token=` | |
+| `stepUpSend` | `POST /auth/email-otp/step-up/send` | ✓ ▲ |
+| `stepUpVerify` | `POST /auth/email-otp/step-up/verify` | ✓ ▲ |
+| `changeEmailSend` | `POST /auth/email-otp/change-email/send` | ✓ ▲ ⧗ |
+| `changeEmailVerify` | `POST /auth/email-otp/change-email/verify` | ✓ ▲ ⧗ |
+
+```ts
+EmailOtp.layer({
+  digits: 8,                    // how long the code is
+  ttl: Duration.minutes(10),    // how long it may be answered for
+  attempts: 5,                  // wrong guesses before the challenge is gone
+  resendCooldown: Duration.seconds(60),
+  disableSignUp: false,         // refuse an address that has no account
+  link: true                    // mint the link beside the code
 })
 ```
 
-`signIn` answers `200` for every well-formed address — one with an account, one without, and one
-whose message could not be delivered — because a distinguishable answer would tell an
-unauthenticated caller who is registered here. `verify` is for the browser: it claims the token,
-sets the session cookie and redirects, and it redirects on failure too, to the link's own
-`errorCallbackURL` carrying `?error=invalid_token` or `?error=sign_up_disabled`. `exchange` is the
-JSON twin for a single-page or mobile client, and sets the cookie as well.
+`send` answers `200` for every well-formed address and writes exactly the same rows whichever way it
+goes — a known address, an unknown one, one a deployment would refuse to create an account for.
+Delivery is forked off the request, so the branches are not separable by a stopwatch either. There
+are three purposes a caller may ask for — `signIn`, `verifyEmail`, `resetPassword` — and no
+`signUp`: signing up is what a `signIn` code *does* when the address turns out to have no account
+and `disableSignUp` is off, because behaving differently for a known and an unknown address is the
+oracle the `200` exists to avoid.
 
-The callback URLs travel in the token's server-side payload rather than in the link, so a link
-cannot be edited into a link that lands somewhere else; each of them is validated against
-`trustedOrigins` when the link is minted, and dropped rather than refused if it does not survive
-that. A link created the account when it is followed? Then `newUserCallbackURL` wins over
-`callbackURL`.
+The attempt budget belongs to the *browser*, not the address: the handle is a full-entropy secret in
+`__Host-effect_auth.email_otp_handle`, so a stranger who knows somebody's address cannot burn their
+five guesses. The resend cooldown is counted against the address, so a thousand proxies do not
+become a thousand codes into one mailbox.
 
-**The unproven-account rule.** Somebody can register an address they do not own, wait, and hope its
-real owner later signs in with a magic link — they would then share the account. So when a link
-proves control of an address whose account is *unverified*, that account's sign-in methods and
-sessions are destroyed in one transaction and the address is marked verified. Switching
-`revokeUnprovenAccounts` off keeps the address verification and keeps the squatter's password: do it
-only if something else in the deployment guarantees no account is ever created unverified.
-
-The mailer is one method:
+`verify` answers a tagged union — `SignedIn`, `Verified` or `PasswordReset` — or `202 MfaRequired`
+when a factor plugin owes a second factor, in which case it sets the pending cookie and **no**
+session cookie.
 
 ```ts
-const MyMagicLinkMailer = Layer.succeed(MagicLink.MagicLinkEmails)({
-  sendMagicLink: ({ email, user, token, url }) =>
-    send(email, user === null ? "Create your account" : "Sign in", Redacted.value(url))
+const MyCodeMailer = Layer.succeed(EmailOtp.EmailOtpEmails)({
+  sendCode: ({ email, user, code, link, purpose }) =>
+    send(email, subjectFor(purpose, user), Redacted.value(code))
 })
 ```
 
-`user` is `null` when the address has no account. Both messages must go out, and a delivery failure
-is logged and swallowed — the endpoint answers `200` either way.
+**The unproven-account rule.** Somebody can register an address they do not own and hope its real
+owner later signs in by code — they would then share the account. So when a *sign-in* or *reset*
+code proves control of an address whose account is unverified, that account's sign-in methods, its
+contributed authenticators and its sessions are destroyed in one transaction and the address is
+marked verified. The `verifyEmail` purpose deliberately does **not** do this: nobody gains access by
+walking through that door, and running it there would delete the password of every person who signs
+up and then confirms their address.
 
-In the browser, `MagicLinkClient` is a client of its own, so an application that does not serve magic
-links never ships it:
+### Username
+
+A second spelling of the credential that already exists — not a second credential. It adds
+`effect_auth_usernames`, contributes nothing to `Authenticators` (removing a username takes no way
+in away), and holds one rule: `signIn` resolves the name, reads the row, runs *exactly one* password
+verification, and only then branches. An unknown name, an account with no password and a wrong
+password are one answer at one cost.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `signIn` | `POST /auth/username/sign-in` | |
+| `set` | `POST /auth/username/set` | ✓ ▲ ⧗ |
+| `available` | `POST /auth/username/available` | |
 
 ```ts
-import { MagicLinkClient } from "effect-auth/client"
-
-const magicLink = MagicLinkClient.make({ baseUrl: "https://app.example.com" })
-
-registry.set(magicLink.signIn, { email, callbackURL: "/welcome" })
-// …and, from the page the link lands on:
-registry.set(magicLink.exchange, { token: Redacted.make(tokenFromTheUrl) })
+Username.layer({
+  minLength: 3,
+  maxLength: 30,
+  unicode: false,           // [a-z0-9_-] unless you opt in
+  availability: false,      // the oracle is off by default
+  reserved: [...Username.reservedUsernames, "acme"]  // replaced, never added to
+})
 ```
 
-It takes no `api` option: the group's prefix is baked into its declaration, so the paths it calls are
-the ones your composed API serves. `exchange` carries `"auth.session"`, so an `AuthClient` built
-beside it refetches its session atom by itself. If you would rather drive your own composed API,
-`HttpApiClient.group(AppApi, { group: "magicLink" })` needs nothing from this library at all.
+Uniqueness is the index's, not the application's: the claim is one `ON CONFLICT … DO UPDATE …
+WHERE user_id = excluded.user_id`, and no row coming back is `UsernameTaken`. Validity lives on the
+write path only, so a name stored under an earlier policy still signs in.
+
+### Anonymous
+
+A visitor with a basket, before they are anybody. It provisions a **real** `users` row at
+`anon-<uuid>@anonymous.invalid` (RFC 2606 reserved, so nothing can be delivered to it) and marks it
+in a table of its own — never an `is_anonymous` column, because adoption is then a `DELETE` rather
+than an `UPDATE` on a shared row.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `signIn` | `POST /auth/anonymous/sign-in` | |
+| `delete` | `POST /auth/anonymous/delete` | ✓ ▲ ⧗ |
+
+**`aal0` is the whole mechanism.** An anonymous session records no evidence, so it derives `aal0`,
+and `Anonymous.identifiedPolicy` — `{ aal: "aal1" }` — is the one guard that excludes every visitor.
+No endpoint needs an `isAnonymous` check and none should grow one.
+
+```ts
+Endpoint.annotate(RequireAssurance, Anonymous.identifiedPolicy)   // "somebody, please"
+```
+
+Conversion has two halves and you want both. *In place*: the visitor acquires a credential — a
+password, a linked provider, a passkey — and the deployment calls `Anonymous.adopt({ userId })`,
+which clears the marker once the account really holds a way in. *On sign-in*: they turn out to have
+had an account all along, and `Anonymous.layerHooks` merges the visitor into it and deletes them —
+at `beforeSessionMint`, after the sign-in pipeline has said `Proceed`, so a challenged sign-in never
+deletes somebody who then abandons the prompt.
+
+Nothing clears the marker on its own, so `sweep` and the merge both check the account for a real way
+in before destroying it. `sweep` is an `Effect` you schedule; it never removes a visitor holding a
+live session.
+
+### Passkeys
+
+WebAuthn, on the `effect-auth/passkeys` subpath — it is the only plugin with a peer dependency
+(`@simplewebauthn/server`), so a deployment that does not serve passkeys installs nothing.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `registerOptions` | `POST /auth/passkeys/register/options` | ✓ ▲ ⧗ |
+| `registerVerify` | `POST /auth/passkeys/register/verify` | ✓ ▲ ⧗ |
+| `authenticateOptions` | `POST /auth/passkeys/authenticate/options` | |
+| `authenticateVerify` | `POST /auth/passkeys/authenticate/verify` | |
+| `listPasskeys` | `GET /auth/passkeys` | ✓ |
+| `renamePasskey` | `POST /auth/passkeys/rename` | ✓ ▲ |
+| `deletePasskey` | `POST /auth/passkeys/delete` | ✓ ▲ ⧗ |
+
+```ts
+Passkeys.layer({
+  rpId: "example.com",                 // the registrable domain — no scheme, no port
+  origin: "https://app.example.com",   // or a list, for several origins
+  userVerification: "preferred",
+  rejectCounterRegression: false
+})
+```
+
+`rpId` and `origin` are **required configuration and never read from a request header**: an origin
+chosen by whoever sent the request is not origin binding, and origin binding is the whole of
+WebAuthn's phishing resistance. `rpId` is fixed for the life of every credential registered under it.
+
+Evidence is read off the authenticator's real UV bit, so a user-verified tap is
+`{ factor: "inherence", userVerified: true }` and reaches `aal2` **in one ceremony** — no second
+prompt. A tap that did not verify the person is `aal1`.
+
+Delivery notes: `Passkeys.layerAuthenticators` goes *underneath* `Auth.layer` (it is what makes
+`Accounts.unlink` count a passkey as a way in); `PasskeyMigrations.layer` sequences after
+`Migrations.layer`; a dismissed browser prompt is `WebAuthnClientError` with `reason: "Cancelled"`
+and should not be rendered as an error; and prefer the address-free flow — with no `email` the
+browser offers whatever discoverable credential it holds.
+
+### Two-factor
+
+TOTP, the recovery codes behind it, and the browsers a person tells you to remember. It is the
+plugin that installs a `SignInPipeline` decider, which is why a person with a confirmed enrolment is
+challenged by *every* sign-in path — password, OAuth, e-mail code, username — with no route list to
+forget one from.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `totpEnroll` | `POST /auth/two-factor/totp/enroll` | ✓ ▲ ⧗ |
+| `totpConfirm` | `POST /auth/two-factor/totp/confirm` | ✓ ▲ ⧗ |
+| `totpVerify` | `POST /auth/two-factor/totp/verify` | |
+| `totpDisable` | `POST /auth/two-factor/totp/disable` | ✓ ▲ ⧗ |
+| `recoveryVerify` | `POST /auth/two-factor/recovery/verify` | |
+| `recoveryRegenerate` | `POST /auth/two-factor/recovery/regenerate` | ✓ ▲ ⧗ |
+| `devices` | `GET /auth/two-factor/devices` | ✓ |
+| `devicesRevoke` | `POST /auth/two-factor/devices/revoke` | ✓ ▲ |
+| `devicesRevokeAll` | `POST /auth/two-factor/devices/revoke-all` | ✓ ▲ |
+
+It installs in **two** places, and both are required:
+
+```ts
+// underneath Auth.layer — the decider and the authenticators are references,
+// read when the services that consult them are built
+const SeamsLive = TwoFactor.layerSeams(options).pipe(Layer.provide(Auth.layerConfigOnly(options)))
+
+// and over it, for the endpoints
+const TwoFactorLive = TwoFactor.layer(options).pipe(Layer.provideMerge(AuthLive))
+```
+
+The verify endpoints carry no `Authenticated` middleware, because the same endpoint serves a
+*pending* authentication — which by construction has no session — and a signed-in person stepping
+up. Defaults: 12-hour step-up window, ten attempts per fifteen minutes per account, thirty-day
+absolute trusted-device lifetime, ten recovery codes shown exactly once.
+
+### Phone
+
+SMS one-time codes, with the limits that make them affordable. `allowedCountries` defaults to the
+**empty list, which refuses every number**: an SMS is the one thing this library does that costs
+money per request, so a deployment names the country calling codes it will send to before the first
+message leaves.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `sendVerification` | `POST /auth/phone/send-verification` | ✓ ▲ ⧗ |
+| `verify` | `POST /auth/phone/verify` | ✓ ▲ ⧗ |
+| `remove` | `POST /auth/phone/remove` | ✓ ▲ ⧗ |
+| `signInSend` | `POST /auth/phone/sign-in/send` | |
+| `signInVerify` | `POST /auth/phone/sign-in/verify` | |
+| `stepUpSend` | `POST /auth/phone/step-up/send` | ✓ ▲ |
+| `stepUpVerify` | `POST /auth/phone/step-up/verify` | ✓ ▲ |
+
+```ts
+Phone.layer({
+  allowedCountries: ["1", "44"],   // country calling codes; [] sends nowhere
+  contact: true,                   // keep a number on the account
+  signIn: false,                   // sign in by SMS — off by default
+  stepUp: true                     // use it as a second factor
+})
+```
+
+Toll fraud is bounded five ways: per destination number, per destination *prefix* (which is what an
+attacker paying for traffic to a premium range actually hits), per authenticated subject, per client
+address, and per subject across challenges — so asking for a fresh code does not refresh the attempt
+budget. SMS is a **restricted** factor (NIST 800-63B §3.2.9): the `Authenticators` contribution says
+so, and `requireAlternateSecondFactor` refuses to attach a number to an account that holds no
+unrestricted second factor.
+
+### Google One Tap
+
+Not a verification path of its own: it checks the browser bindings, then hands the credential to the
+same `IdToken.verifyIdToken` and the same registered provider that the redirect flow uses —
+including that provider's `hd` hosted-domain rule — and then to the same `Accounts.linkOAuth`.
+
+| Endpoint | Method / path | Auth |
+|---|---|---|
+| `nonce` | `GET /auth/one-tap/nonce` | |
+| `callback` | `POST /auth/one-tap/callback` | |
+
+The nonce is minted by this server into `__Host-effect_auth.onetap_nonce`, echoed through Google, and
+compared against what Google *signed*. Redirect mode additionally requires `g_csrf_token` to match
+its own cookie. A One Tap credential is not an OAuth grant, so no provider tokens are stored —
+writing an empty set would wipe what a real authorization-code flow saved.
+
+### The clients
+
+One client per plugin, so a page ships only what it serves. They share `AuthClient`'s reactivity
+keys, so an application holding two of them sees its session atom refetch by itself.
+
+```ts
+import { AuthClient, EmailOtpClient, PasskeysClient, TwoFactorClient } from "effect-auth/client"
+
+const auth = AuthClient.make({ baseUrl })
+const otp = EmailOtpClient.make({ baseUrl })
+
+registry.set(otp.send, { email, purpose: "signIn" })
+registry.set(otp.verify, { code: Redacted.make(typed) })   // carries "auth.session"
+```
+
+None takes an `api` option: a group's prefix is baked into its declaration, so the paths it calls are
+the ones your composed API serves. If you would rather drive your own composed API,
+`HttpApiClient.group(AppApi, { group: "emailOtp" })` needs nothing from this library at all.
 
 ## Testing
 
@@ -1023,24 +1400,22 @@ routinely end up in log sinks and webhooks, and `data` is held to the same rule.
 ## Example
 
 `examples/basic` is a complete Node server in six files — the auth group carrying a deployment's own
-`plan` field, the magic link plugin, one protected `GET /todos` group of its own, two console
+`plan` field, the e-mail OTP plugin, one protected `GET /todos` group of its own, two console
 mailers, PGlite. Its end-to-end test drives sign-up → verify → sign-in → protected endpoint →
 change password → sign-out, the reset flow, `update-user` on the custom field, `set-password` for an
-account that has none, and a magic link that provisions the account it names — all through the
+account that has none, and an e-mailed code that provisions the account it names — all through the
 generated `HttpApiClient`. It is the integration test bed and the source of the snippets above.
 
 ## Roadmap
 
-Shipped since v1: the [plugin seams](#plugins) and [magic link](#magic-link) on top of them, the
-account endpoints (update, change-email, delete, set-password) and OAuth token refresh, four more
-providers plus [OIDC discovery](#the-providers), the [cookie cache](#cookie-cache), and
-[custom user fields](#custom-user-fields).
+Shipped: the [plugin seams](#plugins), the account endpoints and OAuth token refresh, fourteen
+providers plus [OIDC discovery](#the-providers), the [cookie cache](#cookie-cache),
+[custom user fields](#custom-user-fields), [assurance levels and step-up](#assurance), and the seven
+plugins below — [e-mail OTP](#e-mail-otp), [passkeys](#passkeys), [two-factor](#two-factor),
+[phone](#phone), [username](#username), [anonymous](#anonymous) and [One Tap](#google-one-tap).
 
 Planned next:
 
-- **E-mail OTP**, the other passwordless shape, as a second plugin.
-- **Two-factor authentication**: TOTP, recovery codes, and a `SessionNotFresh`-style step-up guard.
-- **Passkeys** (WebAuthn).
 - **Redis-backed sessions** and a shared `RateLimiterStore`, for deployments where process-local is
   not good enough. The [`sessionStore` seam](#swapping-the-session-store) is what the first plugs
   into.

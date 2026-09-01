@@ -1,6 +1,8 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Option, Schema } from "effect"
 import { SqlClient, SqlError } from "effect/unstable/sql"
+import type { AuthenticationMethod } from "../../src/domain/Assurance.js"
+import { deriveAal } from "../../src/domain/Assurance.js"
 import { Account, CredentialIssuer, oauthIssuer, Session, User, UserId, Verification } from "../../src/domain/Schema.js"
 import {
   AccountStore,
@@ -46,7 +48,8 @@ const createSession = Effect.fnUntraced(function* (
   userId: UserId,
   tokenHash: string,
   ttl: Duration.Duration,
-  rememberMe = true
+  rememberMe = true,
+  methods: ReadonlyArray<AuthenticationMethod> = []
 ) {
   const sessions = yield* SessionStore
   const now = yield* DateTime.now
@@ -56,9 +59,24 @@ const createSession = Effect.fnUntraced(function* (
     expiresAt: DateTime.addDuration(now, ttl),
     ipAddress: "203.0.113.7",
     userAgent: "vitest",
-    rememberMe
+    rememberMe,
+    methods,
+    aal: deriveAal(methods)
   })
   return yield* sessions.create(row)
+})
+
+/** One entry of an authentication log, as a plugin states it. */
+const evidence = (
+  name: string,
+  factor: AuthenticationMethod["factor"],
+  completedAt: DateTime.Utc
+): AuthenticationMethod => ({
+  method: name,
+  completedAt,
+  factor,
+  phishingResistant: false,
+  restricted: false
 })
 
 const createVerification = Effect.fnUntraced(function* (identifier: string, valueHash: string, ttl: Duration.Duration) {
@@ -247,6 +265,199 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         const listed = yield* sessions.listByUserId(user.id)
         const reread = listed.find((row) => row.tokenHash === hash)
         assert.strictEqual(reread?.rememberMe, false)
+      })
+    )
+
+    it.effect("stores the authentication log, the level and the stamp, and reads them back on the joined row", () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-assurance")
+        const user = yield* createUser(uniqueEmail("assurance"))
+        const now = yield* DateTime.now
+        const log = [evidence("password", "knowledge", now), evidence("totp", "possession", now)]
+
+        const created = yield* createSession(user.id, hash, Duration.days(7), true, log)
+
+        assert.deepStrictEqual(created.methods, log)
+        assert.strictEqual(created.aal, "aal2")
+
+        // The joined read is the hot path: a column it forgets is a column the
+        // request-authentication path silently cannot see.
+        const found = yield* expectSome(yield* sessions.findByTokenHash(hash), "expected the joined row")
+        assert.deepStrictEqual(found.session.methods, log)
+        assert.strictEqual(found.session.aal, "aal2")
+        assert.strictEqual(
+          DateTime.toEpochMillis(found.session.authenticatedAt),
+          DateTime.toEpochMillis(created.authenticatedAt)
+        )
+      })
+    )
+
+    it.effect("defaults an unstated log to nothing at aal1, stamped with the insert clock", () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-assurance-default")
+        const user = yield* createUser(uniqueEmail("assurance-default"))
+        const now = yield* DateTime.now
+
+        // Deliberately stating none of the three: a writer that predates
+        // step-up gets the row every session had before this wave — one
+        // ordinary authenticated session, authenticated now.
+        const created = yield* sessions.create(
+          yield* Session.insert.makeEffect({
+            tokenHash: hash,
+            userId: user.id,
+            expiresAt: DateTime.addDuration(now, Duration.days(1)),
+            ipAddress: null,
+            userAgent: null,
+            rememberMe: true
+          })
+        )
+
+        assert.deepStrictEqual(created.methods, [])
+        assert.strictEqual(created.aal, "aal1")
+        assert.strictEqual(DateTime.toEpochMillis(created.authenticatedAt), DateTime.toEpochMillis(created.createdAt))
+      })
+    )
+
+    it.effect("elevates a session in one statement: the log, the level, the stamp and a new token", () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-elevate")
+        const rotated = unique("hash-elevated")
+        const user = yield* createUser(uniqueEmail("elevate"))
+        const now = yield* DateTime.now
+        const first = evidence("password", "knowledge", now)
+        const created = yield* createSession(user.id, hash, Duration.days(7), true, [first])
+
+        assert.strictEqual(created.aal, "aal1")
+
+        const second = evidence("totp", "possession", DateTime.addDuration(now, Duration.minutes(3)))
+        const methods = [first, second]
+        const elevated = yield* expectSome(
+          yield* sessions.elevate(created.id, {
+            append: (stored) => {
+              // The log handed to `append` is the row's own, not anything the
+              // caller was holding.
+              assert.deepStrictEqual(stored, [first])
+              return { methods, aal: deriveAal(methods) }
+            },
+            authenticatedAt: DateTime.addDuration(now, Duration.minutes(3)),
+            tokenHash: rotated
+          }),
+          "expected the elevated session"
+        )
+
+        // The id survives, so open tabs and the session list do.
+        assert.strictEqual(elevated.id, created.id)
+        assert.deepStrictEqual(elevated.methods, methods)
+        assert.strictEqual(elevated.aal, "aal2")
+        assert.strictEqual(elevated.tokenHash, rotated)
+        assert.strictEqual(
+          DateTime.toEpochMillis(elevated.authenticatedAt),
+          DateTime.toEpochMillis(DateTime.addDuration(now, Duration.minutes(3)))
+        )
+
+        // The token is replaced, not added to: one captured at aal1 must not
+        // inherit the level the session has now.
+        assert.strictEqual(Option.isNone(yield* sessions.findByTokenHash(hash)), true)
+        const found = yield* expectSome(yield* sessions.findByTokenHash(rotated), "expected the elevated session")
+        assert.strictEqual(found.session.aal, "aal2")
+        assert.deepStrictEqual(found.session.methods, methods)
+      })
+    )
+
+    it.effect("answers None rather than inventing a row when the session is already gone", () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-elevate-gone")
+        const user = yield* createUser(uniqueEmail("elevate-gone"))
+        const now = yield* DateTime.now
+        const session = yield* createSession(user.id, hash, Duration.days(1))
+
+        assert.strictEqual(yield* sessions.deleteById(session.id, user.id), true)
+
+        let appended = false
+        const answered = yield* sessions.elevate(session.id, {
+          append: (stored) => {
+            appended = true
+            return { methods: stored, aal: "aal1" }
+          },
+          authenticatedAt: now,
+          tokenHash: unique("hash-elevate-gone-new")
+        })
+
+        // `None`, the shape `touch` uses for exactly this — and the merge was
+        // never run, so a caller's `append` cannot have side effects on a row
+        // that is not there.
+        assert.strictEqual(Option.isNone(answered), true)
+        assert.isFalse(appended)
+      })
+    )
+
+    it.effect("appends to the stored log, not to the one a stale caller is holding", () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-elevate-stale")
+        const user = yield* createUser(uniqueEmail("elevate-stale"))
+        const now = yield* DateTime.now
+        const password = evidence("password", "knowledge", now)
+        const created = yield* createSession(user.id, hash, Duration.days(7), true, [])
+
+        // Somebody else raised it first — a `reauthenticate`, or a parallel
+        // request — while our caller was still holding the empty log it read.
+        yield* expectSome(
+          yield* sessions.elevate(created.id, {
+            append: () => ({ methods: [password], aal: "aal1" }),
+            authenticatedAt: now,
+            tokenHash: unique("hash-elevate-stale-1")
+          }),
+          "expected the first elevation"
+        )
+
+        const totp = evidence("totp", "possession", now)
+        const elevated = yield* expectSome(
+          yield* sessions.elevate(created.id, {
+            append: (stored) => {
+              const methods = [...stored, totp]
+              return { methods, aal: deriveAal(methods) }
+            },
+            authenticatedAt: now,
+            tokenHash: unique("hash-elevate-stale-2")
+          }),
+          "expected the second elevation"
+        )
+
+        // Both entries survive, so the level is right. Reading the caller's own
+        // `methods` instead would have written `[totp]` and stayed at aal1 —
+        // the password the session really proved, silently dropped.
+        assert.deepStrictEqual(elevated.methods, [password, totp])
+        assert.strictEqual(elevated.aal, "aal2")
+      })
+    )
+
+    it.effect("leaves the authentication stamp untouched across a rolling refresh", () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-stamp-touch")
+        const user = yield* createUser(uniqueEmail("stamp-touch"))
+        const now = yield* DateTime.now
+        const session = yield* createSession(user.id, hash, Duration.days(1))
+
+        yield* expectSome(
+          yield* sessions.touch(session.id, DateTime.addDuration(now, Duration.days(30))),
+          "expected the touched session"
+        )
+
+        // Browsing must not keep a sensitive operation authorized for ever:
+        // the refresh moves the expiry and nothing about the assurance.
+        const found = yield* expectSome(yield* sessions.findByTokenHash(hash), "expected the session")
+        assert.strictEqual(
+          DateTime.toEpochMillis(found.session.authenticatedAt),
+          DateTime.toEpochMillis(session.authenticatedAt)
+        )
+        assert.strictEqual(found.session.aal, session.aal)
+        assert.deepStrictEqual(found.session.methods, session.methods)
       })
     )
 

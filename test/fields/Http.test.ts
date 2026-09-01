@@ -23,6 +23,7 @@ import { insecureSessionCookieName } from "../../src/http/Cookies.js"
 import { Authenticated, currentUserOf } from "../../src/http/Middleware.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, testPasswordText, uniqueEmail } from "../fixtures.js"
+import { completeSignIn } from "../http/helpers.js"
 import { FieldsApi, model } from "./model.js"
 
 /**
@@ -139,7 +140,7 @@ layer(layerFields)("fields/Http", (it) => {
       })
       yield* client.auth.signOut()
 
-      const signedIn = yield* client.auth.signInEmail({ payload: { email, password: testPassword } })
+      const signedIn = completeSignIn(yield* client.auth.signInEmail({ payload: { email, password: testPassword } }))
       assert.strictEqual(signedIn.user.plan, "pro")
 
       const current = yield* client.auth.getSession()

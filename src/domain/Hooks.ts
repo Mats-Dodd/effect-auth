@@ -51,10 +51,12 @@
  *
  * @since 0.1.0
  */
+import type { Option } from "effect"
 import { Context, Effect, Layer, Schema } from "effect"
 import { omitUndefined } from "../internal/records.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import type { UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
+import type { SessionWithUser } from "./Stores.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -67,9 +69,9 @@ import type { UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
  *
  * `OAuth` carries the verified profile the provider returned, so one
  * `beforeUserCreate` covers every provider a deployment serves without the hook
- * having to know which of them is which. `Plugin` is how a plugin outside this
- * package names itself — the magic-link plugin ships its own member rather than
- * borrowing one.
+ * having to know which of them is which. `Plugin` is how a plugin names itself,
+ * and it is what every plugin this package ships now uses — `email-otp`,
+ * `anonymous`, `passkeys`, `username` — rather than each adding a member here.
  *
  * @category models
  * @since 0.1.0
@@ -79,7 +81,15 @@ export type ProvisionSource =
   | { readonly _tag: "EmailPassword" }
   /** A first sign-in through an OAuth or OIDC provider. */
   | { readonly _tag: "OAuth"; readonly providerId: string; readonly info: OAuthUserInfo }
-  /** A first sign-in through a mailed magic link. */
+  /**
+   * A first sign-in through a mailed magic link.
+   *
+   * Nothing this package ships produces it any more: the magic link plugin was
+   * absorbed into `email-otp`, whose link half provisions under
+   * `Plugin("email-otp")`. Kept because a deployment's own link plugin may
+   * still name itself with it, and because removing a member is a breaking
+   * change to every exhaustive match over this union for no gain.
+   */
   | { readonly _tag: "MagicLink" }
   /** A plugin that provisions users of its own, naming itself. */
   | { readonly _tag: "Plugin"; readonly plugin: string }
@@ -185,6 +195,66 @@ export interface AuthHooksOf<F extends UserFields> {
   readonly beforeSessionCreate?: (options: {
     readonly user: UserOf<F>
     readonly source: ProvisionSource
+    /**
+     * The session the request already carried, if it carried one.
+     *
+     * **Details**
+     *
+     * The request arrived as user A and a session is about to be minted for
+     * user B. A policy that acts on that — an "upgrade an anonymous visitor"
+     * merge — belongs in {@link AuthHooksService.beforeSessionMint} rather than
+     * here, because here the sign-in may still be challenged and never happen.
+     *
+     * `None` on every unauthenticated sign-in, which is the ordinary case.
+     */
+    readonly current: Option.Option<SessionWithUser>
+  }) => Effect.Effect<void, PolicyRefused>
+
+  /**
+   * Consulted once the sign-in is *going to happen*: after
+   * {@link AuthHooksService.beforeSessionCreate} admitted it and after the
+   * sign-in pipeline said `Proceed`, immediately before the session row is
+   * written.
+   *
+   * **When to use**
+   *
+   * For the work that must not happen for a sign-in that is never completed.
+   * The two hook points answer two different questions, and the difference is
+   * the whole reason there are two:
+   *
+   * - `beforeSessionCreate` asks *may this person sign in at all*. It runs
+   *   first, so a deployment that has withdrawn access refuses before a factor
+   *   plugin issues a pending row, sends an SMS or writes anything on that
+   *   person's behalf.
+   * - `beforeSessionMint` asks *what has to happen as this session is minted*.
+   *   A second factor may still be owed when the first runs, and a challenged
+   *   sign-in mints nothing — so a merge, a migration of somebody's data, a
+   *   `DELETE` of the account being merged away, run here or they run for a
+   *   sign-in that never completed.
+   *
+   * This is the seam the anonymous plugin's merge hangs on, and it is why that
+   * plugin does not use `beforeSessionCreate`: a visitor deleted at the earlier
+   * point is deleted even when the person then abandons the second-factor
+   * prompt, mistypes their codes, or is refused.
+   *
+   * **Gotchas**
+   *
+   * A `PolicyRefused` here aborts the mint, and nothing has been published yet
+   * — but the credential the caller presented is already spent, because it was
+   * checked before either hook ran. Refuse here only for something the caller
+   * genuinely cannot retry past.
+   *
+   * It is not run inside the same transaction as the write of the session row:
+   * `SignIn` holds no transaction runner. A hook that must be atomic with
+   * something opens its own, as the anonymous plugin does; the residue is that
+   * a storage failure in the mint itself, after this hook committed, leaves the
+   * hook's work done and no session issued.
+   */
+  readonly beforeSessionMint?: (options: {
+    readonly user: UserOf<F>
+    readonly source: ProvisionSource
+    /** The session the request already carried, if it carried one. */
+    readonly current: Option.Option<SessionWithUser>
   }) => Effect.Effect<void, PolicyRefused>
 
   /**
@@ -330,18 +400,20 @@ export const combine = (first: AuthHooksService, second: AuthHooksService): Auth
 
   const afterUserCreate = sequence(first.afterUserCreate, second.afterUserCreate)
   const beforeSessionCreate = sequence(first.beforeSessionCreate, second.beforeSessionCreate)
+  const beforeSessionMint = sequence(first.beforeSessionMint, second.beforeSessionMint)
   const beforeEmailChange = sequence(first.beforeEmailChange, second.beforeEmailChange)
   const beforeUserDelete = sequence(first.beforeUserDelete, second.beforeUserDelete)
   const beforeAccountLink = sequence(first.beforeAccountLink, second.beforeAccountLink)
 
   // Only the members at least one side actually declared: a combined set that
-  // named all six would turn "no hook here" into "a hook that does nothing",
+  // named all seven would turn "no hook here" into "a hook that does nothing",
   // which is observably different to a caller that branches on absence.
   return {
     ...omitUndefined({
       beforeUserCreate,
       afterUserCreate,
       beforeSessionCreate,
+      beforeSessionMint,
       beforeEmailChange,
       beforeUserDelete,
       beforeAccountLink

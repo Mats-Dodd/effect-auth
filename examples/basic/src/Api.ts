@@ -10,7 +10,7 @@
  */
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
-import { Authenticated, MagicLink, UserId } from "effect-auth"
+import { Authenticated, EmailOtp, UserId } from "effect-auth"
 import { auth } from "./Auth.js"
 
 /**
@@ -60,6 +60,6 @@ export class TodosGroup extends HttpApiGroup.make("todos").add(
 
 /**
  * The whole application API: this library's group (carrying the deployment's own
- * user fields), the magic link plugin's, and the application's own.
+ * user fields), the e-mail one-time-code plugin's, and the application's own.
  */
-export const AppApi = HttpApi.make("app").addHttpApi(auth.Api).add(MagicLink.MagicLinkApiGroup).add(TodosGroup)
+export const AppApi = HttpApi.make("app").addHttpApi(auth.Api).add(EmailOtp.EmailOtpApiGroup).add(TodosGroup)

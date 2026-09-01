@@ -5,7 +5,7 @@ import { PolicyRefused } from "../../src/domain/Hooks.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testName, testPassword, uniqueEmail } from "../fixtures.js"
-import { makeClient, maxAgeSeconds, signedUp } from "./helpers.js"
+import { completeSignIn, makeClient, maxAgeSeconds, signedUp } from "./helpers.js"
 
 const sevenDays = Duration.toSeconds(Duration.days(7))
 const oneDay = Duration.toSeconds(Duration.days(1))
@@ -40,9 +40,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "")
 
       // --- sign in ------------------------------------------------------
-      const signedIn = yield* client.auth.signInEmail({
-        payload: { email, password: testPassword }
-      })
+      const signedIn = completeSignIn(
+        yield* client.auth.signInEmail({
+          payload: { email, password: testPassword }
+        })
+      )
       assert.strictEqual(signedIn.user.id, registered.user.id)
 
       const cookie = yield* TestHttpClient.sessionCookie(cookies)
@@ -176,9 +178,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           )
           yield* client.auth.verifyEmail({ query: { token: TestHttpClient.tokenOf(sent) } })
 
-          const signedIn = yield* client.auth.signInEmail({
-            payload: { email, password: testPassword }
-          })
+          const signedIn = completeSignIn(
+            yield* client.auth.signInEmail({
+              payload: { email, password: testPassword }
+            })
+          )
           assert.strictEqual(signedIn.user.emailVerified, true)
           assert.isTrue(Option.isSome(yield* TestHttpClient.sessionCookie(cookies)))
 
@@ -284,9 +288,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
     Effect.gen(function* () {
       const first = yield* signedUp(uniqueEmail("revoke-one"))
       const second = yield* makeClient()
-      const other = yield* second.client.auth.signInEmail({
-        payload: { email: first.email, password: Redacted.make(first.password) }
-      })
+      const other = completeSignIn(
+        yield* second.client.auth.signInEmail({
+          payload: { email: first.email, password: Redacted.make(first.password) }
+        })
+      )
 
       yield* first.client.auth.revokeSession({ payload: { sessionId: other.session.id } })
       const refused = yield* Effect.flip(second.client.auth.getSession())
@@ -454,12 +460,42 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
             })
           )
 
-          assert.strictEqual(error._tag, "SessionNotFresh")
-          if (error._tag === "SessionNotFresh") {
-            assert.strictEqual(error.freshAgeSeconds, 86_400)
+          assert.strictEqual(error._tag, "StepUpRequired")
+          if (error._tag === "StepUpRequired") {
+            // The endpoint's own annotation states no maxAge, so the middleware
+            // resolves it against `session.freshAge` — one day, in seconds.
+            assert.deepStrictEqual(error.required, { maxAge: 86_400 })
+            assert.strictEqual(error.current.aal, "aal1")
+            // No factor plugin is installed, so there is nothing to offer.
+            assert.deepStrictEqual(error.current.available, [])
           }
           // The session itself is still perfectly good.
           yield* client.auth.getSession()
+        })
+      )
+
+      it.effect("takes the refusal away again once the password is proved", () =>
+        Effect.gen(function* () {
+          const { client } = yield* signedUp(uniqueEmail("stale-then-fresh"))
+          yield* TestClock.adjust(Duration.days(2))
+
+          const change = () =>
+            client.auth.changePassword({
+              payload: {
+                currentPassword: testPassword,
+                newPassword: Redacted.make("a different long password")
+              }
+            })
+
+          assert.strictEqual((yield* Effect.flip(change()))._tag, "StepUpRequired")
+
+          // The one step-up this library ships. It re-stamps `authenticatedAt`,
+          // which is what the endpoint's policy is measured from, and rotates
+          // the token — so the next request is on the cookie this one wrote.
+          const elevated = yield* client.auth.reauthenticate({ payload: { password: testPassword } })
+          assert.strictEqual(elevated.session.aal, "aal1")
+
+          yield* change()
         })
       )
 

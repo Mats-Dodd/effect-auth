@@ -186,6 +186,118 @@ describe("http/Cookies", () => {
     })
   })
 
+  describe("plugin cookies", () => {
+    const pending = { baseName: "effect_auth.pending", hostOnly: true, maxAge: Duration.minutes(10) } as const
+    const banner = { baseName: "effect_auth.banner", hostOnly: false, maxAge: Duration.minutes(10) } as const
+
+    it("prefixes a host-only cookie __Host- over TLS and leaves it bare on plain HTTP", () => {
+      assert.strictEqual(AuthCookies.pluginCookieFor(secureConfig, pending).name, "__Host-effect_auth.pending")
+      assert.strictEqual(AuthCookies.pluginCookieFor(devConfig, pending).name, "effect_auth.pending")
+    })
+
+    it("prefixes a cookie that is not host-only __Secure- instead", () => {
+      assert.strictEqual(AuthCookies.pluginCookieFor(secureConfig, banner).name, "__Secure-effect_auth.banner")
+      assert.strictEqual(AuthCookies.pluginCookieFor(devConfig, banner).name, "effect_auth.banner")
+    })
+
+    it("decides a host-only cookie exactly as the OAuth state cookie is decided", () => {
+      // The one cookie this library already writes under these rules. If the
+      // helper and the hand-written original ever disagree, one of them is
+      // wrong, and this is the assertion that says so.
+      const options = { baseName: AuthCookies.oauthStateCookieBaseName, hostOnly: true, maxAge: Duration.minutes(10) }
+
+      for (const config of [secureConfig, devConfig]) {
+        const derived = AuthCookies.pluginCookieFor(config, options)
+
+        assert.strictEqual(derived.name, AuthCookies.oauthStateCookieName(config))
+        assert.deepStrictEqual(
+          derived.options,
+          AuthCookies.oauthStateCookieOptions(config, { maxAge: Duration.minutes(10) })
+        )
+        assert.deepStrictEqual(derived.expiredOptions, AuthCookies.expiredOAuthStateCookieOptions(config))
+        assert.strictEqual(derived.security.key, AuthCookies.oauthStateCookieSecurity(config).key)
+      }
+    })
+
+    it("pins a host-only cookie to Path=/ and no Domain, whatever the deployment configured", () => {
+      // What the `__Host-` prefix requires of the browser. A configured path or
+      // domain would make the browser reject the cookie outright.
+      const config = secure({ path: "/app", domain: ".example.com" })
+      const derived = AuthCookies.pluginCookieFor(config, pending)
+
+      assert.strictEqual(derived.options.path, "/")
+      assert.strictEqual(derived.options.domain, undefined)
+      assert.strictEqual(derived.expiredOptions.path, "/")
+      assert.strictEqual(derived.expiredOptions.domain, undefined)
+    })
+
+    it("carries the deployment's path and domain on a cookie that is not host-only", () => {
+      const config = secure({ path: "/app", domain: ".example.com" })
+      const derived = AuthCookies.pluginCookieFor(config, banner)
+
+      assert.strictEqual(derived.options.path, "/app")
+      assert.strictEqual(derived.options.domain, ".example.com")
+      // The session cookie's own attributes, for the same configuration.
+      const session = AuthCookies.sessionCookieOptions(config, { maxAge: Duration.minutes(10) })
+      assert.strictEqual(derived.options.path, session.path)
+      assert.strictEqual(derived.options.domain, session.domain)
+    })
+
+    it("caps sameSite away from strict, and follows a none deployment", () => {
+      const strict = secure({ sameSite: "strict" })
+      const none = secure({ sameSite: "none" })
+
+      // The session cookie honours `strict`; a flow cookie may not — the
+      // request that completes the flow is a top-level navigation, which a
+      // `Strict` cookie would not ride.
+      assert.strictEqual(AuthCookies.sessionCookieOptions(strict, { maxAge: Duration.minutes(10) }).sameSite, "strict")
+      assert.strictEqual(AuthCookies.pluginCookieFor(strict, pending).options.sameSite, "lax")
+      assert.strictEqual(AuthCookies.pluginCookieFor(strict, banner).options.sameSite, "lax")
+      assert.strictEqual(AuthCookies.pluginCookieFor(none, pending).options.sameSite, "none")
+      assert.strictEqual(AuthCookies.pluginCookieFor(secureConfig, pending).options.sameSite, "lax")
+    })
+
+    it("never lets a plugin cookie be script-readable, and follows the deployment on secure", () => {
+      assert.strictEqual(AuthCookies.pluginCookieFor(secureConfig, pending).options.httpOnly, true)
+      assert.strictEqual(AuthCookies.pluginCookieFor(devConfig, pending).options.httpOnly, true)
+      assert.strictEqual(AuthCookies.pluginCookieFor(secureConfig, pending).options.secure, true)
+      assert.strictEqual(AuthCookies.pluginCookieFor(devConfig, pending).options.secure, false)
+    })
+
+    it("carries the lifetime it was given, and expires by repeating the attributes", () => {
+      const derived = AuthCookies.pluginCookieFor(secureConfig, pending)
+
+      assert.deepStrictEqual(derived.options.maxAge, Duration.minutes(10))
+      // A browser replaces a cookie only when name, path and domain all match,
+      // so the expiry repeats them — and drops `maxAge` for an epoch `expires`.
+      assert.strictEqual(derived.expiredOptions.maxAge, undefined)
+      assert.deepStrictEqual(derived.expiredOptions.expires, new Date(0))
+      assert.strictEqual(derived.expiredOptions.path, derived.options.path)
+      assert.strictEqual(derived.expiredOptions.domain, derived.options.domain)
+      assert.strictEqual(derived.expiredOptions.sameSite, derived.options.sameSite)
+      assert.strictEqual(derived.expiredOptions.secure, derived.options.secure)
+      assert.strictEqual(derived.expiredOptions.httpOnly, true)
+    })
+
+    it("writes the cookie under a scheme whose key is the name", () => {
+      const derived = AuthCookies.pluginCookieFor(secureConfig, pending)
+
+      // `securitySetCookie` takes the cookie's name from the scheme, so the two
+      // cannot be allowed to drift apart.
+      assert.strictEqual(derived.security.key, derived.name)
+      assert.strictEqual(derived.security.in, "cookie")
+    })
+
+    it.effect("answers from the deployment's own configuration when read as an effect", () =>
+      Effect.map(
+        Effect.provideService(AuthCookies.pluginCookie(pending), AuthConfig.AuthConfig, secureConfig),
+        (derived) => {
+          assert.deepStrictEqual(derived, AuthCookies.pluginCookieFor(secureConfig, pending))
+        }
+      )
+    )
+  })
+
   // The redaction is a property of the fiber the value is rendered on, so each
   // of these gets the layer as its block's environment rather than an
   // `Effect.provide` inside the test body.

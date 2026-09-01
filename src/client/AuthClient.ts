@@ -58,7 +58,7 @@ import type {
   PasswordAlreadySet,
   PasswordPolicyViolation,
   RateLimited,
-  SessionNotFresh,
+  StepUpRequired,
   TokenRefreshFailed,
   Unauthorized,
   UserAlreadyExists,
@@ -85,7 +85,9 @@ import {
   type DeleteUserResponse,
   type LinkSocialPayload,
   type OAuthRedirect,
+  type MfaRequired,
   type Ok,
+  type ReauthenticatePayload,
   type RefreshTokenResponse,
   type RequestPasswordResetPayload,
   type ResetPasswordPayload,
@@ -102,8 +104,9 @@ import {
   type VerifyEmailQuery
 } from "../http/AuthApi.js"
 import { Authenticated } from "../http/Middleware.js"
-import type { PayloadRequest, ReactivityKeys as AtomReactivityKeys } from "./internal/atoms.js"
-import { layerFetch, withoutPayload, withPayload, withQuery } from "./internal/atoms.js"
+import type { OriginNotAllowed } from "../http/OriginCheck.js"
+import type { PayloadRequest, ReactivityKeys as AtomReactivityKeys } from "./Atoms.js"
+import { layerFetch, withoutPayload, withPayload, withQuery } from "./Atoms.js"
 
 // -----------------------------------------------------------------------------
 // Reactivity keys
@@ -208,6 +211,29 @@ export type ResetPassword = typeof ResetPasswordPayload.Type
  * @since 0.1.0
  */
 export type ChangePassword = typeof ChangePasswordPayload.Type
+
+/**
+ * The argument of {@link AuthClient.reauthenticate}.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export type Reauthenticate = typeof ReauthenticatePayload.Type
+
+/**
+ * What a sign-in answers: a session, or the news that a second factor is owed.
+ *
+ * **Details**
+ *
+ * The `MfaRequired` member arrives on `202` and carries no user id, no address
+ * and no token — the pending-authentication token is in a `__Host-` cookie the
+ * browser attaches by itself. Discriminate on `_tag`: a `SessionWithUser` has
+ * none, so `"_tag" in result` narrows both ways.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export type SignInResult<F extends UserFields = {}> = SessionWithUserOf<F> | MfaRequired
 
 /**
  * The argument of {@link AuthClient.sendVerificationEmail}.
@@ -416,48 +442,73 @@ export interface AuthClient<F extends UserFields = {}> {
    * `AsyncResult.matchWithError`'s `onError` is where "show the sign-in form"
    * lives.
    */
-  readonly session: Atom.Atom<AsyncResult.AsyncResult<SessionWithUserOf<F>, Unauthorized>>
+  readonly session: Atom.Atom<AsyncResult.AsyncResult<SessionWithUserOf<F>, StepUpRequired | Unauthorized>>
   /**
    * The caller's unexpired sessions, keyed on {@link sessionsKey}.
    */
-  readonly sessions: Atom.Atom<AsyncResult.AsyncResult<ReadonlyArray<SessionPublic>, Unauthorized>>
+  readonly sessions: Atom.Atom<AsyncResult.AsyncResult<ReadonlyArray<SessionPublic>, StepUpRequired | Unauthorized>>
   /**
    * The caller's linked sign-in methods, keyed on {@link accountsKey}.
    */
-  readonly accounts: Atom.Atom<AsyncResult.AsyncResult<ReadonlyArray<AccountPublic>, Unauthorized>>
+  readonly accounts: Atom.Atom<AsyncResult.AsyncResult<ReadonlyArray<AccountPublic>, StepUpRequired | Unauthorized>>
 
   /** Creates an account. Invalidates {@link sessionKey}. */
   readonly signUp: Atom.AtomResultFn<
     SignUpEmailOf<F>,
     SignUpResponseOf<F>,
-    UserAlreadyExists | PasswordPolicyViolation | PolicyRefused | RateLimited
+    UserAlreadyExists | PasswordPolicyViolation | PolicyRefused | RateLimited | OriginNotAllowed
   >
-  /** Signs in with an e-mail address and password. Invalidates {@link sessionKey}. */
+  /**
+   * Signs in with an e-mail address and password. Invalidates
+   * {@link sessionKey}.
+   *
+   * **Gotchas**
+   *
+   * The success is a union: a `SessionWithUser` when the sign-in completed, and
+   * an `MfaRequired` — `202` — when a factor plugin owes a second factor and no
+   * session was minted. Branch on `"_tag" in result` before reading `user`.
+   */
   readonly signIn: Atom.AtomResultFn<
     SignInEmail,
+    SignInResult<F>,
+    InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited | OriginNotAllowed
+  >
+  /**
+   * Proves the caller's password again, raising the session's assurance so an
+   * endpoint that answered {@link StepUpRequired} will accept the next attempt.
+   *
+   * **Details**
+   *
+   * The session id survives — open tabs keep working — while its opaque token
+   * is rotated and the cookie re-set. Invalidates {@link sessionKey}, because
+   * the session it answers with is a new revision of the one every atom is
+   * holding. See {@link withStepUp}, which runs it for you.
+   */
+  readonly reauthenticate: Atom.AtomResultFn<
+    Reauthenticate,
     SessionWithUserOf<F>,
-    InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited
+    InvalidCredentials | RateLimited | StepUpRequired | Unauthorized
   >
   /** Revokes the current session. Invalidates {@link sessionKey} and {@link sessionsKey}. */
-  readonly signOut: Atom.AtomResultFn<void, Ok, Unauthorized>
+  readonly signOut: Atom.AtomResultFn<void, Ok, StepUpRequired | Unauthorized>
   /** Revokes one of the caller's other sessions. Invalidates {@link sessionsKey}. */
-  readonly revokeSession: Atom.AtomResultFn<RevokeSession, Ok, NotFound | Unauthorized>
+  readonly revokeSession: Atom.AtomResultFn<RevokeSession, Ok, NotFound | StepUpRequired | Unauthorized>
   /** Revokes every session of the caller, this one included. */
-  readonly revokeSessions: Atom.AtomResultFn<void, Ok, Unauthorized>
+  readonly revokeSessions: Atom.AtomResultFn<void, Ok, StepUpRequired | Unauthorized>
   /** Revokes every session of the caller except this one. */
-  readonly revokeOtherSessions: Atom.AtomResultFn<void, Ok, Unauthorized>
+  readonly revokeOtherSessions: Atom.AtomResultFn<void, Ok, StepUpRequired | Unauthorized>
   /** Asks for a reset link. Succeeds whether or not the address has an account. */
-  readonly requestPasswordReset: Atom.AtomResultFn<RequestPasswordReset, Ok, RateLimited>
+  readonly requestPasswordReset: Atom.AtomResultFn<RequestPasswordReset, Ok, RateLimited | OriginNotAllowed>
   /** Sets a new password from a reset token. Every session is revoked, so this invalidates {@link sessionKey}. */
   readonly resetPassword: Atom.AtomResultFn<ResetPassword, Ok, InvalidToken | PasswordPolicyViolation>
   /** Changes the caller's password. Requires a fresh session. */
   readonly changePassword: Atom.AtomResultFn<
     ChangePassword,
     Ok,
-    InvalidCredentials | SessionNotFresh | PasswordPolicyViolation | Unauthorized
+    InvalidCredentials | PasswordPolicyViolation | StepUpRequired | Unauthorized
   >
   /** Asks for a verification link. Succeeds whether or not the address has an account. */
-  readonly sendVerificationEmail: Atom.AtomResultFn<SendVerificationEmail, Ok, RateLimited>
+  readonly sendVerificationEmail: Atom.AtomResultFn<SendVerificationEmail, Ok, RateLimited | OriginNotAllowed>
   /** Consumes a verification token. `emailVerified` changes, so this invalidates {@link sessionKey}. */
   readonly verifyEmail: Atom.AtomResultFn<VerifyEmail, Ok, InvalidToken>
   /** Begins an OAuth sign-in; succeeds with the URL to navigate to. See {@link AuthClient.signInSocialUrl}. */
@@ -467,12 +518,16 @@ export interface AuthClient<F extends UserFields = {}> {
     OAuthProviderError | PolicyRefused | RateLimited
   >
   /** Begins linking a provider to the signed-in account. */
-  readonly linkSocial: Atom.AtomResultFn<LinkSocial, OAuthRedirect, OAuthProviderError | PolicyRefused | Unauthorized>
+  readonly linkSocial: Atom.AtomResultFn<
+    LinkSocial,
+    OAuthRedirect,
+    OAuthProviderError | PolicyRefused | StepUpRequired | Unauthorized
+  >
   /** Removes one of the caller's sign-in methods. Invalidates {@link accountsKey}. */
   readonly unlinkAccount: Atom.AtomResultFn<
     UnlinkAccount,
     Ok,
-    CannotUnlinkLastAccount | NotFound | SessionNotFresh | Unauthorized
+    CannotUnlinkLastAccount | NotFound | StepUpRequired | Unauthorized
   >
   /**
    * Edits the caller's own profile. The session atom carries the user, so this
@@ -481,7 +536,7 @@ export interface AuthClient<F extends UserFields = {}> {
   readonly updateUser: Atom.AtomResultFn<
     UpdateUserOf<F>,
     { readonly user: UserPublicOf<F> },
-    UserNotFound | Unauthorized
+    UserNotFound | StepUpRequired | Unauthorized
   >
   /**
    * Starts moving the account to another address. Succeeds whether or not the
@@ -491,7 +546,7 @@ export interface AuthClient<F extends UserFields = {}> {
   readonly changeEmail: Atom.AtomResultFn<
     ChangeEmail,
     Ok,
-    EmailUnchanged | PolicyRefused | SessionNotFresh | RateLimited | Unauthorized
+    EmailUnchanged | PolicyRefused | RateLimited | StepUpRequired | Unauthorized
   >
   /** Consumes the first-hop token, from the current address. */
   readonly confirmEmailChange: Atom.AtomResultFn<TokenArgument, Ok, InvalidToken>
@@ -505,25 +560,25 @@ export interface AuthClient<F extends UserFields = {}> {
   readonly deleteUser: Atom.AtomResultFn<
     DeleteUser,
     DeleteUserResponse,
-    InvalidCredentials | PolicyRefused | SessionNotFresh | RateLimited | Unauthorized
+    InvalidCredentials | PolicyRefused | RateLimited | StepUpRequired | Unauthorized
   >
   /** Gives an account without one its first password. Invalidates {@link accountsKey}. */
   readonly setPassword: Atom.AtomResultFn<
     SetPassword,
     Ok,
-    PasswordAlreadySet | PasswordPolicyViolation | SessionNotFresh | RateLimited | Unauthorized
+    PasswordAlreadySet | PasswordPolicyViolation | RateLimited | StepUpRequired | Unauthorized
   >
   /** A usable provider access token for one of the caller's linked accounts. */
   readonly getAccessToken: Atom.AtomResultFn<
     SelectAccount,
     AccessTokenResponse,
-    NotFound | TokenRefreshFailed | Unauthorized
+    NotFound | TokenRefreshFailed | StepUpRequired | Unauthorized
   >
   /** Spends one of the caller's refresh tokens. */
   readonly refreshToken: Atom.AtomResultFn<
     SelectAccount,
     RefreshTokenResponse,
-    NotFound | TokenRefreshFailed | Unauthorized
+    NotFound | TokenRefreshFailed | StepUpRequired | Unauthorized
   >
 
   /**
@@ -552,7 +607,11 @@ export interface AuthClient<F extends UserFields = {}> {
    */
   readonly linkSocialUrl: (
     payload: LinkSocial
-  ) => Effect.Effect<string, OAuthProviderError | PolicyRefused | Unauthorized, AtomRegistry.AtomRegistry>
+  ) => Effect.Effect<
+    string,
+    OAuthProviderError | PolicyRefused | StepUpRequired | Unauthorized,
+    AtomRegistry.AtomRegistry
+  >
 }
 
 const serviceId = "effect-auth/AuthClient"
@@ -643,7 +702,7 @@ export const make = <
   const signUpMutation = service.mutation("auth", "signUpEmail") as unknown as Atom.AtomResultFn<
     PayloadRequest<SignUpEmailOf<F>>,
     SignUpResponseOf<F>,
-    UserAlreadyExists | PasswordPolicyViolation | PolicyRefused | RateLimited
+    UserAlreadyExists | PasswordPolicyViolation | PolicyRefused | RateLimited | OriginNotAllowed
   >
 
   // The same cast, for the same reason, on the other endpoint whose *payload*
@@ -668,6 +727,7 @@ export const make = <
 
     signUp: withPayload<SignUpEmailOf<F>>()(signUpMutation, [sessionKey]),
     signIn: withPayload<SignInEmail>()(service.mutation("auth", "signInEmail"), [sessionKey]),
+    reauthenticate: withPayload<Reauthenticate>()(service.mutation("auth", "reauthenticate"), [sessionKey]),
     signOut: withoutPayload(service.mutation("auth", "signOut"), [sessionKey, sessionsKey]),
     revokeSession: withPayload<RevokeSession>()(service.mutation("auth", "revokeSession"), [sessionsKey]),
     revokeSessions: withoutPayload(service.mutation("auth", "revokeSessions"), [sessionKey, sessionsKey]),
@@ -753,6 +813,67 @@ export const run = <Arg, A, E>(
   arg: Arg
 ): Effect.Effect<A, E, AtomRegistry.AtomRegistry> =>
   Effect.flatMap(Atom.set(self, arg), () => Atom.getResult(self, { suspendOnWaiting: true }))
+
+/**
+ * Runs an effect, and when it is refused for want of assurance, steps up once
+ * and runs it again.
+ *
+ * **When to use**
+ *
+ * Around any call to an endpoint that can answer `StepUpRequired` — changing a
+ * password, unlinking a sign-in method, moving the address, deleting the
+ * account. `onStepUp` is handed the refusal, so the prompt it puts up can name
+ * the level that was wanted and offer exactly the factors
+ * `error.current.available` lists; its job is to satisfy the requirement —
+ * `AuthClient.run(client.reauthenticate, { password })` is the one this library
+ * ships — and to fail if the person declines.
+ *
+ * **Details**
+ *
+ * Exactly one retry. A second `StepUpRequired` is returned to the caller rather
+ * than looped on: if stepping up did not satisfy the policy, asking again will
+ * not either, and a client that retried forever would be a way to make a person
+ * approve a prompt they did not read.
+ *
+ * **Example**
+ *
+ * ```ts
+ * import { Effect, Redacted } from "effect"
+ * import { AuthClient } from "effect-auth/client"
+ *
+ * declare const client: AuthClient.AuthClient
+ * declare const askForPassword: (available: ReadonlyArray<string>) => Effect.Effect<string>
+ *
+ * const change = AuthClient.withStepUp(
+ *   AuthClient.run(client.changePassword, {
+ *     currentPassword: Redacted.make("old"),
+ *     newPassword: Redacted.make("new")
+ *   }),
+ *   (error) =>
+ *     askForPassword(error.current.available).pipe(
+ *       Effect.flatMap((password) =>
+ *         AuthClient.run(client.reauthenticate, { password: Redacted.make(password) })
+ *       )
+ *     )
+ * )
+ * ```
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const withStepUp = <A, E extends { readonly _tag: string }, R, E2, R2>(
+  effect: Effect.Effect<A, E, R>,
+  onStepUp: (error: Extract<E, { readonly _tag: "StepUpRequired" }>) => Effect.Effect<unknown, E2, R2>
+): Effect.Effect<A, E | E2, R | R2> =>
+  // `catchIf` with an explicit refinement rather than `catchTag`: the retry
+  // re-runs `effect`, so the refusal is back in the error channel and the
+  // result is `E | E2` however the first attempt failed. That union is what
+  // `catchTag`'s `Exclude` cannot state for a generic `E`.
+  Effect.catchIf(
+    effect,
+    (error): error is Extract<E, { readonly _tag: "StepUpRequired" }> => error._tag === "StepUpRequired",
+    (error) => Effect.flatMap(onStepUp(error), () => effect)
+  )
 
 /**
  * Sends the browser to a URL.

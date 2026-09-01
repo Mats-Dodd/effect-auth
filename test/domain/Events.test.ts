@@ -1,5 +1,5 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { Effect, Fiber, Schema, Stream } from "effect"
+import { DateTime, Effect, Fiber, Schema, Stream } from "effect"
 import type { AuthEvent } from "../../src/domain/Events.js"
 import {
   AuthEvent as AuthEventSchema,
@@ -17,7 +17,25 @@ const accountId = AccountId.make("01890000-0000-7000-8000-00000000000c")
 
 const everyEvent: ReadonlyArray<AuthEvent> = [
   { _tag: "UserCreated", userId, email: "ada@example.com", emailVerified: false, method: passwordMethod },
-  { _tag: "SignedIn", userId, sessionId, method: oauthMethod("github") },
+  {
+    _tag: "SignedIn",
+    userId,
+    sessionId,
+    method: oauthMethod("github"),
+    methods: [
+      {
+        method: "oauth:github",
+        factor: "possession",
+        phishingResistant: false,
+        restricted: false,
+        completedAt: DateTime.makeUnsafe(0)
+      }
+    ]
+  },
+  // The log a mint that recorded no evidence carries: `aal0`, and a subscriber
+  // that reads `methods` has to accept it as readily as a full one.
+  { _tag: "SignedIn", userId, sessionId, method: passwordMethod, methods: [] },
+  { _tag: "SessionElevated", userId, sessionId, method: "totp" },
   { _tag: "SignedOut", userId, sessionId },
   { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 },
   { _tag: "SessionRevoked", userId, sessionId: null, scope: "all", count: 3 },
@@ -35,8 +53,8 @@ const everyEvent: ReadonlyArray<AuthEvent> = [
   { _tag: "TokensRefreshed", userId, accountId, providerId: "github" },
   { _tag: "AccountLinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
   { _tag: "AccountUnlinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
-  { _tag: "PluginEvent", plugin: "magic-link", event: "requested", userId: null, data: { newUser: true } },
-  { _tag: "PluginEvent", plugin: "magic-link", event: "verified", userId, data: {} }
+  { _tag: "PluginEvent", plugin: "email-otp", event: "requested", userId: null, data: { newUser: true } },
+  { _tag: "PluginEvent", plugin: "email-otp", event: "verified", userId, data: {} }
 ]
 
 describe("domain/Events/schema", () => {

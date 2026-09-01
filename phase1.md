@@ -665,25 +665,31 @@ migration tables from `0001`.
 
 ---
 
-## Part D — Decisions needed before Wave 0
+## Part D — Decisions (locked 2026-08-31)
 
-1. **Sign-in success union on 202 vs. a single 200 union body.** Recommend 202 (byte-identical
-   wire for deployments without factors) if v4 `HttpApiEndpoint` supports it; needs a 30-minute spike.
-2. **`freshAge` default.** Keep 1 day (no behaviour change) or tighten to 1 h now that it means
-   "since last interactive authentication". Recommend keep, revisit when a consumer asks.
-3. **`SessionNotFresh` → `StepUpRequired` rename.** Recommend yes, in this one breaking wave.
-4. **`@simplewebauthn/server` as optional peer dep.** Recommend yes; the alternative is ~350 LOC
-   of ES256-only, registration-`none`-only code that rejects Windows Hello RS256 credentials.
-5. **Fold magic link into email-otp** (shared row, hybrid link+code) now or later. Recommend
-   later — ship email-otp with the hybrid and deprecate magic link's separate module in Phase 2.
-6. **tsc budget:** rebaseline on TS 7 and keep a ceiling, or drop the instantiation gate and keep
-   only the check-time gate. Recommend rebaseline.
-7. **Anonymous conversion semantics:** single path (callback + delete anonymous user, better-auth's
-   model made transactional) vs. also "adopt in place" for the credential-sign-up case. Recommend
-   single path for the first cut.
-8. **Freeze the `Aal` strings as wire format now?** A Phase 3 JWT plugin would emit them as `acr`
-   (Ory's `aal1`/`aal2` convention, not ISO 29115 integers). Recommend yes — they already appear on
-   `GET /auth/session` after A1, so they are wire format whether or not we say so.
+There is no backward compatibility to keep (`AGENTS.md`); every break below is recorded in
+`CHANGELOG.md`, not defended.
+
+1. **Sign-in success is a two-status union: `SessionWithUser` on 200, `MfaRequired` on 202.** If
+   v4 `HttpApiEndpoint` cannot express a multi-status success union, fall back to a single 200
+   union body — B5 spikes this first and records the answer in SPEC Amendment 19.
+2. **`freshAge` default stays 1 day.**
+3. **`SessionNotFresh` is deleted; `StepUpRequired` is the one error.**
+4. **`@simplewebauthn/server` is an optional peer dependency** behind the `WebAuthn` service,
+   exported from `effect-auth/passkeys`.
+5. **Magic link folds into email-otp now.** `src/magic-link/`, `MagicLinkClient`, `MagicLinkTest`
+   and `test/magic-link/` are deleted; email-otp ships the hybrid (code + link on one row) and
+   carries the unproven-account rule forward. `AGENTS.md`'s "reference plugin" becomes email-otp.
+6. **The tsc instantiation gate is gone** (already retired in `569e7c2`); nothing in this wave
+   measures it.
+7. **Anonymous conversion = adopt in place + merge-on-sign-in.** Adopt: the existing authenticated
+   flows (`setPassword`, `linkSocial`, passkey registration, email-otp `changeEmail`) run against
+   the anonymous row — permitted at `aal0` for exactly those endpoints — and the plugin drops the
+   marker once a real credential or verified identifier exists. Merge: signing in to an *existing*
+   account B while anonymous as A runs the consumer's optional `onMerge(A, B)` inside the mint
+   transaction, then deletes A; the default `onMerge` is a no-op, so the default is "delete A".
+8. **`aal0` / `aal1` / `aal2` are frozen wire strings** (Ory's convention; a future JWT plugin
+   emits them as `acr`).
 
 ---
 

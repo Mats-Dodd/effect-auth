@@ -8,6 +8,7 @@ import {
   isPathRelative,
   isTrustedOrigin,
   originOf,
+  requireTrustedIfPresent,
   resolveUrl,
   safeMethods,
   trustedOrigins,
@@ -29,6 +30,22 @@ const request = (options: { readonly method?: string; readonly headers?: Record<
       method: options.method ?? "POST",
       headers: options.headers ?? {}
     })
+  )
+
+/**
+ * {@link requireTrustedIfPresent} against one request — the guard an
+ * unauthenticated send endpoint calls for itself, so both the request and the
+ * configuration come out of the context rather than off an argument.
+ */
+const requiring = (
+  options: { readonly method?: string; readonly headers?: Record<string, string> },
+  trusted: ReadonlyArray<string> = []
+) =>
+  Effect.result(
+    requireTrustedIfPresent.pipe(
+      Effect.provideService(HttpServerRequest.HttpServerRequest, request(options)),
+      Effect.provideService(AuthConfig.AuthConfig, config(trusted))
+    )
   )
 
 const checking = (
@@ -239,6 +256,74 @@ describe("http/OriginCheck", () => {
     it.effect("refuses an unparseable Referer when there is no Origin", () =>
       Effect.gen(function* () {
         const result = yield* checking({ headers: { referer: "about:blank" } })
+        assert.isTrue(result._tag === "Failure")
+      })
+    )
+  })
+
+  describe("requireTrustedIfPresent", () => {
+    it.effect("allows a trusted claimed origin", () =>
+      Effect.gen(function* () {
+        const byOrigin = yield* requiring({ headers: { origin: baseUrl } })
+        assert.isTrue(byOrigin._tag === "Success")
+
+        const byConfigured = yield* requiring({ headers: { origin: "https://admin.example.com" } }, [
+          "https://admin.example.com"
+        ])
+        assert.isTrue(byConfigured._tag === "Success")
+      })
+    )
+
+    it.effect("refuses an untrusted claimed origin", () =>
+      Effect.gen(function* () {
+        const result = yield* requiring({ headers: { origin: "https://evil.test" } })
+
+        assert.isTrue(result._tag === "Failure")
+        if (result._tag === "Failure") {
+          // Not `Unauthorized`: the caller presented no credential, so a 401
+          // would invite them to go and get one. This is a 403.
+          assert.strictEqual(result.failure._tag, "OriginNotAllowed")
+        }
+      })
+    )
+
+    it.effect("allows a request that claims no origin — a server-to-server caller", () =>
+      Effect.gen(function* () {
+        const result = yield* requiring({})
+
+        // Every browser attaches `Origin` to a cross-origin POST, so the absent
+        // case is not a browser and no cross-site defence is relevant to it.
+        assert.isTrue(result._tag === "Success")
+      })
+    )
+
+    it.effect("falls back to the Referer when there is no Origin", () =>
+      Effect.gen(function* () {
+        const trusted = yield* requiring({ headers: { referer: `${baseUrl}/sign-in` } })
+        assert.isTrue(trusted._tag === "Success")
+
+        const untrusted = yield* requiring({ headers: { referer: "https://evil.test/attack" } })
+        assert.isTrue(untrusted._tag === "Failure")
+      })
+    )
+
+    it.effect("refuses Origin: null, and an Origin it cannot parse", () =>
+      Effect.gen(function* () {
+        const sandboxed = yield* requiring({ headers: { origin: "null" } })
+        assert.isTrue(sandboxed._tag === "Failure")
+
+        const nonsense = yield* requiring({ headers: { referer: "about:blank" } })
+        assert.isTrue(nonsense._tag === "Failure")
+      })
+    )
+
+    it.effect("makes no exception for a read-only method", () =>
+      Effect.gen(function* () {
+        // Unlike `checkOrigin`, which a middleware applies to everything: this
+        // one is called by the handler that wants it, so the method is already
+        // decided by the endpoint doing the calling.
+        const result = yield* requiring({ method: "GET", headers: { origin: "https://evil.test" } })
+
         assert.isTrue(result._tag === "Failure")
       })
     )

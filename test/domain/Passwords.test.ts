@@ -1,17 +1,32 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { Duration, Effect, Option, Redacted } from "effect"
+import { DateTime, Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { SqlClient } from "effect/unstable/sql"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
-import { Passwords } from "../../src/domain/Passwords.js"
-import type { AccountId, UserId } from "../../src/domain/Schema.js"
+import { passwordEvidence, Passwords } from "../../src/domain/Passwords.js"
+import type { AccountId, UserFields, UserId } from "../../src/domain/Schema.js"
 import { CredentialIssuer } from "../../src/domain/Schema.js"
+import type { SignInResult } from "../../src/domain/SignIn.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
 import { decodeSubjectToken, Verifications } from "../../src/domain/Verifications.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, forUser, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
+
+/**
+ * A sign-in that really did produce a session.
+ *
+ * `signIn`'s success is a union now: a deployment with a factor plugin installed
+ * can answer with a challenge instead. Every test here runs without one, so a
+ * challenge is a failure of the test rather than a case it handles.
+ */
+const completed = <F extends UserFields>(result: SignInResult<F>): Extract<SignInResult<F>, { _tag: "Complete" }> => {
+  if (result._tag !== "Complete") {
+    return assert.fail(`expected a completed sign-in, got ${result._tag}`)
+  }
+  return result
+}
 
 /**
  * Registers a user.
@@ -110,7 +125,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         assert.strictEqual(Option.isSome(yield* users.findByEmail(email)), true)
 
         // ... and the lookup on sign-in normalizes too.
-        const signedIn = yield* passwords.signIn({ email: email.toUpperCase(), password: testPassword })
+        const signedIn = completed(yield* passwords.signIn({ email: email.toUpperCase(), password: testPassword }))
         assert.strictEqual(signedIn.user.id, user.id)
       })
     )
@@ -177,7 +192,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const { user } = yield* register(email)
 
         const { events, result } = yield* AuthTest.recordingEvents(passwords.signIn({ email, password: testPassword }))
-        assert.strictEqual(result.user.id, user.id)
+        assert.strictEqual(completed(result).user.id, user.id)
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SignedIn"])
 
         const wrong = yield* Effect.flip(passwords.signIn({ email, password: Redacted.make("wrong-password") }))
@@ -254,7 +269,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           const verified = yield* passwords.verifyEmail(mail.token)
           assert.strictEqual(verified.emailVerified, true)
 
-          const signedIn = yield* passwords.signIn({ email, password: testPassword })
+          const signedIn = completed(yield* passwords.signIn({ email, password: testPassword }))
           assert.strictEqual(signedIn.user.emailVerified, true)
         })
       )
@@ -362,7 +377,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const email = uniqueEmail("reset-full")
         const { session, user } = yield* register(email)
         const established = yield* expectSome(session, "expected a session")
-        yield* sessions.create({ userId: user.id })
+        yield* sessions.createUnchecked({ userId: user.id })
 
         assert.strictEqual((yield* sessions.list(user.id)).length, 2)
 
@@ -381,7 +396,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           (yield* Effect.flip(passwords.signIn({ email, password: testPassword })))._tag,
           "InvalidCredentials"
         )
-        const signedIn = yield* passwords.signIn({ email, password: newPassword })
+        const signedIn = completed(yield* passwords.signIn({ email, password: newPassword }))
         assert.strictEqual(signedIn.user.id, user.id)
 
         // The link is single use.
@@ -543,7 +558,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           "reset should create the missing credential account"
         )
         assert.notStrictEqual(created.passwordHash, null)
-        assert.strictEqual((yield* passwords.signIn({ email, password: newPassword })).user.id, user.id)
+        assert.strictEqual(completed(yield* passwords.signIn({ email, password: newPassword })).user.id, user.id)
       })
     )
 
@@ -585,7 +600,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const email = uniqueEmail("change")
         const { session, user } = yield* register(email)
         const current = yield* expectSome(session, "expected a session")
-        const other = yield* sessions.create({ userId: user.id })
+        const other = yield* sessions.createUnchecked({ userId: user.id })
 
         const { events } = yield* AuthTest.recordingEvents(
           passwords.changePassword({
@@ -614,7 +629,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const passwords = yield* Passwords
         const sessions = yield* Sessions
         const { user } = yield* register(uniqueEmail("change-keep"))
-        const other = yield* sessions.create({ userId: user.id })
+        const other = yield* sessions.createUnchecked({ userId: user.id })
 
         yield* passwords.changePassword({
           userId: user.id,
@@ -679,6 +694,68 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
         assert.isFalse(yield* passwords.verifyPassword(user.id, testPassword))
       })
+    )
+  })
+
+  describe("reauthenticate", () => {
+    it.effect("answers the evidence a correct password proves, and mints nothing", () =>
+      Effect.gen(function* () {
+        const passwords = yield* Passwords
+        const sessions = yield* Sessions
+        const { user } = yield* register(uniqueEmail("reauth"))
+        const before = (yield* sessions.list(user.id)).length
+
+        const evidence = yield* passwords.reauthenticate(user.id, testPassword)
+
+        assert.deepStrictEqual(evidence, passwordEvidence)
+        assert.strictEqual(evidence.method, "password")
+        assert.strictEqual(evidence.factor, "knowledge")
+        // A password is typed into whatever page asked for it.
+        assert.isFalse(evidence.phishingResistant)
+        assert.isFalse(evidence.restricted)
+        // Re-authenticating is a check, not a sign-in: no second session.
+        assert.strictEqual((yield* sessions.list(user.id)).length, before)
+      })
+    )
+
+    it.effect("a wrong password and no password at all are one answer", () =>
+      Effect.gen(function* () {
+        const passwords = yield* Passwords
+        const { user } = yield* register(uniqueEmail("reauth-wrong"))
+        const { user: other } = yield* register(uniqueEmail("reauth-none"))
+        yield* dropCredential(other.id)
+
+        const wrong = yield* Effect.flip(passwords.reauthenticate(user.id, Redacted.make("not-the-password")))
+        const none = yield* Effect.flip(passwords.reauthenticate(other.id, testPassword))
+
+        assert.strictEqual(wrong._tag, "InvalidCredentials")
+        assert.strictEqual(none._tag, "InvalidCredentials")
+      })
+    )
+
+    it.effect("the evidence it answers is what raises a session to a fresh knowledge factor", () =>
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const passwords = yield* Passwords
+          const sessions = yield* Sessions
+          const email = uniqueEmail("reauth-elevate")
+          const registered = yield* register(email)
+          const created = yield* expectSome(registered.session, "sign-up should establish a session")
+          yield* TestClock.adjust(Duration.hours(3))
+
+          const evidence = yield* passwords.reauthenticate(registered.user.id, testPassword)
+          const elevated = yield* sessions.elevate(created.session, evidence)
+
+          assert.strictEqual(elevated.session.id, created.session.id)
+          assert.strictEqual(yield* sessions.isFresh(elevated.session), true)
+          assert.strictEqual(
+            DateTime.toEpochMillis(elevated.session.authenticatedAt),
+            DateTime.toEpochMillis(yield* DateTime.now)
+          )
+          // Two knowledge proofs are still one factor.
+          assert.strictEqual(elevated.session.aal, "aal1")
+        })
+      )
     )
   })
 

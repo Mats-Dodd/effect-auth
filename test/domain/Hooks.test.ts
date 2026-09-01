@@ -28,10 +28,10 @@ import type { UserInsertOf } from "../../src/domain/Schema.js"
 import { baseUserModel, oauthIssuer } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { Users } from "../../src/domain/Users.js"
-import { MagicLink } from "../../src/magic-link/MagicLink.js"
+import { EmailOtp } from "../../src/email-otp/index.js"
 import { OAuthFlow } from "../../src/oauth/Flow.js"
-import { AuthTest, MagicLinkTest, MockProvider } from "../../src/testing/index.js"
-import { expectSome, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
+import { AuthTest, EmailOtpTest, MockProvider } from "../../src/testing/index.js"
+import { completed, expectSome, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** The source every test here provisions with, unless it is testing the source. */
 const testSource: ProvisionSource = { _tag: "Plugin", plugin: "test" }
@@ -405,7 +405,7 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       // typed it would be one no sign-in, no reset and no link could ever find
       // again — while a second sign-up for the same mailbox would sail past
       // both the duplicate check and the unique index.
-      const signedIn = yield* passwords.signIn({ email, password: testPassword })
+      const signedIn = completed(yield* passwords.signIn({ email, password: testPassword }))
       assert.strictEqual(signedIn.user.id, user.id)
       const duplicate = yield* Effect.flip(passwords.signUp({ name: testName, email, password: testPassword }))
       assert.strictEqual(duplicate._tag, "UserAlreadyExists")
@@ -637,17 +637,23 @@ const crossTrace: Array<string> = []
  * set covers atomicity: the row exists when the hook runs, so a refusal that
  * leaves nothing behind can only be the enclosing transaction unwinding.
  */
+/**
+ * What a source calls itself. A plugin's source is `Plugin` whatever plugin it
+ * is, so the name it carries is the interesting half.
+ */
+const labelOf = (source: ProvisionSource): string => (source._tag === "Plugin" ? source.plugin : source._tag)
+
 const crossHooks: AuthHooksService = {
   beforeUserCreate: ({ candidate, source }) =>
     Effect.sync(() => {
-      crossTrace.push(`before:${source._tag}`)
-      return { ...candidate, name: `${candidate.name} via ${source._tag}` }
+      crossTrace.push(`before:${labelOf(source)}`)
+      return { ...candidate, name: `${candidate.name} via ${labelOf(source)}` }
     }),
   afterUserCreate: ({ source, user }) =>
     Effect.suspend(() => {
-      crossTrace.push(`after:${source._tag}`)
+      crossTrace.push(`after:${labelOf(source)}`)
       return user.email.includes("abort")
-        ? Effect.fail(PolicyRefused.make({ code: "related_row_refused", detail: source._tag }))
+        ? Effect.fail(PolicyRefused.make({ code: "related_row_refused", detail: labelOf(source) }))
         : Effect.void
     })
 }
@@ -669,7 +675,7 @@ const crossProvider = MockProvider.mockProvider()
  * composition a consumer writes, and it is what makes the assertions below
  * about one policy rather than about three copies of one that happen to agree.
  */
-const crossDeployment = MagicLinkTest.layerMagicLink().pipe(
+const crossDeployment = EmailOtpTest.layerEmailOtp().pipe(
   Layer.provideMerge(AuthTest.layerFlow({ providers: [crossProvider], fetch: crossServer.fetch })),
   Layer.provide(append(crossHooks))
 )
@@ -701,12 +707,12 @@ const crossOAuthSignIn = Effect.fnUntraced(function* (email: string) {
   })
 })
 
-/** A whole magic-link round trip: ask for the link, then follow it. */
-const crossMagicLinkSignIn = Effect.fnUntraced(function* (email: string) {
-  const magic = yield* MagicLink
-  yield* magic.request({ email, name: testName })
-  const emails = yield* AuthTest.TestEmails
-  return yield* magic.verify({ token: yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email) })
+/** A whole email-otp round trip: ask for a code, then answer it. */
+const crossEmailOtpSignIn = Effect.fnUntraced(function* (email: string) {
+  const otp = yield* EmailOtp
+  const issued = yield* otp.send({ email, name: testName, purpose: "signIn" })
+  const code = yield* EmailOtpTest.awaitCode(email)
+  return yield* otp.verify({ handle: issued.handle, code })
 })
 
 // One policy, one trace, three sources: the tests share the array the hooks
@@ -721,11 +727,11 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
 
         const password = uniqueEmail("cross-password")
         const oauth = uniqueEmail("cross-oauth")
-        const magic = uniqueEmail("cross-magic")
+        const otp = uniqueEmail("cross-otp")
 
         const registered = yield* passwords.signUp({ name: testName, email: password, password: testPassword })
         const outcome = yield* crossOAuthSignIn(oauth)
-        const linked = yield* crossMagicLinkSignIn(magic)
+        const byCode = yield* crossEmailOtpSignIn(otp)
 
         // Both hooks, once per source, in the order the flows ran — no source
         // consulted twice, and none that skipped the choke point.
@@ -734,8 +740,8 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
           "after:EmailPassword",
           "before:OAuth",
           "after:OAuth",
-          "before:MagicLink",
-          "after:MagicLink"
+          "before:email-otp",
+          "after:email-otp"
         ])
 
         assert.strictEqual(outcome._tag, "Success")
@@ -744,11 +750,13 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
         // back from the store, so it was stored and not merely answered with.
         assert.strictEqual(registered.user.name, `${testName} via EmailPassword`)
         assert.strictEqual(outcome.user.name, `${testName} via OAuth`)
-        assert.strictEqual(linked.user.name, `${testName} via MagicLink`)
+        assert.strictEqual(byCode._tag, "SignedIn")
+        if (byCode._tag !== "SignedIn") return
+        assert.strictEqual(byCode.user.name, `${testName} via email-otp`)
         const rows: ReadonlyArray<readonly [string, string]> = [
           [password, "EmailPassword"],
           [oauth, "OAuth"],
-          [magic, "MagicLink"]
+          [otp, "email-otp"]
         ]
         for (const [email, source] of rows) {
           const stored = yield* expectSome(yield* store.findByEmail(email), `the ${source} row`)
@@ -765,21 +773,21 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
 
         const password = uniqueEmail("cross-abort-password")
         const oauth = uniqueEmail("cross-abort-oauth")
-        const magic = uniqueEmail("cross-abort-magic")
+        const otp = uniqueEmail("cross-abort-otp")
 
         const refusedPassword = yield* Effect.flip(
           passwords.signUp({ name: testName, email: password, password: testPassword })
         )
         const outcome = yield* crossOAuthSignIn(oauth)
-        const refusedMagic = yield* Effect.flip(crossMagicLinkSignIn(magic))
+        const refusedOtp = yield* Effect.flip(crossEmailOtpSignIn(otp))
 
         // The typed sources report the refusal itself; the callback, which is a
         // top-level browser navigation, reports it as the redirect its shape
         // demands. Same hook, same code, two ways of saying it.
         assert.strictEqual(refusedPassword._tag, "PolicyRefused")
         if (refusedPassword._tag === "PolicyRefused") assert.strictEqual(refusedPassword.detail, "EmailPassword")
-        assert.strictEqual(refusedMagic._tag, "PolicyRefused")
-        if (refusedMagic._tag === "PolicyRefused") assert.strictEqual(refusedMagic.detail, "MagicLink")
+        assert.strictEqual(refusedOtp._tag, "PolicyRefused")
+        if (refusedOtp._tag === "PolicyRefused") assert.strictEqual(refusedOtp.detail, "email-otp")
         assert.strictEqual(outcome._tag, "Failure")
         if (outcome._tag === "Failure") {
           assert.strictEqual(outcome.code, "policy_refused")
@@ -795,10 +803,10 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
           "after:EmailPassword",
           "before:OAuth",
           "after:OAuth",
-          "before:MagicLink",
-          "after:MagicLink"
+          "before:email-otp",
+          "after:email-otp"
         ])
-        for (const email of [password, oauth, magic]) {
+        for (const email of [password, oauth, otp]) {
           assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
         }
       })
