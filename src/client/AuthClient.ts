@@ -37,7 +37,7 @@
  * })
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted } from "effect"
 import { Effect, Layer } from "effect"
@@ -120,7 +120,7 @@ import { layerFetch, withoutPayload, withPayload, withQuery } from "./internal/a
  * that one sign-out refreshes all of them at once.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionKey = "auth.session"
 
@@ -129,7 +129,7 @@ export const sessionKey = "auth.session"
  * view). Invalidated by every revoke, and by a password change.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionsKey = "auth.sessions"
 
@@ -138,7 +138,7 @@ export const sessionsKey = "auth.sessions"
  * Invalidated by `unlinkAccount`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const accountsKey = "auth.accounts"
 
@@ -146,7 +146,7 @@ export const accountsKey = "auth.accounts"
  * The shape `Atom` accepts for invalidation keys.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ReactivityKeys = AtomReactivityKeys
 
@@ -165,7 +165,7 @@ export type ReactivityKeys = AtomReactivityKeys
  * deployment's own a client may state.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignUpEmail = typeof SignUpEmailPayload.Type
 
@@ -173,7 +173,7 @@ export type SignUpEmail = typeof SignUpEmailPayload.Type
  * The argument of {@link AuthClient.signIn}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignInEmail = typeof SignInEmailPayload.Type
 
@@ -181,7 +181,7 @@ export type SignInEmail = typeof SignInEmailPayload.Type
  * The argument of {@link AuthClient.revokeSession}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type RevokeSession = typeof RevokeSessionPayload.Type
 
@@ -189,7 +189,7 @@ export type RevokeSession = typeof RevokeSessionPayload.Type
  * The argument of {@link AuthClient.requestPasswordReset}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type RequestPasswordReset = typeof RequestPasswordResetPayload.Type
 
@@ -197,7 +197,7 @@ export type RequestPasswordReset = typeof RequestPasswordResetPayload.Type
  * The argument of {@link AuthClient.resetPassword}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ResetPassword = typeof ResetPasswordPayload.Type
 
@@ -205,7 +205,7 @@ export type ResetPassword = typeof ResetPasswordPayload.Type
  * The argument of {@link AuthClient.changePassword}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ChangePassword = typeof ChangePasswordPayload.Type
 
@@ -213,7 +213,7 @@ export type ChangePassword = typeof ChangePasswordPayload.Type
  * The argument of {@link AuthClient.sendVerificationEmail}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SendVerificationEmail = typeof SendVerificationEmailPayload.Type
 
@@ -221,7 +221,7 @@ export type SendVerificationEmail = typeof SendVerificationEmailPayload.Type
  * The argument of {@link AuthClient.verifyEmail}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type VerifyEmail = typeof VerifyEmailQuery.Type
 
@@ -229,7 +229,7 @@ export type VerifyEmail = typeof VerifyEmailQuery.Type
  * The argument of {@link AuthClient.signInSocial}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignInSocial = typeof SignInSocialPayload.Type
 
@@ -237,7 +237,7 @@ export type SignInSocial = typeof SignInSocialPayload.Type
  * The argument of {@link AuthClient.linkSocial}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type LinkSocial = typeof LinkSocialPayload.Type
 
@@ -245,7 +245,7 @@ export type LinkSocial = typeof LinkSocialPayload.Type
  * The argument of {@link AuthClient.unlinkAccount}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UnlinkAccount = typeof UnlinkAccountPayload.Type
 
@@ -253,7 +253,7 @@ export type UnlinkAccount = typeof UnlinkAccountPayload.Type
  * The argument of {@link AuthClient.changeEmail}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ChangeEmail = typeof ChangeEmailPayload.Type
 
@@ -262,7 +262,7 @@ export type ChangeEmail = typeof ChangeEmailPayload.Type
  * {@link AuthClient.verifyEmailChange} — the token out of a mailed link.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type TokenArgument = typeof TokenQuery.Type
 
@@ -270,7 +270,7 @@ export type TokenArgument = typeof TokenQuery.Type
  * The argument of {@link AuthClient.deleteUser}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DeleteUser = typeof DeleteUserPayload.Type
 
@@ -278,7 +278,7 @@ export type DeleteUser = typeof DeleteUserPayload.Type
  * The argument of {@link AuthClient.setPassword}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SetPassword = typeof SetPasswordPayload.Type
 
@@ -287,7 +287,7 @@ export type SetPassword = typeof SetPasswordPayload.Type
  * {@link AuthClient.refreshToken}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SelectAccount = typeof AccountSelection.Type
 
@@ -299,7 +299,7 @@ export type SelectAccount = typeof AccountSelection.Type
  * The options of {@link make}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options<
   ApiId extends string = string,
@@ -393,7 +393,7 @@ export interface Options<
  * {@link run} from an `Effect`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthClient<F extends UserFields = {}> {
   /**
@@ -585,7 +585,7 @@ const serviceId = "effect-auth/AuthClient"
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = <
   ApiId extends string = string,
@@ -746,7 +746,7 @@ export const make = <
  * ```
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const run = <Arg, A, E>(
   self: Atom.AtomResultFn<Arg, A, E>,
@@ -764,7 +764,7 @@ export const run = <Arg, A, E>(
  * and therefore needs no validation here.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const navigate = (url: string): Effect.Effect<void> =>
   Effect.sync(() => {

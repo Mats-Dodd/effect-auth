@@ -31,7 +31,7 @@
  *
  * Anything a caller states explicitly wins over what the document says.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
@@ -54,7 +54,7 @@ import { fetchIdentity, identityOf } from "./internal/userInfo.js"
  * The path an issuer's discovery document is served at.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const wellKnownPath = "/.well-known/openid-configuration"
 
@@ -69,7 +69,7 @@ export const wellKnownPath = "/.well-known/openid-configuration"
  * reason.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const DiscoveryDocument = Schema.Struct({
   issuer: lenient(Schema.NonEmptyString),
@@ -85,7 +85,7 @@ export const DiscoveryDocument = Schema.Struct({
  * The type of a {@link DiscoveryDocument}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DiscoveryDocument = typeof DiscoveryDocument.Type
 
@@ -102,7 +102,7 @@ const readDocument = Schema.decodeUnknownOption(DiscoveryDocument)
  * Keycloak and Zitadel do.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const discoveryUrlOf = (issuer: string): string => `${trimTrailingSlashes(issuer)}${wellKnownPath}`
 
@@ -119,7 +119,7 @@ export const discoveryUrlOf = (issuer: string): string => `${trimTrailingSlashes
  * which leaves the decision to whatever the resolved JWKS key admits.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const asymmetricAlgorithms = (
   algorithms: ReadonlyArray<string> | undefined
@@ -154,7 +154,7 @@ type Oidc = NonNullable<OAuthProviderConfig["oidc"]>
  * {@link make} is what folds the OIDC half into the block.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   /**
@@ -233,7 +233,7 @@ export interface Options {
  * The scopes a discovered provider asks for unless told otherwise.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["openid", "email", "profile"]
 
@@ -271,7 +271,7 @@ const failure = (id: string, reason: DiscoveryError["reason"]) => DiscoveryError
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: (options: Options) => Effect.Effect<OAuthProviderConfig, DiscoveryError, HttpClient.HttpClient> =
   Effect.fnUntraced(function* (options: Options) {

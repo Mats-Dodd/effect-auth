@@ -27,7 +27,7 @@
  * server-side state, not a secret: put an address or a callback URL in one,
  * never a credential.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, DateTime, type Duration, Effect, Encoding, Layer, Option, Redacted, Result, Schema } from "effect"
 import { Token } from "../crypto/Token.js"
@@ -48,7 +48,7 @@ import { VerificationStore } from "./Stores.js"
  * base64url token.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const subjectTokenSeparator = "."
 
@@ -56,7 +56,7 @@ export const subjectTokenSeparator = "."
  * Pairs the subject a single-use token belongs to with the secret itself.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SubjectToken {
   /** The user id, normalized e-mail address, or whatever else names the row. */
@@ -79,7 +79,7 @@ export interface SubjectToken {
  * are, and only their digest is stored.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const encodeSubjectToken = (subject: string, secret: Redacted.Redacted): Redacted.Redacted =>
   Redacted.make(`${Encoding.encodeBase64Url(subject)}${subjectTokenSeparator}${Redacted.value(secret)}`)
@@ -89,7 +89,7 @@ export const encodeSubjectToken = (subject: string, secret: Redacted.Redacted): 
  * it is not a subject token at all.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const decodeSubjectToken = (token: Redacted.Redacted): Option.Option<SubjectToken> => {
   const raw = Redacted.value(token)
@@ -109,7 +109,7 @@ export const decodeSubjectToken = (token: Redacted.Redacted): Option.Option<Subj
  * run, because it is decoded on the request path with nothing provided to it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface PurposePayload extends Schema.ConstraintCodec<unknown> {}
 
@@ -127,7 +127,7 @@ export interface PurposePayload extends Schema.ConstraintCodec<unknown> {}
  * built by {@link purpose}, never by hand.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface TokenPurpose<P> {
   /** The namespace of every row this purpose writes. */
@@ -173,7 +173,7 @@ export interface TokenPurpose<P> {
  * purposes with the same `name` are the same rows.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export function purpose(name: string): TokenPurpose<null>
 export function purpose<S extends PurposePayload>(name: string, payload: S): TokenPurpose<S["Type"]>
@@ -202,7 +202,7 @@ export function purpose(name: string, payload?: PurposePayload): TokenPurpose<un
  * gets two namespaces.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const identifierOf = (purpose: TokenPurpose<unknown>, subject: string): string => `${purpose.name}:${subject}`
 
@@ -210,7 +210,7 @@ export const identifierOf = (purpose: TokenPurpose<unknown>, subject: string): s
  * The purpose of an e-mail verification link.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const emailVerifyPurpose: TokenPurpose<null> = purpose("email-verify")
 
@@ -218,7 +218,7 @@ export const emailVerifyPurpose: TokenPurpose<null> = purpose("email-verify")
  * The purpose of a password reset link.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const passwordResetPurpose: TokenPurpose<null> = purpose("password-reset")
 
@@ -231,7 +231,7 @@ export const passwordResetPurpose: TokenPurpose<null> = purpose("password-reset"
  * the whole reason the payload exists — see the module header.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const ChangeEmailPayload = Schema.Struct({
   newEmail: Schema.String
@@ -241,7 +241,7 @@ export const ChangeEmailPayload = Schema.Struct({
  * The type of a {@link ChangeEmailPayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ChangeEmailPayload = typeof ChangeEmailPayload.Type
 
@@ -250,7 +250,7 @@ export type ChangeEmailPayload = typeof ChangeEmailPayload.Type
  * afterwards.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const DeleteAccountPayload = Schema.Struct({
   callbackURL: Schema.NullOr(Schema.String)
@@ -260,7 +260,7 @@ export const DeleteAccountPayload = Schema.Struct({
  * The type of a {@link DeleteAccountPayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DeleteAccountPayload = typeof DeleteAccountPayload.Type
 
@@ -269,7 +269,7 @@ export type DeleteAccountPayload = typeof DeleteAccountPayload.Type
  * currently has. Its subject is the user's id.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const changeEmailConfirmPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
   "change-email-confirm",
@@ -281,7 +281,7 @@ export const changeEmailConfirmPurpose: TokenPurpose<ChangeEmailPayload> = purpo
  * changes the column. Its subject is the user's id.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const changeEmailVerifyPurpose: TokenPurpose<ChangeEmailPayload> = purpose(
   "change-email-verify",
@@ -292,7 +292,7 @@ export const changeEmailVerifyPurpose: TokenPurpose<ChangeEmailPayload> = purpos
  * An account-deletion confirmation link. Its subject is the user's id.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose("delete-account", DeleteAccountPayload)
 
@@ -321,7 +321,7 @@ export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose(
  * against `normalizeEmail(user.email)`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
   passwordResetPurpose,
@@ -342,7 +342,7 @@ export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
  * why `email-verify` is not among them.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const retireUserSubjectTokens = (
   verifications: VerificationsService,
@@ -358,7 +358,7 @@ export const retireUserSubjectTokens = (
  * What {@link VerificationsService.issue} needs to know.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface IssueOptions<P> {
   /** The class of token to mint. */
@@ -380,7 +380,7 @@ export interface IssueOptions<P> {
  * Put it in a link and drop it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Issued {
   readonly token: Redacted.Redacted
@@ -393,7 +393,7 @@ export interface Issued {
  * consumed.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Claimed<P> {
   readonly subject: string
@@ -407,7 +407,7 @@ export interface Claimed<P> {
  * The {@link Verifications} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface VerificationsService {
   /**
@@ -449,7 +449,7 @@ export interface VerificationsService {
  * Mints and claims single-use tokens. See {@link VerificationsService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Verifications extends Context.Service<Verifications, VerificationsService>()(
   "effect-auth/domain/Verifications"
@@ -464,7 +464,7 @@ export class Verifications extends Context.Service<Verifications, VerificationsS
  * verification store.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: Effect.Effect<VerificationsService, never, Token | VerificationStore> = Effect.gen(function* () {
   const tokens = yield* Token
@@ -518,6 +518,6 @@ export const make: Effect.Effect<VerificationsService, never, Token | Verificati
  * Provides {@link Verifications}.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<Verifications, never, Token | VerificationStore> = Layer.effect(Verifications, make)

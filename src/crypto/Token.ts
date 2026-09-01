@@ -13,7 +13,7 @@
  * usable session or reset link, and every lookup hashes the presented value
  * first.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Crypto, Effect, Encoding, Layer, Redacted } from "effect"
 import { encodeUtf8 } from "../internal/crypto.js"
@@ -22,7 +22,7 @@ import { encodeUtf8 } from "../internal/crypto.js"
  * The number of random bytes in a token.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenBytes = 32
 
@@ -30,7 +30,7 @@ export const tokenBytes = 32
  * The length of the base64url encoding of {@link tokenBytes} bytes.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenLength = 43
 
@@ -38,7 +38,7 @@ export const tokenLength = 43
  * The {@link Token} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface TokenService {
   /**
@@ -64,7 +64,7 @@ export interface TokenService {
  * Mints and hashes opaque tokens. See {@link TokenService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Token extends Context.Service<Token, TokenService>()("effect-auth/crypto/Token") {}
 
@@ -87,7 +87,7 @@ export class Token extends Context.Service<Token, TokenService>()("effect-auth/c
  * surfaces as a defect rather than a typed error.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (crypto: Crypto.Crypto): TokenService =>
   Token.of({
@@ -108,6 +108,6 @@ export const make = (crypto: Crypto.Crypto): TokenService =>
  * implementation provides its own `Crypto.Crypto` layer instead.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<Token, never, Crypto.Crypto> = Layer.effect(Token, Crypto.Crypto.useSync(make))

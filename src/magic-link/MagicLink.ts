@@ -37,7 +37,7 @@
  * an unverified account moves the whole account to the address that asked for
  * it, and the change-email flow skips its first hop precisely there.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Duration, Effect, Layer, Option, type Redacted, Schema } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -69,7 +69,7 @@ import { magicLinkPrefix, SignUpDisabled } from "./Api.js"
  * `passwordMethod` and `oauthMethod`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const magicLinkMethod = "magic-link"
 
@@ -85,7 +85,7 @@ export const magicLinkMethod = "magic-link"
  * this plugin exists.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const magicLinkPlugin = "magic-link"
 
@@ -113,7 +113,7 @@ const magicLinkSource: ProvisionSource = { _tag: "MagicLink" }
  * landing page — or their own display name — into it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const MagicLinkPayload = Schema.Struct({
   /** The display name to give the account this link may create. */
@@ -132,7 +132,7 @@ export const MagicLinkPayload = Schema.Struct({
  * The type of a {@link MagicLinkPayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type MagicLinkPayload = typeof MagicLinkPayload.Type
 
@@ -141,7 +141,7 @@ export type MagicLinkPayload = typeof MagicLinkPayload.Type
  * e-mail address the link was sent to.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const magicLinkPurpose: TokenPurpose<MagicLinkPayload> = purpose("magic-link", MagicLinkPayload)
 
@@ -161,7 +161,7 @@ export const magicLinkPurpose: TokenPurpose<MagicLinkPayload> = purpose("magic-l
  * the flow already handles.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface MagicLinkEmail {
   /** The address the message goes to, normalized. */
@@ -187,7 +187,7 @@ export interface MagicLinkEmail {
  * point.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface MagicLinkEmailsService {
   readonly sendMagicLink: (email: MagicLinkEmail) => Effect.Effect<void, EmailDeliveryError>
@@ -197,7 +197,7 @@ export interface MagicLinkEmailsService {
  * Delivers magic links. See {@link MagicLinkEmailsService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class MagicLinkEmails extends Context.Service<MagicLinkEmails, MagicLinkEmailsService>()(
   "effect-auth/magic-link/MagicLink/MagicLinkEmails"
@@ -211,7 +211,7 @@ export class MagicLinkEmails extends Context.Service<MagicLinkEmails, MagicLinkE
  * What a deployment may vary about the magic link flow.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Config {
   /**
@@ -270,7 +270,7 @@ export interface Config {
  * {@link Config}, with every field optional.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   readonly ttl?: Duration.Duration | undefined
@@ -283,7 +283,7 @@ export interface Options {
  * The defaults every unstated {@link Options} field resolves to.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaults: Config = {
   ttl: Duration.minutes(5),
@@ -296,7 +296,7 @@ export const defaults: Config = {
  * Resolves {@link Options} against {@link defaults}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig = (options?: Options): Config => withDefaults(defaults, options)
 
@@ -308,7 +308,7 @@ export const makeConfig = (options?: Options): Config => withDefaults(defaults, 
  * What {@link MagicLinkService.request} takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RequestOptions {
   /** The address to send the link to. Normalized here, not by the caller. */
@@ -329,7 +329,7 @@ export interface RequestOptions {
  * What {@link MagicLinkService.verify} and {@link MagicLinkService.complete} take.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface VerifyOptions {
   /** The token out of the link. */
@@ -343,7 +343,7 @@ export interface VerifyOptions {
  * A spent magic link: who it signed in, and where to send them.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface VerifyResult {
   readonly user: User
@@ -374,7 +374,7 @@ export interface VerifyResult {
  * it refused.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type VerifyError = InvalidToken | SignUpDisabled | PolicyRefused
 
@@ -383,7 +383,7 @@ export type VerifyError = InvalidToken | SignUpDisabled | PolicyRefused
  * browser.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type VerifyOutcome =
   | ({ readonly _tag: "Success" } & VerifyResult)
@@ -424,7 +424,7 @@ const errorCodes: { readonly [Tag in VerifyError["_tag"]]: string } = {
  * callback uses.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const errorCode = (error: VerifyError): string => errorCodes[error._tag]
 
@@ -436,7 +436,7 @@ export const errorCode = (error: VerifyError): string => errorCodes[error._tag]
  * The {@link MagicLink} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface MagicLinkService {
   /** The resolved configuration this instance was built with. */
@@ -500,7 +500,7 @@ export interface MagicLinkService {
  * Passwordless sign-in by e-mailed link. See {@link MagicLinkService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class MagicLink extends Context.Service<MagicLink, MagicLinkService>()("effect-auth/magic-link/MagicLink") {}
 
@@ -524,7 +524,7 @@ export class MagicLink extends Context.Service<MagicLink, MagicLinkService>()("e
  * ```
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Requirements =
   | MagicLinkEmails
@@ -548,7 +548,7 @@ export type Requirements =
  * for the same reason.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: (options?: Options) => Effect.Effect<MagicLinkService, never, Requirements> = Effect.fnUntraced(
   function* (options?: Options) {
@@ -889,7 +889,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
  * ```
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = (options?: Options): Layer.Layer<MagicLink, never, Requirements> =>
   Layer.effect(MagicLink, make(options))

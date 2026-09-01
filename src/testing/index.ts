@@ -14,7 +14,7 @@
  * dependency; nothing under `effect-auth` or `effect-auth/client` depends on
  * it, so a production bundle never sees it.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 export * as MagicLinkTest from "./MagicLinkTest.js"
 export * as MockProvider from "./MockProvider.js"

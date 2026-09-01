@@ -24,7 +24,7 @@
  * const magicLink = yield* HttpApiClient.group(AppApi, { group: "magicLink" })
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http"
@@ -48,7 +48,7 @@ import { layerFetch, withPayload } from "./internal/atoms.js"
  * The path the e-mailed link points at, as {@link MagicLinkApiGroup} serves it.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const verifyPath = `${magicLinkPrefix}/verify`
 
@@ -56,7 +56,7 @@ export const verifyPath = `${magicLinkPrefix}/verify`
  * The argument of {@link MagicLinkClient.signIn}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignIn = MagicLinkSignInPayload
 
@@ -65,7 +65,7 @@ export type SignIn = MagicLinkSignInPayload
  * `Redacted<string>` — wrap the value out of the link with `Redacted.make`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Exchange = MagicLinkExchangePayload
 
@@ -73,7 +73,7 @@ export type Exchange = MagicLinkExchangePayload
  * The options of {@link make}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   /**
@@ -112,7 +112,7 @@ export interface Options {
  * one included.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface MagicLinkClient {
   /**
@@ -182,7 +182,7 @@ const serviceId = "effect-auth/MagicLinkClient"
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options?: Options): MagicLinkClient => {
   const service = AtomHttpApi.Service()(serviceId, {

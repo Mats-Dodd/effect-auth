@@ -25,7 +25,7 @@
  * `response_type` stays `code`: this library exchanges the code server-side and
  * has no use for the hybrid flow's front-channel token.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted as RedactedType } from "effect"
 import { Config, DateTime, Duration, Effect, Option, Redacted, Schema } from "effect"
@@ -46,7 +46,7 @@ import { identityOf } from "../internal/userInfo.js"
  * The id Apple is registered and addressed under.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const id = "apple"
 
@@ -55,7 +55,7 @@ export const id = "apple"
  * this provider writes.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const issuer = "https://appleid.apple.com"
 
@@ -63,7 +63,7 @@ export const issuer = "https://appleid.apple.com"
  * Apple's authorization endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const authorizationUrl = `${issuer}/auth/authorize`
 
@@ -71,7 +71,7 @@ export const authorizationUrl = `${issuer}/auth/authorize`
  * Apple's token endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenUrl = `${issuer}/auth/token`
 
@@ -79,7 +79,7 @@ export const tokenUrl = `${issuer}/auth/token`
  * Where Apple publishes its signing keys.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const jwksUrl = `${issuer}/auth/keys`
 
@@ -88,7 +88,7 @@ export const jwksUrl = `${issuer}/auth/keys`
  * field back on the first authorization — and what makes it use `form_post`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["email", "name"]
 
@@ -96,7 +96,7 @@ export const defaultScopes: ReadonlyArray<string> = ["email", "name"]
  * How long a minted client secret lives by default.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultSecretTtl: Duration.Duration = Duration.hours(1)
 
@@ -105,7 +105,7 @@ export const defaultSecretTtl: Duration.Duration = Duration.hours(1)
  * token endpoint refuses the assertion outright.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const maximumSecretTtl: Duration.Duration = Duration.days(180)
 
@@ -117,7 +117,7 @@ export const maximumSecretTtl: Duration.Duration = Duration.days(180)
  * What minting a client secret needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SecretOptions {
   /** The Services ID — the `sub` of the assertion, and the OAuth client id. */
@@ -162,7 +162,7 @@ export interface SecretOptions {
  * reports without ever quoting the key.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const clientSecret: (options: SecretOptions) => Effect.Effect<RedactedType.Redacted, OAuthProviderError> =
   Effect.fnUntraced(function* (options: SecretOptions) {
@@ -227,7 +227,7 @@ const readUserParam = Schema.decodeUnknownOption(Schema.fromJsonString(UserParam
  * name at all — is worth pinning.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const nameOf = (user: string | undefined): string | null => {
   if (user === undefined) return null
@@ -250,7 +250,7 @@ export const nameOf = (user: string | undefined): string | null => {
  * What Apple needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options extends SecretOptions {
   /** Scopes on top of {@link defaultScopes}. */
@@ -334,7 +334,7 @@ export interface Options extends SecretOptions {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
   const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens, info?: UserInfoOptions) {
@@ -385,7 +385,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  * What Apple needs, per field, as `Config` values.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
@@ -432,7 +432,7 @@ interface Settings {
  * a `ConfigError`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig: (options: ConfigOptions) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> =
   Effect.fnUntraced(function* (options: ConfigOptions) {

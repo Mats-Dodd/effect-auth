@@ -21,7 +21,7 @@
  * keeps the same guarantee by memoising on the model itself, so a fixture's model
  * is what ties a file's blocks to one PGlite.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { PgliteClient } from "@effect/sql-pglite"
 import type { Crypto, Scope } from "effect"
@@ -74,7 +74,7 @@ import { type EmailDelivery, layerEmails, type TestEmails } from "./TestEmails.j
  * deployment. `TestEmails.*` is the same module under its own name, for a test
  * that touches the mailer and nothing else.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type { EmailDelivery, EmailKind, SentEmail, TestEmailsService } from "./TestEmails.js"
 export {
@@ -97,7 +97,7 @@ export {
  * credential worth protecting.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const testSecret: Redacted.Redacted = Redacted.make("effect-auth-test-secret-do-not-use-in-production")
 
@@ -107,7 +107,7 @@ export const testSecret: Redacted.Redacted = Redacted.make("effect-auth-test-sec
  * simulated.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const testBaseUrl = "http://localhost:3000"
 
@@ -117,7 +117,7 @@ export const testBaseUrl = "http://localhost:3000"
  * production layer.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const testScryptOptions: ScryptOptions = { N: 1024, r: 8, p: 1 }
 
@@ -131,7 +131,7 @@ export const testScryptOptions: ScryptOptions = { N: 1024, r: 8, p: 1 }
  * deployment with the rate limits switched off.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Settings {
   readonly baseUrl?: string | undefined
@@ -201,7 +201,7 @@ export interface Settings {
  * carry it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options<F extends UserFields = {}> extends Settings {
   /**
@@ -214,7 +214,7 @@ export interface Options<F extends UserFields = {}> extends Settings {
  * {@link Settings.user}, plus the model the deployment is built for.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserTestOptions<F extends UserFields> extends UserConfigOptions {
   readonly model?: UserModel<F> | undefined
@@ -233,7 +233,7 @@ export interface UserTestOptions<F extends UserFields> extends UserConfigOptions
  * on in the tests that are).
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const testConfig = (options?: Settings): AuthConfigOptions => ({
   baseUrl: options?.baseUrl ?? testBaseUrl,
@@ -326,7 +326,7 @@ const databases = new WeakMap<
  * equivalent layer yourself gets you a second, empty one.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerDatabaseFor = <F extends UserFields>(
   model: UserModel<F>
@@ -343,7 +343,7 @@ export const layerDatabaseFor = <F extends UserFields>(
  * persistence tier, with nothing of the domain on top.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerStoresFor = <F extends UserFields>(
   model: UserModel<F>
@@ -367,7 +367,7 @@ export const layerStoresFor = <F extends UserFields>(
  * yourself gets you a second, empty one.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerDatabase: Layer.Layer<
   SqlClient.SqlClient | PgliteClient.PgliteClient,
@@ -384,7 +384,7 @@ export const layerDatabase: Layer.Layer<
  * without going through `Sessions`, `Accounts` or `Passwords`.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerStores: Layer.Layer<
   AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
@@ -436,7 +436,7 @@ export const layerStores: Layer.Layer<
  * fixture's model is what ties a file's blocks to one PGlite.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = <F extends UserFields = {}>(
   options?: Options<F>
@@ -459,7 +459,7 @@ const deployment = <F extends UserFields>(
  * usually.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFetch = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClient.HttpClient> =>
   FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(fetch)))
@@ -468,7 +468,7 @@ export const layerFetch = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClie
  * What {@link layerFlow} needs on top of {@link Settings}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface FlowSettings extends Settings {
   /**
@@ -486,7 +486,7 @@ export interface FlowSettings extends Settings {
  * What {@link layerFlow} needs on top of {@link Options}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface FlowOptions<F extends UserFields = {}> extends Options<F>, FlowSettings {
   /** Restated so that the two supertypes agree on it. See {@link Options.user}. */
@@ -497,7 +497,7 @@ export interface FlowOptions<F extends UserFields = {}> extends Options<F>, Flow
  * {@link layer} with the OAuth flow in it, talking to a stubbed provider.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFlow = <F extends UserFields = {}>(
   options: FlowOptions<F>
@@ -535,7 +535,7 @@ const flowDeployment = <F extends UserFields>(
  * The platform services an `HttpApi` needs in order to encode a response.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerPlatform: Layer.Layer<
   Path.Path | Etag.Generator | HttpPlatform.HttpPlatform | FileSystem.FileSystem
@@ -546,7 +546,7 @@ export const layerPlatform: Layer.Layer<
  * composes it — and therefore what `AuthHandlers.layer` has to infer against.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const TestApi = HttpApi.make("test-app").addHttpApi(AuthApi)
 
@@ -583,7 +583,7 @@ type TestHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F
  * signatures say the same thing the two call shapes mean.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
   api: TestHttpApi<ApiId, Groups, F>,
@@ -625,7 +625,7 @@ export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.C
  * {@link layerHttpApi} may ask for.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DeploymentServices = Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails
 
@@ -635,7 +635,7 @@ export type DeploymentServices = Services | SqlClient.SqlClient | PgliteClient.P
  * is encoded with.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type HttpApiLayer<ApiId extends string, Extra = never> = Layer.Layer<
   | HttpApiGroup.Service<ApiId, "auth">
@@ -653,7 +653,7 @@ export type HttpApiLayer<ApiId extends string, Extra = never> = Layer.Layer<
  * this library's own endpoints runs on.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export function layerHttp(options?: Settings): HttpApiLayer<"test-app">
 export function layerHttp<Extra>(
@@ -704,7 +704,7 @@ export function layerHttp(
  * can survive.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export function layerHttpMovingClock(options?: Settings): HttpApiLayer<"test-app", TestClock.TestClock>
 export function layerHttpMovingClock<Extra>(
@@ -756,7 +756,7 @@ export function layerHttpMovingClock(
  * ```
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const freshClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
   // A clock scoped to one test body is the whole of what this combinator is;
@@ -767,7 +767,7 @@ export const freshClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effe
  * What {@link countingHasher} counts.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface HasherCounts {
   hashes: number
@@ -791,7 +791,7 @@ export interface HasherCounts {
  * asserts on it must run sequentially.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const countingHasher = (
   options?: ScryptOptions
@@ -817,7 +817,7 @@ export const countingHasher = (
  * What {@link countingSessionStore} counts.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionStoreCounts {
   /** How many times a session was resolved from its token — a database read. */
@@ -851,7 +851,7 @@ export interface SessionStoreCounts {
  * asserts on it must run sequentially.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const countingSessionStore = (): {
   readonly layer: Layer.Layer<SessionStore, never, SessionStore>
@@ -881,7 +881,7 @@ export const countingSessionStore = (): {
  * What {@link recordingEvents} hands back.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Recorded<A> {
   readonly result: A
@@ -903,7 +903,7 @@ export interface Recorded<A> {
  * rather than on the whole sequence.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const recordingEvents = <A, E, R>(
   body: Effect.Effect<A, E, R>
@@ -929,7 +929,7 @@ export const recordingEvents = <A, E, R>(
  * user usually holds `ReadonlyArray<{ readonly _tag: string }>` by then.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tagsOf = (values: ReadonlyArray<{ readonly _tag: string }>): ReadonlyArray<string> =>
   values.map((value) => value._tag)

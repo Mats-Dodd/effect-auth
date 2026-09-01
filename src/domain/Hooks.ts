@@ -49,7 +49,7 @@
  * const AuthLive = Auth.layer(options).pipe(Layer.provide(AcmeOnly))
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Layer, Schema } from "effect"
 import { omitUndefined } from "../internal/records.js"
@@ -72,7 +72,7 @@ import type { UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
  * borrowing one.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ProvisionSource =
   /** A sign-up with an e-mail address and a password. */
@@ -107,7 +107,7 @@ export type ProvisionSource =
  * or the internals of the policy. `detail` is subject to the same rule.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class PolicyRefused extends Schema.TaggedError<PolicyRefused>("effect-auth/PolicyRefused")(
   "PolicyRefused",
@@ -135,7 +135,7 @@ export class PolicyRefused extends Schema.TaggedError<PolicyRefused>("effect-aut
  * header for what that forbids.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthHooksOf<F extends UserFields> {
   /**
@@ -226,7 +226,7 @@ export interface AuthHooksOf<F extends UserFields> {
  * The hooks a deployment installed. See {@link AuthHooksOf}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthHooksService extends AuthHooksOf<{}> {}
 
@@ -247,7 +247,7 @@ export interface AuthHooksService extends AuthHooksOf<{}> {}
  * (`Layer.provide`), and cannot swap them for one request.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AuthHooks: Context.Reference<AuthHooksService> = Context.Reference<AuthHooksService>(
   "effect-auth/AuthHooks",
@@ -274,7 +274,7 @@ export const AuthHooks: Context.Reference<AuthHooksService> = Context.Reference<
  * ```
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const hooksOf = <F extends UserFields>(_model: UserModel<F>): Context.Reference<AuthHooksOf<F>> =>
   Context.Reference<AuthHooksOf<F>>("effect-auth/AuthHooks", { defaultValue: () => ({}) })
@@ -315,7 +315,7 @@ const sequence = <O>(
  * followed.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const combine = (first: AuthHooksService, second: AuthHooksService): AuthHooksService => {
   const firstCreate = first.beforeUserCreate
@@ -369,7 +369,7 @@ export const combine = (first: AuthHooksService, second: AuthHooksService): Auth
  * ```
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = (hooks: AuthHooksService): Layer.Layer<never> => Layer.succeed(AuthHooks)(hooks)
 
@@ -400,7 +400,7 @@ export const layer = (hooks: AuthHooksService): Layer.Layer<never> => Layer.succ
  * ```
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const append = (hooks: AuthHooksService): Layer.Layer<never> =>
   Layer.effect(

@@ -18,7 +18,7 @@
  * a key carries the request path, so the magic link endpoints are limited
  * independently of `/auth/sign-in/email`.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Effect, Redacted } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
@@ -41,7 +41,7 @@ import { MagicLink } from "./MagicLink.js"
  * the plugin knows nothing else about.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type HandlerServices = AuthConfig | MagicLink | RateLimiter.RateLimiter
 
@@ -66,7 +66,7 @@ export type HandlerServices = AuthConfig | MagicLink | RateLimiter.RateLimiter
  * mis-served — see `AuthHandlers.forGroup`.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
   Effect.gen(function* () {

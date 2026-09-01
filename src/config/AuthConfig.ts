@@ -6,7 +6,7 @@
  * signing secret. {@link make} applies the defaults, so a consumer only states
  * what differs from them.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Duration, Layer, Redacted } from "effect"
 import { toEntries } from "effect/Record"
@@ -19,7 +19,7 @@ import { withDefaults } from "../internal/records.js"
  * caller may pass `{ basePath: undefined }` under `exactOptionalPropertyTypes`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type PartialOptions<T> = { readonly [K in keyof T]?: T[K] | undefined }
 
@@ -31,7 +31,7 @@ export type PartialOptions<T> = { readonly [K in keyof T]?: T[K] | undefined }
  * Session lifetime knobs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionConfig {
   /**
@@ -60,7 +60,7 @@ export interface SessionConfig {
  * E-mail and password sign-in knobs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface EmailPasswordConfig {
   /**
@@ -91,7 +91,7 @@ export interface EmailPasswordConfig {
  * Session cookie shape.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface CookieConfig {
   /**
@@ -118,7 +118,7 @@ export interface CookieConfig {
  * Lifetimes of the single-use values stored in the verification table.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface TokenConfig {
   /**
@@ -160,7 +160,7 @@ export interface TokenConfig {
  * Whether a signed-in person may change the address on their account.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ChangeEmailConfig {
   /**
@@ -180,7 +180,7 @@ export interface ChangeEmailConfig {
  * Whether a signed-in person may delete their own account, and how.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface DeleteUserConfig {
   /**
@@ -205,7 +205,7 @@ export interface DeleteUserConfig {
  * What a signed-in person may do to their own user record.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserConfig {
   readonly changeEmail: ChangeEmailConfig
@@ -222,7 +222,7 @@ export interface UserConfig {
  * must not lose the default of the other.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserConfigOptions {
   readonly changeEmail?: PartialOptions<ChangeEmailConfig> | undefined
@@ -233,7 +233,7 @@ export interface UserConfigOptions {
  * Rate limiting knobs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RateLimitConfig {
   /**
@@ -281,7 +281,7 @@ export interface RateLimitConfig {
  * trades against.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface CookieCacheConfig {
   /**
@@ -326,7 +326,7 @@ export interface CookieCacheConfig {
  * The paths, relative to `baseUrl`, that the e-mails link to.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface EmailPathConfig {
   /**
@@ -366,7 +366,7 @@ export interface EmailPathConfig {
  * every default applied, nothing optional.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthConfigService {
   /**
@@ -422,7 +422,7 @@ export interface AuthConfigService {
  * The configuration service. See {@link AuthConfigService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class AuthConfig extends Context.Service<AuthConfig, AuthConfigService>()("effect-auth/config/AuthConfig") {}
 
@@ -435,7 +435,7 @@ export class AuthConfig extends Context.Service<AuthConfig, AuthConfigService>()
  * and `secret` are required.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthConfigOptions {
   readonly baseUrl: string
@@ -461,7 +461,7 @@ export interface AuthConfigOptions {
  * The default session lifetimes.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultSession: SessionConfig = {
   expiresIn: Duration.days(7),
@@ -475,7 +475,7 @@ export const defaultSession: SessionConfig = {
  * passwords of 8 to 128 characters.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultEmailPassword: EmailPasswordConfig = {
   enabled: false,
@@ -489,7 +489,7 @@ export const defaultEmailPassword: EmailPasswordConfig = {
  * The default single-use token lifetimes.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultTokens: TokenConfig = {
   emailVerificationTtl: Duration.days(1),
@@ -503,7 +503,7 @@ export const defaultTokens: TokenConfig = {
  * The default rate limiting configuration.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultRateLimit: RateLimitConfig = {
   enabled: true,
@@ -517,7 +517,7 @@ export const defaultRateLimit: RateLimitConfig = {
  * The default e-mail link paths.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultEmailPaths: EmailPathConfig = {
   verifyEmail: "/auth/verify-email",
@@ -531,7 +531,7 @@ export const defaultEmailPaths: EmailPathConfig = {
  * The default change-email policy: not served.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultChangeEmail: ChangeEmailConfig = { enabled: false }
 
@@ -540,7 +540,7 @@ export const defaultChangeEmail: ChangeEmailConfig = { enabled: false }
  * rather than confirmed by mail.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultDeleteUser: DeleteUserConfig = { enabled: false, confirmByEmail: false }
 
@@ -548,7 +548,7 @@ export const defaultDeleteUser: DeleteUserConfig = { enabled: false, confirmByEm
  * The default cookie cache configuration: off, five minutes, no version.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultCookieCache: CookieCacheConfig = {
   enabled: false,
@@ -568,7 +568,7 @@ export const defaultCookieCache: CookieCacheConfig = {
  * every cookie-authenticated request would then answer `Unauthorized`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultCookieName = "effect_auth.session"
 
@@ -577,7 +577,7 @@ export const defaultCookieName = "effect_auth.session"
  * and the `__Secure-` cookie prefix.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isSecureUrl = (url: string): boolean => {
   try {
@@ -597,7 +597,7 @@ export const isSecureUrl = (url: string): boolean => {
  * HTTP sibling origin cannot overwrite the session cookie.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cookieName = (config: AuthConfigService): string =>
   config.cookie.secure ? `__Secure-${defaultCookieName}` : defaultCookieName
@@ -613,7 +613,7 @@ export const cookieName = (config: AuthConfigService): string =>
  * droppable without touching the session.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultCacheCookieName = "effect_auth.session_data"
 
@@ -622,7 +622,7 @@ export const defaultCacheCookieName = "effect_auth.session_data"
  * `__Secure-` rule as {@link cookieName}.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cacheCookieName = (config: AuthConfigService): string =>
   config.cookie.secure ? `__Secure-${defaultCacheCookieName}` : defaultCacheCookieName
@@ -743,7 +743,7 @@ const validate = (config: AuthConfigService): AuthConfigService => {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: AuthConfigOptions): AuthConfigService => {
   const origins = options.trustedOrigins ?? []
@@ -781,7 +781,7 @@ export const make = (options: AuthConfigOptions): AuthConfigService => {
  * Provides {@link AuthConfig} from plain options.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = (options: AuthConfigOptions): Layer.Layer<AuthConfig> => Layer.succeed(AuthConfig)(make(options))
 

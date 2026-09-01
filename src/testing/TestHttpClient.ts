@@ -9,7 +9,7 @@
  * next request worked) and per-client request headers. Everything else — the
  * routing, the codecs, the middleware — is the real pipeline.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Effect, Option, Redacted, Ref } from "effect"
 import type { HttpClientResponse } from "effect/unstable/http"
@@ -33,7 +33,7 @@ import { testBaseUrl, TestApi } from "./TestLayer.js"
  * How a client presents itself.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ClientOptions {
   /**
@@ -66,7 +66,7 @@ export interface ClientOptions {
  * `Set-Cookie` this library writes.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeClient = Effect.fnUntraced(function* <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
   api: HttpApi.HttpApi<ApiId, Groups>,
@@ -127,7 +127,7 @@ export const makeClient = Effect.fnUntraced(function* <ApiId extends string, Gro
  * {@link makeClient} with its own sign-up call instead.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const signedUp = Effect.fnUntraced(function* (
   options?: ClientOptions & {
@@ -175,7 +175,7 @@ export const signedUp = Effect.fnUntraced(function* (
  * is under test.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const refusedStatus = <A, E, R>(request: Effect.Effect<A, E, R>): Effect.Effect<number, never, R> =>
   Effect.match(request, {
@@ -204,7 +204,7 @@ export const refusedStatus = <A, E, R>(request: Effect.Effect<A, E, R>): Effect.
  * one from an earlier request" — the difference the rolling refresh turns on.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const responseCookie = (
   response: HttpClientResponse.HttpClientResponse,
@@ -215,7 +215,7 @@ export const responseCookie = (
  * The session cookie currently in a jar, if there is one.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCookie = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Effect<Option.Option<Cookies.Cookie>> =>
   Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, insecureSessionCookieName))
@@ -229,7 +229,7 @@ export const sessionCookie = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Effect<
  * of this on a response is exactly the "the snapshot was refreshed" signal.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const responseCacheCookie = (
   response: HttpClientResponse.HttpClientResponse,
@@ -240,7 +240,7 @@ export const responseCacheCookie = (
  * The session cache cookie currently in a jar, if there is one.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCacheCookie = (
   cookies: Ref.Ref<Cookies.Cookies>,
@@ -252,7 +252,7 @@ export const sessionCacheCookie = (
  * `"<absent>"` when the jar never held one.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCookieValue = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Effect<string> =>
   Effect.map(sessionCookie(cookies), Option.match({ onNone: () => "<absent>", onSome: (cookie) => cookie.value }))
@@ -266,7 +266,7 @@ export const sessionCookieValue = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Ef
  * broken assumption, not a condition to recover from.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenOf = (email: SentEmail): string => {
   const url = new URL(Redacted.value(email.url))

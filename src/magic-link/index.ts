@@ -38,7 +38,7 @@
  * *does* need a table ships its own `Migrations.make` set under its own
  * bookkeeping table — never merged into this library's.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 export * from "./Api.js"
 export * from "./Handlers.js"

@@ -18,7 +18,7 @@
  * `effect-auth/testing`; neither is re-exported here, so a server bundle never
  * pulls in `FetchHttpClient` and a published build never pulls in PGlite.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 
 // -----------------------------------------------------------------------------

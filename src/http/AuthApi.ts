@@ -10,7 +10,7 @@
  * This module is import-safe from a browser: it pulls in schemas and the
  * middleware *declaration*, never a store, a hasher or a node builtin.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
@@ -61,7 +61,7 @@ import { Authenticated, AuthoritativeSession } from "./Middleware.js"
  * request — unwraps it again.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 const nonEmptyBounded = (maxLength: number) =>
   Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(maxLength)))
@@ -86,7 +86,7 @@ const ResponseSecret = Schema.Redacted(Schema.String)
  * response would be a user-enumeration oracle.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const Ok = Schema.Struct({
   success: Schema.Boolean
@@ -96,7 +96,7 @@ export const Ok = Schema.Struct({
  * The type of an {@link Ok} response.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Ok = typeof Ok.Type
 
@@ -110,7 +110,7 @@ export type Ok = typeof Ok.Type
  * remains a normal JSON body that `fetch` can read.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const OAuthRedirect = Schema.Struct({
   /** The provider's authorization URL, with `state` and `code_challenge`. */
@@ -123,7 +123,7 @@ export const OAuthRedirect = Schema.Struct({
  * The type of an {@link OAuthRedirect} response.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type OAuthRedirect = typeof OAuthRedirect.Type
 
@@ -137,7 +137,7 @@ export type OAuthRedirect = typeof OAuthRedirect.Type
  * The target is always validated against `trustedOrigins` before it is written.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const Redirect = HttpApiSchema.WithHeaders(HttpApiSchema.Empty(302), { location: Schema.String })
 
@@ -156,7 +156,7 @@ export const Redirect = HttpApiSchema.WithHeaders(HttpApiSchema.Empty(302), { lo
  * client asserts about itself.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SignUpEmailPayload = Schema.Struct({
   name: InputName,
@@ -172,7 +172,7 @@ export const SignUpEmailPayload = Schema.Struct({
  * The schema {@link makeSignUpEmailPayload} builds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SignUpEmailPayloadSchema<F extends UserFields> extends Schema.Codec<
   typeof SignUpEmailPayload.Type & UserExtras<F, "jsonCreate">,
@@ -192,7 +192,7 @@ export interface SignUpEmailPayloadSchema<F extends UserFields> extends Schema.C
  * keep working when a deployment adds a field.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeSignUpEmailPayload = <F extends UserFields>(model: UserModel<F>): SignUpEmailPayloadSchema<F> =>
   model.withExtras(SignUpEmailPayload, "jsonCreate")
@@ -201,7 +201,7 @@ export const makeSignUpEmailPayload = <F extends UserFields>(model: UserModel<F>
  * The type of a {@link makeSignUpEmailPayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignUpEmailOf<F extends UserFields> = SignUpEmailPayloadSchema<F>["Type"]
 
@@ -209,7 +209,7 @@ export type SignUpEmailOf<F extends UserFields> = SignUpEmailPayloadSchema<F>["T
  * The body of `POST /auth/sign-in/email`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SignInEmailPayload = Schema.Struct({
   email: Email,
@@ -223,7 +223,7 @@ export const SignInEmailPayload = Schema.Struct({
  * The body of `POST /auth/revoke-session`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const RevokeSessionPayload = Schema.Struct({
   sessionId: SessionId
@@ -233,7 +233,7 @@ export const RevokeSessionPayload = Schema.Struct({
  * The body of `POST /auth/request-password-reset`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const RequestPasswordResetPayload = Schema.Struct({
   email: Email,
@@ -245,7 +245,7 @@ export const RequestPasswordResetPayload = Schema.Struct({
  * The body of `POST /auth/reset-password`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const ResetPasswordPayload = Schema.Struct({
   token: Secret,
@@ -256,7 +256,7 @@ export const ResetPasswordPayload = Schema.Struct({
  * The body of `POST /auth/change-password`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const ChangePasswordPayload = Schema.Struct({
   currentPassword: Secret,
@@ -269,7 +269,7 @@ export const ChangePasswordPayload = Schema.Struct({
  * The body of `POST /auth/send-verification-email`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SendVerificationEmailPayload = Schema.Struct({
   email: Email,
@@ -280,7 +280,7 @@ export const SendVerificationEmailPayload = Schema.Struct({
  * The query string of `GET /auth/verify-email`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const VerifyEmailQuery = Schema.Struct({
   token: InputToken,
@@ -298,7 +298,7 @@ export const VerifyEmailQuery = Schema.Struct({
  * before anything can log it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const TokenQuery = Schema.Struct({
   token: InputToken
@@ -316,7 +316,7 @@ export const TokenQuery = Schema.Struct({
  * change-email flow, never a profile edit.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UpdateUserPayload = Schema.Struct({
   name: Schema.optional(InputName),
@@ -327,7 +327,7 @@ export const UpdateUserPayload = Schema.Struct({
  * The schema {@link makeUpdateUserPayload} builds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UpdateUserPayloadSchema<F extends UserFields> extends Schema.Codec<
   typeof UpdateUserPayload.Type & UserExtras<F, "jsonUpdate">,
@@ -345,7 +345,7 @@ export interface UpdateUserPayloadSchema<F extends UserFields> extends Schema.Co
  * key is dropped rather than refused.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeUpdateUserPayload = <F extends UserFields>(model: UserModel<F>): UpdateUserPayloadSchema<F> =>
   model.withExtras(UpdateUserPayload, "jsonUpdate")
@@ -354,7 +354,7 @@ export const makeUpdateUserPayload = <F extends UserFields>(model: UserModel<F>)
  * The type of a {@link makeUpdateUserPayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UpdateUserOf<F extends UserFields> = UpdateUserPayloadSchema<F>["Type"]
 
@@ -362,7 +362,7 @@ export type UpdateUserOf<F extends UserFields> = UpdateUserPayloadSchema<F>["Typ
  * The body of `POST /auth/change-email`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const ChangeEmailPayload = Schema.Struct({
   /** The address to move the account to. */
@@ -375,7 +375,7 @@ export const ChangeEmailPayload = Schema.Struct({
  * The body of `POST /auth/delete-user`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const DeleteUserPayload = Schema.Struct({
   /**
@@ -396,7 +396,7 @@ export const DeleteUserPayload = Schema.Struct({
  * What `POST /auth/delete-user` did.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const DeleteUserResponse = Schema.Struct({
   success: Schema.Boolean,
@@ -411,7 +411,7 @@ export const DeleteUserResponse = Schema.Struct({
  * The type of a {@link DeleteUserResponse}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DeleteUserResponse = typeof DeleteUserResponse.Type
 
@@ -419,7 +419,7 @@ export type DeleteUserResponse = typeof DeleteUserResponse.Type
  * The body of `POST /auth/set-password`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SetPasswordPayload = Schema.Struct({
   newPassword: Secret
@@ -429,7 +429,7 @@ export const SetPasswordPayload = Schema.Struct({
  * The body of the two endpoints that name one of the caller's linked accounts.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AccountSelection = Schema.Struct({
   accountId: AccountId
@@ -446,7 +446,7 @@ export const AccountSelection = Schema.Struct({
  * wire, so serve these endpoints over TLS and do not cache their responses.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AccessTokenResponse = Schema.Struct({
   accessToken: ResponseSecret,
@@ -462,7 +462,7 @@ export const AccessTokenResponse = Schema.Struct({
  * The type of an {@link AccessTokenResponse}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AccessTokenResponse = typeof AccessTokenResponse.Type
 
@@ -477,7 +477,7 @@ export type AccessTokenResponse = typeof AccessTokenResponse.Type
  * that does not rotate them gets the stored one back unchanged.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const RefreshTokenResponse = Schema.Struct({
   ...AccessTokenResponse.fields,
@@ -489,7 +489,7 @@ export const RefreshTokenResponse = Schema.Struct({
  * The type of a {@link RefreshTokenResponse}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type RefreshTokenResponse = typeof RefreshTokenResponse.Type
 
@@ -497,7 +497,7 @@ export type RefreshTokenResponse = typeof RefreshTokenResponse.Type
  * The body of `POST /auth/sign-in/social`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SignInSocialPayload = Schema.Struct({
   providerId: InputProviderId,
@@ -514,7 +514,7 @@ export const SignInSocialPayload = Schema.Struct({
  * The path parameters of `GET /auth/callback/:providerId`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const OAuthCallbackParams = Schema.Struct({
   providerId: InputProviderId
@@ -530,7 +530,7 @@ export const OAuthCallbackParams = Schema.Struct({
  * A missing `state` is an `OAuthStateMismatch`, never a crash.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const OAuthCallbackQuery = Schema.Struct({
   code: Schema.optional(InputToken),
@@ -561,7 +561,7 @@ export const OAuthCallbackQuery = Schema.Struct({
  * twin — see the endpoint's own description for why.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const OAuthCallbackForm = Schema.Struct({
   code: Schema.optional(InputToken),
@@ -575,7 +575,7 @@ export const OAuthCallbackForm = Schema.Struct({
  * The body of `POST /auth/link-social`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const LinkSocialPayload = Schema.Struct({
   providerId: InputProviderId,
@@ -588,7 +588,7 @@ export const LinkSocialPayload = Schema.Struct({
  * The body of `POST /auth/unlink-account`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UnlinkAccountPayload = Schema.Struct({
   accountId: AccountId
@@ -622,7 +622,7 @@ export const UnlinkAccountPayload = Schema.Struct({
  * is the one `ReturnType` in the library.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
   HttpApiGroup.make("auth")
@@ -993,7 +993,7 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
  * `AuthApiGroupOf<{}>` is what {@link AuthApiGroup} extends.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AuthApiGroupOf<F extends UserFields = {}> = ReturnType<typeof makeAuthApiGroup<F>>
 
@@ -1010,7 +1010,7 @@ export type AuthApiGroupOf<F extends UserFields = {}> = ReturnType<typeof makeAu
  * in the emitted types instead of inlining it at each use.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class AuthApiGroup extends makeAuthApiGroup(baseUserModel) {}
 
@@ -1040,7 +1040,7 @@ export class AuthApiGroup extends makeAuthApiGroup(baseUserModel) {}
  * same place the endpoints are reachable from.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AuthApi = HttpApi.make("effect-auth").add(AuthApiGroup)
 
@@ -1066,7 +1066,7 @@ export const AuthApi = HttpApi.make("effect-auth").add(AuthApiGroup)
  * at the first of those three call sites that disagrees.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeAuthApi = <F extends UserFields>(
   model: UserModel<F>

@@ -26,7 +26,7 @@
  * })
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Effect } from "effect"
 import { Context, Option, Redacted } from "effect"
@@ -45,7 +45,7 @@ import type { AuthConfigService } from "./AuthConfig.js"
  * `Redacted.value` at the point the message body is composed and nowhere else.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthEmail {
   /**
@@ -76,7 +76,7 @@ export interface AuthEmail {
  * the current address and {@link ChangeEmailEmail.newEmail} the proposed one.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ChangeEmailEmail extends AuthEmail {
   /** The address the person has asked to move the account to. */
@@ -94,7 +94,7 @@ export interface ChangeEmailEmail extends AuthEmail {
  * so a failure is a signal for your logs, not for the caller.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthEmailsService {
   /**
@@ -154,7 +154,7 @@ export interface AuthEmailsService {
  * {@link AuthEmailsService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class AuthEmails extends Context.Service<AuthEmails, AuthEmailsService>()("effect-auth/config/AuthEmails") {}
 
@@ -163,7 +163,7 @@ export class AuthEmails extends Context.Service<AuthEmails, AuthEmailsService>()
  * its `token` query parameter.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenUrl = (config: AuthConfigService, path: string, token: Redacted.Redacted): Redacted.Redacted => {
   const url = new URL(path, config.baseUrl)
@@ -175,7 +175,7 @@ export const tokenUrl = (config: AuthConfigService, path: string, token: Redacte
  * The e-mail verification link for a token.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const verifyEmailUrl = (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
   tokenUrl(config, config.emailPaths.verifyEmail, token)
@@ -184,7 +184,7 @@ export const verifyEmailUrl = (config: AuthConfigService, token: Redacted.Redact
  * The password reset link for a token.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const resetPasswordUrl = (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
   tokenUrl(config, config.emailPaths.resetPassword, token)
@@ -193,7 +193,7 @@ export const resetPasswordUrl = (config: AuthConfigService, token: Redacted.Reda
  * The first-hop link of an e-mail change — the one sent to the current address.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const changeEmailConfirmUrl = (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
   tokenUrl(config, config.emailPaths.changeEmailConfirm, token)
@@ -208,7 +208,7 @@ export const changeEmailConfirmUrl = (config: AuthConfigService, token: Redacted
  * a link that moves the account somewhere else.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const changeEmailVerifyUrl = (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
   tokenUrl(config, config.emailPaths.changeEmailVerify, token)
@@ -217,7 +217,7 @@ export const changeEmailVerifyUrl = (config: AuthConfigService, token: Redacted.
  * The account-deletion confirmation link.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const deleteAccountUrl = (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
   tokenUrl(config, config.emailPaths.deleteAccount, token)
@@ -243,7 +243,7 @@ export const deleteAccountUrl = (config: AuthConfigService, token: Redacted.Reda
  * worth sending without it.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const withCallbackUrl = (
   config: AuthConfigService,

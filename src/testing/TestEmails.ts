@@ -17,7 +17,7 @@
  * test layer implements its mailer over, and the recipient it records is a plain
  * address — which a plugin's mail may have without a user behind it at all.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Layer, Option, type Redacted, Ref } from "effect"
 import type { AuthEmail, ChangeEmailEmail } from "../config/AuthEmails.js"
@@ -36,7 +36,7 @@ import type { User } from "../domain/Schema.js"
  * constants below.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type EmailKind = string
 
@@ -44,7 +44,7 @@ export type EmailKind = string
  * The kind recorded for the "confirm your address" message.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const verificationKind: EmailKind = "verification"
 
@@ -52,7 +52,7 @@ export const verificationKind: EmailKind = "verification"
  * The kind recorded for the "reset your password" message.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const resetKind: EmailKind = "reset"
 
@@ -61,7 +61,7 @@ export const resetKind: EmailKind = "reset"
  * address the account currently has.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const changeEmailConfirmationKind: EmailKind = "change-email-confirmation"
 
@@ -75,7 +75,7 @@ export const changeEmailConfirmationKind: EmailKind = "change-email-confirmation
  * newAddress)` is how a test reads the link, exactly as the person would.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const changeEmailVerificationKind: EmailKind = "change-email-verification"
 
@@ -83,7 +83,7 @@ export const changeEmailVerificationKind: EmailKind = "change-email-verification
  * The kind recorded for the "confirm you want to delete your account" message.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const deleteAccountKind: EmailKind = "delete-account"
 
@@ -91,7 +91,7 @@ export const deleteAccountKind: EmailKind = "delete-account"
  * One e-mail the application asked to have delivered.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SentEmail {
   /** What kind of message it was — see {@link verificationKind}. */
@@ -125,7 +125,7 @@ export interface SentEmail {
  * address exists must not be observable.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type EmailDelivery = "ok" | "failing"
 
@@ -145,7 +145,7 @@ export type EmailDelivery = "ok" | "failing"
  * ```
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface TestEmailsService {
   /**
@@ -201,7 +201,7 @@ export interface TestEmailsService {
  * The captured outbox. See {@link TestEmailsService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class TestEmails extends Context.Service<TestEmails, TestEmailsService>()("effect-auth/testing/TestEmails") {}
 
@@ -221,7 +221,7 @@ const matches = (email: SentEmail, kind: EmailKind, address: string | undefined)
  * even when the delivery failed.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerEmails = (delivery: EmailDelivery = "ok"): Layer.Layer<TestEmails | AuthEmails> =>
   Layer.effectContext(

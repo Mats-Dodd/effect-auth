@@ -21,7 +21,7 @@
  *   session kept alive for a month by ordinary browsing is no evidence that the
  *   person at the keyboard is still the account's owner.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, DateTime, Duration, Effect, Layer, type Redacted } from "effect"
 import type { AuthConfigService } from "../config/AuthConfig.js"
@@ -42,7 +42,7 @@ import { type PersistenceError, type SessionStore, sessionStoreOf } from "./Stor
  * What {@link Sessions.create} needs to know.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface CreateOptions {
   readonly userId: UserId
@@ -73,7 +73,7 @@ export interface CreateOptions {
  * way to recover it afterwards.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface CreatedSession {
   readonly session: Session
@@ -84,7 +84,7 @@ export interface CreatedSession {
  * A resolved session.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface VerifiedSession<F extends UserFields = {}> {
   readonly session: Session
@@ -121,7 +121,7 @@ export interface VerifiedSession<F extends UserFields = {}> {
  * authenticated request.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const grantedLifetime = (session: Session, config: AuthConfigService): Duration.Duration => {
   const lifetime = DateTime.distance(session.updatedAt, session.expiresAt)
@@ -133,7 +133,7 @@ export const grantedLifetime = (session: Session, config: AuthConfigService): Du
  * `expiresAt - lifetime + updateAge`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const refreshDueAt = (session: Session, config: AuthConfigService): DateTime.Utc =>
   DateTime.addDuration(
@@ -145,7 +145,7 @@ export const refreshDueAt = (session: Session, config: AuthConfigService): DateT
  * Whether a session's expiry is due to be rolled forward at `now`.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isRefreshDue = (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
   DateTime.isLessThanOrEqualTo(refreshDueAt(session, config), now)
@@ -154,7 +154,7 @@ export const isRefreshDue = (session: Session, config: AuthConfigService, now: D
  * Whether a session has expired at `now`.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isExpired = (session: Session, now: DateTime.Utc): boolean =>
   DateTime.isLessThanOrEqualTo(session.expiresAt, now)
@@ -163,7 +163,7 @@ export const isExpired = (session: Session, now: DateTime.Utc): boolean =>
  * Whether a session is fresh enough for a sensitive operation at `now`.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isFreshAt = (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
   DateTime.isGreaterThan(DateTime.addDuration(session.createdAt, config.session.freshAge), now)
@@ -176,7 +176,7 @@ export const isFreshAt = (session: Session, config: AuthConfigService, now: Date
  * The {@link Sessions} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionsService<F extends UserFields = {}> {
   /**
@@ -258,7 +258,7 @@ export interface SessionsService<F extends UserFields = {}> {
  * The session lifecycle service.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/domain/Sessions") {}
 
@@ -270,7 +270,7 @@ export class Sessions extends Context.Service<Sessions, SessionsService>()("effe
  * `domain/Stores.ts` for what a typed view is and why it is sound.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionsOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<Sessions, SessionsService<F>> =>
   Context.Service<Sessions, SessionsService<F>>("effect-auth/domain/Sessions")
@@ -284,7 +284,7 @@ export const sessionsOf = <F extends UserFields>(_model: UserModel<F>): Context.
  * token service, session store and event hub.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: <F extends UserFields>(
   model: UserModel<F>
@@ -396,7 +396,7 @@ export const make: <F extends UserFields>(
  * model's user, while the layer's own type stays the base one.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
@@ -407,7 +407,7 @@ export const layerFor = <F extends UserFields>(
  * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<Sessions, never, AuthConfig | Token | SessionStore | AuthEvents> =
   layerFor(baseUserModel)

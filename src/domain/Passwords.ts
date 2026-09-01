@@ -24,7 +24,7 @@
  * carry a token whose SHA-256 digest is all the database holds, and claiming
  * one is a single atomic `DELETE ... RETURNING`.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Layer, Option, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -78,7 +78,7 @@ import { emailVerifyPurpose, passwordResetPurpose, retireUserSubjectTokens, Veri
  * show "Password" next to "GitHub".
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const credentialProviderId = "credential"
 
@@ -95,7 +95,7 @@ export const credentialProviderId = "credential"
  * channel this is here to close.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const dummyPassword = "effect-auth::timing-defence::not-a-real-password"
 
@@ -110,7 +110,7 @@ export const dummyPassword = "effect-auth::timing-defence::not-a-real-password"
  * indistinguishable in round trips as well as in hashing work.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const absentUserId = UserId.make("00000000-0000-0000-0000-000000000000")
 
@@ -136,7 +136,7 @@ const passwordSource: ProvisionSource = { _tag: "EmailPassword" }
  * arbitrarily large input.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const checkPolicy = (
   password: Redacted.Redacted,
@@ -170,7 +170,7 @@ export const checkPolicy = (
  * fields are added to it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface BaseSignUpOptions {
   readonly name: string
@@ -198,7 +198,7 @@ export interface BaseSignUpOptions {
  * `readOnly` or `hidden` cannot be passed at all.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignUpOptions<F extends UserFields = {}> = BaseSignUpOptions & UserExtras<F, "jsonCreate">
 
@@ -212,7 +212,7 @@ export type SignUpOptions<F extends UserFields = {}> = BaseSignUpOptions & UserE
  * prove they own the address does not get a session for having claimed it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SignUpResult<F extends UserFields = {}> {
   readonly user: UserOf<F>
@@ -223,7 +223,7 @@ export interface SignUpResult<F extends UserFields = {}> {
  * What {@link Passwords} needs to sign a user in.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SignInOptions {
   readonly email: string
@@ -237,7 +237,7 @@ export interface SignInOptions {
  * A completed sign-in: the user, the session, and the session's raw token.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SignInResult<F extends UserFields = {}> {
   readonly user: UserOf<F>
@@ -249,7 +249,7 @@ export interface SignInResult<F extends UserFields = {}> {
  * What {@link Passwords} needs to change a password from inside a session.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ChangePasswordOptions {
   readonly userId: UserId
@@ -273,7 +273,7 @@ export interface ChangePasswordOptions {
  * password.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SetPasswordOptions {
   readonly userId: UserId
@@ -288,7 +288,7 @@ export interface SetPasswordOptions {
  * The {@link Passwords} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface PasswordsService<F extends UserFields = {}> {
   /**
@@ -471,7 +471,7 @@ export interface PasswordsService<F extends UserFields = {}> {
  * E-mail and password authentication.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Passwords extends Context.Service<Passwords, PasswordsService>()("effect-auth/domain/Passwords") {}
 
@@ -483,7 +483,7 @@ export class Passwords extends Context.Service<Passwords, PasswordsService>()("e
  * what a typed view is and why it is sound.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const passwordsOf = <F extends UserFields>(
   _model: UserModel<F>
@@ -509,7 +509,7 @@ export const passwordsOf = <F extends UserFields>(
  * is built through the model so anything the caller left out is defaulted.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: <F extends UserFields>(
   model: UserModel<F>
@@ -1012,7 +1012,7 @@ export const make: <F extends UserFields>(
  * its own, while the layer's type stays the base one.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
@@ -1035,7 +1035,7 @@ export const layerFor = <F extends UserFields>(
  * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<
   Passwords,

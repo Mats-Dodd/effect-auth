@@ -13,7 +13,7 @@
  * SQL layer therefore stores every timestamp column as `text`, which behaves
  * identically on PostgreSQL and SQLite and preserves lexicographic ordering.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Option, Schema, Struct } from "effect"
 import { Model, type VariantSchema } from "effect/unstable/schema"
@@ -28,7 +28,7 @@ import { camelToSnake, pickKeys } from "../internal/records.js"
  * Branded identifier of a {@link User}. A UUIDv7 string.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserId = Schema.String.pipe(Schema.brand("UserId"))
 
@@ -36,7 +36,7 @@ export const UserId = Schema.String.pipe(Schema.brand("UserId"))
  * The type of a {@link UserId}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserId = typeof UserId.Type
 
@@ -44,7 +44,7 @@ export type UserId = typeof UserId.Type
  * Branded identifier of a {@link Session}. A UUIDv7 string.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SessionId = Schema.String.pipe(Schema.brand("SessionId"))
 
@@ -52,7 +52,7 @@ export const SessionId = Schema.String.pipe(Schema.brand("SessionId"))
  * The type of a {@link SessionId}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SessionId = typeof SessionId.Type
 
@@ -60,7 +60,7 @@ export type SessionId = typeof SessionId.Type
  * Branded identifier of an {@link Account}. A UUIDv7 string.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AccountId = Schema.String.pipe(Schema.brand("AccountId"))
 
@@ -68,7 +68,7 @@ export const AccountId = Schema.String.pipe(Schema.brand("AccountId"))
  * The type of an {@link AccountId}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AccountId = typeof AccountId.Type
 
@@ -76,7 +76,7 @@ export type AccountId = typeof AccountId.Type
  * Branded identifier of a {@link Verification}. A UUIDv7 string.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const VerificationId = Schema.String.pipe(Schema.brand("VerificationId"))
 
@@ -84,7 +84,7 @@ export const VerificationId = Schema.String.pipe(Schema.brand("VerificationId"))
  * The type of a {@link VerificationId}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type VerificationId = typeof VerificationId.Type
 
@@ -98,7 +98,7 @@ export type VerificationId = typeof VerificationId.Type
  * {@link normalizeEmail} on every write and on every lookup key.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const Email = Schema.String.pipe(
   Schema.check(
@@ -121,7 +121,7 @@ export const Email = Schema.String.pipe(
  * differ only in case.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const normalizeEmail = (email: string): string => email.trim().toLowerCase()
 
@@ -140,7 +140,7 @@ export const normalizeEmail = (email: string): string => email.trim().toLowerCas
  * the JSON create/update variants so a client can never set it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class User extends Model.Class<User>("effect-auth/User")({
   id: Model.UuidV7Insert(UserId),
@@ -167,7 +167,7 @@ export class User extends Model.Class<User>("effect-auth/User")({
  * the presented token and matches on the digest.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Session extends Model.Class<Session>("effect-auth/Session")({
   id: Model.UuidV7Insert(SessionId),
@@ -203,7 +203,7 @@ export class Session extends Model.Class<Session>("effect-auth/Session")({
  * account's `accountId` is the user's id.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const CredentialIssuer = "local:credential"
 
@@ -212,7 +212,7 @@ export const CredentialIssuer = "local:credential"
  * OIDC issuer URL (GitHub, for example). OIDC providers use their real issuer.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthIssuer = (providerId: string): string => `local:oauth:${providerId}`
 
@@ -228,7 +228,7 @@ export const oauthIssuer = (providerId: string): string => `local:oauth:${provid
  * hash are `Model.Sensitive` and never appear in JSON.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Account extends Model.Class<Account>("effect-auth/Account")({
   id: Model.UuidV7Insert(AccountId),
@@ -261,7 +261,7 @@ export class Account extends Model.Class<Account>("effect-auth/Account")({
  * A `null` column, and one holding only separators, are both the empty list.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const scopesOf = (scope: string | null): ReadonlyArray<string> =>
   scope === null ? [] : scope.split(/[\s,]+/).filter((entry) => entry.length > 0)
@@ -283,7 +283,7 @@ export const scopesOf = (scope: string | null): ReadonlyArray<string> =>
  * `verifications.identifier` is composed.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthStateIdentifier = (nonce: string): string => `oauth-state:${nonce}`
 
@@ -301,7 +301,7 @@ export const oauthStateIdentifier = (nonce: string): string => `oauth-state:${no
  * links and OAuth state genuinely single-use under concurrency.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Verification extends Model.Class<Verification>("effect-auth/Verification")({
   id: Model.UuidV7Insert(VerificationId),
@@ -329,7 +329,7 @@ const userModelId = "effect-auth/User"
  * `Model.Sensitive`, `Model.GeneratedByApp` and a bare `Schema` all fit.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserFields = VariantSchema.Struct.Fields
 
@@ -337,7 +337,7 @@ export type UserFields = VariantSchema.Struct.Fields
  * The field declarations of the base {@link User} model.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type BaseUserFields = (typeof User)[typeof VariantSchema.TypeId]
 
@@ -346,7 +346,7 @@ export type BaseUserFields = (typeof User)[typeof VariantSchema.TypeId]
  * with the custom ones laid over them.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserModelFields<F extends UserFields> = Struct.Simplify<BaseUserFields & F>
 
@@ -355,7 +355,7 @@ export type UserModelFields<F extends UserFields> = Struct.Simplify<BaseUserFiel
  * parameterized by `F`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserVariantFields<F extends UserFields, V extends string> = Struct.Simplify<
   VariantSchema.ExtractFields<V, UserModelFields<F>>
@@ -375,7 +375,7 @@ export type UserVariantFields<F extends UserFields, V extends string> = Struct.S
  * callers that build payload schemas out of it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserVariant<A, I, Fields extends Schema.Struct.Fields> extends Schema.Codec<A, I> {
   readonly fields: Fields
@@ -390,7 +390,7 @@ export interface UserVariant<A, I, Fields extends Schema.Struct.Fields> extends 
  * without restating the base fields around them.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserExtras<F extends UserFields, V extends string> = Schema.Struct<
   Struct.Simplify<VariantSchema.ExtractFields<V, F>>
@@ -400,7 +400,7 @@ export type UserExtras<F extends UserFields, V extends string> = Schema.Struct<
  * {@link UserExtras}, on the wire.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserExtrasEncoded<F extends UserFields, V extends string> = Schema.Struct<
   Struct.Simplify<VariantSchema.ExtractFields<V, F>>
@@ -411,7 +411,7 @@ export type UserExtrasEncoded<F extends UserFields, V extends string> = Schema.S
  * interchangeable with {@link User}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserOf<F extends UserFields> = User & UserExtras<F, "select">
 
@@ -419,7 +419,7 @@ export type UserOf<F extends UserFields> = User & UserExtras<F, "select">
  * {@link UserOf}, as its columns are stored.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserEncodedOf<F extends UserFields> = typeof User.select.Encoded & UserExtrasEncoded<F, "select">
 
@@ -428,7 +428,7 @@ export type UserEncodedOf<F extends UserFields> = typeof User.select.Encoded & U
  * {@link UserFieldConstructors.hidden} are absent from it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPublicOf<F extends UserFields> = typeof User.json.Type & UserExtras<F, "json">
 
@@ -436,7 +436,7 @@ export type UserPublicOf<F extends UserFields> = typeof User.json.Type & UserExt
  * {@link UserPublicOf}, on the wire.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPublicEncodedOf<F extends UserFields> = typeof User.json.Encoded & UserExtrasEncoded<F, "json">
 
@@ -444,7 +444,7 @@ export type UserPublicEncodedOf<F extends UserFields> = typeof User.json.Encoded
  * The row a `UserStore.create` of a model parameterized by `F` takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserInsertOf<F extends UserFields> = typeof User.insert.Type & UserExtras<F, "insert">
 
@@ -452,7 +452,7 @@ export type UserInsertOf<F extends UserFields> = typeof User.insert.Type & UserE
  * {@link UserInsertOf}, as its columns are written.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserInsertEncodedOf<F extends UserFields> = typeof User.insert.Encoded & UserExtrasEncoded<F, "insert">
 
@@ -460,7 +460,7 @@ export type UserInsertEncodedOf<F extends UserFields> = typeof User.insert.Encod
  * The row a `UserStore.update` of a model parameterized by `F` writes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserUpdateOf<F extends UserFields> = typeof User.update.Type & UserExtras<F, "update">
 
@@ -470,7 +470,7 @@ export type UserUpdateOf<F extends UserFields> = typeof User.update.Type & UserE
  * itself.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type BaseUserPatch = Partial<Omit<typeof User.update.Type, "id" | "updatedAt">>
 
@@ -478,7 +478,7 @@ export type BaseUserPatch = Partial<Omit<typeof User.update.Type, "id" | "update
  * {@link UserUpdateOf}, as its columns are written.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserUpdateEncodedOf<F extends UserFields> = typeof User.update.Encoded & UserExtrasEncoded<F, "update">
 
@@ -487,7 +487,7 @@ export type UserUpdateEncodedOf<F extends UserFields> = typeof User.update.Encod
  * payload's user half has.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserCreateOf<F extends UserFields> = typeof User.jsonCreate.Type & UserExtras<F, "jsonCreate">
 
@@ -495,7 +495,7 @@ export type UserCreateOf<F extends UserFields> = typeof User.jsonCreate.Type & U
  * {@link UserCreateOf}, on the wire.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserCreateEncodedOf<F extends UserFields> = typeof User.jsonCreate.Encoded &
   UserExtrasEncoded<F, "jsonCreate">
@@ -505,7 +505,7 @@ export type UserCreateEncodedOf<F extends UserFields> = typeof User.jsonCreate.E
  * update payload's user half has.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPatchOf<F extends UserFields> = typeof User.jsonUpdate.Type & UserExtras<F, "jsonUpdate">
 
@@ -513,7 +513,7 @@ export type UserPatchOf<F extends UserFields> = typeof User.jsonUpdate.Type & Us
  * {@link UserPatchOf}, on the wire.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPatchEncodedOf<F extends UserFields> = typeof User.jsonUpdate.Encoded &
   UserExtrasEncoded<F, "jsonUpdate">
@@ -522,7 +522,7 @@ export type UserPatchEncodedOf<F extends UserFields> = typeof User.jsonUpdate.En
  * The base fields every caller supplies when it provisions a user.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface BaseUserInsert {
   readonly name: string
@@ -543,7 +543,7 @@ export interface BaseUserInsert {
  * straight off the model's `jsonCreate` variant.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserInsertInput extends BaseUserInsert {
   readonly [key: string]: unknown
@@ -564,7 +564,7 @@ export interface UserInsertInput extends BaseUserInsert {
  * anywhere in the library becomes generic.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserModel<F extends UserFields> {
   /** The custom fields alone, exactly as they were declared. */
@@ -707,7 +707,7 @@ export interface UserModel<F extends UserFields> {
  * and the JSON payload of a partial update.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPayloadVariant = "jsonCreate" | "jsonUpdate"
 
@@ -716,7 +716,7 @@ export type UserPayloadVariant = "jsonCreate" | "jsonUpdate"
  * struct of whatever shape, read for its field map.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserPayloadBase extends Schema.Top {
   readonly fields: Schema.Struct.Fields
@@ -726,7 +726,7 @@ export interface UserPayloadBase extends Schema.Top {
  * A user row as a storage implementation holds it: a bag of columns.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserRow {
   readonly [key: string]: unknown
@@ -745,7 +745,7 @@ export interface UserRow {
  * writing codecs are named here over the record shape a statement holds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserRowCodecs {
   /** The `insert` variant: a complete row, encoded into its columns. */
@@ -770,7 +770,7 @@ export interface UserRowCodecs {
  * a cast. The base fields are always present, so the narrowing is sound.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AnyUserModel {
   readonly fields: UserFields
@@ -802,7 +802,7 @@ export interface AnyUserModel {
  * everywhere a stored user is read, optional wherever a client writes one.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserFieldWithDefault<
   S extends Schema.Top & Schema.WithoutConstructorDefault
@@ -819,7 +819,7 @@ export interface UserFieldWithDefault<
  * The four constructors a custom user field is declared with.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserFieldConstructors {
   /**
@@ -892,7 +892,7 @@ const withConstructorDefault = <S extends Schema.Top & Schema.WithoutConstructor
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserField: UserFieldConstructors = {
   required: (schema) => schema,
@@ -1148,7 +1148,7 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeUserModel = <const F extends UserFields>(fields: F): UserModel<F> =>
   // The one cast in this module, and the reason `buildUserModel` exists: the
@@ -1171,7 +1171,7 @@ export const makeUserModel = <const F extends UserFields>(fields: F): UserModel<
  * `User.json` and the rest, annotated identically.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const baseUserModel: UserModel<{}> = makeUserModel({})
 
@@ -1210,7 +1210,7 @@ export const baseUserModel: UserModel<{}> = makeUserModel({})
  * link plugin does — is equivalent and needs no model at all.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserModelRef: Context.Reference<AnyUserModel> = Context.Reference<AnyUserModel>("effect-auth/UserModel", {
   defaultValue: () => baseUserModel
@@ -1224,7 +1224,7 @@ export const UserModelRef: Context.Reference<AnyUserModel> = Context.Reference<A
  * The client-facing projection of a {@link User}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserPublic = baseUserModel.json
 
@@ -1232,7 +1232,7 @@ export const UserPublic = baseUserModel.json
  * The type of a {@link UserPublic}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPublic = UserPublicOf<{}>
 
@@ -1240,7 +1240,7 @@ export type UserPublic = UserPublicOf<{}>
  * The client-facing projection of a {@link Session}. It omits `tokenHash`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SessionPublic = Session.json
 
@@ -1248,7 +1248,7 @@ export const SessionPublic = Session.json
  * The type of a {@link SessionPublic}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SessionPublic = typeof Session.json.Type
 
@@ -1257,7 +1257,7 @@ export type SessionPublic = typeof Session.json.Type
  * the password hash.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AccountPublic = Account.json
 
@@ -1265,7 +1265,7 @@ export const AccountPublic = Account.json
  * The type of an {@link AccountPublic}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AccountPublic = typeof Account.json.Type
 
@@ -1273,7 +1273,7 @@ export type AccountPublic = typeof Account.json.Type
  * The schema {@link makeSessionWithUser} builds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionWithUserSchema<F extends UserFields> extends Schema.Struct<{
   readonly user: UserModel<F>["json"]
@@ -1285,7 +1285,7 @@ export interface SessionWithUserSchema<F extends UserFields> extends Schema.Stru
  * model parameterized by `F`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeSessionWithUser = <F extends UserFields>(model: UserModel<F>): SessionWithUserSchema<F> =>
   Schema.Struct({ user: model.json, session: SessionPublic })
@@ -1294,7 +1294,7 @@ export const makeSessionWithUser = <F extends UserFields>(model: UserModel<F>): 
  * The type of a {@link makeSessionWithUser}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SessionWithUserOf<F extends UserFields> = SessionWithUserSchema<F>["Type"]
 
@@ -1302,7 +1302,7 @@ export type SessionWithUserOf<F extends UserFields> = SessionWithUserSchema<F>["
  * The payload returned by every endpoint that establishes or reads a session.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SessionWithUser: SessionWithUserSchema<{}> = makeSessionWithUser(baseUserModel)
 
@@ -1310,7 +1310,7 @@ export const SessionWithUser: SessionWithUserSchema<{}> = makeSessionWithUser(ba
  * The type of a {@link SessionWithUser}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SessionWithUser = SessionWithUserOf<{}>
 
@@ -1318,7 +1318,7 @@ export type SessionWithUser = SessionWithUserOf<{}>
  * The schema {@link makeSignUpResponse} builds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SignUpResponseSchema<F extends UserFields> extends Schema.Struct<{
   readonly user: UserModel<F>["json"]
@@ -1329,7 +1329,7 @@ export interface SignUpResponseSchema<F extends UserFields> extends Schema.Struc
  * The payload sign-up returns, for a model parameterized by `F`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeSignUpResponse = <F extends UserFields>(model: UserModel<F>): SignUpResponseSchema<F> =>
   Schema.Struct({ user: model.json, session: Schema.NullOr(SessionPublic) })
@@ -1338,7 +1338,7 @@ export const makeSignUpResponse = <F extends UserFields>(model: UserModel<F>): S
  * The type of a {@link makeSignUpResponse}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignUpResponseOf<F extends UserFields> = SignUpResponseSchema<F>["Type"]
 
@@ -1354,7 +1354,7 @@ export type SignUpResponseOf<F extends UserFields> = SignUpResponseSchema<F>["Ty
  * success shapes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SignUpResponse: SignUpResponseSchema<{}> = makeSignUpResponse(baseUserModel)
 
@@ -1362,7 +1362,7 @@ export const SignUpResponse: SignUpResponseSchema<{}> = makeSignUpResponse(baseU
  * The type of a {@link SignUpResponse}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignUpResponse = SignUpResponseOf<{}>
 
@@ -1370,7 +1370,7 @@ export type SignUpResponse = SignUpResponseOf<{}>
  * The schema {@link makeUserResponse} builds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserResponseSchema<F extends UserFields> extends Schema.Struct<{
   readonly user: UserModel<F>["json"]
@@ -1381,7 +1381,7 @@ export interface UserResponseSchema<F extends UserFields> extends Schema.Struct<
  * profile updates, for instance.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeUserResponse = <F extends UserFields>(model: UserModel<F>): UserResponseSchema<F> =>
   Schema.Struct({ user: model.json })
@@ -1390,6 +1390,6 @@ export const makeUserResponse = <F extends UserFields>(model: UserModel<F>): Use
  * The type of a {@link makeUserResponse}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserResponseOf<F extends UserFields> = UserResponseSchema<F>["Type"]

@@ -15,7 +15,7 @@
  * what gates attaching this identity to a local account that already holds the
  * same address.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
@@ -32,7 +32,7 @@ import { lenient, StringFromNumeric, Truthy } from "../internal/claims.js"
  * The id Discord is registered and addressed under.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const id = "discord"
 
@@ -40,7 +40,7 @@ export const id = "discord"
  * Discord's authorization endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const authorizationUrl = "https://discord.com/api/oauth2/authorize"
 
@@ -48,7 +48,7 @@ export const authorizationUrl = "https://discord.com/api/oauth2/authorize"
  * Discord's token endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenUrl = "https://discord.com/api/oauth2/token"
 
@@ -56,7 +56,7 @@ export const tokenUrl = "https://discord.com/api/oauth2/token"
  * Discord's user endpoint, where the identity comes from.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userInfoUrl = "https://discord.com/api/users/@me"
 
@@ -64,7 +64,7 @@ export const userInfoUrl = "https://discord.com/api/users/@me"
  * Where Discord serves avatars from.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cdnUrl = "https://cdn.discordapp.com"
 
@@ -73,7 +73,7 @@ export const cdnUrl = "https://cdn.discordapp.com"
  * there is no identity.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["identify", "email"]
 
@@ -85,7 +85,7 @@ export const defaultScopes: ReadonlyArray<string> = ["identify", "email"]
  * As much of a Discord profile as an avatar URL is built from.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AvatarSource {
   /** The account's snowflake. */
@@ -133,7 +133,7 @@ const defaultAvatarIndex = (source: AvatarSource): number => {
  * (chosen by the discriminator).
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const avatarUrl = (source: AvatarSource): string => {
   const avatar = source.avatar
@@ -174,7 +174,7 @@ const readProfile = Schema.decodeUnknownOption(Profile)
  * What Discord needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   readonly clientId: string
@@ -217,7 +217,7 @@ export interface Options {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
   const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
@@ -266,7 +266,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  * What Discord needs, per field, as `Config` values.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
@@ -297,7 +297,7 @@ interface Settings {
  * appears in a log line or a `ConfigError`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(

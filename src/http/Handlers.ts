@@ -29,7 +29,7 @@
  * `PasswordHashError` are server faults: they are turned into defects here, so
  * they render as `500` and stay out of every endpoint's error union.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Layer, Scope } from "effect"
 import { Effect, Option, Redacted } from "effect"
@@ -107,7 +107,7 @@ const isNamedFault =
  * whole error channel disappears from the type while the runtime keeps failing.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const dieOn =
   <const Tags extends ReadonlyArray<string>>(tags: Tags) =>
@@ -132,7 +132,7 @@ export const dieOn =
  * hashing fault. Both mean the deployment is broken.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const serverFaultTags = ["PasswordHashError", "PersistenceError"] as const
 
@@ -149,7 +149,7 @@ export const serverFaultTags = ["PasswordHashError", "PersistenceError"] as cons
  * the compiler agree that no endpoint declares them.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const serverFault: <A, E extends Tagged, R>(
   effect: Effect.Effect<A, E, R>
@@ -171,7 +171,7 @@ export const serverFault: <A, E extends Tagged, R>(
  * session list; nothing authorizes on it.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const clientMeta = (
   config: AuthConfigService,
@@ -193,7 +193,7 @@ export const clientMeta = (
  * HTTP, rather than inventing an error the contract does not mention.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const notServed: HttpServerResponse.HttpServerResponse = HttpServerResponse.empty({ status: 404 })
 
@@ -201,7 +201,7 @@ export const notServed: HttpServerResponse.HttpServerResponse = HttpServerRespon
  * The body-less `302` the OAuth callback answers with.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const redirectTo = (location: string) =>
   HttpApiSchema.withHeaders({
@@ -213,7 +213,7 @@ export const redirectTo = (location: string) =>
  * The `{ success: true }` body shared by every acknowledged endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const acknowledged = { success: true } as const
 
@@ -229,7 +229,7 @@ export const acknowledged = { success: true } as const
  * read: the person would stay signed in until it expired.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const clearSessionCookies = (
   config: AuthConfigService,
@@ -249,7 +249,7 @@ export const clearSessionCookies = (
  * open redirect. Absent fields are simply not written.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const callbackFormTarget = (
   config: AuthConfigService,
@@ -284,7 +284,7 @@ export const callbackFormTarget = (
  * answer `UnknownProvider` instead of failing to build.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type HandlerServices =
   | AuthConfig
@@ -337,7 +337,7 @@ export type HandlerServices =
  * endpoint paths in the type), is rejected rather than mis-served.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const forGroup =
   <const Id extends string, Group extends HttpApiGroup.Constraint, Return>(
@@ -467,7 +467,7 @@ const buildGroup = (<Return>(
  * mis-served at runtime.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
   // `NoInfer`, so that `F` comes from the model alone and the API is *checked*

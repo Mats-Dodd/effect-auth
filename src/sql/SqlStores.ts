@@ -42,7 +42,7 @@
  * the domain acts on. The underlying `SqlError` is kept in `cause` for logs;
  * nothing above the seam inspects it.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Array, DateTime, Effect, Layer, Option, Predicate, Schema, SchemaAST } from "effect"
 import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
@@ -209,7 +209,7 @@ const firstAccount = decodeFirst(decodeAccount)
  * because `false` decodes just as well.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const decodeSqliteBoolean = (value: unknown): unknown =>
   value === null || value === undefined ? value : value === 1 || value === true
@@ -900,7 +900,7 @@ const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, Sq
  * ```
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
@@ -917,6 +917,6 @@ export const layerFor = <F extends UserFields>(
  * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<AuthStores, never, SqlClient.SqlClient | AuthConfig> = layerFor(baseUserModel)

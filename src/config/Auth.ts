@@ -16,7 +16,7 @@
  * needs. Nothing in this module inspects a list length or reshapes a type, so
  * what a call site reads is what the compiler checked.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Context, Crypto, Redacted } from "effect"
 import { Config, Duration, Effect, Layer, Schedule, Stream } from "effect"
@@ -118,7 +118,7 @@ import type { AuthEmails } from "./AuthEmails.js"
  * the last one wins — see `OAuthProviders`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ProviderList = readonly [OAuthProviderConfig, ...Array<OAuthProviderConfig>]
 
@@ -127,7 +127,7 @@ export type ProviderList = readonly [OAuthProviderConfig, ...Array<OAuthProvider
  * environment — the effects `Github.makeConfig` / `Google.makeConfig` return.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ProviderConfigList = readonly [ProviderConfigEffect, ...Array<ProviderConfigEffect>]
 
@@ -143,7 +143,7 @@ export type ProviderConfigList = readonly [ProviderConfigEffect, ...Array<Provid
  * that does none of that — `Github.makeConfig` — simply uses less of it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type ProviderConfigEffect = Effect.Effect<
   OAuthProviderConfig,
@@ -155,7 +155,7 @@ export type ProviderConfigEffect = Effect.Effect<
  * The knobs every entry point in this module accepts on top of the settings.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Extras {
   /**
@@ -251,7 +251,7 @@ export interface Extras {
  * but the error lands at the API, not here.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserOptions<F extends UserFields> extends UserConfigOptions {
   /**
@@ -272,7 +272,7 @@ export interface UserOptions<F extends UserFields> extends UserConfigOptions {
  * {@link Definition}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Settings extends AuthConfigOptions, Extras {}
 
@@ -280,7 +280,7 @@ export interface Settings extends AuthConfigOptions, Extras {}
  * Everything {@link layer} accepts.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options<F extends UserFields = {}> extends Settings {
   /**
@@ -293,7 +293,7 @@ export interface Options<F extends UserFields = {}> extends Settings {
  * {@link Settings} plus the providers to serve.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthSettings extends Settings {
   /**
@@ -319,7 +319,7 @@ export interface OAuthSettings extends Settings {
  * to serve.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthOptions<F extends UserFields = {}> extends Options<F>, OAuthSettings {
   /** Restated so that the two supertypes agree on it. See {@link Options.user}. */
@@ -331,7 +331,7 @@ export interface OAuthOptions<F extends UserFields = {}> extends Options<F>, OAu
  * settings as `Config` values, the structured sections as plain objects.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigSettings extends Extras {
   readonly baseUrl: Config.Config<string>
@@ -353,7 +353,7 @@ export interface ConfigSettings extends Extras {
  * Everything {@link layerConfig} accepts.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions<F extends UserFields = {}> extends ConfigSettings {
   /**
@@ -367,7 +367,7 @@ export interface ConfigOptions<F extends UserFields = {}> extends ConfigSettings
  * environment.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthConfigSettings extends ConfigSettings {
   /**
@@ -396,7 +396,7 @@ export interface OAuthConfigSettings extends ConfigSettings {
  * the providers, themselves read from the environment.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthConfigOptions<F extends UserFields = {}> extends ConfigOptions<F>, OAuthConfigSettings {
   /** Restated so that the two supertypes agree on it. See {@link Options.user}. */
@@ -428,7 +428,7 @@ export interface OAuthConfigOptions<F extends UserFields = {}> extends ConfigOpt
  * with one `Layer.provideMerge(AuthLive)`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Services =
   | AuthConfig
@@ -454,7 +454,7 @@ export type Services =
  * OAuth flow the three social endpoints run on.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type OAuthServices = Services | OAuthFlow
 
@@ -463,7 +463,7 @@ export type OAuthServices = Services | OAuthFlow
  * client and the mailer.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Requirements = SqlClient.SqlClient | AuthEmails
 
@@ -473,7 +473,7 @@ export type Requirements = SqlClient.SqlClient | AuthEmails
  * over the network.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type OAuthRequirements = Requirements | HttpClient.HttpClient
 
@@ -712,7 +712,7 @@ const resolveConfig = <F extends UserFields>(
  * migrator.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = <F extends UserFields = {}>(options: Options<F>): Layer.Layer<Services, never, Requirements> =>
   options.user?.model === undefined
@@ -755,7 +755,7 @@ export const layer = <F extends UserFields = {}>(options: Options<F>): Layer.Lay
  * redirect internally before answering. `FetchHttpClient.layer` is fine.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerWithOAuth = <F extends UserFields = {}>(
   options: OAuthOptions<F>
@@ -787,7 +787,7 @@ export const layerWithOAuth = <F extends UserFields = {}>(
  * `ConfigError`.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerConfig = <F extends UserFields = {}>(
   options: ConfigOptions<F>
@@ -830,7 +830,7 @@ export const layerConfig = <F extends UserFields = {}>(
  * provider that answers `UnknownProvider` in production.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerConfigWithOAuth = <F extends UserFields = {}>(
   options: OAuthConfigOptions<F>
@@ -849,7 +849,7 @@ export const layerConfigWithOAuth = <F extends UserFields = {}>(
  * only reads cookies.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerConfigOnly: (options: AuthConfigOptions) => Layer.Layer<AuthConfig> = authConfigLayer
 
@@ -871,7 +871,7 @@ export const layerConfigOnly: (options: AuthConfigOptions) => Layer.Layer<AuthCo
  * there is one everywhere.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Definition<F extends UserFields> {
   /** The model every other member is derived from. */
@@ -936,7 +936,7 @@ export interface Definition<F extends UserFields> {
  * What {@link define} takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface DefineOptions<F extends UserFields> {
   readonly user: {
@@ -992,7 +992,7 @@ export interface DefineOptions<F extends UserFields> {
  * browser-safe. Pass the model to `AuthClient.make({ api, model })` instead.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const define = <const F extends UserFields>(options: DefineOptions<F>): Definition<F> => {
   const model = makeUserModel(options.user.fields)
@@ -1059,7 +1059,7 @@ export const define = <const F extends UserFields>(options: DefineOptions<F>): D
  * ```
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cleanupExpired: Effect.Effect<
   { readonly sessions: number; readonly verifications: number },
@@ -1092,7 +1092,7 @@ export const cleanupExpired: Effect.Effect<
  * logged and the next one is attempted; it never fails the layer.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerCleanup = (options?: {
   readonly interval?: Duration.Duration | undefined
@@ -1132,7 +1132,7 @@ export const layerCleanup = (options?: {
  * traffic you want to observe.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const events: Stream.Stream<AuthEvent, never, AuthEvents> = Stream.unwrap(
   AuthEvents.use((hub) => Effect.succeed(hub.stream))

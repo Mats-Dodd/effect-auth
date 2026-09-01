@@ -60,7 +60,7 @@
  * that is mass *cache* invalidation, not sign-out: the session tokens themselves
  * are untouched.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, type Redacted, Result, Schema } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
@@ -92,7 +92,7 @@ import {
  * both are base64url.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cacheCookieSeparator = "."
 
@@ -109,7 +109,7 @@ export const cacheCookieSeparator = "."
  * database as it would have been anyway.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const maxCookieBytes = 3072
 
@@ -118,7 +118,7 @@ export const maxCookieBytes = 3072
  * *shape* of a snapshot is a miss rather than a mis-decode.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const payloadVersion = 1
 
@@ -137,7 +137,7 @@ export const payloadVersion = 1
  * snapshot — a miss, never a `401`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const macContext = "effect-auth/session-cache/v1\n"
 
@@ -154,7 +154,7 @@ export const macContext = "effect-auth/session-cache/v1\n"
  * the user half.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const CacheEnvelope = Schema.Struct({
   v: Schema.Literal(payloadVersion),
@@ -171,7 +171,7 @@ export const CacheEnvelope = Schema.Struct({
  * The type of a {@link CacheEnvelope}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type CacheEnvelope = typeof CacheEnvelope.Type
 
@@ -182,7 +182,7 @@ const CacheEnvelopeJson = Schema.fromJsonString(CacheEnvelope)
  * values a store would have answered with.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionCachePayload<F extends UserFields = {}> {
   /** The invalidation token this snapshot was written under. */
@@ -212,7 +212,7 @@ export interface SessionCachePayload<F extends UserFields = {}> {
  * first ends the snapshot.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cacheExpiry = (config: AuthConfigService, session: Session, now: DateTime.Utc): DateTime.Utc =>
   DateTime.min(
@@ -225,7 +225,7 @@ export const cacheExpiry = (config: AuthConfigService, session: Session, now: Da
  * under.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const cacheVersion = (config: AuthConfigService, session: Session, user: User): string => {
   const { version } = config.cookieCache
@@ -246,7 +246,7 @@ export const cacheVersion = (config: AuthConfigService, session: Session, user: 
  * depends on it has to branch on the configuration.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionCacheService<F extends UserFields = {}> {
   /** Whether this deployment writes and reads snapshots at all. */
@@ -297,7 +297,7 @@ export interface SessionCacheService<F extends UserFields = {}> {
  * The session cookie cache. See {@link SessionCacheService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class SessionCache extends Context.Service<SessionCache, SessionCacheService>()(
   "effect-auth/http/SessionCache"
@@ -310,7 +310,7 @@ export class SessionCache extends Context.Service<SessionCache, SessionCacheServ
  * for what a typed view is and why it is sound.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCacheOf = <F extends UserFields>(
   _model: UserModel<F>
@@ -338,7 +338,7 @@ const decodeEnvelope = Schema.decodeUnknownEffect(CacheEnvelopeJson)
  * stay that.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionSnapshot = (session: Session): Effect.Effect<UserRow> => Effect.orDie(encodeSessionJson(session))
 
@@ -346,7 +346,7 @@ export const sessionSnapshot = (session: Session): Effect.Effect<UserRow> => Eff
  * Builds the {@link SessionCache} implementation for a user model.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: <F extends UserFields>(
   model: UserModel<F>
@@ -516,7 +516,7 @@ export const make: <F extends UserFields>(
  * carries, which a reader asks for through {@link sessionCacheOf}.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
@@ -526,6 +526,6 @@ export const layerFor = <F extends UserFields>(
  * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<SessionCache, never, AuthConfig | Hmac | Token> = layerFor(baseUserModel)

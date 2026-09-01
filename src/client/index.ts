@@ -24,7 +24,7 @@
  * })
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 
 export * as AuthClient from "./AuthClient.js"
@@ -37,7 +37,7 @@ export * as AuthClient from "./AuthClient.js"
  * plugin is a module of its own on the server: an application that does not serve
  * magic links never imports it, and never ships it to a browser.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 export * as MagicLinkClient from "./MagicLinkClient.js"
 
@@ -50,6 +50,6 @@ export * as MagicLinkClient from "./MagicLinkClient.js"
  * transport and decode failures into defects, so a UI wants `onError` and
  * `onDefect` separated rather than the single `onFailure` of `AsyncResult.match`.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 export { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity"

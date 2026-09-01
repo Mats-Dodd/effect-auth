@@ -14,7 +14,7 @@
  * e-mail matching. `GET /user/emails` is the authoritative list, and only the
  * `verified` flag on it is evidence. See {@link selectEmail}.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted } from "effect"
 import { Array, Config, Effect, Option, Schema } from "effect"
@@ -32,7 +32,7 @@ import { lenient, StringFromNumeric } from "../internal/claims.js"
  * The id GitHub is registered and addressed under.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const id = "github"
 
@@ -41,7 +41,7 @@ export const id = "github"
  * address list, and nothing else.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["read:user", "user:email"]
 
@@ -56,7 +56,7 @@ const defaultApiUrl = "https://api.github.com"
  * One entry of `GET /user/emails`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface GithubEmail {
   readonly email: string
@@ -68,7 +68,7 @@ export interface GithubEmail {
  * The address to use, and whether GitHub says it verified it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SelectedEmail {
   readonly email: string
@@ -101,7 +101,7 @@ export interface SelectedEmail {
  * field, and step 3 only trusts it as far as the *list* corroborates it.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const selectEmail = (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null => {
   const primary = emails.find((entry) => entry.primary)
@@ -167,7 +167,7 @@ const readEmailEntry = Schema.decodeUnknownOption(EmailEntry)
  * advisory, and one unparseable entry must not cost the person their session.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const decodeEmails = (body: unknown): ReadonlyArray<GithubEmail> =>
   Option.match(readEmailList(body), {
@@ -192,7 +192,7 @@ export const decodeEmails = (body: unknown): ReadonlyArray<GithubEmail> =>
  * What GitHub needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   readonly clientId: string
@@ -237,7 +237,7 @@ export interface Options {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
   const webUrl = trimTrailingSlashes(options.webUrl ?? defaultWebUrl)
@@ -291,7 +291,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  * What GitHub needs, per field, as `Config` values.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
@@ -324,7 +324,7 @@ interface Settings {
  * appears in a log line or a `ConfigError`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(

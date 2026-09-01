@@ -35,7 +35,7 @@
  * })
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Scope } from "effect"
 import { Context, Effect, Layer, PubSub, Schema, Stream } from "effect"
@@ -50,7 +50,7 @@ import { AccountId, SessionId, UserId } from "./Schema.js"
  * The `method` recorded on a sign-in that used an e-mail address and password.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const passwordMethod = "password"
 
@@ -58,7 +58,7 @@ export const passwordMethod = "password"
  * The `method` recorded on a sign-in that came back from an OAuth provider.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthMethod = (providerId: string): string => `oauth:${providerId}`
 
@@ -71,7 +71,7 @@ export const oauthMethod = (providerId: string): string => `oauth:${providerId}`
  * found no existing account to link to.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserCreated = Schema.TaggedStruct("UserCreated", {
   userId: UserId,
@@ -85,7 +85,7 @@ export const UserCreated = Schema.TaggedStruct("UserCreated", {
  * The type of a {@link UserCreated} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserCreated = typeof UserCreated.Type
 
@@ -93,7 +93,7 @@ export type UserCreated = typeof UserCreated.Type
  * A session was established.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SignedIn = Schema.TaggedStruct("SignedIn", {
   userId: UserId,
@@ -106,7 +106,7 @@ export const SignedIn = Schema.TaggedStruct("SignedIn", {
  * The type of a {@link SignedIn} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignedIn = typeof SignedIn.Type
 
@@ -114,7 +114,7 @@ export type SignedIn = typeof SignedIn.Type
  * A session was ended by its own owner presenting it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SignedOut = Schema.TaggedStruct("SignedOut", {
   userId: UserId,
@@ -125,7 +125,7 @@ export const SignedOut = Schema.TaggedStruct("SignedOut", {
  * The type of a {@link SignedOut} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SignedOut = typeof SignedOut.Type
 
@@ -133,7 +133,7 @@ export type SignedOut = typeof SignedOut.Type
  * How broadly a revocation applied.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const RevocationScope = Schema.Literals(["single", "all", "others"])
 
@@ -141,7 +141,7 @@ export const RevocationScope = Schema.Literals(["single", "all", "others"])
  * The type of a {@link RevocationScope}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type RevocationScope = typeof RevocationScope.Type
 
@@ -156,7 +156,7 @@ export type RevocationScope = typeof RevocationScope.Type
  * an alert.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const SessionRevoked = Schema.TaggedStruct("SessionRevoked", {
   userId: UserId,
@@ -169,7 +169,7 @@ export const SessionRevoked = Schema.TaggedStruct("SessionRevoked", {
  * The type of a {@link SessionRevoked} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type SessionRevoked = typeof SessionRevoked.Type
 
@@ -178,7 +178,7 @@ export type SessionRevoked = typeof SessionRevoked.Type
  * completed reset.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const PasswordChanged = Schema.TaggedStruct("PasswordChanged", {
   userId: UserId,
@@ -190,7 +190,7 @@ export const PasswordChanged = Schema.TaggedStruct("PasswordChanged", {
  * The type of a {@link PasswordChanged} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type PasswordChanged = typeof PasswordChanged.Type
 
@@ -204,7 +204,7 @@ export type PasswordChanged = typeof PasswordChanged.Type
  * place the distinction exists — keep it out of anything a caller can observe.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const PasswordResetRequested = Schema.TaggedStruct("PasswordResetRequested", {
   userId: UserId
@@ -214,7 +214,7 @@ export const PasswordResetRequested = Schema.TaggedStruct("PasswordResetRequeste
  * The type of a {@link PasswordResetRequested} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type PasswordResetRequested = typeof PasswordResetRequested.Type
 
@@ -222,7 +222,7 @@ export type PasswordResetRequested = typeof PasswordResetRequested.Type
  * A user's e-mail address was confirmed by a consumed verification token.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const EmailVerified = Schema.TaggedStruct("EmailVerified", {
   userId: UserId,
@@ -233,7 +233,7 @@ export const EmailVerified = Schema.TaggedStruct("EmailVerified", {
  * The type of an {@link EmailVerified} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type EmailVerified = typeof EmailVerified.Type
 
@@ -249,7 +249,7 @@ export type EmailVerified = typeof EmailVerified.Type
  * publishes an empty `fields`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UpdatedUserField = Schema.Literals(["name", "image"])
 
@@ -257,7 +257,7 @@ export const UpdatedUserField = Schema.Literals(["name", "image"])
  * The type of an {@link UpdatedUserField}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UpdatedUserField = typeof UpdatedUserField.Type
 
@@ -265,7 +265,7 @@ export type UpdatedUserField = typeof UpdatedUserField.Type
  * A user edited their own profile.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserUpdated = Schema.TaggedStruct("UserUpdated", {
   userId: UserId,
@@ -277,7 +277,7 @@ export const UserUpdated = Schema.TaggedStruct("UserUpdated", {
  * The type of a {@link UserUpdated} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserUpdated = typeof UserUpdated.Type
 
@@ -292,7 +292,7 @@ export type UserUpdated = typeof UserUpdated.Type
  * alerts on address changes needs to be able to reach the *old* mailbox.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const EmailChanged = Schema.TaggedStruct("EmailChanged", {
   userId: UserId,
@@ -304,7 +304,7 @@ export const EmailChanged = Schema.TaggedStruct("EmailChanged", {
  * The type of an {@link EmailChanged} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type EmailChanged = typeof EmailChanged.Type
 
@@ -319,7 +319,7 @@ export type EmailChanged = typeof EmailChanged.Type
  * needs and can no longer read.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const UserDeleted = Schema.TaggedStruct("UserDeleted", {
   userId: UserId,
@@ -330,7 +330,7 @@ export const UserDeleted = Schema.TaggedStruct("UserDeleted", {
  * The type of a {@link UserDeleted} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserDeleted = typeof UserDeleted.Type
 
@@ -338,7 +338,7 @@ export type UserDeleted = typeof UserDeleted.Type
  * A linked provider's tokens were exchanged for fresh ones.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const TokensRefreshed = Schema.TaggedStruct("TokensRefreshed", {
   userId: UserId,
@@ -350,7 +350,7 @@ export const TokensRefreshed = Schema.TaggedStruct("TokensRefreshed", {
  * The type of a {@link TokensRefreshed} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type TokensRefreshed = typeof TokensRefreshed.Type
 
@@ -358,7 +358,7 @@ export type TokensRefreshed = typeof TokensRefreshed.Type
  * A sign-in method was added to a user.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AccountLinked = Schema.TaggedStruct("AccountLinked", {
   userId: UserId,
@@ -371,7 +371,7 @@ export const AccountLinked = Schema.TaggedStruct("AccountLinked", {
  * The type of an {@link AccountLinked} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AccountLinked = typeof AccountLinked.Type
 
@@ -379,7 +379,7 @@ export type AccountLinked = typeof AccountLinked.Type
  * A sign-in method was removed from a user.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AccountUnlinked = Schema.TaggedStruct("AccountUnlinked", {
   userId: UserId,
@@ -392,7 +392,7 @@ export const AccountUnlinked = Schema.TaggedStruct("AccountUnlinked", {
  * The type of an {@link AccountUnlinked} event.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AccountUnlinked = typeof AccountUnlinked.Type
 
@@ -415,7 +415,7 @@ export type AccountUnlinked = typeof AccountUnlinked.Type
  * subscriber to go and read whatever else it needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const PluginEvent = Schema.TaggedStruct("PluginEvent", {
   /** The plugin that published it, in kebab-case. */
@@ -432,7 +432,7 @@ export const PluginEvent = Schema.TaggedStruct("PluginEvent", {
  * The type of a {@link PluginEvent}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type PluginEvent = typeof PluginEvent.Type
 
@@ -447,7 +447,7 @@ export type PluginEvent = typeof PluginEvent.Type
  * read whatever else it needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AuthEvent = Schema.Union([
   UserCreated,
@@ -470,7 +470,7 @@ export const AuthEvent = Schema.Union([
  * The type of an {@link AuthEvent}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AuthEvent = typeof AuthEvent.Type
 
@@ -482,7 +482,7 @@ export type AuthEvent = typeof AuthEvent.Type
  * The {@link AuthEvents} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AuthEventsService {
   /**
@@ -518,7 +518,7 @@ export interface AuthEventsService {
  * The publish/subscribe hub the domain services emit through.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class AuthEvents extends Context.Service<AuthEvents, AuthEventsService>()(
   "effect-auth/domain/Events/AuthEvents"
@@ -528,7 +528,7 @@ export class AuthEvents extends Context.Service<AuthEvents, AuthEventsService>()
  * How many events the default hub buffers before it starts dropping.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultCapacity = 256
 
@@ -543,7 +543,7 @@ export const defaultCapacity = 256
  * pipeline cares about least once it has already fallen behind.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: (options?: { readonly capacity?: number | undefined }) => Effect.Effect<AuthEventsService> =
   Effect.fnUntraced(function* (options?: { readonly capacity?: number | undefined }) {
@@ -560,7 +560,7 @@ export const make: (options?: { readonly capacity?: number | undefined }) => Eff
  * Provides {@link AuthEvents} over a dropping hub.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = (options?: { readonly capacity?: number | undefined }): Layer.Layer<AuthEvents> =>
   Layer.effect(AuthEvents, make(options))
@@ -585,7 +585,7 @@ export const layer = (options?: { readonly capacity?: number | undefined }): Lay
  * keeps `AuthEvents` out of the requirements of every method.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const emit = (event: AuthEvent): Effect.Effect<void, never, AuthEvents> =>
   AuthEvents.use((events) => publishSafely(events, event))
@@ -601,7 +601,7 @@ export const emit = (event: AuthEvent): Effect.Effect<void, never, AuthEvents> =
  * and does not leak `AuthEvents` into the requirement of every method.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const publishSafely = (events: AuthEventsService, event: AuthEvent): Effect.Effect<void> =>
   Effect.catchCause(events.publish(event), (cause) =>

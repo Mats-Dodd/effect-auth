@@ -7,7 +7,7 @@
  * here so a deployment can never end up setting a cookie under one name and
  * reading it under another.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Duration } from "effect"
 import { Layer } from "effect"
@@ -30,7 +30,7 @@ import {
  * The session cookie name used when the deployment is not served over TLS.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const insecureSessionCookieName: string = defaultCookieName
 
@@ -44,7 +44,7 @@ export const insecureSessionCookieName: string = defaultCookieName
  * holding a plain-HTTP sibling origin cannot overwrite the session.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const secureSessionCookieName: string = `__Secure-${defaultCookieName}`
 
@@ -59,7 +59,7 @@ export const secureSessionCookieName: string = `__Secure-${defaultCookieName}`
  * the HTTP layer goes through here.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCookieName: (config: AuthConfigService) => string = resolveCookieName
 
@@ -67,7 +67,7 @@ export const sessionCookieName: (config: AuthConfigService) => string = resolveC
  * The session cache cookie name used when the deployment is not served over TLS.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const insecureSessionCacheCookieName: string = defaultCacheCookieName
 
@@ -75,7 +75,7 @@ export const insecureSessionCacheCookieName: string = defaultCacheCookieName
  * The session cache cookie name used when the deployment is served over TLS.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const secureSessionCacheCookieName: string = `__Secure-${defaultCacheCookieName}`
 
@@ -85,7 +85,7 @@ export const secureSessionCacheCookieName: string = `__Secure-${defaultCacheCook
  * `AuthConfig.cookieName`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCacheCookieName: (config: AuthConfigService) => string = resolveCacheCookieName
 
@@ -101,7 +101,7 @@ export const sessionCacheCookieName: (config: AuthConfigService) => string = res
  * was issued.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthStateCookieBaseName = "effect_auth.oauth_state"
 
@@ -110,7 +110,7 @@ export const oauthStateCookieBaseName = "effect_auth.oauth_state"
  * over TLS.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const insecureOAuthStateCookieName: string = oauthStateCookieBaseName
 
@@ -132,7 +132,7 @@ export const insecureOAuthStateCookieName: string = oauthStateCookieBaseName
  * {@link oauthStateCookieOptions}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const secureOAuthStateCookieName: string = `__Host-${oauthStateCookieBaseName}`
 
@@ -144,7 +144,7 @@ export const secureOAuthStateCookieName: string = `__Host-${oauthStateCookieBase
  * bare {@link insecureOAuthStateCookieName}.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthStateCookieName = (config: AuthConfigService): string =>
   config.cookie.secure ? secureOAuthStateCookieName : insecureOAuthStateCookieName
@@ -168,7 +168,7 @@ export const oauthStateCookieName = (config: AuthConfigService): string =>
  * `HttpServerResponse.setCookie` accept.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCookieOptions = (
   config: AuthConfigService,
@@ -191,7 +191,7 @@ export const sessionCookieOptions = (
  * match, so the expiry must repeat the attributes the cookie was set with.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const expiredSessionCookieOptions = (config: AuthConfigService): NonNullable<Cookies.Cookie["options"]> => ({
   path: config.cookie.path,
@@ -228,7 +228,7 @@ export const expiredSessionCookieOptions = (config: AuthConfigService): NonNulla
  * row expires.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthStateCookieOptions = (
   config: AuthConfigService,
@@ -250,7 +250,7 @@ export const oauthStateCookieOptions = (
  * `Domain` the `__Host-` prefix requires are mirrored here.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const expiredOAuthStateCookieOptions = (config: AuthConfigService): NonNullable<Cookies.Cookie["options"]> => ({
   path: "/",
@@ -277,7 +277,7 @@ export const expiredOAuthStateCookieOptions = (config: AuthConfigService): NonNu
  * {@link insecureSessionCookieSecurity}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const secureSessionCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
   key: secureSessionCookieName,
@@ -289,7 +289,7 @@ export const secureSessionCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecuri
  * as local development.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const insecureSessionCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
   key: insecureSessionCookieName,
@@ -308,7 +308,7 @@ export const insecureSessionCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecu
  * {@link sessionCookieName} decides the `__Secure-` prefix.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
   config.cookie.secure ? secureSessionCookieSecurity : insecureSessionCookieSecurity
@@ -318,7 +318,7 @@ export const sessionCookieSecurity = (config: AuthConfigService): HttpApiSecurit
  * session token as `Authorization: Bearer <token>`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const bearerSecurity: HttpApiSecurity.Http = HttpApiSecurity.bearer
 
@@ -334,7 +334,7 @@ export const bearerSecurity: HttpApiSecurity.Http = HttpApiSecurity.bearer
  * presenting it alone authenticates nothing.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const secureSessionCacheCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
   key: secureSessionCacheCookieName,
@@ -346,7 +346,7 @@ export const secureSessionCacheCookieSecurity: HttpApiSecurity.ApiKey = HttpApiS
  * deployment. See {@link secureSessionCacheCookieSecurity}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const insecureSessionCacheCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
   key: insecureSessionCacheCookieName,
@@ -357,7 +357,7 @@ export const insecureSessionCacheCookieSecurity: HttpApiSecurity.ApiKey = HttpAp
  * The scheme whose key is the cache cookie name this configuration writes.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionCacheCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
   config.cookie.secure ? secureSessionCacheCookieSecurity : insecureSessionCacheCookieSecurity
@@ -374,7 +374,7 @@ export const sessionCacheCookieSecurity = (config: AuthConfigService): HttpApiSe
  * presenting it alone authenticates nothing.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const secureOAuthStateCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
   key: secureOAuthStateCookieName,
@@ -386,7 +386,7 @@ export const secureOAuthStateCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSec
  * deployment. See {@link secureOAuthStateCookieSecurity}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const insecureOAuthStateCookieSecurity: HttpApiSecurity.ApiKey = HttpApiSecurity.apiKey({
   key: insecureOAuthStateCookieName,
@@ -398,7 +398,7 @@ export const insecureOAuthStateCookieSecurity: HttpApiSecurity.ApiKey = HttpApiS
  * configuration writes.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oauthStateCookieSecurity = (config: AuthConfigService): HttpApiSecurity.ApiKey =>
   config.cookie.secure ? secureOAuthStateCookieSecurity : insecureOAuthStateCookieSecurity
@@ -417,7 +417,7 @@ export const oauthStateCookieSecurity = (config: AuthConfigService): HttpApiSecu
  * session token. `authorization` covers the bearer transport of the same token.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const redactedHeaderNames: ReadonlyArray<string | RegExp> = [
   "authorization",
@@ -446,7 +446,7 @@ export const redactedHeaderNames: ReadonlyArray<string | RegExp> = [
  * ```
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerRedactedHeaders = (additional: ReadonlyArray<string | RegExp> = []): Layer.Layer<never> =>
   Layer.succeed(Headers.CurrentRedactedNames)([...redactedHeaderNames, ...additional])

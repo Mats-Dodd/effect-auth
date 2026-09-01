@@ -15,7 +15,7 @@
  *   origin, and falls back to `baseUrl` rather than refusing — a failed
  *   redirect target is not worth an error page.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Effect, Option } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
@@ -33,7 +33,7 @@ import * as InternalOrigins from "../internal/origins.js"
  * far as this module is concerned.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const webProtocols: ReadonlySet<string> = InternalOrigins.webProtocols
 
@@ -56,7 +56,7 @@ const resolveAgainst = Option.liftThrowable((candidate: string, base: string) =>
  * literal `"null"` is never an origin here.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const originOf: (url: string) => Option.Option<string> = InternalOrigins.originOf
 
@@ -72,7 +72,7 @@ export const originOf: (url: string) => Option.Option<string> = InternalOrigins.
  * every request goes through.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const trustedOriginSet: (options: {
   readonly baseUrl: string
@@ -95,7 +95,7 @@ export const trustedOriginSet: (options: {
  * trusted, which a `startsWith` check would get wrong.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> => config.trustedOriginSet
 
@@ -103,7 +103,7 @@ export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> =
  * Whether an origin header value is one this deployment trusts.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isTrustedOrigin = (config: AuthConfigService, origin: string): boolean => {
   const parsed = originOf(origin)
@@ -126,7 +126,7 @@ export const isTrustedOrigin = (config: AuthConfigService, origin: string): bool
  * is `https://evil.test/` — a protocol-relative URL wearing a path's clothes.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isPathRelative = (candidate: string): boolean => {
   if (!candidate.startsWith("/")) return false
@@ -159,7 +159,7 @@ export const isPathRelative = (candidate: string): boolean => {
  * turn into a redirect off-origin.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const resolveUrl = (config: AuthConfigService, candidate: string | null | undefined): string => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return config.baseUrl
@@ -185,7 +185,7 @@ export const resolveUrl = (config: AuthConfigService, candidate: string | null |
  * `callbackURL` only when one was actually given.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const validateUrl = (config: AuthConfigService, candidate: string | null | undefined): Option.Option<string> => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return Option.none()
@@ -209,7 +209,7 @@ export const validateUrl = (config: AuthConfigService, candidate: string | null 
  * validates nothing, it only appends a query parameter to whatever it is given.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const withErrorCode = (url: string, code: string): string => {
   const parsed = new URL(url)
@@ -244,7 +244,7 @@ export const withErrorCode = (url: string, code: string): string => {
  * token payload the refusing call has already claimed — lands on `baseUrl`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const policyRefusedTarget = (
   config: AuthConfigService,
@@ -261,7 +261,7 @@ export const policyRefusedTarget = (
  * the browser, and the safe code that was appended to it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RedirectFailure<E> {
   readonly _tag: "Failure"
@@ -296,7 +296,7 @@ const isPolicyRefused = (error: { readonly _tag: string }): error is PolicyRefus
  * that case, and it stays the closed set it was.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const redirectFailure =
   <E extends { readonly _tag: string }>(
@@ -323,7 +323,7 @@ export const redirectFailure =
  * HTTP methods that do not change state and therefore need no origin check.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const safeMethods: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"])
 
@@ -346,7 +346,7 @@ export const safeMethods: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS
  * `Referer` yields `None`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const claimedOrigin = (headers: Readonly<Record<string, string | undefined>>): Option.Option<string> => {
   const origin = headers["origin"]
@@ -379,7 +379,7 @@ export const claimedOrigin = (headers: Readonly<Record<string, string | undefine
  * and is refused: something browser-shaped made it, and it is not us.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const checkOrigin = (
   config: AuthConfigService

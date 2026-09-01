@@ -4,7 +4,7 @@
  * Used wherever a value leaves the server and must come back unmodified without
  * a database round-trip.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Layer, Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -14,7 +14,7 @@ import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
  * The {@link Hmac} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface HmacService {
   /**
@@ -39,7 +39,7 @@ export interface HmacService {
  * {@link HmacService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Hmac extends Context.Service<Hmac, HmacService>()("effect-auth/crypto/Hmac") {}
 
@@ -68,7 +68,7 @@ export class Hmac extends Context.Service<Hmac, HmacService>()("effect-auth/cryp
  * surfaces as a defect rather than a typed error.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (crypto: Crypto, secret: Redacted.Redacted): Effect.Effect<HmacService> =>
   Effect.map(
@@ -101,7 +101,7 @@ export const make = (crypto: Crypto, secret: Redacted.Redacted): Effect.Effect<H
  * `AuthConfig.secret`.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<Hmac, never, AuthConfig> = Layer.effect(
   Hmac,

@@ -21,7 +21,7 @@
  * })
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Layer } from "effect"
@@ -52,7 +52,7 @@ import * as AuthTest from "./TestLayer.js"
  * test reads a link exactly as its recipient would.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const magicLinkKind: EmailKind = "magic-link"
 
@@ -66,7 +66,7 @@ export const magicLinkKind: EmailKind = "magic-link"
  * same outbox — with the same `delivery: "failing"` behaviour — as the library's.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerEmails: Layer.Layer<MagicLinkEmails, never, TestEmails> = Layer.effect(
   MagicLinkEmails,
@@ -93,7 +93,7 @@ export const layerEmails: Layer.Layer<MagicLinkEmails, never, TestEmails> = Laye
  * `makeAuthApi(model)` and adds `MagicLinkApiGroup` to it.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options extends AuthTest.Settings {
   /** The plugin's own settings — TTL, `disableSignUp`, `revokeUnprovenAccounts`. */
@@ -116,7 +116,7 @@ export interface Options extends AuthTest.Settings {
  * `magicLinkLayer(options)` is a fresh value per call and needs no such care.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerMagicLink = (
   options?: MagicLinkOptions
@@ -132,7 +132,7 @@ export const layerMagicLink = (
  * endpoints in front of it.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer = (
   options?: Options
@@ -146,7 +146,7 @@ export const layer = (
  * exactly as a consumer composes them.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const TestApi = HttpApi.make("test-app").addHttpApi(AuthApi).add(MagicLinkApiGroup)
 
@@ -161,7 +161,7 @@ export const TestApi = HttpApi.make("test-app").addHttpApi(AuthApi).add(MagicLin
  * — so both groups read one `Sessions`, one `UserStore` and one rate limiter.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerHttp = (
   options?: Options

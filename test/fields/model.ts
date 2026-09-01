@@ -19,7 +19,7 @@
  * reason `AuthTest`'s are: `layer()` memoises by object identity, so every block
  * in this directory shares one PGlite rather than booting its own.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { PgliteClient } from "@effect/sql-pglite"
 import { Schema } from "effect"

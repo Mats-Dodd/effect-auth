@@ -38,7 +38,7 @@
  * an endpoint annotated `AuthoritativeSession` — see `http/SessionCache.ts`,
  * whose module header carries the threat model this trades against.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
@@ -72,7 +72,7 @@ import { type SessionCache, sessionCacheOf } from "./SessionCache.js"
  * at zero.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const remainingLifetime = (session: Session): Effect.Effect<Duration.Duration> =>
   Effect.map(DateTime.now, (now) => Duration.max(Duration.zero, DateTime.distance(now, session.expiresAt)))
@@ -105,7 +105,7 @@ export const remainingLifetime = (session: Session): Effect.Effect<Duration.Dura
  * short, which is what `Sessions.grantedLifetime` exists to do.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const setSessionCookie = (
   config: AuthConfigService,
@@ -131,7 +131,7 @@ export const setSessionCookie = (
  * different attributes leaves the original cookie in place.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const clearSessionCookie = (
   config: AuthConfigService
@@ -157,7 +157,7 @@ export const clearSessionCookie = (
  * state row expires.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const setOAuthStateCookie = (
   config: AuthConfigService,
@@ -180,7 +180,7 @@ export const setOAuthStateCookie = (
  * `domain`, as {@link clearSessionCookie} does.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const clearOAuthStateCookie = (
   config: AuthConfigService
@@ -207,7 +207,7 @@ export const clearOAuthStateCookie = (
  * — the transports, the origin check, the error — depends on it.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = Effect.fnUntraced(function* <F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
@@ -323,7 +323,7 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
  * `Middleware.currentUserOf`.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>
@@ -333,6 +333,6 @@ export const layerFor = <F extends UserFields>(
  * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<Authenticated, never, AuthConfig | Sessions | SessionCache> = layerFor(baseUserModel)

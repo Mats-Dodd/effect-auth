@@ -19,7 +19,7 @@
  *   `User.insert.make({ ... })`, which fills in the generated UUIDv7 id and the
  *   `createdAt` / `updatedAt` timestamps from the current clock
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { DateTime, Effect, Option } from "effect"
 import { Context, Schema } from "effect"
@@ -54,7 +54,7 @@ import type {
  * module is what stops `SqlError` leaking upward through the seam.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const PersistenceFailureKind = Schema.Literals(["UniqueViolation", "Unknown"])
 
@@ -62,7 +62,7 @@ export const PersistenceFailureKind = Schema.Literals(["UniqueViolation", "Unkno
  * The type of a {@link PersistenceFailureKind}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type PersistenceFailureKind = typeof PersistenceFailureKind.Type
 
@@ -77,7 +77,7 @@ export type PersistenceFailureKind = typeof PersistenceFailureKind.Type
  * endpoint contract: the HTTP layer renders this as an opaque `500`.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class PersistenceError extends Schema.TaggedError<PersistenceError>("effect-auth/PersistenceError")(
   "PersistenceError",
@@ -108,7 +108,7 @@ export class PersistenceError extends Schema.TaggedError<PersistenceError>("effe
  * only closes the race the lookup cannot.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isUniqueViolation = (error: PersistenceError): boolean => error.kind === "UniqueViolation"
 
@@ -131,7 +131,7 @@ export const isUniqueViolation = (error: PersistenceError): boolean => error.kin
  * `domain/Schema.ts`; the store does not normalize on the caller's behalf.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UserPatch<F extends UserFields = {}> = BaseUserPatch & Partial<UserExtras<F, "update">>
 
@@ -139,7 +139,7 @@ export type UserPatch<F extends UserFields = {}> = BaseUserPatch & Partial<UserE
  * The {@link UserStore} service definition, for a model parameterized by `F`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserStoreService<F extends UserFields = {}> {
   /**
@@ -200,7 +200,7 @@ export interface UserStoreService<F extends UserFields = {}> {
  * Storage for user rows.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class UserStore extends Context.Service<UserStore, UserStoreService>()("effect-auth/domain/Stores/UserStore") {}
 
@@ -223,7 +223,7 @@ export class UserStore extends Context.Service<UserStore, UserStoreService>()("e
  * see {@link UserStoreService.create}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userStoreOf = <F extends UserFields>(
   _model: UserModel<F>
@@ -238,7 +238,7 @@ export const userStoreOf = <F extends UserFields>(
  * A session together with the user it belongs to.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionWithUser<F extends UserFields = {}> {
   readonly session: Session
@@ -254,7 +254,7 @@ export interface SessionWithUser<F extends UserFields = {}> {
  * store hands a user back.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SessionStoreService<F extends UserFields = {}> {
   /**
@@ -319,7 +319,7 @@ export interface SessionStoreService<F extends UserFields = {}> {
  * Storage for {@link Session} rows.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class SessionStore extends Context.Service<SessionStore, SessionStoreService>()(
   "effect-auth/domain/Stores/SessionStore"
@@ -332,7 +332,7 @@ export class SessionStore extends Context.Service<SessionStore, SessionStoreServ
  * means and why it is sound.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionStoreOf = <F extends UserFields>(
   _model: UserModel<F>
@@ -348,7 +348,7 @@ export const sessionStoreOf = <F extends UserFields>(
  * sign-in.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AccountTokens {
   readonly accessToken?: string | null
@@ -363,7 +363,7 @@ export interface AccountTokens {
  * The {@link AccountStore} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AccountStoreService {
   /**
@@ -490,7 +490,7 @@ export interface AccountStoreService {
  * Storage for {@link Account} rows — the sign-in methods of a user.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class AccountStore extends Context.Service<AccountStore, AccountStoreService>()(
   "effect-auth/domain/Stores/AccountStore"
@@ -504,7 +504,7 @@ export class AccountStore extends Context.Service<AccountStore, AccountStoreServ
  * The {@link VerificationStore} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface VerificationStoreService {
   /**
@@ -561,7 +561,7 @@ export interface VerificationStoreService {
  * reset tokens, and pending OAuth state.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class VerificationStore extends Context.Service<VerificationStore, VerificationStoreService>()(
   "effect-auth/domain/Stores/VerificationStore"
@@ -575,7 +575,7 @@ export class VerificationStore extends Context.Service<VerificationStore, Verifi
  * The {@link WithAuthTransaction} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface WithAuthTransactionService {
   /**
@@ -600,7 +600,7 @@ export interface WithAuthTransactionService {
  * the transaction has committed, never inside it.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class WithAuthTransaction extends Context.Service<WithAuthTransaction, WithAuthTransactionService>()(
   "effect-auth/domain/Stores/WithAuthTransaction"
@@ -611,6 +611,6 @@ export class WithAuthTransaction extends Context.Service<WithAuthTransaction, Wi
  * this set.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AuthStores = UserStore | SessionStore | AccountStore | VerificationStore | WithAuthTransaction

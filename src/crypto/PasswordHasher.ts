@@ -15,7 +15,7 @@
  * pbkdf2$i=600000$<base64url salt>$<base64url key>
  * ```
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Crypto, Effect, Encoding, Layer, Redacted, Result } from "effect"
 import { PasswordHashError } from "../domain/Errors.js"
@@ -31,7 +31,7 @@ import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
  * unwrap it immediately before handing the bytes to the KDF.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface PasswordHasherService {
   /**
@@ -58,7 +58,7 @@ export interface PasswordHasherService {
  * Hashes and verifies passwords. See {@link PasswordHasherService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class PasswordHasher extends Context.Service<PasswordHasher, PasswordHasherService>()(
   "effect-auth/crypto/PasswordHasher"
@@ -72,7 +72,7 @@ export class PasswordHasher extends Context.Service<PasswordHasher, PasswordHash
  * scrypt cost parameters.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ScryptOptions {
   /**
@@ -97,7 +97,7 @@ export interface ScryptOptions {
  * PBKDF2 parameters.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Pbkdf2Options {
   /**
@@ -114,7 +114,7 @@ export interface Pbkdf2Options {
  * The default scrypt parameters: `N=16384, r=16, p=1`, 64-byte key.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScryptOptions = {
   N: 16384,
@@ -128,7 +128,7 @@ export const defaultScryptOptions = {
  * key.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultPbkdf2Options = {
   iterations: 600_000,
@@ -139,7 +139,7 @@ export const defaultPbkdf2Options = {
  * The number of random salt bytes each hash is given.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const saltBytes = 16
 
@@ -147,7 +147,7 @@ export const saltBytes = 16
  * The algorithm labels that can begin a stored hash.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type HashAlgorithm = "scrypt" | "pbkdf2"
 
@@ -155,7 +155,7 @@ export type HashAlgorithm = "scrypt" | "pbkdf2"
  * A stored hash string taken apart.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ParsedHash {
   readonly algorithm: HashAlgorithm
@@ -184,7 +184,7 @@ export interface ParsedHash {
  * time.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const timingSafeEqualUint8 = (a: Uint8Array, b: Uint8Array): boolean => {
   if (a.length !== b.length) return false
@@ -252,7 +252,7 @@ const formatHash = (algorithm: HashAlgorithm, params: string, salt: Uint8Array, 
  * it must be an ordinary key rather than a way to reach `Object.prototype`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const parseHash = (hash: string): Effect.Effect<ParsedHash, PasswordHashError> =>
   Effect.suspend(() => {
@@ -490,7 +490,7 @@ const pbkdf2Derive = (
  * turn a broken deployment into a wave of "invalid credentials".
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const verifyHash = (password: Redacted.Redacted, hash: string): Effect.Effect<boolean, PasswordHashError> =>
   Effect.flatMap(parseHash(hash), (parsed) => {
@@ -522,7 +522,7 @@ export const verifyHash = (password: Redacted.Redacted, hash: string): Effect.Ef
  * salt) and `node:crypto` (used for the KDF).
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): PasswordHasherService => {
   const params: ScryptParams = {
@@ -548,7 +548,7 @@ export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): Pass
  * salt) and WebCrypto's `subtle` (used for the KDF).
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): PasswordHasherService => {
   const params: Pbkdf2Params = {
@@ -580,7 +580,7 @@ export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): Pass
  * the two layers in either direction.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerScrypt = (options?: ScryptOptions): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
   Layer.effect(
@@ -599,7 +599,7 @@ export const layerScrypt = (options?: ScryptOptions): Layer.Layer<PasswordHasher
  * password.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerPbkdf2 = (options?: Pbkdf2Options): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
   Layer.effect(

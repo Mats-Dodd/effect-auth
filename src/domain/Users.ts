@@ -50,7 +50,7 @@
  * `Passwords.requestReset` documents, and it closes the same way, with an
  * `AuthEmails` implementation that enqueues and returns.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Brand, Context, Effect, Layer, Option, type Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -117,7 +117,7 @@ export {
  * The distinction is why these are `| undefined` rather than merely optional.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface BaseUpdateOptions {
   readonly userId: UserId
@@ -136,7 +136,7 @@ export interface BaseUpdateOptions {
  * `SignUpOptions` follows for creation.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type UpdateOptions<F extends UserFields = {}> = BaseUpdateOptions & UserExtras<F, "jsonUpdate">
 
@@ -144,7 +144,7 @@ export type UpdateOptions<F extends UserFields = {}> = BaseUpdateOptions & UserE
  * What {@link UsersService.provision} takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ProvisionOptions<F extends UserFields = {}> {
   /**
@@ -165,7 +165,7 @@ export interface ProvisionOptions<F extends UserFields = {}> {
  * What {@link UsersService.requestEmailChange} takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RequestEmailChangeOptions<F extends UserFields = {}> {
   /** The signed-in user, as the middleware resolved them. */
@@ -190,7 +190,7 @@ export interface RequestEmailChangeOptions<F extends UserFields = {}> {
  * make it an enumeration oracle. See the module header.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type EmailChangeOutcome =
   /** The current address is verified, so hop one was mailed to it. */
@@ -214,7 +214,7 @@ export type EmailChangeOutcome =
  * What {@link UsersService.requestDeletion} takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RequestDeletionOptions<F extends UserFields = {}> {
   readonly user: UserOf<F>
@@ -239,7 +239,7 @@ export interface RequestDeletionOptions<F extends UserFields = {}> {
  * What asking to delete an account did.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DeletionOutcome =
   /** The row is gone, and every session with it. */
@@ -251,7 +251,7 @@ export type DeletionOutcome =
  * What {@link UsersService.confirmDeletion} takes.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfirmDeletionOptions {
   /** The token from the link. */
@@ -273,7 +273,7 @@ export interface ConfirmDeletionOptions {
  * Where a completed deletion sends the browser.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface DeletionResult {
   /** The validated URL, already resolved against `trustedOrigins`. */
@@ -288,7 +288,7 @@ export interface DeletionResult {
  * The {@link Users} service definition, for a model parameterized by `F`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UsersService<F extends UserFields = {}> {
   /**
@@ -421,7 +421,7 @@ export interface UsersService<F extends UserFields = {}> {
  * {@link UsersService}.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Users extends Context.Service<Users, UsersService>()("effect-auth/domain/Users") {}
 
@@ -433,7 +433,7 @@ export class Users extends Context.Service<Users, UsersService>()("effect-auth/d
  * what a typed view is and why it is sound.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const usersOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<Users, UsersService<F>> =>
   Context.Service<Users, UsersService<F>>("effect-auth/domain/Users")
@@ -459,7 +459,7 @@ const asUserId = Brand.nominal<UserId>()
  * What {@link make} needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Requirements =
   | AuthConfig
@@ -488,7 +488,7 @@ export type Requirements =
  * method happens to sit on.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<UsersService<F>, never, Requirements> =
   Effect.fnUntraced(function* <F extends UserFields>(model: UserModel<F>) {
@@ -881,7 +881,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
  * carry that model's, while the layer's own type stays the base one.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(model: UserModel<F>): Layer.Layer<Users, never, Requirements> =>
   Layer.effect(usersOf(model), make(model))
@@ -890,6 +890,6 @@ export const layerFor = <F extends UserFields>(model: UserModel<F>): Layer.Layer
  * {@link layerFor}, for a deployment that added no user fields of its own.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<Users, never, Requirements> = layerFor(baseUserModel)

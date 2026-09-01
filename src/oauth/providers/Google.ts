@@ -14,7 +14,7 @@
  * without `email`, where the token carries no address; the userinfo endpoint is
  * then consulted, through the flow's redirect-refusing client.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
@@ -33,7 +33,7 @@ import { fetchIdentity, identityOf } from "../internal/userInfo.js"
  * The id Google is registered and addressed under.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const id = "google"
 
@@ -42,7 +42,7 @@ export const id = "google"
  * this provider writes.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const issuer = "https://accounts.google.com"
 
@@ -50,7 +50,7 @@ export const issuer = "https://accounts.google.com"
  * Where Google publishes its signing keys.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const jwksUrl = "https://www.googleapis.com/oauth2/v3/certs"
 
@@ -58,7 +58,7 @@ export const jwksUrl = "https://www.googleapis.com/oauth2/v3/certs"
  * Google's authorization endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth"
 
@@ -66,7 +66,7 @@ export const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth"
  * Google's token endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenUrl = "https://oauth2.googleapis.com/token"
 
@@ -75,7 +75,7 @@ export const tokenUrl = "https://oauth2.googleapis.com/token"
  * no address.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userInfoUrl = "https://openidconnect.googleapis.com/v1/userinfo"
 
@@ -83,7 +83,7 @@ export const userInfoUrl = "https://openidconnect.googleapis.com/v1/userinfo"
  * The scopes requested by default.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["openid", "email", "profile"]
 
@@ -95,7 +95,7 @@ export const defaultScopes: ReadonlyArray<string> = ["openid", "email", "profile
  * What Google needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   readonly clientId: string
@@ -175,7 +175,7 @@ const readHostedDomain = Schema.decodeUnknownOption(HostedDomainClaim)
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
   const authorizationParams: Record<string, string> = {
@@ -234,7 +234,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  * What Google needs, per field, as `Config` values.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
@@ -268,7 +268,7 @@ interface Settings {
  * appears in a log line or a `ConfigError`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(

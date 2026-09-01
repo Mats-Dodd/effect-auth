@@ -15,7 +15,7 @@
  * should count in a shared `RateLimiterStore` instead — the store is a layer of
  * its own for exactly that reason.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Duration, Effect, Layer, Option } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
@@ -34,7 +34,7 @@ import { makeStore } from "../internal/rateLimiterStore.js"
  * One configured limit: how many requests, over what window.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Bucket {
   /** Names the policy. Part of the key, so two buckets never share a count. */
@@ -48,7 +48,7 @@ export interface Bucket {
  * per ten seconds per client.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const credentials: Bucket = {
   name: "credentials",
@@ -61,7 +61,7 @@ export const credentials: Bucket = {
  * client.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const email: Bucket = {
   name: "email",
@@ -84,7 +84,7 @@ export const email: Bucket = {
  * distinct ones.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sharedKey = "shared"
 
@@ -106,7 +106,7 @@ export const sharedKey = "shared"
  * which throttles everyone a little instead of throttling nobody at all.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const clientAddress = (
   config: AuthConfigService,
@@ -240,7 +240,7 @@ const stripQueryAndDecode = (raw: string): string => {
  * literal, since the router never turns it into a separator.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const requestPath = (request: HttpServerRequest.HttpServerRequest): string => {
   let path = request.url
@@ -265,7 +265,7 @@ export const requestPath = (request: HttpServerRequest.HttpServerRequest): strin
  * that signing in is allowed.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const keyFor = (bucket: Bucket, path: string, client: Option.Option<string>): string =>
   `effect-auth:${bucket.name}:${path}:${Option.getOrElse(client, () => sharedKey)}`
@@ -278,7 +278,7 @@ export const keyFor = (bucket: Bucket, path: string, client: Option.Option<strin
  * How long a caller is told to wait, in whole seconds and never less than one.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const retryAfterSeconds = (retryAfter: Duration.Duration): number =>
   Math.max(1, Math.ceil(Duration.toMillis(retryAfter) / 1000))
@@ -299,7 +299,7 @@ export const retryAfterSeconds = (retryAfter: Duration.Duration): number =>
  * attacker can arrange.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const consume = (
   bucket: Bucket
@@ -322,7 +322,7 @@ export const consume = (
  * is what keeps the handler layer's requirements plain.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const consumeWith = (options: {
   readonly config: AuthConfigService
@@ -367,7 +367,7 @@ export const consumeWith = (options: {
  * Applies a bucket to an effect: consume first, run second.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const limit = <A, E, R>(
   bucket: Bucket,
@@ -396,7 +396,7 @@ export const limit = <A, E, R>(
  * caller that keeps spending its allowance keeps its counter.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerStore = (options?: {
   readonly sweepInterval?: Duration.Duration | undefined
@@ -426,6 +426,6 @@ export const layerStore = (options?: {
  * That is why this layer does not install it.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<RateLimiter.RateLimiter> = RateLimiter.layer.pipe(Layer.provide(layerStore()))

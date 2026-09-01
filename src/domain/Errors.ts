@@ -14,7 +14,7 @@
  * and password-reset flows deliberately collapse those cases (see
  * `InvalidCredentials` and the always-200 reset endpoints).
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Schema } from "effect"
 import { HttpApiError } from "effect/unstable/httpapi"
@@ -36,7 +36,7 @@ import type { PersistenceError } from "./Stores.js"
  * generation.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const Unauthorized = HttpApiError.Unauthorized
 
@@ -44,7 +44,7 @@ export const Unauthorized = HttpApiError.Unauthorized
  * The type of an {@link Unauthorized} error.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type Unauthorized = HttpApiError.Unauthorized
 
@@ -54,7 +54,7 @@ export type Unauthorized = HttpApiError.Unauthorized
  * indistinguishable.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const NotFound = HttpApiError.NotFound
 
@@ -62,7 +62,7 @@ export const NotFound = HttpApiError.NotFound
  * The type of a {@link NotFound} error.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type NotFound = HttpApiError.NotFound
 
@@ -81,7 +81,7 @@ export type NotFound = HttpApiError.NotFound
  * user — so neither the response nor its timing reveals which case occurred.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class InvalidCredentials extends Schema.TaggedError<InvalidCredentials>("effect-auth/InvalidCredentials")(
   "InvalidCredentials",
@@ -97,7 +97,7 @@ export class InvalidCredentials extends Schema.TaggedError<InvalidCredentials>("
  * verified and `emailPassword.requireEmailVerification` is enabled.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class EmailNotVerified extends Schema.TaggedError<EmailNotVerified>("effect-auth/EmailNotVerified")(
   "EmailNotVerified",
@@ -112,7 +112,7 @@ export class EmailNotVerified extends Schema.TaggedError<EmailNotVerified>("effe
  * Sign-up was attempted with an e-mail address that already has an account.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class UserAlreadyExists extends Schema.TaggedError<UserAlreadyExists>("effect-auth/UserAlreadyExists")(
   "UserAlreadyExists",
@@ -133,7 +133,7 @@ export class UserAlreadyExists extends Schema.TaggedError<UserAlreadyExists>("ef
  * whose subject vanished concurrently.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class UserNotFound extends Schema.TaggedError<UserNotFound>("effect-auth/UserNotFound")(
   "UserNotFound",
@@ -153,7 +153,7 @@ export class UserNotFound extends Schema.TaggedError<UserNotFound>("effect-auth/
  * precise message without hard-coding the server's configuration.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class PasswordPolicyViolation extends Schema.TaggedError<PasswordPolicyViolation>(
   "effect-auth/PasswordPolicyViolation"
@@ -182,7 +182,7 @@ export class PasswordPolicyViolation extends Schema.TaggedError<PasswordPolicyVi
  * it.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class EmailUnchanged extends Schema.TaggedError<EmailUnchanged>("effect-auth/EmailUnchanged")(
   "EmailUnchanged",
@@ -206,7 +206,7 @@ export class EmailUnchanged extends Schema.TaggedError<EmailUnchanged>("effect-a
  * prevent for ever.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class PasswordAlreadySet extends Schema.TaggedError<PasswordAlreadySet>("effect-auth/PasswordAlreadySet")(
   "PasswordAlreadySet",
@@ -225,7 +225,7 @@ export class PasswordAlreadySet extends Schema.TaggedError<PasswordAlreadySet>("
  * The presented session existed but its expiry has passed.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class SessionExpired extends Schema.TaggedError<SessionExpired>("effect-auth/SessionExpired")(
   "SessionExpired",
@@ -246,7 +246,7 @@ export class SessionExpired extends Schema.TaggedError<SessionExpired>("effect-a
  * configured window a session must have been created within.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class SessionNotFresh extends Schema.TaggedError<SessionNotFresh>("effect-auth/SessionNotFresh")(
   "SessionNotFresh",
@@ -273,7 +273,7 @@ export class SessionNotFresh extends Schema.TaggedError<SessionNotFresh>("effect
  * reports exactly this, and reports nothing about which of the causes applied.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class InvalidToken extends Schema.TaggedError<InvalidToken>("effect-auth/InvalidToken")(
   "InvalidToken",
@@ -297,7 +297,7 @@ export class InvalidToken extends Schema.TaggedError<InvalidToken>("effect-auth/
  * an application that holds the row itself and can tell the difference.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class TokenExpired extends Schema.TaggedError<TokenExpired>("effect-auth/TokenExpired")(
   "TokenExpired",
@@ -322,7 +322,7 @@ export class TokenExpired extends Schema.TaggedError<TokenExpired>("effect-auth/
  * state rows are consumed atomically and are therefore single-use.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class OAuthStateMismatch extends Schema.TaggedError<OAuthStateMismatch>("effect-auth/OAuthStateMismatch")(
   "OAuthStateMismatch",
@@ -337,7 +337,7 @@ export class OAuthStateMismatch extends Schema.TaggedError<OAuthStateMismatch>("
  * The set of safe, non-leaking reasons an OAuth exchange can fail.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const OAuthFailureReason = Schema.Literals([
   /** The provider id is not registered with this instance. */
@@ -370,7 +370,7 @@ export const OAuthFailureReason = Schema.Literals([
  * The type of an {@link OAuthFailureReason}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type OAuthFailureReason = typeof OAuthFailureReason.Type
 
@@ -384,7 +384,7 @@ export type OAuthFailureReason = typeof OAuthFailureReason.Type
  * failed request, or raw account data.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class OAuthProviderError extends Schema.TaggedError<OAuthProviderError>("effect-auth/OAuthProviderError")(
   "OAuthProviderError",
@@ -408,7 +408,7 @@ export class OAuthProviderError extends Schema.TaggedError<OAuthProviderError>("
  * a description of somebody else's credentials.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const TokenRefreshReason = Schema.Literals([
   /** The account belongs to a provider this instance no longer serves. */
@@ -429,7 +429,7 @@ export const TokenRefreshReason = Schema.Literals([
  * The type of a {@link TokenRefreshReason}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type TokenRefreshReason = typeof TokenRefreshReason.Type
 
@@ -444,7 +444,7 @@ export type TokenRefreshReason = typeof TokenRefreshReason.Type
  * routinely quotes the refresh token it refused.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class TokenRefreshFailed extends Schema.TaggedError<TokenRefreshFailed>("effect-auth/TokenRefreshFailed")(
   "TokenRefreshFailed",
@@ -462,7 +462,7 @@ export class TokenRefreshFailed extends Schema.TaggedError<TokenRefreshFailed>("
  * Why an OIDC discovery document could not be turned into a provider.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const DiscoveryFailureReason = Schema.Literals([
   /** The discovery endpoint could not be read, or answered with a redirect. */
@@ -483,7 +483,7 @@ export const DiscoveryFailureReason = Schema.Literals([
  * The type of a {@link DiscoveryFailureReason}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type DiscoveryFailureReason = typeof DiscoveryFailureReason.Type
 
@@ -499,7 +499,7 @@ export type DiscoveryFailureReason = typeof DiscoveryFailureReason.Type
  * anything the remote document said.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class DiscoveryError extends Schema.TaggedError<DiscoveryError>("effect-auth/DiscoveryError")(
   "DiscoveryError",
@@ -531,7 +531,7 @@ export class DiscoveryError extends Schema.TaggedError<DiscoveryError>("effect-a
  * deliberately.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class AccountAlreadyLinked extends Schema.TaggedError<AccountAlreadyLinked>("effect-auth/AccountAlreadyLinked")(
   "AccountAlreadyLinked",
@@ -548,7 +548,7 @@ export class AccountAlreadyLinked extends Schema.TaggedError<AccountAlreadyLinke
  * Unlinking the account would leave the user with no way to sign in.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class CannotUnlinkLastAccount extends Schema.TaggedError<CannotUnlinkLastAccount>(
   "effect-auth/CannotUnlinkLastAccount"
@@ -575,7 +575,7 @@ export class CannotUnlinkLastAccount extends Schema.TaggedError<CannotUnlinkLast
  * for these limits is a client IP address.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class RateLimited extends Schema.TaggedError<RateLimited>("effect-auth/RateLimited")(
   "RateLimited",
@@ -598,7 +598,7 @@ export class RateLimited extends Schema.TaggedError<RateLimited>("effect-auth/Ra
  * caller of the domain services — it is not part of those endpoints' contract.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class EmailDeliveryError extends Schema.TaggedError<EmailDeliveryError>("effect-auth/EmailDeliveryError")(
   "EmailDeliveryError",
@@ -623,7 +623,7 @@ export class EmailDeliveryError extends Schema.TaggedError<EmailDeliveryError>("
  * must not be reported to the caller as invalid credentials.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class PasswordHashError extends Schema.TaggedError<PasswordHashError>("effect-auth/PasswordHashError")(
   "PasswordHashError",
@@ -652,7 +652,7 @@ export class PasswordHashError extends Schema.TaggedError<PasswordHashError>("ef
  * the only thing able to raise it, and joins the union here.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type AuthError =
   | Unauthorized

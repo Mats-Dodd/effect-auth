@@ -16,7 +16,7 @@
  * trimmed, so a configured `https://gitlab.acme.internal/` cannot produce a
  * double-slashed endpoint.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
@@ -34,7 +34,7 @@ import { lenient, StringFromNumeric, Truthy } from "../internal/claims.js"
  * The id GitLab is registered and addressed under.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const id = "gitlab"
 
@@ -42,7 +42,7 @@ export const id = "gitlab"
  * The host a deployment that says nothing else talks to.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultBaseUrl = "https://gitlab.com"
 
@@ -50,7 +50,7 @@ export const defaultBaseUrl = "https://gitlab.com"
  * The scopes requested by default: enough to read the profile, and nothing else.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["read_user"]
 
@@ -58,7 +58,7 @@ export const defaultScopes: ReadonlyArray<string> = ["read_user"]
  * The endpoints a GitLab instance serves, derived from its host.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Endpoints {
   readonly authorizationUrl: string
@@ -70,7 +70,7 @@ export interface Endpoints {
  * Where one GitLab instance's endpoints live.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const endpointsOf = (baseUrl?: string): Endpoints => {
   const host = trimTrailingSlashes(baseUrl ?? defaultBaseUrl)
@@ -112,7 +112,7 @@ const readProfile = Schema.decodeUnknownOption(Profile)
  * The one `state` a GitLab account may sign in from.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const activeState = "active"
 
@@ -124,7 +124,7 @@ export const activeState = "active"
  * What GitLab needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   readonly clientId: string
@@ -164,7 +164,7 @@ export interface Options {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
   const endpoints = endpointsOf(options.baseUrl)
@@ -216,7 +216,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  * What GitLab needs, per field, as `Config` values.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
@@ -247,7 +247,7 @@ interface Settings {
  * appears in a log line or a `ConfigError`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(

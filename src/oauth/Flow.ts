@@ -48,7 +48,7 @@
  * factory through `Accounts`, coupling identity resolution to session
  * lifetime. See the amendment note in `SPEC.md`.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema, String } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
@@ -121,7 +121,7 @@ const manualRedirect: globalThis.RequestInit = { redirect: "manual" }
  * a client not to follow redirects, or use the fetch client.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const refuseRedirects = (client: HttpClient.HttpClient): HttpClient.HttpClient =>
   HttpClient.transformResponse(client, (effect) =>
@@ -153,7 +153,7 @@ export const refuseRedirects = (client: HttpClient.HttpClient): HttpClient.HttpC
  * `jwks_uri` that answers `302` a failure rather than an SSRF primitive.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerSafeClient: Layer.Layer<HttpClient.HttpClient, never, HttpClient.HttpClient> = Layer.effect(
   HttpClient.HttpClient,
@@ -177,7 +177,7 @@ const joinUrl = (baseUrl: string, path: string): string => `${trimTrailingSlashe
  * A mismatch is the single most common cause of a `TokenExchangeFailed`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const callbackUri = (config: AuthConfigService, provider: OAuthProviderConfig): string =>
   provider.redirectUri ?? joinUrl(config.baseUrl, `${config.basePath}/callback/${encodeURIComponent(provider.id)}`)
@@ -187,7 +187,7 @@ export const callbackUri = (config: AuthConfigService, provider: OAuthProviderCo
  * asked for, in order and without repeats.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const mergeScopes = (
   provider: OAuthProviderConfig,
@@ -206,7 +206,7 @@ export const mergeScopes = (
  * written.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const authorizationUrl = (options: {
   readonly provider: OAuthProviderConfig
@@ -274,7 +274,7 @@ const readTokenResponse = Schema.decodeUnknownOption(TokenResponse)
  * Answers `null` when the body is not an object or carries no `access_token`.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const decodeTokens = (body: unknown, now: DateTime.Utc): OAuthTokens | null =>
   Option.match(readTokenResponse(body), {
@@ -322,7 +322,7 @@ interface TokenFailures<E> {
  * What starting a flow needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface StartOptions {
   readonly providerId: string
@@ -345,7 +345,7 @@ export interface StartOptions {
  * A started flow.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface StartResult {
   readonly providerId: string
@@ -361,7 +361,7 @@ export interface StartResult {
  * What came back from the provider.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface CallbackOptions {
   readonly providerId: string
@@ -393,7 +393,7 @@ export interface CallbackOptions {
  * `NotFound`, indistinguishable from naming one that does not exist.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface TokenSelector {
   readonly userId: UserId
@@ -410,7 +410,7 @@ export interface TokenSelector {
  * nothing else — never a log line, never a span attribute.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AccessTokenResult {
   readonly accessToken: Redacted.Redacted
@@ -432,7 +432,7 @@ export interface AccessTokenResult {
  * both cases this carries the refresh token the account now holds.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RefreshedTokens extends AccessTokenResult {
   readonly refreshToken: Redacted.Redacted
@@ -450,7 +450,7 @@ export interface RefreshedTokens extends AccessTokenResult {
  * cookie exactly when `token` is not `null`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface CallbackResult {
   readonly providerId: string
@@ -482,7 +482,7 @@ export interface CallbackResult {
  * Everything {@link OAuthFlow.callback} can fail with, apart from persistence.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type CallbackError =
   | OAuthStateMismatch
@@ -496,7 +496,7 @@ export type CallbackError =
  * browser.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type CallbackOutcome =
   | ({ readonly _tag: "Success" } & CallbackResult)
@@ -538,7 +538,7 @@ const fixedErrorCodes: { readonly [Tag in Exclude<CallbackError["_tag"], "OAuthP
  * only helps somebody probing the callback.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const errorCode = (error: CallbackError): string =>
   error._tag === "OAuthProviderError" ? String.snakeCase(error.reason) : fixedErrorCodes[error._tag]
@@ -551,7 +551,7 @@ export const errorCode = (error: CallbackError): string =>
  * The {@link OAuthFlow} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthFlowService {
   /**
@@ -645,7 +645,7 @@ export interface OAuthFlowService {
  * and on a provider that rotates refresh tokens every refresh is a write.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const accessTokenSkew: Duration.Duration = Duration.seconds(5)
 
@@ -653,7 +653,7 @@ export const accessTokenSkew: Duration.Duration = Duration.seconds(5)
  * The OAuth runner.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class OAuthFlow extends Context.Service<OAuthFlow, OAuthFlowService>()("effect-auth/oauth/Flow/OAuthFlow") {}
 
@@ -665,7 +665,7 @@ export class OAuthFlow extends Context.Service<OAuthFlow, OAuthFlowService>()("e
  * Builds the {@link OAuthFlow} implementation.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: Effect.Effect<
   OAuthFlowService,
@@ -1200,7 +1200,7 @@ export const make: Effect.Effect<
  * module-level variable between two `Auth` stacks in one process.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<
   OAuthFlow,

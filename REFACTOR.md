@@ -8,7 +8,8 @@ semantics (update call sites, not assertions, except where the API change forces
 
 1. **No type gymnastics.** No value-dependent layer types, no conditional types in layer
    signatures, no `Layer.Layer<any, any, any>`, no `as` casts — except the two documented
-   boundary casts (see §5). Enforced by the grep gate in §6.
+   boundary casts (see §5). Enforced by `typescript/no-unsafe-type-assertion` and the suppression
+   review in §6.
 2. **Idiomatic Effect layer composition.** Optionality via composition (consumer adds a layer),
    never via an options field that mutates a conditional type. Linear `pipe` chains, no named
    intermediate layer tiers.
@@ -79,13 +80,13 @@ For each `Context.Service`, a named, exported, JSDoc'd interface holds the defin
 is only the key:
 
 ```ts
-/** The Sessions service definition. @category models @since 1.0.0 */
+/** The Sessions service definition. @category models @since 0.1.0 */
 export interface SessionsService {
   readonly create: (input: CreateSession) => Effect.Effect<CreatedSession, PersistenceError>
   // ...
 }
 
-/** @category services @since 1.0.0 */
+/** @category services @since 0.1.0 */
 export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/domain/Sessions") {}
 ```
 
@@ -175,27 +176,15 @@ suppression in the file.
 
 ## 6. Definition of done (gates — the final reviewer runs all of these)
 
-1. `pnpm build && pnpm check && pnpm test` green (count must not go down; 357 at the end of the
-   tightening refactor, 643 at the end of the v2 wave, 743 after the lint calibration).
-   `pnpm check` at zero lines of output — a warn-level finding is a finding.
-2. Grep gate over `src/` (tests excluded):
-   `grep -rnE "as any|as unknown|: any\b|<any[,>]| as Layer| as Effect|@ts-expect-error|@ts-ignore" src/`
-   returns EXACTLY the five §5 casts and nothing else — no `any` in a type position anywhere in
-   `src/`, forced or otherwise. (If effect's own APIs ever force one, it needs a one-line comment
-   naming the forcing API and the final reviewer has to agree it is forced. None does today.)
-   Since the lint calibration this is belt-and-braces: `typescript/no-unsafe-type-assertion` at
-   error is what actually holds the line, and the reviewable artefact is the suppression list —
-   `grep -rn "oxlint-disable" src test`, which must return the five §5 casts, the two
-   `effecttsgo/global-date` epoch constants in `src/http/Cookies.ts`, the one
-   `effecttsgo/catch-conditional-refail-to-catch-if` in `src/http/Handlers.ts`, and the one
-   `typescript/no-unsafe-type-assertion` in `test/http-api/Middleware.test.ts`. Every suppression is
-   a single `oxlint-disable-next-line` with its reason — inline after `--`, or, where the reason
-   needs a paragraph, in the comment block directly above it. No blanket or file-level disables.
-3. No conditional types in any exported layer/function signature, and exactly one `ReturnType` in an
-   exported signature (`AuthApiGroupOf`, sanctioned in SPEC.md §8.4). `grep -rn ReturnType src/`
-   returns a second hit, `Effect.Services<ReturnType<typeof respond>>` in
-   `src/testing/TestHttpClient.ts`: a local, non-exported type that predates this wave, and not a
-   signature violation. The gate is over exported signatures, not over the grep.
+1. `pnpm check && pnpm test` green. `pnpm check` at zero lines of output — a warn-level finding is
+   a finding.
+2. The suppression list is reviewed: `grep -rn "oxlint-disable" src test`. The five §5 casts are
+   the only `as unknown as` in `src/` (`typescript/no-unsafe-type-assertion` at error holds that
+   line); every other entry is a single `oxlint-disable-next-line` with its reason — inline after
+   `--`, or, where the reason needs a paragraph, in the comment block directly above it. No blanket
+   or file-level disables, and no new cast without a §5 entry.
+3. No conditional types and no value-dependent layer types in any exported signature. The one
+   sanctioned `ReturnType` in an exported position is `AuthApiGroupOf` (SPEC.md §8.4).
 4. Every `Context.Service` in src/ follows §4.
 5. README quickstart, example app (`examples/basic`), `testing/TestLayer.ts`, and the client all
    compile against the new API; README shows both `Auth.layer` and `Auth.layerWithOAuth`.
@@ -203,7 +192,6 @@ suppression in the file.
    values, the two entry points, the narrowed Services, the interface-split convention. The v2 wave
    adds §§8–12 for the typed-view kernel, the plugin SDK, magic link, core parity and the cookie
    cache.
-7. All conventions from SPEC.md §"Coding conventions" still hold (it.effect, assert, JSDoc
-   categories, etc.).
+7. The conventions in `AGENTS.md` still hold.
 8. The generated OpenAPI document (`test/http-api/__snapshots__/openapi.json`) mentions no
    `tokenHash`, `passwordHash` or `valueHash`, in any casing.

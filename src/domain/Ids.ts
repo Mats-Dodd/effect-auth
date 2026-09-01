@@ -21,7 +21,7 @@
  * from this module. Reach for it only when an id must exist *before* the row
  * does — correlating a log line with a write, or seeding fixtures.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Crypto, Effect } from "effect"
 import { AccountId, SessionId, UserId } from "./Schema.js"
@@ -38,7 +38,7 @@ import { AccountId, SessionId, UserId } from "./Schema.js"
  * badly asked.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const uuidV7: Effect.Effect<string, never, Crypto.Crypto> = Effect.orDie(
   Crypto.Crypto.use((crypto) => crypto.randomUUIDv7)
@@ -53,7 +53,7 @@ export const uuidV7: Effect.Effect<string, never, Crypto.Crypto> = Effect.orDie(
  * flow claims, without depending on a separate timestamp column.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const timestampOf = (uuid: string): number => Number.parseInt(uuid.slice(0, 8) + uuid.slice(9, 13), 16)
 
@@ -64,7 +64,7 @@ const uuidV7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
  * 9562 variant.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isUuidV7 = (value: string): boolean => uuidV7Pattern.test(value)
 
@@ -72,7 +72,7 @@ export const isUuidV7 = (value: string): boolean => uuidV7Pattern.test(value)
  * A fresh {@link UserId}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userId: Effect.Effect<UserId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => UserId.make(id))
 
@@ -80,7 +80,7 @@ export const userId: Effect.Effect<UserId, never, Crypto.Crypto> = Effect.map(uu
  * A fresh {@link SessionId}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const sessionId: Effect.Effect<SessionId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => SessionId.make(id))
 
@@ -88,6 +88,6 @@ export const sessionId: Effect.Effect<SessionId, never, Crypto.Crypto> = Effect.
  * A fresh {@link AccountId}.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const accountId: Effect.Effect<AccountId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => AccountId.make(id))

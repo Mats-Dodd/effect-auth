@@ -29,7 +29,7 @@
  * application registration asks for it, so it defaults to `false` and the
  * `verified_primary_email` list is consulted as the only other evidence.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
@@ -48,7 +48,7 @@ import { lenient, Truthy } from "../internal/claims.js"
  * The id Microsoft is registered and addressed under.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const id = "microsoft"
 
@@ -56,7 +56,7 @@ export const id = "microsoft"
  * The authority a deployment that says nothing else talks to.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultAuthority = "https://login.microsoftonline.com"
 
@@ -64,7 +64,7 @@ export const defaultAuthority = "https://login.microsoftonline.com"
  * The tenant a deployment that says nothing else serves: every kind of account.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultTenantId = "common"
 
@@ -77,7 +77,7 @@ export const defaultTenantId = "common"
  * account *class* apart: `organizations` refuses it, `consumers` requires it.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const consumerTenantId = "9188040d-6c67-4c5b-b112-36a304b66dad"
 
@@ -86,7 +86,7 @@ export const consumerTenantId = "9188040d-6c67-4c5b-b112-36a304b66dad"
  * issuer.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const multiTenantIds: ReadonlyArray<string> = ["common", "organizations", "consumers"]
 
@@ -97,7 +97,7 @@ export const multiTenantIds: ReadonlyArray<string> = ["common", "organizations",
  * `POST /auth/get-access-token` has nothing to refresh.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const defaultScopes: ReadonlyArray<string> = ["openid", "profile", "email", "User.Read", "offline_access"]
 
@@ -105,7 +105,7 @@ export const defaultScopes: ReadonlyArray<string> = ["openid", "profile", "email
  * The endpoints one authority-and-tenant pair serves.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Endpoints {
   readonly authority: string
@@ -126,7 +126,7 @@ export interface Endpoints {
  * expected issuer `https://host//<tid>/v2.0` and refuse every token.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const endpointsOf = (options?: {
   readonly authority?: string | undefined
@@ -148,7 +148,7 @@ export const endpointsOf = (options?: {
  * The issuer a token from tenant `tid` must claim.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const issuerOfTenant = (authority: string, tenantId: string): string => `${authority}/${tenantId}/v2.0`
 
@@ -198,7 +198,7 @@ const readTenant = Schema.decodeUnknownOption(TenantClaim)
  * absent claim is not a statement about that.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const emailVerifiedOf = (claims: {
   readonly email?: string | undefined
@@ -222,7 +222,7 @@ export const emailVerifiedOf = (claims: {
  * What Microsoft needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface Options {
   readonly clientId: string
@@ -308,7 +308,7 @@ export interface Options {
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
   const endpoints = endpointsOf(options)
@@ -397,7 +397,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  * What Microsoft needs, per field, as `Config` values.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
@@ -432,7 +432,7 @@ interface Settings {
  * public PKCE client has none — rather than a missing setting.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(

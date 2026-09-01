@@ -9,7 +9,7 @@
  * pulls in schemas and the group declaration, never a store, a mailer or a node
  * builtin. It is what `MagicLinkClient` and the server implementation share.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
@@ -38,7 +38,7 @@ import { InputName, InputToken, InputUrl, Ok, Redirect, Secret } from "../http/A
  * oracle.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class SignUpDisabled extends Schema.TaggedError<SignUpDisabled>("effect-auth/magic-link/SignUpDisabled")(
   "SignUpDisabled",
@@ -64,7 +64,7 @@ export class SignUpDisabled extends Schema.TaggedError<SignUpDisabled>("effect-a
  * back to the caller.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const MagicLinkSignInPayload = Schema.Struct({
   email: Email,
@@ -87,7 +87,7 @@ export const MagicLinkSignInPayload = Schema.Struct({
  * The type of a {@link MagicLinkSignInPayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type MagicLinkSignInPayload = typeof MagicLinkSignInPayload.Type
 
@@ -101,7 +101,7 @@ export type MagicLinkSignInPayload = typeof MagicLinkSignInPayload.Type
  * handler wraps it with `Redacted.make` as its first act.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const MagicLinkVerifyQuery = Schema.Struct({
   token: InputToken
@@ -111,7 +111,7 @@ export const MagicLinkVerifyQuery = Schema.Struct({
  * The type of a {@link MagicLinkVerifyQuery}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type MagicLinkVerifyQuery = typeof MagicLinkVerifyQuery.Type
 
@@ -119,7 +119,7 @@ export type MagicLinkVerifyQuery = typeof MagicLinkVerifyQuery.Type
  * The body of `POST /auth/magic-link/exchange`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const MagicLinkExchangePayload = Schema.Struct({
   token: Secret
@@ -129,7 +129,7 @@ export const MagicLinkExchangePayload = Schema.Struct({
  * The type of a {@link MagicLinkExchangePayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type MagicLinkExchangePayload = typeof MagicLinkExchangePayload.Type
 
@@ -149,7 +149,7 @@ export type MagicLinkExchangePayload = typeof MagicLinkExchangePayload.Type
  * deployment concern, and `AuthConfig.basePath` is how the library is told.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const magicLinkPrefix = "/auth/magic-link"
 
@@ -167,7 +167,7 @@ export const magicLinkPrefix = "/auth/magic-link"
  * request endpoint has to be reachable by somebody who cannot sign in at all.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class MagicLinkApiGroup extends HttpApiGroup.make("magicLink")
   .add(
@@ -233,6 +233,6 @@ export class MagicLinkApiGroup extends HttpApiGroup.make("magicLink")
  * ```
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const MagicLinkApi = HttpApi.make("effect-auth-magic-link").add(MagicLinkApiGroup)

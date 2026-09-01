@@ -16,7 +16,7 @@
  * provider's own stable subject — and an e-mail address alone is never enough
  * on its own.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Layer, Option } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -39,7 +39,7 @@ import { AccountStore, isUniqueViolation, UserStore, WithAuthTransaction } from 
  * What a provider told us about the person who just authorized.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthIdentity {
   /**
@@ -89,7 +89,7 @@ export interface OAuthIdentity {
  * The outcome of a link.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface LinkResult {
   readonly user: User
@@ -150,7 +150,7 @@ const userInfoOf = (identity: OAuthIdentity): OAuthUserInfo => ({
  * must sign in with the method they already have and link deliberately.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const canLinkImplicitly = (options: {
   readonly providerId: string
@@ -168,7 +168,7 @@ export const canLinkImplicitly = (options: {
  * The {@link Accounts} service definition.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface AccountsService {
   /**
@@ -245,7 +245,7 @@ export interface AccountsService {
  * The account-linking service.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Accounts extends Context.Service<Accounts, AccountsService>()("effect-auth/domain/Accounts") {}
 
@@ -257,7 +257,7 @@ export class Accounts extends Context.Service<Accounts, AccountsService>()("effe
  * Builds the {@link Accounts} implementation.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make: Effect.Effect<
   AccountsService,
@@ -549,7 +549,7 @@ export const make: Effect.Effect<
  * Provides {@link Accounts}.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<
   Accounts,

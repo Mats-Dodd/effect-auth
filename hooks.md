@@ -198,6 +198,6 @@ Small wave, same discipline as before: 2 Opus builders (1: Hooks.ts + provision 
 domain call sites + domain tests; 2: HTTP/error surface + clients + HTTP/fields tests + SPEC/
 README) sequenced 1→2, then 1 Fable review (security lens: timing defences, enumeration
 posture unchanged, transaction atomicity, hook-code leakage) + fix pass. Gates as always:
-`pnpm check/build/test` green, count only grows from 657, cast gate unchanged (no new casts —
+`pnpm check/build/test` green, cast gate unchanged (no new casts —
 `hooksOf` reuses the typed-view pattern; if it needs a cast, it joins REFACTOR §5 with the
 same justification as `currentUserOf`), two shuffled seeds.

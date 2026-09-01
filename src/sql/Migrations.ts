@@ -27,7 +27,7 @@
  * The `ON DELETE CASCADE` foreign keys are only enforced by SQLite when the
  * connection has `PRAGMA foreign_keys = ON`.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Effect, Layer, Option, Predicate, SchemaAST } from "effect"
 import type { Schema } from "effect"
@@ -304,7 +304,7 @@ const columnKindFor = (field: string, ast: SchemaAST.AST): Effect.Effect<ColumnK
  * running it outside the migrator on every boot.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const forUserFields = <F extends UserFields>(
   model: UserModel<F>,
@@ -352,7 +352,7 @@ export const forUserFields = <F extends UserFields>(
  * effect that runs it, and the layer that runs it while it is built.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface MigrationSet {
   /** The migrations themselves, keyed `<id>_<name>`. */
@@ -407,7 +407,7 @@ export interface MigrationSet {
  * over the same `SqlClient` with no ordering between them run concurrently.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const make = (options: {
   readonly table: string
@@ -442,7 +442,7 @@ export const make = (options: {
  * or skips migrations. Number your own migrations above `0004`.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>> = {
   "0001_create_users": createUsers,
@@ -456,7 +456,7 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
  * The name of the table this library records its own migrations in.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const table = "effect_auth_migrations"
 
@@ -467,7 +467,7 @@ const core = make({ table, migrations })
  * The `Migrator` loader for {@link migrations}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const loader: Migrator.Loader = core.loader
 
@@ -476,7 +476,7 @@ export const loader: Migrator.Loader = core.loader
  * the migrations that were applied.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const run: Effect.Effect<
   ReadonlyArray<readonly [id: number, name: string]>,
@@ -501,7 +501,7 @@ export const run: Effect.Effect<
  * they cannot collide with the application's own migration ids.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layer: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> = core.layer
 
@@ -523,7 +523,7 @@ export const layer: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlErr
  * bookkeeping that comes with that.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerFor = <F extends UserFields>(
   model: UserModel<F>

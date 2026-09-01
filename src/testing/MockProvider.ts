@@ -10,7 +10,7 @@
  * from a signed `id_token` — and {@link IdTokenSigner} mints those tokens
  * against a key pair generated once per layer rather than once per test.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, Effect, Layer, Redacted } from "effect"
 import { HttpClient } from "effect/unstable/http"
@@ -30,7 +30,7 @@ import { layerFetch } from "./TestLayer.js"
  * One request the stubbed provider saw, decoded far enough to assert on.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface RecordedRequest {
   readonly url: string
@@ -47,7 +47,7 @@ export interface RecordedRequest {
  * Reads a form-encoded request body as a lookup.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const formOf = (request: RecordedRequest): URLSearchParams => new URLSearchParams(request.body)
 
@@ -78,7 +78,7 @@ const headersOf = (input: unknown): Readonly<Record<string, string>> => {
  * A handler for one endpoint of the stubbed provider.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type RouteHandler = (request: RecordedRequest) => Response | Promise<Response>
 
@@ -86,7 +86,7 @@ export type RouteHandler = (request: RecordedRequest) => Response | Promise<Resp
  * The provider's HTTP surface, stubbed.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface MockServer {
   /**
@@ -133,7 +133,7 @@ export interface MockServer {
  * block that mutates routes per test must run sequentially.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const mockServer = (): MockServer => {
   const routes: Record<string, RouteHandler> = Object.create(null)
@@ -172,7 +172,7 @@ export const mockServer = (): MockServer => {
  * A JSON response, as a provider would send one.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const json = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -181,7 +181,7 @@ export const json = (body: unknown, status = 200): Response =>
  * A redirect, which every OAuth fetch in this library must refuse to follow.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const redirect = (location: string, status = 302): Response =>
   new Response(null, { status, headers: { location } })
@@ -194,7 +194,7 @@ export const redirect = (location: string, status = 302): Response =>
  * The origin the stubbed provider serves from.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const providerOrigin = "https://provider.test"
 
@@ -202,7 +202,7 @@ export const providerOrigin = "https://provider.test"
  * The stubbed provider's token endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokenUrl = `${providerOrigin}/token`
 
@@ -210,7 +210,7 @@ export const tokenUrl = `${providerOrigin}/token`
  * The stubbed provider's user-info endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userInfoUrl = `${providerOrigin}/userinfo`
 
@@ -218,7 +218,7 @@ export const userInfoUrl = `${providerOrigin}/userinfo`
  * The stubbed provider's authorization endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const authorizeUrl = `${providerOrigin}/authorize`
 
@@ -226,7 +226,7 @@ export const authorizeUrl = `${providerOrigin}/authorize`
  * Where the stubbed provider publishes its signing keys.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const jwksUrl = `${providerOrigin}/jwks`
 
@@ -234,7 +234,7 @@ export const jwksUrl = `${providerOrigin}/jwks`
  * Where the stubbed provider publishes its OIDC discovery document.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const discoveryUrl = `${providerOrigin}/.well-known/openid-configuration`
 
@@ -257,7 +257,7 @@ export const discoveryUrl = `${providerOrigin}/.well-known/openid-configuration`
  * ```
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const discoveryDocument = (overrides?: Readonly<Record<string, unknown>>): Record<string, unknown> => {
   const document: Record<string, unknown> = {
@@ -287,7 +287,7 @@ export const discoveryDocument = (overrides?: Readonly<Record<string, unknown>>)
  * is the whole of what that endpoint does.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const queryOf = (location: string): Record<string, string> =>
   Object.fromEntries(new URL(location).searchParams.entries())
@@ -309,7 +309,7 @@ const readString = (record: Readonly<Record<string, unknown>>, key: string): str
  * A plain OAuth2 provider whose identity comes from a user-info endpoint.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthProviderConfig => ({
   id: "mock",
@@ -362,7 +362,7 @@ export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthPro
  * `oidc` block is what makes the flow demand an `id_token`.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const oidcProvider = (
   keys: KeyResolver | NonNullable<OAuthProviderConfig["oidc"]>["keys"],
@@ -395,7 +395,7 @@ export const oidcProvider = (
  * A token set, for exercising a provider's `userInfo` on its own.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const tokensOf = (accessToken: string, overrides?: Partial<OAuthTokens>): OAuthTokens => ({
   accessToken: Redacted.make(accessToken),
@@ -413,7 +413,7 @@ export const tokensOf = (accessToken: string, overrides?: Partial<OAuthTokens>):
  * The query parameters of an authorization URL.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const paramsOf = (url: string): URLSearchParams => new URL(url).searchParams
 
@@ -425,7 +425,7 @@ export const paramsOf = (url: string): URLSearchParams => new URL(url).searchPar
  * How an `id_token` may depart from the defaults.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface SignOptions {
   readonly issuer?: string | undefined
@@ -443,7 +443,7 @@ export interface SignOptions {
  * verification runs with no network. See {@link IdTokenSigner}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface IdTokenSignerService {
   /**
@@ -471,7 +471,7 @@ export interface IdTokenSignerService {
  * block — that is the whole reason it is a service rather than a helper.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class IdTokenSigner extends Context.Service<IdTokenSigner, IdTokenSignerService>()(
   "effect-auth/testing/MockProvider/IdTokenSigner"
@@ -480,7 +480,7 @@ export class IdTokenSigner extends Context.Service<IdTokenSigner, IdTokenSignerS
    * A freshly generated key pair, behind the {@link IdTokenSigner} key.
    *
    * @category layers
-   * @since 1.0.0
+   * @since 0.1.0
    */
   static readonly layer: Layer.Layer<IdTokenSigner> = Layer.effect(IdTokenSigner, makeIdTokenSigner())
 }
@@ -489,7 +489,7 @@ export class IdTokenSigner extends Context.Service<IdTokenSigner, IdTokenSignerS
  * Generates a key pair and the local JWKS that admits it.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
   return Effect.promise(async () => {
@@ -520,7 +520,7 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
  * redirect-refusing client, and a test of one should too.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const safeHttpLayer = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClient.HttpClient> =>
   Layer.effect(HttpClient.HttpClient, HttpClient.HttpClient.useSync(refuseRedirects)).pipe(

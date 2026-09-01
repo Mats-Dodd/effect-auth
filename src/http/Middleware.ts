@@ -8,7 +8,7 @@
  * what keeps the declaration importable from a browser client without dragging
  * the session store along with it.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Context, DateTime, Duration, Effect } from "effect"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
@@ -36,7 +36,7 @@ import { bearerSecurity, insecureSessionCookieSecurity, secureSessionCookieSecur
  * the class here is nothing but the key.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class CurrentSession extends Context.Service<CurrentSession, Session>()(
   "effect-auth/http/Middleware/CurrentSession"
@@ -55,7 +55,7 @@ export class CurrentSession extends Context.Service<CurrentSession, Session>()(
  * than an inline one, so there is nothing to extract.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class CurrentUser extends Context.Service<CurrentUser, User>()("effect-auth/http/Middleware/CurrentUser") {}
 
@@ -76,7 +76,7 @@ export class CurrentUser extends Context.Service<CurrentUser, User>()("effect-au
  * ```
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const currentUserOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<CurrentUser, UserOf<F>> =>
   Context.Service<CurrentUser, UserOf<F>>("effect-auth/http/Middleware/CurrentUser")
@@ -134,7 +134,7 @@ export const currentUserOf = <F extends UserFields>(_model: UserModel<F>): Conte
  * @effect-expect-leaking HttpServerRequest | ParsedSearchParams | RouteContext
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Authenticated extends HttpApiMiddleware.Service<
   Authenticated,
@@ -194,7 +194,7 @@ export class Authenticated extends HttpApiMiddleware.Service<
  * remember this line.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const AuthoritativeSession: Context.Reference<boolean> = Context.Reference<boolean>(
   "effect-auth/AuthoritativeSession",
@@ -233,7 +233,7 @@ export const AuthoritativeSession: Context.Reference<boolean> = Context.Referenc
  * ```
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const requireFresh: Effect.Effect<void, SessionNotFresh, CurrentSession | AuthConfig> = Effect.gen(function* () {
   const session = yield* CurrentSession

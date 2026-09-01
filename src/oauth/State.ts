@@ -36,7 +36,7 @@
  * consumption, so a state minted for one provider cannot be redeemed at
  * another's callback.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { DateTime, Effect, Option, Redacted, Schema } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -61,7 +61,7 @@ import { insertRow } from "../internal/effects.js"
  * so never appears in a JSON projection of the model.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const StatePayload = Schema.Struct({
   /** The provider this request was started for. Re-checked on the callback. */
@@ -90,7 +90,7 @@ export const StatePayload = Schema.Struct({
  * The type of a {@link StatePayload}.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type StatePayload = typeof StatePayload.Type
 
@@ -104,7 +104,7 @@ const StateJson = Schema.fromJsonString(StatePayload)
  * What {@link issue} needs to know.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface IssueOptions {
   readonly providerId: string
@@ -123,7 +123,7 @@ export interface IssueOptions {
  * A minted, stored authorization request.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface IssuedState {
   /** The opaque value that travels as `state`. Only its digest is stored. */
@@ -143,7 +143,7 @@ export interface IssuedState {
  * fallback: a downgrade to `plain` makes PKCE decorative.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const codeChallengeMethod = "S256"
 
@@ -151,7 +151,7 @@ export const codeChallengeMethod = "S256"
  * Mints a state nonce and a PKCE verifier and stores the pending request.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const issue: (
   options: IssueOptions
@@ -212,7 +212,7 @@ export const issue: (
  * which of their guesses was closest.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const consume: (
   providerId: string,

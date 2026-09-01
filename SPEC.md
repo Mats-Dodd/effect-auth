@@ -63,42 +63,7 @@ TypeScript config: strict, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`,
 (NodeNext resolution over `.ts` sources compiled by tsc; follow whatever the scaffold
 establishes and keep it consistent). Build = `tsc -b`. Test = vitest with `@effect/vitest`.
 
-## Coding conventions (non-negotiable, from effect/.patterns)
-
-- Services are `class X extends Context.Service<X, Shape>()("effect-auth/<module path>/X") {}`.
-  Import from `effect`. Keys are module-qualified and enforced by the `deterministic-keys`
-  rule — see Amendment 17 for the exact formula. Check the v4 checkout for the exact
-  `Context.Service` signature before writing.
-- No try/catch inside `Effect.gen` — use `Effect.result` / typed errors.
-- `return yield*` for terminal effects; prefer `Effect.fnUntraced(function* (...) {...})` over
-  a function whose body is only `Effect.gen`.
-- Errors are `Schema.TaggedError` classes (check v4 name — may be `Schema.ErrorClass`/`Data.TaggedError`;
-  match what `HttpApiError.ts` and `RateLimiter.ts` do so errors drop into endpoint error unions).
-- Secrets are `Redacted<string>` end to end; unwrap only at the last moment.
-- Attacker-influenced record keys: owned dicts via `Object.create(null)`; check external records
-  only with `Object.hasOwn`; never `in`, never `for...in`, spread (`{...x}`) not `Object.assign({}, x)`.
-- Tests: `@effect/vitest`, `it.effect` (already scoped — never wrap in `Effect.scoped`), `assert` not
-  `expect`, `TestClock` for time, never `Effect.runSync` in tests.
-- JSDoc on public exports with `@since 1.0.0` and one `@category` (constructors|models|services|layers|errors|combinators|guards).
-
-## Module map & ownership
-
-```
-src/
-  crypto/       PasswordHasher.ts, Hmac.ts, Token.ts
-  domain/       Schema.ts (Models), Errors.ts, Stores.ts (4 store services),
-                Sessions.ts, Accounts.ts, Passwords.ts, Events.ts, Ids.ts
-  sql/          SqlStores.ts (one layer implementing all 4 stores), Migrations.ts
-  http/         AuthApi.ts (group + endpoint declarations), Middleware.ts (Authenticated, requireFresh),
-                Handlers.ts (AuthHandlers.layer factory), Cookies.ts (config service), RateLimits.ts,
-                OriginCheck.ts
-  oauth/        Provider.ts (interface), Flow.ts (generic runner), State.ts,
-                providers/Github.ts, providers/Google.ts, IdToken.ts (jose)
-  config/       AuthConfig.ts, Auth.ts (the batteries `Auth.layer` / `Auth.layerConfig`)
-  client/       AuthClient.ts
-  testing/      TestLayer.ts (Auth.layerTest on pglite)
-  index.ts      (barrel)
-```
+Coding conventions and the module map live in `AGENTS.md`.
 
 ## Crypto (src/crypto)
 
@@ -681,56 +646,10 @@ type-checked once rather than once per deployment; the extras of a payload are r
 `model.extrasOf` and the extras of a response are produced by `model.toPublic`, so the wire is
 unaffected and the module's cast count is unchanged.
 
-The type-checking cost is real and is recorded rather than hidden. Whole-repo
-`npx tsc --noEmit --extendedDiagnostics -p tsconfig.json` (`src`, `test`, `examples` and
-`vitest.config.ts`), and the emitted declaration sizes both waves agreed to watch. Measured on
-2026-09-01 on the tree Amendment 18 lands as (the first commit after `ddf9904`), three consecutive
-runs agreeing to the digit on the counters. `ddf9904` itself, the last tree before the 69 `dual()`
-overloads were removed, read 293,113 types / 1,466,140 instantiations / `AuthClient.d.ts` 21,175 B
-under the same binary — the delta below it is what those overloads cost:
-
-| Measure | v1 (`6b04380`, TS 5) | tsgo 7.0.2 baseline | Gate | |
-|---|---|---|---|---|
-| Files | – | 680 | – | |
-| Types | 66,873 | 285,065 | — new baseline | |
-| Instantiations | 309,786 | 1,429,097 | — new baseline | |
-| Check time | 0.85 s | 0.38 s | ≤ 2.5 s | ✓ |
-| Total time | – | 0.57 s | – | |
-| Memory | 402 MB | 455 MB | – | |
-| `dist/http/AuthApi.d.ts` | 21,627 B | 52,349 B | ≤ 3× v1 (2.42×) | ✓ |
-| `dist/client/AuthClient.d.ts` | 16,673 B | 21,053 B | ≤ 3× v1 (1.26×) | ✓ |
-
-**The instantiation gate is retired, and the "17 % over / breached gate" narrative that stood here
-is withdrawn.** It compared numbers that were never comparable: the 128,273 types / 723,591
-instantiations and the ≤ 620,000 ceiling were taken with TypeScript 5's checker, and the toolchain
-is now the patched `@effect/tsgo` build of tsgo (`tsc --version` → `7.0.2+effect-tsgo.0.38.0`).
-tsgo counts types and instantiations on a different basis entirely, and the tree has also gained
-four waves of code (§§9–13) since that measurement, so the two readings cannot be differenced: the
-2.22× types and 1.97× instantiations between them are a compiler change and a feature delta added
-together, with no way to separate the two from these numbers. A ceiling that cannot be evaluated is
-not a gate. Neither of the two levers reserved against the supposed overrun — more class-wrapping of
-default groups, hand-written interfaces in place of the `ReturnType` in §8.4 — is therefore called
-for; if one is ever wanted it will be on evidence taken with one compiler.
-
-What remains as a live gate is what is measured the same way in both toolchains:
-
-- **Check time ≤ 2.5 s** for the whole repo. It is 0.38 s, which is not close.
-- **Each watched `.d.ts` within 3× its v1 size.** Both are, at 2.42× and 1.26×. These are ratios
-  against a fixed v1 byte count, so they survive a compiler change: declaration emit is the shape
-  of the API, not an accounting of the checker's internals.
-
-The Types and Instantiations rows are recorded as **the new tsgo baseline**, not as budgets. A
-future wave compares against 285,065 / 1,429,097 and reports the delta; a large jump is a signal to
-look, not a fail condition, until someone re-derives a ceiling from a tsgo measurement.
-
-Nothing enforces this table. `.github/workflows/ci.yml` runs `pnpm check`, `pnpm format:check` and
-`pnpm test` and nothing else; no script re-takes these numbers and no step fails on them. It is
-re-taken by hand, by whoever finishes a wave that touches the parameterized surface:
-
-```sh
-npx tsc --noEmit --extendedDiagnostics -p tsconfig.json
-pnpm build && wc -c dist/http/AuthApi.d.ts dist/client/AuthClient.d.ts
-```
+Type-checking cost is not budgeted. Whole-repo check time under tsgo is well under a second; if it
+ever becomes noticeable, the one `ReturnType` in §8.4 is where to look. (An earlier instantiation
+budget stood here; it was taken with TypeScript 5's counters, which tsgo does not share, and was
+retired in Amendment 18.)
 
 #### 8.6 Backward compatibility, and `Auth.define`
 

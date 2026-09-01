@@ -20,7 +20,7 @@
  *   attached to a local account that already holds the same address. A provider
  *   that cannot prove it verified an address must report `false`.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import type { Cause, DateTime } from "effect"
 import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
@@ -46,7 +46,7 @@ import { jsonWithin } from "./internal/http.js"
  * once, when the account row is written.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthTokens {
   /** The access token, for a `userInfo` call and for storage on the account. */
@@ -81,7 +81,7 @@ export interface OAuthTokens {
  * The identity a provider reports for the person who just authorized.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthUserInfo {
   /**
@@ -126,7 +126,7 @@ export interface OAuthUserInfo {
  * request that produced the tokens.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface UserInfoOptions {
   /**
@@ -156,7 +156,7 @@ export interface UserInfoOptions {
  * Everything the generic OAuth runner needs to talk to one provider.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthProviderConfig {
   /**
@@ -375,7 +375,7 @@ export interface OAuthProviderConfig {
  * {@link OAuthProviderConfig.authorizationParams} may not overwrite.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const reservedAuthorizationParams: ReadonlySet<string> = new Set([
   "response_type",
@@ -393,7 +393,7 @@ export const reservedAuthorizationParams: ReadonlySet<string> = new Set([
  * {@link OAuthProviderConfig.tokenRefresh}'s `params` may not overwrite.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const reservedTokenParams: ReadonlySet<string> = new Set([
   "grant_type",
@@ -417,7 +417,7 @@ export const reservedTokenParams: ReadonlySet<string> = new Set([
  * across a deployment's lifetime is exactly what it must not do.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const resolveClientSecret = (
   provider: OAuthProviderConfig
@@ -438,7 +438,7 @@ export const resolveClientSecret = (
  * the whole reason the OIDC settings live in one block.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isOidc = (
   provider: OAuthProviderConfig
@@ -450,7 +450,7 @@ export const isOidc = (
  * or the synthetic `local:oauth:<id>` for a plain OAuth2 provider.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const providerIssuer = (provider: OAuthProviderConfig): string =>
   provider.oidc?.issuer ?? oauthIssuer(provider.id)
@@ -464,7 +464,7 @@ export const providerIssuer = (provider: OAuthProviderConfig): string =>
  * serves, addressed by id.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface OAuthProvidersService {
   /**
@@ -485,7 +485,7 @@ export interface OAuthProvidersService {
  * The providers this instance serves, addressed by id.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvidersService>()(
   "effect-auth/oauth/Provider/OAuthProviders"
@@ -501,7 +501,7 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
    * legitimate registry whose every lookup answers `UnknownProvider`.
    *
    * @category layers
-   * @since 1.0.0
+   * @since 0.1.0
    */
   static readonly layer = (providers: ReadonlyArray<OAuthProviderConfig>): Layer.Layer<OAuthProviders> =>
     Layer.succeed(OAuthProviders)(makeRegistry(providers))
@@ -524,7 +524,7 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
  * stopped working.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthProvidersService => {
   const byId: Record<string, OAuthProviderConfig> = Object.create(null)
@@ -554,7 +554,7 @@ export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthPro
  * — the constructor a provider module uses for its own failures.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const providerError = (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError =>
   ProviderError.make({ providerId, reason })
@@ -563,7 +563,7 @@ export const providerError = (providerId: string, reason: OAuthProviderError["re
  * Unwraps a `Redacted` credential for the one call that has to send it.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const revealToken = (token: Redacted.Redacted | null): string | null =>
   token === null ? null : Redacted.value(token)
@@ -576,7 +576,7 @@ export const revealToken = (token: Redacted.Redacted | null): string | null =>
  * How long any single request to a provider is given.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const providerRequestTimeout: Duration.Duration = Duration.seconds(10)
 
@@ -602,7 +602,7 @@ export const providerRequestTimeout: Duration.Duration = Duration.seconds(10)
  * the bound lives where it cannot be opted out of.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const userInfoDeadline: Duration.Duration = Duration.seconds(30)
 
@@ -629,7 +629,7 @@ export const userInfoDeadline: Duration.Duration = Duration.seconds(30)
  * that race is not observable.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const exchangeDeadline: Duration.Duration = Duration.seconds(30)
 
@@ -637,7 +637,7 @@ export const exchangeDeadline: Duration.Duration = Duration.seconds(30)
  * How many times a transport-level failure is tried again.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const providerRetryCount = 2
 
@@ -670,7 +670,7 @@ export const providerRetryCount = 2
  * failure under `TestClock` must advance it.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const resilient = <A, R>(
   request: Effect.Effect<A, HttpClientError.HttpClientError, R>
@@ -692,7 +692,7 @@ export const resilient = <A, R>(
  * What a provider's user-info endpoint answered.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface JsonResponse {
   readonly status: number
@@ -724,7 +724,7 @@ export interface JsonResponse {
  * has to decide about, not a transport error.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const fetchJson = (options: {
   readonly providerId: string

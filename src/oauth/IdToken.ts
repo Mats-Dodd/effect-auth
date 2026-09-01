@@ -19,7 +19,7 @@
  * unexpected algorithm — is `OAuthProviderError({ reason: "IdTokenInvalid" })`.
  * There is deliberately no path that reports "could not check" as success.
  *
- * @since 1.0.0
+ * @since 0.1.0
  */
 import { Cache, Context, DateTime, Duration, Effect, Exit, Layer, Redacted, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
@@ -38,7 +38,7 @@ import { jsonWithin } from "./internal/http.js"
  * `createLocalJWKSet` result.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export type KeyResolver = JWTVerifyGetKey
 
@@ -46,7 +46,7 @@ export type KeyResolver = JWTVerifyGetKey
  * The claims of an `id_token` that has passed every check.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface IdTokenClaims {
   /** `sub` — the provider's stable subject, and the account's identity half. */
@@ -82,7 +82,7 @@ export interface IdTokenClaims {
  * What {@link verify} needs.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface VerifyOptions {
   /** Named only so a failure can say which provider it came from. */
@@ -162,7 +162,7 @@ const redirectStatuses: ReadonlySet<number> = new Set([301, 302, 303, 307, 308])
  * settle it.
  *
  * @category guards
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const isRedirectResponse = (response: { readonly status: number; readonly type?: string }): boolean =>
   response.type === "opaqueredirect" || response.status === 0 || redirectStatuses.has(response.status)
@@ -181,7 +181,7 @@ export const isRedirectResponse = (response: { readonly status: number; readonly
  * check the signature" and "the signature is wrong" must be the same answer.
  *
  * @category errors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class JwksUnavailable extends Schema.TaggedError<JwksUnavailable>("effect-auth/JwksUnavailable")(
   "JwksUnavailable",
@@ -231,7 +231,7 @@ const decodeKeySet = Schema.decodeUnknownEffect(JsonWebKeySet)
  * kept at once.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface JwksOptions {
   /**
@@ -276,7 +276,7 @@ export interface JwksOptions {
  * fetched over the ambient `HttpClient` and cached per URL.
  *
  * @category models
- * @since 1.0.0
+ * @since 0.1.0
  */
 export interface JwksService {
   /**
@@ -314,7 +314,7 @@ export interface JwksService {
  * internal address and serve keys from the target.
  *
  * @category services
- * @since 1.0.0
+ * @since 0.1.0
  */
 export class Jwks extends Context.Service<Jwks, JwksService>()("effect-auth/oauth/IdToken/Jwks") {}
 
@@ -322,7 +322,7 @@ export class Jwks extends Context.Service<Jwks, JwksService>()("effect-auth/oaut
  * How long a JWKS fetch is given before it is treated as unreachable.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const jwksRequestTimeout: Duration.Duration = Duration.seconds(10)
 
@@ -330,7 +330,7 @@ export const jwksRequestTimeout: Duration.Duration = Duration.seconds(10)
  * Builds the {@link Jwks} implementation.
  *
  * @category constructors
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const makeJwks: (options?: JwksOptions) => Effect.Effect<JwksService, never, HttpClient.HttpClient> =
   Effect.fnUntraced(function* (options?: JwksOptions) {
@@ -384,7 +384,7 @@ export const makeJwks: (options?: JwksOptions) => Effect.Effect<JwksService, nev
  * Provides {@link Jwks} over the ambient `HttpClient`.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerJwks: Layer.Layer<Jwks, never, HttpClient.HttpClient> = Layer.effect(Jwks, makeJwks())
 
@@ -392,7 +392,7 @@ export const layerJwks: Layer.Layer<Jwks, never, HttpClient.HttpClient> = Layer.
  * {@link layerJwks}, with the cache tuned.
  *
  * @category layers
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const layerJwksWith = (options: JwksOptions): Layer.Layer<Jwks, never, HttpClient.HttpClient> =>
   Layer.effect(Jwks, makeJwks(options))
@@ -453,7 +453,7 @@ const audienceOf = (aud: string | ReadonlyArray<string> | undefined): ReadonlyAr
  * probing the verifier.
  *
  * @category combinators
- * @since 1.0.0
+ * @since 0.1.0
  */
 export const verify = Effect.fnUntraced(function* (options: VerifyOptions) {
   const invalid = ProviderError.make({ providerId: options.providerId, reason: "IdTokenInvalid" })
