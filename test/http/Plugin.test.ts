@@ -18,21 +18,21 @@ import { testName, testPassword, uniqueEmail } from "../fixtures.js"
  */
 const WhoAmIGroup = HttpApiGroup.make("whoami")
   .add(
-    HttpApiEndpoint.get("whoami", "/whoami", { success: Schema.Struct({ email: Schema.String }) })
-      .middleware(Authenticated)
+    HttpApiEndpoint.get("whoami", "/whoami", { success: Schema.Struct({ email: Schema.String }) }).middleware(
+      Authenticated
+    )
   )
   .prefix("/auth/whoami")
 
 const PluginApi = HttpApi.make("plugin-app").addHttpApi(AuthApi).add(WhoAmIGroup)
 
 const whoamiHandlers = AuthHandlers.forGroup(WhoAmIGroup, (handlers) =>
-  Effect.succeed(
-    handlers.handle("whoami", () => Effect.map(CurrentUser, (user) => ({ email: user.email })))
-  ))
+  Effect.succeed(handlers.handle("whoami", () => Effect.map(CurrentUser, (user) => ({ email: user.email }))))
+)
 
 layer(AuthTest.layerHttpApi(PluginApi, undefined, whoamiHandlers(PluginApi)))("http/plugin seam", (it) => {
   it.effect("serves a plugin's group beside the auth group, on one deployment", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("plugin")
       const { client } = yield* TestHttpClient.makeClient(PluginApi)
 
@@ -48,12 +48,14 @@ layer(AuthTest.layerHttpApi(PluginApi, undefined, whoamiHandlers(PluginApi)))("h
       // And the auth group is still served, from the same stack.
       const session = yield* client.auth.getSession()
       assert.strictEqual(session.user.email, email)
-    }))
+    })
+  )
 
   it.effect("refuses the plugin's endpoint without a session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* TestHttpClient.makeClient(PluginApi)
       const error = yield* Effect.flip(client.whoami.whoami())
       assert.strictEqual(error._tag, "Unauthorized")
-    }))
+    })
+  )
 })

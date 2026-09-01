@@ -118,10 +118,7 @@ export type ProviderList = readonly [OAuthProviderConfig, ...Array<OAuthProvider
  * @category models
  * @since 1.0.0
  */
-export type ProviderConfigList = readonly [
-  ProviderConfigEffect,
-  ...Array<ProviderConfigEffect>
-]
+export type ProviderConfigList = readonly [ProviderConfigEffect, ...Array<ProviderConfigEffect>]
 
 /**
  * One entry of a {@link ProviderConfigList}: a provider still to be resolved.
@@ -526,9 +523,8 @@ const baseTier = <F extends UserFields>(
   model: UserModel<F>
 ): Layer.Layer<AuthConfig | AuthStores | AuthEvents | RateLimiter.RateLimiter, never, SqlClient.SqlClient> => {
   const sqlStores = SqlStores.layerFor(model).pipe(Layer.provide(Layer.succeed(AuthConfig)(config)))
-  const stores = options.sessionStore === undefined
-    ? sqlStores
-    : options.sessionStore.pipe(Layer.provideMerge(sqlStores))
+  const stores =
+    options.sessionStore === undefined ? sqlStores : options.sessionStore.pipe(Layer.provideMerge(sqlStores))
   return Layer.mergeAll(
     Layer.succeed(AuthConfig)(config),
     stores,
@@ -564,12 +560,7 @@ const compose = <A, RIn, F extends UserFields>(
     // entry points want it.
     Layer.provideMerge(top),
     Layer.provideMerge(
-      Layer.mergeAll(
-        sessionsLayerFor(model),
-        accountsLayer,
-        verificationsLayer,
-        sessionCacheLayerFor(model)
-      )
+      Layer.mergeAll(sessionsLayerFor(model), accountsLayer, verificationsLayer, sessionCacheLayerFor(model))
     ),
     Layer.provideMerge(baseTier(config, options, model)),
     Layer.provideMerge(secretTier(config)),
@@ -638,8 +629,7 @@ const oauthStack = <F extends UserFields>(
   options: Extras,
   model: UserModel<F>,
   providers: ReadonlyArray<OAuthProviderConfig>
-): Layer.Layer<OAuthServices, never, OAuthRequirements> =>
-  compose(config, options, model, oauthTop(model, providers))
+): Layer.Layer<OAuthServices, never, OAuthRequirements> => compose(config, options, model, oauthTop(model, providers))
 
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface ScalarSettings {
@@ -713,9 +703,7 @@ const resolveConfig = <F extends UserFields>(
  * @category layers
  * @since 1.0.0
  */
-export const layer = <F extends UserFields = {}>(
-  options: Options<F>
-): Layer.Layer<Services, never, Requirements> =>
+export const layer = <F extends UserFields = {}>(options: Options<F>): Layer.Layer<Services, never, Requirements> =>
   options.user?.model === undefined
     ? stack(makeAuthConfig(options), options, baseUserModel)
     : stack(makeAuthConfig(options), options, options.user.model)
@@ -793,10 +781,13 @@ export const layerWithOAuth = <F extends UserFields = {}>(
 export const layerConfig = <F extends UserFields = {}>(
   options: ConfigOptions<F>
 ): Layer.Layer<Services, Config.ConfigError, Requirements> =>
-  Layer.unwrap(Effect.map(resolveConfig(options), (config) =>
-    options.user?.model === undefined
-      ? stack(config, options, baseUserModel)
-      : stack(config, options, options.user.model)))
+  Layer.unwrap(
+    Effect.map(resolveConfig(options), (config) =>
+      options.user?.model === undefined
+        ? stack(config, options, baseUserModel)
+        : stack(config, options, options.user.model)
+    )
+  )
 
 /**
  * {@link layerWithOAuth}, with the settings *and* the provider credentials read
@@ -834,12 +825,10 @@ export const layerConfigWithOAuth = <F extends UserFields = {}>(
   options: OAuthConfigOptions<F>
 ): Layer.Layer<OAuthServices, Config.ConfigError | DiscoveryError, OAuthRequirements> =>
   Layer.unwrap(
-    Effect.map(
-      Effect.all([resolveConfig(options), Effect.all(options.providers)]),
-      ([config, providers]) =>
-        options.user?.model === undefined
-          ? oauthStack(config, options, baseUserModel, providers)
-          : oauthStack(config, options, options.user.model, providers)
+    Effect.map(Effect.all([resolveConfig(options), Effect.all(options.providers)]), ([config, providers]) =>
+      options.user?.model === undefined
+        ? oauthStack(config, options, baseUserModel, providers)
+        : oauthStack(config, options, options.user.model, providers)
     )
   )
 
@@ -905,9 +894,7 @@ export interface Definition<F extends UserFields> {
   readonly Api: HttpApi.HttpApi<"effect-auth", AuthApiGroupOf<F>>
   /** Implements {@link Definition.ApiGroup} inside an API that contains it. */
   readonly handlers: <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api:
-      & HttpApi.HttpApi<ApiId, Groups>
-      & { readonly groups: { readonly auth: AuthApiGroupOf<F> } }
+    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: AuthApiGroupOf<F> } }
   ) => Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, AuthHandlers.HandlerServices>
 
   /** {@link layer}, for this model. */
@@ -931,11 +918,7 @@ export interface Definition<F extends UserFields> {
    * migrator numbers `Migrations.forUserFields(model)` into its own record
    * instead.
    */
-  readonly layerMigrations: Layer.Layer<
-    never,
-    Migrator.MigrationError | SqlError.SqlError,
-    SqlClient.SqlClient
-  >
+  readonly layerMigrations: Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient>
 }
 
 /**
@@ -1024,9 +1007,8 @@ export const define = <const F extends UserFields>(options: DefineOptions<F>): D
       Layer.unwrap(Effect.map(resolveConfig(settings), (config) => stack(config, settings, model))),
     layerConfigWithOAuth: (settings) =>
       Layer.unwrap(
-        Effect.map(
-          Effect.all([resolveConfig(settings), Effect.all(settings.providers)]),
-          ([config, providers]) => oauthStack(config, settings, model, providers)
+        Effect.map(Effect.all([resolveConfig(settings), Effect.all(settings.providers)]), ([config, providers]) =>
+          oauthStack(config, settings, model, providers)
         )
       ),
     layerMigrations: Migrations.layerFor(model)
@@ -1072,7 +1054,7 @@ export const cleanupExpired: Effect.Effect<
   { readonly sessions: number; readonly verifications: number },
   PersistenceError,
   SessionStore | VerificationStore
-> = Effect.gen(function*() {
+> = Effect.gen(function* () {
   const sessions = yield* SessionStore
   const verifications = yield* VerificationStore
   return {

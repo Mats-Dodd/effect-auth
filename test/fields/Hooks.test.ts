@@ -57,15 +57,15 @@ const planHooks: AuthHooksOf<Fields> = {
     candidate.email.startsWith("banned-plan-")
       ? Effect.fail(new PolicyRefused({ code: "plan_not_available", detail: candidate.plan }))
       : Effect.succeed({
-        ...candidate,
-        // Read off the fields the model resolved before the hook was consulted,
-        // written onto ones no payload may carry. The witness goes into the row
-        // rather than into an array beside it: the tests in a `layer()` block
-        // share a deployment and run beside each other, so what a hook saw has
-        // to be recoverable from the row it produced.
-        role: candidate.plan === "pro" ? ("admin" as const) : ("user" as const),
-        apiSecret: `saw:${candidate.plan}/${candidate.role}`
-      })
+          ...candidate,
+          // Read off the fields the model resolved before the hook was consulted,
+          // written onto ones no payload may carry. The witness goes into the row
+          // rather than into an array beside it: the tests in a `layer()` block
+          // share a deployment and run beside each other, so what a hook saw has
+          // to be recoverable from the row it produced.
+          role: candidate.plan === "pro" ? ("admin" as const) : ("user" as const),
+          apiSecret: `saw:${candidate.plan}/${candidate.role}`
+        })
 }
 
 /**
@@ -76,13 +76,11 @@ const planHooks: AuthHooksOf<Fields> = {
  * set installed through the model's own key is the set the base-typed domain
  * services read back.
  */
-const deployment = AuthTest.layer({ user: { model } }).pipe(
-  Layer.provide(Layer.succeed(hooksOf(model))(planHooks))
-)
+const deployment = AuthTest.layer({ user: { model } }).pipe(Layer.provide(Layer.succeed(hooksOf(model))(planHooks)))
 
 layer(deployment)("fields/Hooks", (it) => {
   it.effect("reads the field the model defaulted and writes the ones no client may state", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const store = yield* users
       const email = uniqueEmail("hooks-fields-default")
 
@@ -100,10 +98,11 @@ layer(deployment)("fields/Hooks", (it) => {
       const stored = yield* expectSome(yield* store.findByEmail(email), "the provisioned row")
       assert.strictEqual(stored.role, "user")
       assert.strictEqual(stored.apiSecret, "saw:free/user")
-    }))
+    })
+  )
 
   it.effect("sees what the sign-up stated, and derives the read-only field from it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const store = yield* users
       const email = uniqueEmail("hooks-fields-pro")
 
@@ -125,10 +124,11 @@ layer(deployment)("fields/Hooks", (it) => {
       const stored = yield* expectSome(yield* store.findByEmail(email), "the provisioned row")
       assert.strictEqual(stored.role, "admin")
       assert.strictEqual(stored.apiSecret, "saw:pro/user")
-    }))
+    })
+  )
 
   it.effect("refuses on a custom field, and leaves no row", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const store = yield* users
       const email = `banned-plan-${uniqueEmail("hooks-fields")}`
 
@@ -143,7 +143,8 @@ layer(deployment)("fields/Hooks", (it) => {
         assert.strictEqual(refused.detail, "pro")
       }
       assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
-    }))
+    })
+  )
 })
 
 // -----------------------------------------------------------------------------
@@ -189,7 +190,7 @@ const identityFor = (email: string): OAuthIdentity => ({
 describe.sequential("fields/Hooks — every source", () => {
   layer(everySource)((it) => {
     it.effect("hands a first OAuth sign-in a candidate carrying the model's own columns", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const store = yield* users
         const email = uniqueEmail("hooks-fields-oauth")
 
@@ -203,10 +204,11 @@ describe.sequential("fields/Hooks — every source", () => {
         assert.strictEqual(stored.plan, "free")
         assert.strictEqual(stored.role, "user")
         assert.strictEqual(stored.apiSecret, "saw:free/user")
-      }))
+      })
+    )
 
     it.effect("hands a magic link's first sign-in the same candidate", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const store = yield* users
         const magic = yield* MagicLink
         const emails = yield* AuthTest.TestEmails
@@ -222,7 +224,8 @@ describe.sequential("fields/Hooks — every source", () => {
         assert.strictEqual(stored.plan, "free")
         assert.strictEqual(stored.role, "user")
         assert.strictEqual(stored.apiSecret, "saw:free/user")
-      }))
+      })
+    )
   })
 })
 
@@ -268,21 +271,20 @@ layer(AuthTest.layer({ user: { model }, hooks: smugglingHooks, trustedProviders:
      * last line of defence on one source out of three.
      */
     it.effect("refuses it on the password source, storing nothing", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const store = yield* users
         const email = uniqueEmail("hooks-fields-smuggle-password")
 
-        const exit = yield* Effect.exit(
-          (yield* passwords).signUp({ name: testName, email, password: testPassword })
-        )
+        const exit = yield* Effect.exit((yield* passwords).signUp({ name: testName, email, password: testPassword }))
 
         assert.strictEqual(exit._tag, "Failure")
         assert.isTrue(exit._tag === "Failure" && Cause.hasDies(exit.cause))
         assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
-      }))
+      })
+    )
 
     it.effect("refuses it on the OAuth source too, storing nothing", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const store = yield* users
         const email = uniqueEmail("hooks-fields-smuggle-oauth")
 
@@ -291,6 +293,7 @@ layer(AuthTest.layer({ user: { model }, hooks: smugglingHooks, trustedProviders:
         assert.strictEqual(exit._tag, "Failure")
         assert.isTrue(exit._tag === "Failure" && Cause.hasDies(exit.cause))
         assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
-      }))
+      })
+    )
   }
 )

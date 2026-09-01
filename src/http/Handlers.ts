@@ -113,7 +113,7 @@ export const dieOn =
   <A, E extends Tagged, R>(
     effect: Effect.Effect<A, E, R>
   ): Effect.Effect<A, Exclude<E, { readonly _tag: Tags[number] }>, R> =>
-    Effect.catch(effect, (error) => isDischarged(error, tags) ? Effect.fail(error) : Effect.die(error))
+    Effect.catch(effect, (error) => (isDischarged(error, tags) ? Effect.fail(error) : Effect.die(error)))
 
 /**
  * The two failures no endpoint of this library declares: a storage fault and a
@@ -141,9 +141,8 @@ export const serverFaultTags = ["PasswordHashError", "PersistenceError"] as cons
  */
 export const serverFault: <A, E extends Tagged, R>(
   effect: Effect.Effect<A, E, R>
-) => Effect.Effect<A, Exclude<E, { readonly _tag: "PasswordHashError" | "PersistenceError" }>, R> = dieOn(
-  serverFaultTags
-)
+) => Effect.Effect<A, Exclude<E, { readonly _tag: "PasswordHashError" | "PersistenceError" }>, R> =
+  dieOn(serverFaultTags)
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -251,10 +250,7 @@ export const callbackFormTarget = (
     readonly user?: string | undefined
   }
 ): string => {
-  const url = new URL(
-    `${config.basePath}/callback/${encodeURIComponent(providerId)}`,
-    config.baseUrl
-  )
+  const url = new URL(`${config.basePath}/callback/${encodeURIComponent(providerId)}`, config.baseUrl)
   for (const [key, value] of Object.entries(form)) {
     if (value !== undefined) url.searchParams.set(key, value)
   }
@@ -331,27 +327,21 @@ export type HandlerServices =
  * @category combinators
  * @since 1.0.0
  */
-export const forGroup = <
-  const Id extends string,
-  Group extends HttpApiGroup.Constraint,
-  Return
->(
-  // `Id` is inferred from the value's own `identifier`, which is what makes the
-  // key of the mapped type below a literal rather than `string`.
-  group: Group & { readonly identifier: Id },
-  build: (
-    handlers: HttpApiBuilder.Handlers.FromGroup<Group>
-  ) => HttpApiBuilder.Handlers.ValidateReturn<Return>
-) =>
-<ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-  api:
-    & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly [K in Id]: Group } }
-): Layer.Layer<
-  HttpApiGroup.Service<ApiId, Id>,
-  HttpApiBuilder.Handlers.Error<Return>,
-  Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
-> => buildGroup(api, group, build)
+export const forGroup =
+  <const Id extends string, Group extends HttpApiGroup.Constraint, Return>(
+    // `Id` is inferred from the value's own `identifier`, which is what makes the
+    // key of the mapped type below a literal rather than `string`.
+    group: Group & { readonly identifier: Id },
+    build: (handlers: HttpApiBuilder.Handlers.FromGroup<Group>) => HttpApiBuilder.Handlers.ValidateReturn<Return>
+  ) =>
+  <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly [K in Id]: Group } }
+  ): Layer.Layer<
+    HttpApiGroup.Service<ApiId, Id>,
+    HttpApiBuilder.Handlers.Error<Return>,
+    Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
+  > =>
+    buildGroup(api, group, build)
 
 /**
  * `HttpApiBuilder.group`, restated for one named group of a composed API.
@@ -412,9 +402,7 @@ const buildGroup = (<Return>(
 >(
   api: HttpApi.HttpApi<ApiId, Groups>,
   group: Group,
-  build: (
-    handlers: HttpApiBuilder.Handlers.FromGroup<Group>
-  ) => HttpApiBuilder.Handlers.ValidateReturn<Return>
+  build: (handlers: HttpApiBuilder.Handlers.FromGroup<Group>) => HttpApiBuilder.Handlers.ValidateReturn<Return>
 ) => Layer.Layer<
   HttpApiGroup.Service<ApiId, Id>,
   HttpApiBuilder.Handlers.Error<Return>,
@@ -477,15 +465,9 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
   // model. Without it the compiler would also read `F` off the group's own inner
   // types, where it appears as `BaseUserFields & F`, and report the mismatch
   // between two spellings of the same thing.
-  api:
-    & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
   model?: UserModel<F>
-): Layer.Layer<
-  HttpApiGroup.Service<ApiId, "auth">,
-  never,
-  HandlerServices
-> =>
+): Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, HandlerServices> =>
   // Two branches because `UserModel<F>` and `UserModel<{}>` are different types:
   // "the model, or the base one" is a choice that has to be made before anything
   // is built with it.
@@ -494,240 +476,261 @@ export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constrai
 const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
   api: HttpApi.HttpApi<ApiId, Groups>,
   model: UserModel<F>
-): Layer.Layer<
-  HttpApiGroup.Service<ApiId, "auth">,
-  never,
-  HandlerServices
-> => {
+): Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, HandlerServices> => {
   const CurrentUser = currentUserOf(model)
-  return buildGroup(
-    api,
-    AuthApiGroup,
-    (handlers) =>
-      Effect.gen(function*() {
-        const config = yield* AuthConfig
-        // The two services that answer with users are read through the model's
-        // typed view of their key: the same slot, a shape that carries the
-        // deployment's own fields.
-        const sessions = yield* sessionsOf(model)
-        const passwords = yield* passwordsOf(model)
-        const users = yield* usersOf(model)
-        const accounts = yield* Accounts
-        const cache = yield* SessionCache
-        const limiter = yield* RateLimiter.RateLimiter
-        // Resolved once, and optional: see `HandlerServices`.
-        const flow = yield* Effect.serviceOption(OAuthFlow)
+  return buildGroup(api, AuthApiGroup, (handlers) =>
+    Effect.gen(function* () {
+      const config = yield* AuthConfig
+      // The two services that answer with users are read through the model's
+      // typed view of their key: the same slot, a shape that carries the
+      // deployment's own fields.
+      const sessions = yield* sessionsOf(model)
+      const passwords = yield* passwordsOf(model)
+      const users = yield* usersOf(model)
+      const accounts = yield* Accounts
+      const cache = yield* SessionCache
+      const limiter = yield* RateLimiter.RateLimiter
+      // Resolved once, and optional: see `HandlerServices`.
+      const flow = yield* Effect.serviceOption(OAuthFlow)
 
-        // Every service is resolved here, when the layer is built, so that no
-        // handler carries a request-time requirement: anything left in a
-        // handler's environment becomes a router-scoped service the consumer
-        // would have to provide per request.
-        const rateLimit = (bucket: Bucket, request: HttpServerRequest.HttpServerRequest) =>
-          consumeWith({ config, limiter, bucket, request })
+      // Every service is resolved here, when the layer is built, so that no
+      // handler carries a request-time requirement: anything left in a
+      // handler's environment becomes a router-scoped service the consumer
+      // would have to provide per request.
+      const rateLimit = (bucket: Bucket, request: HttpServerRequest.HttpServerRequest) =>
+        consumeWith({ config, limiter, bucket, request })
 
-        const unknownProvider = (providerId: string) =>
-          new OAuthProviderError({ providerId, reason: "UnknownProvider" })
+      const unknownProvider = (providerId: string) => new OAuthProviderError({ providerId, reason: "UnknownProvider" })
 
-        return handlers
-          .handle("signUpEmail", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(credentials, request)
-              if (!config.emailPassword.enabled) return notServed
-              // `payload` carries whatever custom fields the deployment's model
-              // declared — this handler is checked against the base group, so
-              // the model is what recovers them, at the type level as well as at
-              // run time. A deployment that declared none contributes `{}`.
-              const result = yield* passwords.signUp({
+      return handlers
+        .handle("signUpEmail", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(credentials, request)
+            if (!config.emailPassword.enabled) return notServed
+            // `payload` carries whatever custom fields the deployment's model
+            // declared — this handler is checked against the base group, so
+            // the model is what recovers them, at the type level as well as at
+            // run time. A deployment that declared none contributes `{}`.
+            const result = yield* passwords
+              .signUp({
                 ...payload,
                 ...model.extrasOf(payload, "jsonCreate"),
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL)),
                 ...clientMeta(config, request)
-              }).pipe(serverFault)
+              })
+              .pipe(serverFault)
 
-              if (Option.isNone(result.session)) {
-                // Verification is required, or auto sign-in is off: the user
-                // exists but has no session, and no cookie is written.
-                return { user: model.toPublic(result.user), session: null }
-              }
-              const { session, token } = result.session.value
-              yield* setSessionCookie(config, session, token, { persistent: payload.rememberMe !== false })
-              return { user: model.toPublic(result.user), session }
-            }))
-          .handle("signInEmail", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(credentials, request)
-              if (!config.emailPassword.enabled) return notServed
-              const result = yield* passwords.signIn({
+            if (Option.isNone(result.session)) {
+              // Verification is required, or auto sign-in is off: the user
+              // exists but has no session, and no cookie is written.
+              return { user: model.toPublic(result.user), session: null }
+            }
+            const { session, token } = result.session.value
+            yield* setSessionCookie(config, session, token, { persistent: payload.rememberMe !== false })
+            return { user: model.toPublic(result.user), session }
+          })
+        )
+        .handle("signInEmail", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(credentials, request)
+            if (!config.emailPassword.enabled) return notServed
+            const result = yield* passwords
+              .signIn({
                 email: payload.email,
                 password: payload.password,
                 rememberMe: payload.rememberMe,
                 ...clientMeta(config, request)
-              }).pipe(serverFault)
-
-              yield* setSessionCookie(config, result.session, result.token, {
-                persistent: payload.rememberMe !== false
               })
-              return { user: model.toPublic(result.user), session: result.session }
-            }))
-          .handle("signOut", () =>
-            Effect.gen(function*() {
-              const session = yield* CurrentSession
-              yield* sessions.signOut(session).pipe(serverFault)
+              .pipe(serverFault)
+
+            yield* setSessionCookie(config, result.session, result.token, {
+              persistent: payload.rememberMe !== false
+            })
+            return { user: model.toPublic(result.user), session: result.session }
+          })
+        )
+        .handle("signOut", () =>
+          Effect.gen(function* () {
+            const session = yield* CurrentSession
+            yield* sessions.signOut(session).pipe(serverFault)
+            yield* clearSessionCookies(config, cache)
+            return acknowledged
+          })
+        )
+        .handle("getSession", () =>
+          Effect.gen(function* () {
+            // The middleware has already verified, refreshed and — when the
+            // expiry moved — re-set the cookie.
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            return { user: model.toPublic(user), session }
+          })
+        )
+        .handle("listSessions", () =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            return yield* sessions.list(user.id).pipe(serverFault)
+          })
+        )
+        .handle("revokeSession", ({ payload }) =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            yield* sessions.revoke(payload.sessionId, user.id).pipe(serverFault)
+            // Revoking one's own session ends this browser's too: clear the
+            // cookies, or the cookie cache would keep serving this browser
+            // behind its snapshot until it aged out — the row is already gone.
+            if (payload.sessionId === session.id) {
               yield* clearSessionCookies(config, cache)
-              return acknowledged
-            }))
-          .handle("getSession", () =>
-            Effect.gen(function*() {
-              // The middleware has already verified, refreshed and — when the
-              // expiry moved — re-set the cookie.
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              return { user: model.toPublic(user), session }
-            }))
-          .handle("listSessions", () =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              return yield* sessions.list(user.id).pipe(serverFault)
-            }))
-          .handle("revokeSession", ({ payload }) =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              yield* sessions.revoke(payload.sessionId, user.id).pipe(serverFault)
-              // Revoking one's own session ends this browser's too: clear the
-              // cookies, or the cookie cache would keep serving this browser
-              // behind its snapshot until it aged out — the row is already gone.
-              if (payload.sessionId === session.id) {
-                yield* clearSessionCookies(config, cache)
-              }
-              return acknowledged
-            }))
-          .handle("revokeSessions", () =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              yield* sessions.revokeAll(user.id).pipe(serverFault)
-              // This one revoked the caller's own session too.
-              yield* clearSessionCookies(config, cache)
-              return acknowledged
-            }))
-          .handle("revokeOtherSessions", () =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              yield* sessions.revokeOthers(user.id, session.id).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("requestPasswordReset", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(emailBucket, request)
-              if (!config.emailPassword.enabled) return notServed
-              // Answers the same whether or not the address has an account.
-              yield* passwords.requestReset({
+            }
+            return acknowledged
+          })
+        )
+        .handle("revokeSessions", () =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            yield* sessions.revokeAll(user.id).pipe(serverFault)
+            // This one revoked the caller's own session too.
+            yield* clearSessionCookies(config, cache)
+            return acknowledged
+          })
+        )
+        .handle("revokeOtherSessions", () =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            yield* sessions.revokeOthers(user.id, session.id).pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("requestPasswordReset", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(emailBucket, request)
+            if (!config.emailPassword.enabled) return notServed
+            // Answers the same whether or not the address has an account.
+            yield* passwords
+              .requestReset({
                 email: payload.email,
                 redirectTo: Option.getOrUndefined(validateUrl(config, payload.redirectTo))
-              }).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("resetPassword", ({ payload }) =>
-            Effect.gen(function*() {
-              if (!config.emailPassword.enabled) return notServed
-              yield* passwords.resetPassword({
+              })
+              .pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("resetPassword", ({ payload }) =>
+          Effect.gen(function* () {
+            if (!config.emailPassword.enabled) return notServed
+            yield* passwords
+              .resetPassword({
                 token: payload.token,
                 newPassword: payload.newPassword
-              }).pipe(serverFault)
-              // Every session was revoked, this browser's included.
-              yield* clearSessionCookies(config, cache)
-              return acknowledged
-            }))
-          .handle("changePassword", ({ payload }) =>
-            Effect.gen(function*() {
-              if (!config.emailPassword.enabled) return notServed
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              // A stolen but stale cookie must not be enough to take the
-              // account over permanently: the caller has to have signed in
-              // recently, as well as knowing the current password.
-              yield* sessions.requireFresh(session)
-              yield* passwords.changePassword({
+              })
+              .pipe(serverFault)
+            // Every session was revoked, this browser's included.
+            yield* clearSessionCookies(config, cache)
+            return acknowledged
+          })
+        )
+        .handle("changePassword", ({ payload }) =>
+          Effect.gen(function* () {
+            if (!config.emailPassword.enabled) return notServed
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            // A stolen but stale cookie must not be enough to take the
+            // account over permanently: the caller has to have signed in
+            // recently, as well as knowing the current password.
+            yield* sessions.requireFresh(session)
+            yield* passwords
+              .changePassword({
                 userId: user.id,
                 currentPassword: payload.currentPassword,
                 newPassword: payload.newPassword,
                 revokeOtherSessions: payload.revokeOtherSessions,
                 currentSessionId: session.id
-              }).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("sendVerificationEmail", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(emailBucket, request)
-              if (!config.emailPassword.enabled) return notServed
-              yield* passwords.sendVerificationEmail({
+              })
+              .pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("sendVerificationEmail", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(emailBucket, request)
+            if (!config.emailPassword.enabled) return notServed
+            yield* passwords
+              .sendVerificationEmail({
                 email: payload.email,
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL))
-              }).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("verifyEmail", ({ query }) =>
-            Effect.gen(function*() {
-              if (!config.emailPassword.enabled) return notServed
-              // A query parameter is decoded as a plain string — query strings
-              // do not go through the JSON codec — so it is redacted here,
-              // before anything can log it. `query.callbackURL` is accepted and
-              // ignored: the link an e-mail carries has one appended to it, and
-              // this endpoint answers JSON rather than a redirect.
-              yield* passwords.verifyEmail(Redacted.make(query.token)).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("signInSocial", ({ payload, request }) =>
-            Effect.gen(function*() {
-              // Unauthenticated, and every call writes a state row. Without a
-              // counter it is a free way to grow the verifications table — and
-              // therefore to slow the indexed lookup every callback and reset
-              // depends on. It shares the credentials policy, not its counter:
-              // the key carries the path.
-              yield* rateLimit(credentials, request)
-              if (Option.isNone(flow)) {
-                return yield* Effect.fail(unknownProvider(payload.providerId))
-              }
-              const started = yield* flow.value.start({
+              })
+              .pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("verifyEmail", ({ query }) =>
+          Effect.gen(function* () {
+            if (!config.emailPassword.enabled) return notServed
+            // A query parameter is decoded as a plain string — query strings
+            // do not go through the JSON codec — so it is redacted here,
+            // before anything can log it. `query.callbackURL` is accepted and
+            // ignored: the link an e-mail carries has one appended to it, and
+            // this endpoint answers JSON rather than a redirect.
+            yield* passwords.verifyEmail(Redacted.make(query.token)).pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("signInSocial", ({ payload, request }) =>
+          Effect.gen(function* () {
+            // Unauthenticated, and every call writes a state row. Without a
+            // counter it is a free way to grow the verifications table — and
+            // therefore to slow the indexed lookup every callback and reset
+            // depends on. It shares the credentials policy, not its counter:
+            // the key carries the path.
+            yield* rateLimit(credentials, request)
+            if (Option.isNone(flow)) {
+              return yield* Effect.fail(unknownProvider(payload.providerId))
+            }
+            const started = yield* flow.value
+              .start({
                 providerId: payload.providerId,
                 callbackURL: payload.callbackURL,
                 errorCallbackURL: payload.errorCallbackURL,
                 scopes: payload.scopes,
                 rememberMe: payload.rememberMe
-              }).pipe(serverFault)
-              // Bind the flow to this browser: the callback requires the state
-              // it comes back with to equal this cookie, which an attacker who
-              // merely obtained a valid state cannot plant in the victim's jar.
-              yield* setOAuthStateCookie(config, started.state, { maxAge: config.tokens.oauthStateTtl })
-              return { url: started.url, redirect: true }
-            }))
-          .handle("oauthCallback", ({ params, query, request }) =>
-            Effect.gen(function*() {
-              // The state cookie is single-use — cleared on every exit from this
-              // handler, the `unknown_provider` early return included, so
-              // "cleared whatever the outcome" is literally true.
-              yield* clearOAuthStateCookie(config)
-              if (Option.isNone(flow)) {
-                return redirectTo(withErrorCode(resolveUrl(config, null), "unknown_provider"))
-              }
-              // Browser binding, before the state is even consumed: the flow set
-              // a cookie holding the raw `state` when it started, and the value
-              // the provider echoed back must equal it. A browser lured to a
-              // callback for a `state` it never started holds no such cookie and
-              // is turned away with the same safe `state_mismatch` code an
-              // unissued state gets.
-              const bound = request.cookies[oauthStateCookieName(config)]
-              if (query.state === undefined || bound === undefined || bound.length === 0 || bound !== query.state) {
-                // The same closed-set code `errorCode(OAuthStateMismatch)` and
-                // `complete` produce for an unissued state, written as the
-                // literal it resolves to — as the `unknown_provider` branch above is.
-                return redirectTo(withErrorCode(resolveUrl(config, null), "state_mismatch"))
-              }
-              // `complete` resolves every failure into a validated redirect: the
-              // browser arrived here by a top-level navigation and must leave by
-              // one, whatever happened.
-              const outcome = yield* flow.value.complete({
+              })
+              .pipe(serverFault)
+            // Bind the flow to this browser: the callback requires the state
+            // it comes back with to equal this cookie, which an attacker who
+            // merely obtained a valid state cannot plant in the victim's jar.
+            yield* setOAuthStateCookie(config, started.state, { maxAge: config.tokens.oauthStateTtl })
+            return { url: started.url, redirect: true }
+          })
+        )
+        .handle("oauthCallback", ({ params, query, request }) =>
+          Effect.gen(function* () {
+            // The state cookie is single-use — cleared on every exit from this
+            // handler, the `unknown_provider` early return included, so
+            // "cleared whatever the outcome" is literally true.
+            yield* clearOAuthStateCookie(config)
+            if (Option.isNone(flow)) {
+              return redirectTo(withErrorCode(resolveUrl(config, null), "unknown_provider"))
+            }
+            // Browser binding, before the state is even consumed: the flow set
+            // a cookie holding the raw `state` when it started, and the value
+            // the provider echoed back must equal it. A browser lured to a
+            // callback for a `state` it never started holds no such cookie and
+            // is turned away with the same safe `state_mismatch` code an
+            // unissued state gets.
+            const bound = request.cookies[oauthStateCookieName(config)]
+            if (query.state === undefined || bound === undefined || bound.length === 0 || bound !== query.state) {
+              // The same closed-set code `errorCode(OAuthStateMismatch)` and
+              // `complete` produce for an unissued state, written as the
+              // literal it resolves to — as the `unknown_provider` branch above is.
+              return redirectTo(withErrorCode(resolveUrl(config, null), "state_mismatch"))
+            }
+            // `complete` resolves every failure into a validated redirect: the
+            // browser arrived here by a top-level navigation and must leave by
+            // one, whatever happened.
+            const outcome = yield* flow.value
+              .complete({
                 providerId: params.providerId,
                 code: query.code,
                 state: query.state,
@@ -738,57 +741,65 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 // attacker-controllable — carried, never trusted.
                 ...(query.user === undefined ? {} : { params: { user: query.user } }),
                 ...clientMeta(config, request)
-              }).pipe(serverFault)
+              })
+              .pipe(serverFault)
 
-              if (outcome._tag === "Success" && outcome.session !== null && outcome.token !== null) {
-                // Null for a link flow: the person was already signed in, and a
-                // second session would be a silent session upgrade.
-                // `rememberMe` travelled in the state row, so the choice made
-                // when the flow started decides the cookie's persistence here,
-                // exactly as it does on the password path.
-                yield* setSessionCookie(config, outcome.session, outcome.token, {
-                  persistent: outcome.rememberMe
-                })
-              }
-              return redirectTo(outcome.redirectTo)
-            }))
-          .handle("listAccounts", () =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              return yield* accounts.listForUser(user.id).pipe(serverFault)
-            }))
-          .handle("linkSocial", ({ payload }) =>
-            Effect.gen(function*() {
-              if (Option.isNone(flow)) {
-                return yield* Effect.fail(unknownProvider(payload.providerId))
-              }
-              const user = yield* CurrentUser
-              const started = yield* flow.value.start({
+            if (outcome._tag === "Success" && outcome.session !== null && outcome.token !== null) {
+              // Null for a link flow: the person was already signed in, and a
+              // second session would be a silent session upgrade.
+              // `rememberMe` travelled in the state row, so the choice made
+              // when the flow started decides the cookie's persistence here,
+              // exactly as it does on the password path.
+              yield* setSessionCookie(config, outcome.session, outcome.token, {
+                persistent: outcome.rememberMe
+              })
+            }
+            return redirectTo(outcome.redirectTo)
+          })
+        )
+        .handle("listAccounts", () =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            return yield* accounts.listForUser(user.id).pipe(serverFault)
+          })
+        )
+        .handle("linkSocial", ({ payload }) =>
+          Effect.gen(function* () {
+            if (Option.isNone(flow)) {
+              return yield* Effect.fail(unknownProvider(payload.providerId))
+            }
+            const user = yield* CurrentUser
+            const started = yield* flow.value
+              .start({
                 providerId: payload.providerId,
                 callbackURL: payload.callbackURL,
                 errorCallbackURL: payload.errorCallbackURL,
                 scopes: payload.scopes,
                 linkUserId: user.id
-              }).pipe(serverFault)
-              // Bind the link flow to this browser too: the callback attaches
-              // the returned identity to `user.id`, so a forged callback must
-              // not be able to drive it — see `signInSocial`.
-              yield* setOAuthStateCookie(config, started.state, { maxAge: config.tokens.oauthStateTtl })
-              return { url: started.url, redirect: true }
-            }))
-          .handle("unlinkAccount", ({ payload }) =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              yield* sessions.requireFresh(session)
-              yield* accounts.unlink(payload.accountId, user.id).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("updateUser", ({ payload }) =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              const updated = yield* users.update({
+              })
+              .pipe(serverFault)
+            // Bind the link flow to this browser too: the callback attaches
+            // the returned identity to `user.id`, so a forged callback must
+            // not be able to drive it — see `signInSocial`.
+            yield* setOAuthStateCookie(config, started.state, { maxAge: config.tokens.oauthStateTtl })
+            return { url: started.url, redirect: true }
+          })
+        )
+        .handle("unlinkAccount", ({ payload }) =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            yield* sessions.requireFresh(session)
+            yield* accounts.unlink(payload.accountId, user.id).pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("updateUser", ({ payload }) =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            const updated = yield* users
+              .update({
                 userId: user.id,
                 name: payload.name,
                 image: payload.image,
@@ -796,142 +807,165 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 // — this handler is checked against the base group, so the
                 // payload's custom half is invisible to it otherwise.
                 ...model.extrasOf(payload, "jsonUpdate")
-              }).pipe(serverFault)
-              // The snapshot in this browser's cookie now names the old profile.
-              // Rewriting it here is cheaper than invalidating it, and keeps the
-              // very next request a cache hit. Unconditional because it is not:
-              // `write` is a no-op unless the request presented the session
-              // cookie, so a bearer client is handed nothing.
-              yield* cache.write(session, updated)
-              return { user: model.toPublic(updated) }
-            }))
-          .handle("changeEmail", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(credentials, request)
-              if (!config.user.changeEmail.enabled) return notServed
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              // The address is the account's recovery path, so a stale cookie
-              // must not be enough to start moving it.
-              yield* sessions.requireFresh(session)
-              yield* users.requestEmailChange({
+              })
+              .pipe(serverFault)
+            // The snapshot in this browser's cookie now names the old profile.
+            // Rewriting it here is cheaper than invalidating it, and keeps the
+            // very next request a cache hit. Unconditional because it is not:
+            // `write` is a no-op unless the request presented the session
+            // cookie, so a bearer client is handed nothing.
+            yield* cache.write(session, updated)
+            return { user: model.toPublic(updated) }
+          })
+        )
+        .handle("changeEmail", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(credentials, request)
+            if (!config.user.changeEmail.enabled) return notServed
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            // The address is the account's recovery path, so a stale cookie
+            // must not be enough to start moving it.
+            yield* sessions.requireFresh(session)
+            yield* users
+              .requestEmailChange({
                 user,
                 newEmail: payload.newEmail,
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL))
-              }).pipe(serverFault)
-              // The same answer whichever branch ran, taken address included.
-              return acknowledged
-            }))
-          .handle("confirmEmailChange", ({ query }) =>
-            Effect.gen(function*() {
-              if (!config.user.changeEmail.enabled) return notServed
-              yield* users.confirmEmailChange(Redacted.make(query.token)).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("verifyEmailChange", ({ query }) =>
-            Effect.gen(function*() {
-              if (!config.user.changeEmail.enabled) return notServed
-              yield* users.verifyEmailChange(Redacted.make(query.token)).pipe(serverFault)
-              // Unauthenticated: this link may be opened in a browser that holds
-              // nobody's session, or the account owner's, and there is no
-              // `CurrentSession` here to rewrite a snapshot from. Dropping
-              // whatever this browser had costs one database read and is the
-              // only way a stale address cannot survive the change.
-              yield* cache.clear
-              return acknowledged
-            }))
-          .handle("deleteUser", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(credentials, request)
-              if (!config.user.deleteUser.enabled) return notServed
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              const outcome = yield* users.requestDeletion({
+              })
+              .pipe(serverFault)
+            // The same answer whichever branch ran, taken address included.
+            return acknowledged
+          })
+        )
+        .handle("confirmEmailChange", ({ query }) =>
+          Effect.gen(function* () {
+            if (!config.user.changeEmail.enabled) return notServed
+            yield* users.confirmEmailChange(Redacted.make(query.token)).pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("verifyEmailChange", ({ query }) =>
+          Effect.gen(function* () {
+            if (!config.user.changeEmail.enabled) return notServed
+            yield* users.verifyEmailChange(Redacted.make(query.token)).pipe(serverFault)
+            // Unauthenticated: this link may be opened in a browser that holds
+            // nobody's session, or the account owner's, and there is no
+            // `CurrentSession` here to rewrite a snapshot from. Dropping
+            // whatever this browser had costs one database read and is the
+            // only way a stale address cannot survive the change.
+            yield* cache.clear
+            return acknowledged
+          })
+        )
+        .handle("deleteUser", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(credentials, request)
+            if (!config.user.deleteUser.enabled) return notServed
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            const outcome = yield* users
+              .requestDeletion({
                 user,
                 session,
                 password: payload.password,
                 callbackURL: Option.getOrUndefined(validateUrl(config, payload.callbackURL))
-              }).pipe(serverFault)
+              })
+              .pipe(serverFault)
 
-              if (outcome === "Deleted") {
-                // The row and every session of it have gone; the credential in
-                // this browser is dead and must not look alive.
-                yield* clearSessionCookies(config, cache)
-              }
-              return { success: true, status: outcome }
-            }))
-          .handle("deleteUserCallback", ({ query }) =>
-            Effect.gen(function*() {
-              if (!config.user.deleteUser.enabled) return notServed
-              const user = yield* CurrentUser
-              const deleted = yield* users.confirmDeletion({
+            if (outcome === "Deleted") {
+              // The row and every session of it have gone; the credential in
+              // this browser is dead and must not look alive.
+              yield* clearSessionCookies(config, cache)
+            }
+            return { success: true, status: outcome }
+          })
+        )
+        .handle("deleteUserCallback", ({ query }) =>
+          Effect.gen(function* () {
+            if (!config.user.deleteUser.enabled) return notServed
+            const user = yield* CurrentUser
+            const deleted = yield* users
+              .confirmDeletion({
                 token: Redacted.make(query.token),
                 userId: user.id
-              }).pipe(serverFault)
-              yield* clearSessionCookies(config, cache)
-              return redirectTo(deleted.redirectTo)
-            }).pipe(
-              // A refusal is a caller-visible outcome, never a fault — but this
-              // endpoint is a top-level navigation, so it leaves by one too. The
-              // token was claimed before the hook was asked, so the link is
-              // spent whichever way this went, and no cookie is cleared: nothing
-              // was deleted.
-              Effect.catchTag(
-                "PolicyRefused",
-                // `baseUrl`, and deliberately: the only URL this link carries is
-                // where to land once the account is *gone*, and sending somebody
-                // whose deletion was refused to "your account has been deleted"
-                // would be a lie. Unlike a magic link, this payload has no error
-                // URL to honour.
-                (refused) => Effect.succeed(redirectTo(policyRefusedTarget(config, null, refused.code)))
-              )
-            ))
-          .handle("setPassword", ({ payload, request }) =>
-            Effect.gen(function*() {
-              yield* rateLimit(credentials, request)
-              if (!config.emailPassword.enabled) return notServed
-              const user = yield* CurrentUser
-              const session = yield* CurrentSession
-              // Adding a credential is adding a way in, so the same freshness
-              // rule as changing one.
-              yield* sessions.requireFresh(session)
-              yield* passwords.setPassword({
+              })
+              .pipe(serverFault)
+            yield* clearSessionCookies(config, cache)
+            return redirectTo(deleted.redirectTo)
+          }).pipe(
+            // A refusal is a caller-visible outcome, never a fault — but this
+            // endpoint is a top-level navigation, so it leaves by one too. The
+            // token was claimed before the hook was asked, so the link is
+            // spent whichever way this went, and no cookie is cleared: nothing
+            // was deleted.
+            Effect.catchTag(
+              "PolicyRefused",
+              // `baseUrl`, and deliberately: the only URL this link carries is
+              // where to land once the account is *gone*, and sending somebody
+              // whose deletion was refused to "your account has been deleted"
+              // would be a lie. Unlike a magic link, this payload has no error
+              // URL to honour.
+              (refused) => Effect.succeed(redirectTo(policyRefusedTarget(config, null, refused.code)))
+            )
+          )
+        )
+        .handle("setPassword", ({ payload, request }) =>
+          Effect.gen(function* () {
+            yield* rateLimit(credentials, request)
+            if (!config.emailPassword.enabled) return notServed
+            const user = yield* CurrentUser
+            const session = yield* CurrentSession
+            // Adding a credential is adding a way in, so the same freshness
+            // rule as changing one.
+            yield* sessions.requireFresh(session)
+            yield* passwords
+              .setPassword({
                 userId: user.id,
                 newPassword: payload.newPassword
-              }).pipe(serverFault)
-              return acknowledged
-            }))
-          .handle("getAccessToken", ({ payload }) =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              if (Option.isNone(flow)) {
-                // No provider is configured, so no account can be one of theirs.
-                return yield* Effect.fail(new NotFound())
-              }
-              return yield* flow.value.accessToken({
+              })
+              .pipe(serverFault)
+            return acknowledged
+          })
+        )
+        .handle("getAccessToken", ({ payload }) =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            if (Option.isNone(flow)) {
+              // No provider is configured, so no account can be one of theirs.
+              return yield* Effect.fail(new NotFound())
+            }
+            return yield* flow.value
+              .accessToken({
                 userId: user.id,
                 accountId: payload.accountId
-              }).pipe(serverFault)
-            }))
-          .handle("refreshToken", ({ payload }) =>
-            Effect.gen(function*() {
-              const user = yield* CurrentUser
-              if (Option.isNone(flow)) {
-                return yield* Effect.fail(new NotFound())
-              }
-              return yield* flow.value.refreshTokens({
+              })
+              .pipe(serverFault)
+          })
+        )
+        .handle("refreshToken", ({ payload }) =>
+          Effect.gen(function* () {
+            const user = yield* CurrentUser
+            if (Option.isNone(flow)) {
+              return yield* Effect.fail(new NotFound())
+            }
+            return yield* flow.value
+              .refreshTokens({
                 userId: user.id,
                 accountId: payload.accountId
-              }).pipe(serverFault)
-            }))
-          .handle("oauthCallbackForm", ({ params, payload }) =>
-            // No session, no state, no store: the whole endpoint is a hop. A
-            // provider using `response_mode=form_post` posts here cross-site,
-            // and a cross-site POST carries no `SameSite=Lax` cookie — so
-            // completing the flow here could neither read the caller's session
-            // nor write one that the browser would keep. The 302 turns it into
-            // the top-level GET navigation the rest of the flow is built for.
-            Effect.succeed(redirectTo(callbackFormTarget(config, params.providerId, payload))))
-      })
+              })
+              .pipe(serverFault)
+          })
+        )
+        .handle("oauthCallbackForm", ({ params, payload }) =>
+          // No session, no state, no store: the whole endpoint is a hop. A
+          // provider using `response_mode=form_post` posts here cross-site,
+          // and a cross-site POST carries no `SameSite=Lax` cookie — so
+          // completing the flow here could neither read the caller's session
+          // nor write one that the browser would keep. The 302 turns it into
+          // the top-level GET navigation the rest of the flow is built for.
+          Effect.succeed(redirectTo(callbackFormTarget(config, params.providerId, payload)))
+        )
+    })
   )
 }

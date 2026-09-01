@@ -79,16 +79,18 @@ export type PersistenceFailureKind = typeof PersistenceFailureKind.Type
  * @category errors
  * @since 1.0.0
  */
-export class PersistenceError
-  extends Schema.TaggedError<PersistenceError>("effect-auth/PersistenceError")("PersistenceError", {
+export class PersistenceError extends Schema.TaggedError<PersistenceError>("effect-auth/PersistenceError")(
+  "PersistenceError",
+  {
     operation: Schema.String,
     kind: Schema.optional(PersistenceFailureKind),
     cause: Schema.optional(Schema.Defect())
-  }, {
+  },
+  {
     description: "A storage operation failed",
     httpApiStatus: 500
-  })
-{}
+  }
+) {}
 
 /**
  * Whether a storage failure was a unique-index rejection.
@@ -270,18 +272,13 @@ export interface SessionStoreService<F extends UserFields = {}> {
    * expired row means, so that an expired session can be distinguished from an
    * unknown one and cleaned up.
    */
-  readonly findByTokenHash: (
-    tokenHash: string
-  ) => Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError>
+  readonly findByTokenHash: (tokenHash: string) => Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError>
 
   /**
    * Extends a session's expiry (the rolling refresh) and returns the updated
    * row, or `None` when the session was concurrently revoked.
    */
-  readonly touch: (
-    id: SessionId,
-    expiresAt: DateTime.Utc
-  ) => Effect.Effect<Option.Option<Session>, PersistenceError>
+  readonly touch: (id: SessionId, expiresAt: DateTime.Utc) => Effect.Effect<Option.Option<Session>, PersistenceError>
 
   /**
    * Deletes one session belonging to `userId`. Returns whether a row was
@@ -400,10 +397,7 @@ export interface AccountStoreService {
    * telling them apart would let a signed-in caller probe which account ids
    * exist.
    */
-  readonly findByIdAndUserId: (
-    id: AccountId,
-    userId: UserId
-  ) => Effect.Effect<Option.Option<Account>, PersistenceError>
+  readonly findByIdAndUserId: (id: AccountId, userId: UserId) => Effect.Effect<Option.Option<Account>, PersistenceError>
 
   /**
    * Looks up a user's account for one provider — including the synthetic
@@ -565,9 +559,9 @@ export interface VerificationStoreService {
  * @category services
  * @since 1.0.0
  */
-export class VerificationStore
-  extends Context.Service<VerificationStore, VerificationStoreService>()("effect-auth/VerificationStore")
-{}
+export class VerificationStore extends Context.Service<VerificationStore, VerificationStoreService>()(
+  "effect-auth/VerificationStore"
+) {}
 
 // -----------------------------------------------------------------------------
 // Transactions
@@ -604,9 +598,9 @@ export interface WithAuthTransactionService {
  * @category services
  * @since 1.0.0
  */
-export class WithAuthTransaction
-  extends Context.Service<WithAuthTransaction, WithAuthTransactionService>()("effect-auth/WithAuthTransaction")
-{}
+export class WithAuthTransaction extends Context.Service<WithAuthTransaction, WithAuthTransactionService>()(
+  "effect-auth/WithAuthTransaction"
+) {}
 
 /**
  * Every service the storage seam is made of. `SqlStores.layer` provides exactly
@@ -615,9 +609,4 @@ export class WithAuthTransaction
  * @category services
  * @since 1.0.0
  */
-export type AuthStores =
-  | UserStore
-  | SessionStore
-  | AccountStore
-  | VerificationStore
-  | WithAuthTransaction
+export type AuthStores = UserStore | SessionStore | AccountStore | VerificationStore | WithAuthTransaction

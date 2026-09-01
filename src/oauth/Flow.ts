@@ -131,17 +131,18 @@ export const refuseRedirects = (client: HttpClient.HttpClient): HttpClient.HttpC
       Effect.flatMap((response) =>
         isRedirectResponse(response)
           ? Effect.fail(
-            new HttpClientError.HttpClientError({
-              reason: new HttpClientError.StatusCodeError({
-                request: response.request,
-                response,
-                description: "effect-auth refuses HTTP redirects on OAuth requests"
+              new HttpClientError.HttpClientError({
+                reason: new HttpClientError.StatusCodeError({
+                  request: response.request,
+                  response,
+                  description: "effect-auth refuses HTTP redirects on OAuth requests"
+                })
               })
-            })
-          )
+            )
           : Effect.succeed(response)
       )
-    ))
+    )
+  )
 
 /**
  * {@link refuseRedirects} as a layer over the ambient `HttpClient`.
@@ -192,8 +193,7 @@ export const callbackUri = (config: AuthConfigService, provider: OAuthProviderCo
 export const mergeScopes = (
   provider: OAuthProviderConfig,
   extra: ReadonlyArray<string> | undefined
-): ReadonlyArray<string> =>
-  Array.dedupe([...provider.scopes, ...(extra ?? [])].filter((scope) => scope.length > 0))
+): ReadonlyArray<string> => Array.dedupe([...provider.scopes, ...(extra ?? [])].filter((scope) => scope.length > 0))
 
 /**
  * Builds the authorization URL the browser is sent to.
@@ -287,9 +287,8 @@ export const decodeTokens = (body: unknown, now: DateTime.Utc): OAuthTokens | nu
       idToken: fields.id_token === undefined ? null : Redacted.make(fields.id_token),
       idTokenClaims: null,
       accessTokenExpiresAt: fields.expires_in === undefined ? null : addSeconds(now, fields.expires_in),
-      refreshTokenExpiresAt: fields.refresh_token_expires_in === undefined
-        ? null
-        : addSeconds(now, fields.refresh_token_expires_in),
+      refreshTokenExpiresAt:
+        fields.refresh_token_expires_in === undefined ? null : addSeconds(now, fields.refresh_token_expires_in),
       scope: fields.scope ?? null
     })
   })
@@ -503,17 +502,17 @@ export type CallbackError =
 export type CallbackOutcome =
   | ({ readonly _tag: "Success" } & CallbackResult)
   | {
-    readonly _tag: "Failure"
-    readonly error: CallbackError
-    /**
-     * The validated error URL, carrying `?error=<code>` — and, when a
-     * deployment's own hook was what refused, `&code=<the hook's code>` beside
-     * it.
-     */
-    readonly redirectTo: string
-    /** The safe, closed-set error code that was appended. */
-    readonly code: string
-  }
+      readonly _tag: "Failure"
+      readonly error: CallbackError
+      /**
+       * The validated error URL, carrying `?error=<code>` — and, when a
+       * deployment's own hook was what refused, `&code=<the hook's code>` beside
+       * it.
+       */
+      readonly redirectTo: string
+      /** The safe, closed-set error code that was appended. */
+      readonly code: string
+    }
 
 /**
  * The safe error code a failed callback reports in the redirect's query string.
@@ -562,9 +561,7 @@ export interface OAuthFlowService {
    * Fails `OAuthProviderError({ reason: "UnknownProvider" })` for an id this
    * instance does not serve.
    */
-  readonly start: (
-    options: StartOptions
-  ) => Effect.Effect<StartResult, OAuthProviderError | PersistenceError>
+  readonly start: (options: StartOptions) => Effect.Effect<StartResult, OAuthProviderError | PersistenceError>
 
   /**
    * Completes a callback: consumes the state, exchanges the code, verifies an
@@ -575,9 +572,7 @@ export interface OAuthFlowService {
    * session it is about to mint — so `PolicyRefused` is one of the failures,
    * carrying the code whichever rule refused named itself with.
    */
-  readonly callback: (
-    options: CallbackOptions
-  ) => Effect.Effect<CallbackResult, CallbackError | PersistenceError>
+  readonly callback: (options: CallbackOptions) => Effect.Effect<CallbackResult, CallbackError | PersistenceError>
 
   /**
    * `callback`, but resolving a failure into a redirect rather than an error.
@@ -589,9 +584,7 @@ export interface OAuthFlowService {
    * happened, so a failure becomes a `302` to the validated `errorCallbackURL`
    * with a safe `?error=` code rather than an error page.
    */
-  readonly complete: (
-    options: CallbackOptions
-  ) => Effect.Effect<CallbackOutcome, PersistenceError>
+  readonly complete: (options: CallbackOptions) => Effect.Effect<CallbackOutcome, PersistenceError>
 
   /**
    * A usable access token for one of the caller's linked accounts, refreshing it
@@ -688,7 +681,7 @@ export const make: () => Effect.Effect<
   | AuthEvents
   | Jwks
   | HttpClient.HttpClient
-> = Effect.fnUntraced(function*() {
+> = Effect.fnUntraced(function* () {
   const config = yield* AuthConfig
   const registry = yield* OAuthProviders
   const accounts = yield* Accounts
@@ -705,35 +698,37 @@ export const make: () => Effect.Effect<
   // `State` reads its services from the context. Capturing them once, when the
   // layer is built, keeps them out of every method's requirements.
   const stateServices = yield* Effect.context<AuthConfig | Token | VerificationStore>()
-  const issue = (options: IssueOptions) =>
-    Effect.provideContext(issueState(options), stateServices)
+  const issue = (options: IssueOptions) => Effect.provideContext(issueState(options), stateServices)
   const consume = (providerId: string, state: Redacted.Redacted<string>) =>
     Effect.provideContext(consumeState(providerId, state), stateServices)
 
-  const start = Effect.fnUntraced(function*(options: StartOptions) {
-    const provider = yield* registry.get(options.providerId)
-    const issued = yield* issue({
-      providerId: provider.id,
-      callbackURL: resolveUrl(config, options.callbackURL),
-      errorURL: resolveUrl(config, options.errorCallbackURL),
-      linkUserId: options.linkUserId ?? null,
-      rememberMe: options.rememberMe ?? true,
-      withNonce: isOidc(provider)
-    })
-    return {
-      providerId: provider.id,
-      url: authorizationUrl({
-        provider,
-        redirectUri: callbackUri(config, provider),
-        state: Redacted.value(issued.state),
-        codeChallenge: issued.codeChallenge,
-        nonce: issued.nonce,
-        scopes: mergeScopes(provider, options.scopes)
-      }),
-      state: issued.state,
-      expiresAt: issued.expiresAt
-    } satisfies StartResult
-  }, (effect, options) => Effect.withSpan(effect, "OAuthFlow.start", { attributes: { providerId: options.providerId } }))
+  const start = Effect.fnUntraced(
+    function* (options: StartOptions) {
+      const provider = yield* registry.get(options.providerId)
+      const issued = yield* issue({
+        providerId: provider.id,
+        callbackURL: resolveUrl(config, options.callbackURL),
+        errorURL: resolveUrl(config, options.errorCallbackURL),
+        linkUserId: options.linkUserId ?? null,
+        rememberMe: options.rememberMe ?? true,
+        withNonce: isOidc(provider)
+      })
+      return {
+        providerId: provider.id,
+        url: authorizationUrl({
+          provider,
+          redirectUri: callbackUri(config, provider),
+          state: Redacted.value(issued.state),
+          codeChallenge: issued.codeChallenge,
+          nonce: issued.nonce,
+          scopes: mergeScopes(provider, options.scopes)
+        }),
+        state: issued.state,
+        expiresAt: issued.expiresAt
+      } satisfies StartResult
+    },
+    (effect, options) => Effect.withSpan(effect, "OAuthFlow.start", { attributes: { providerId: options.providerId } })
+  )
 
   /**
    * One request to the provider's token endpoint: the code exchange and the
@@ -746,7 +741,7 @@ export const make: () => Effect.Effect<
    * `TokenRefreshFailed` naming the account — so the mapping is a parameter
    * rather than a `catchTag` at the boundary.
    */
-  const tokenRequest = Effect.fnUntraced(function*<E>(options: {
+  const tokenRequest = Effect.fnUntraced(function* <E>(options: {
     readonly provider: OAuthProviderConfig
     /** The flow's own parameters. They always win over `extraParams`. */
     readonly params: Readonly<Record<string, string>>
@@ -852,20 +847,17 @@ export const make: () => Effect.Effect<
     const redirectUri = callbackUri(config, provider)
     const fallback = defaultExchange(provider, code, codeVerifier, redirectUri)
     const override = provider.exchange
-    const run = override === undefined
-      ? fallback
-      : Effect.provideService(
-        override({ code, codeVerifier, redirectUri, fallback }),
-        HttpClient.HttpClient,
-        client
-      )
+    const run =
+      override === undefined
+        ? fallback
+        : Effect.provideService(override({ code, codeVerifier, redirectUri, fallback }), HttpClient.HttpClient, client)
     return run.pipe(
       Effect.timeout(exchangeDeadline),
       Effect.catchTag("TimeoutError", () => Effect.fail(providerError(provider.id, "ProviderUnavailable")))
     )
   }
 
-  const withIdToken = Effect.fnUntraced(function*(
+  const withIdToken = Effect.fnUntraced(function* (
     provider: OAuthProviderConfig,
     tokens: OAuthTokens,
     nonce: string | null
@@ -879,9 +871,10 @@ export const make: () => Effect.Effect<
     // with an issuer and no key source at all — is gone because `oidc.keys` is a
     // union: that configuration can no longer be written down.
     const source = oidc.keys
-    const resolved: { readonly keys: KeyResolver; readonly jwksUrl: string | null } = "jwksUrl" in source
-      ? { keys: yield* Effect.mapError(keySets.keys(source.jwksUrl), () => invalid), jwksUrl: source.jwksUrl }
-      : { keys: source.jwks, jwksUrl: null }
+    const resolved: { readonly keys: KeyResolver; readonly jwksUrl: string | null } =
+      "jwksUrl" in source
+        ? { keys: yield* Effect.mapError(keySets.keys(source.jwksUrl), () => invalid), jwksUrl: source.jwksUrl }
+        : { keys: source.jwks, jwksUrl: null }
     const claims: IdTokenClaims = yield* verifyIdToken({
       providerId: provider.id,
       token: tokens.idToken,
@@ -910,7 +903,7 @@ export const make: () => Effect.Effect<
     scope: tokens.scope
   })
 
-  const begin = Effect.fnUntraced(function*(options: CallbackOptions) {
+  const begin = Effect.fnUntraced(function* (options: CallbackOptions) {
     const provider = yield* registry.get(options.providerId)
     if (options.state === undefined || options.state.length === 0) {
       return yield* Effect.fail(new OAuthStateMismatch())
@@ -919,7 +912,7 @@ export const make: () => Effect.Effect<
     return { provider, payload }
   })
 
-  const finish = Effect.fnUntraced(function*(
+  const finish = Effect.fnUntraced(function* (
     provider: OAuthProviderConfig,
     payload: StatePayload,
     options: CallbackOptions
@@ -971,9 +964,7 @@ export const make: () => Effect.Effect<
     }
 
     const linkUserId = payload.linkUserId
-    const link = yield* (linkUserId === null
-      ? accounts.linkOAuth(identity)
-      : accounts.linkToUser(linkUserId, identity))
+    const link = yield* linkUserId === null ? accounts.linkOAuth(identity) : accounts.linkToUser(linkUserId, identity)
 
     if (linkUserId !== null) {
       return {
@@ -1030,7 +1021,7 @@ export const make: () => Effect.Effect<
   })
 
   const callback = Effect.fnUntraced(
-    function*(options: CallbackOptions) {
+    function* (options: CallbackOptions) {
       const { payload, provider } = yield* begin(options)
       return yield* finish(provider, payload, options)
     },
@@ -1040,21 +1031,24 @@ export const make: () => Effect.Effect<
 
   const failure = redirectFailure(config, errorCode)
 
-  const complete = Effect.fnUntraced(function*(options: CallbackOptions) {
-    const begun = yield* Effect.result(begin(options))
-    if (begun._tag === "Failure") {
-      if (begun.failure._tag === "PersistenceError") return yield* Effect.fail(begun.failure)
-      return failure(begun.failure, null)
-    }
-    const { payload, provider } = begun.success
-    const finished = yield* Effect.result(finish(provider, payload, options))
-    if (finished._tag === "Failure") {
-      if (finished.failure._tag === "PersistenceError") return yield* Effect.fail(finished.failure)
-      return failure(finished.failure, payload.errorURL)
-    }
-    return { _tag: "Success", ...finished.success } satisfies CallbackOutcome
-  }, (effect, options) =>
-    Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } }))
+  const complete = Effect.fnUntraced(
+    function* (options: CallbackOptions) {
+      const begun = yield* Effect.result(begin(options))
+      if (begun._tag === "Failure") {
+        if (begun.failure._tag === "PersistenceError") return yield* Effect.fail(begun.failure)
+        return failure(begun.failure, null)
+      }
+      const { payload, provider } = begun.success
+      const finished = yield* Effect.result(finish(provider, payload, options))
+      if (finished._tag === "Failure") {
+        if (finished.failure._tag === "PersistenceError") return yield* Effect.fail(finished.failure)
+        return failure(finished.failure, payload.errorURL)
+      }
+      return { _tag: "Success", ...finished.success } satisfies CallbackOutcome
+    },
+    (effect, options) =>
+      Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } })
+  )
 
   // ---------------------------------------------------------------------------
   // Provider tokens, after the flow
@@ -1067,7 +1061,7 @@ export const make: () => Effect.Effect<
    * The caller's own account, or `NotFound` — which is also the answer for
    * somebody else's account, and deliberately the same one.
    */
-  const findAccount = Effect.fnUntraced(function*(selector: TokenSelector) {
+  const findAccount = Effect.fnUntraced(function* (selector: TokenSelector) {
     const found = yield* accountStore.findByIdAndUserId(selector.accountId, selector.userId)
     return yield* Effect.fromOption(found, () => new NotFound())
   })
@@ -1093,18 +1087,17 @@ export const make: () => Effect.Effect<
     account.accessToken === null
       ? Effect.fail(refreshFailure(account.id, "AccessTokenMissing"))
       : Effect.succeed({
-        accessToken: Redacted.make(account.accessToken),
-        accessTokenExpiresAt: account.accessTokenExpiresAt,
-        idToken: account.idToken === null ? null : Redacted.make(account.idToken),
-        scopes: scopesOf(account.scope),
-        providerId: account.providerId,
-        accountId: account.id
-      })
+          accessToken: Redacted.make(account.accessToken),
+          accessTokenExpiresAt: account.accessTokenExpiresAt,
+          idToken: account.idToken === null ? null : Redacted.make(account.idToken),
+          scopes: scopesOf(account.scope),
+          providerId: account.providerId,
+          accountId: account.id
+        })
 
-  const refreshFor = Effect.fnUntraced(function*(account: Account) {
-    const provider = yield* Effect.mapError(
-      registry.get(account.providerId),
-      () => refreshFailure(account.id, "ProviderNotSupported")
+  const refreshFor = Effect.fnUntraced(function* (account: Account) {
+    const provider = yield* Effect.mapError(registry.get(account.providerId), () =>
+      refreshFailure(account.id, "ProviderNotSupported")
     )
     if (provider.tokenRefresh?.enabled === false) {
       return yield* Effect.fail(refreshFailure(account.id, "RefreshNotSupported"))
@@ -1134,18 +1127,17 @@ export const make: () => Effect.Effect<
     const patch: AccountTokens = {
       accessToken: Redacted.value(tokens.accessToken),
       accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-      ...(tokens.refreshToken === null ? {} : {
-        refreshToken: Redacted.value(tokens.refreshToken),
-        refreshTokenExpiresAt: tokens.refreshTokenExpiresAt
-      }),
+      ...(tokens.refreshToken === null
+        ? {}
+        : {
+            refreshToken: Redacted.value(tokens.refreshToken),
+            refreshTokenExpiresAt: tokens.refreshTokenExpiresAt
+          }),
       ...(tokens.idToken === null ? {} : { idToken: Redacted.value(tokens.idToken) })
     }
     // The account was unlinked between the read and the write: there is nothing
     // to answer with, and what was just minted belongs to nobody.
-    const row = yield* Effect.fromOption(
-      yield* accountStore.updateTokens(account.id, patch),
-      () => new NotFound()
-    )
+    const row = yield* Effect.fromOption(yield* accountStore.updateTokens(account.id, patch), () => new NotFound())
 
     yield* publishSafely(events, {
       _tag: "TokensRefreshed",
@@ -1166,19 +1158,22 @@ export const make: () => Effect.Effect<
     } satisfies RefreshedTokens
   })
 
-  const accessToken = Effect.fnUntraced(function*(selector: TokenSelector) {
-    const account = yield* findAccount(selector)
-    // The hot path: a token with life left in it, or one that could not be
-    // renewed anyway, is handed straight back.
-    if (!expiring(account, yield* DateTime.now) || !refreshable(account)) {
-      return yield* storedTokens(account)
-    }
-    return yield* refreshFor(account)
-  }, (effect, selector) =>
-    Effect.withSpan(effect, "OAuthFlow.accessToken", { attributes: { accountId: selector.accountId } }))
+  const accessToken = Effect.fnUntraced(
+    function* (selector: TokenSelector) {
+      const account = yield* findAccount(selector)
+      // The hot path: a token with life left in it, or one that could not be
+      // renewed anyway, is handed straight back.
+      if (!expiring(account, yield* DateTime.now) || !refreshable(account)) {
+        return yield* storedTokens(account)
+      }
+      return yield* refreshFor(account)
+    },
+    (effect, selector) =>
+      Effect.withSpan(effect, "OAuthFlow.accessToken", { attributes: { accountId: selector.accountId } })
+  )
 
   const refreshTokens = Effect.fnUntraced(
-    function*(selector: TokenSelector) {
+    function* (selector: TokenSelector) {
       return yield* refreshFor(yield* findAccount(selector))
     },
     (effect, selector) =>
@@ -1219,6 +1214,4 @@ export const layer: Layer.Layer<
   | Sessions
   | AuthEvents
   | HttpClient.HttpClient
-> = Layer.effect(OAuthFlow, make()).pipe(
-  Layer.provide(layerJwks.pipe(Layer.provide(layerSafeClient)))
-)
+> = Layer.effect(OAuthFlow, make()).pipe(Layer.provide(layerJwks.pipe(Layer.provide(layerSafeClient))))

@@ -193,9 +193,7 @@ export const sessionCookieOptions = (
  * @category combinators
  * @since 1.0.0
  */
-export const expiredSessionCookieOptions = (
-  config: AuthConfigService
-): NonNullable<Cookies.Cookie["options"]> => ({
+export const expiredSessionCookieOptions = (config: AuthConfigService): NonNullable<Cookies.Cookie["options"]> => ({
   path: config.cookie.path,
   domain: config.cookie.domain,
   sameSite: config.cookie.sameSite,
@@ -253,9 +251,7 @@ export const oauthStateCookieOptions = (
  * @category combinators
  * @since 1.0.0
  */
-export const expiredOAuthStateCookieOptions = (
-  config: AuthConfigService
-): NonNullable<Cookies.Cookie["options"]> => ({
+export const expiredOAuthStateCookieOptions = (config: AuthConfigService): NonNullable<Cookies.Cookie["options"]> => ({
   path: "/",
   domain: undefined,
   sameSite: config.cookie.sameSite === "none" ? "none" : "lax",
@@ -450,7 +446,5 @@ export const redactedHeaderNames: ReadonlyArray<string | RegExp> = [
  * @category layers
  * @since 1.0.0
  */
-export const layerRedactedHeaders = (
-  additional: ReadonlyArray<string | RegExp> = []
-): Layer.Layer<never> =>
+export const layerRedactedHeaders = (additional: ReadonlyArray<string | RegExp> = []): Layer.Layer<never> =>
   Layer.succeed(Headers.CurrentRedactedNames)([...redactedHeaderNames, ...additional])

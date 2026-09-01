@@ -76,7 +76,7 @@ const noNetwork = MockProvider.safeHttpLayer(MockProvider.mockServer().fetch)
 layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
   describe("configuration", () => {
     it.effect("is an OIDC provider that asks for a form_post callback", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         assert.strictEqual(provider.id, "apple")
         assert.strictEqual(provider.oidc?.issuer, "https://appleid.apple.com")
@@ -90,10 +90,11 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         // server-side, so the hybrid flow's front-channel token buys nothing.
         assert.strictEqual(provider.authorizationParams?.response_mode, "form_post")
         assert.isUndefined(provider.authorizationParams?.response_type)
-      }))
+      })
+    )
 
     it.effect("expects the audience the deployment actually receives tokens for", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const keys = yield* AppleKeys
         assert.strictEqual(Apple.make(secretOptions(keys)).oidc?.audience, clientId)
         // A native application's tokens carry its bundle identifier, not the
@@ -104,18 +105,21 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         )
         // A deployment serving both states both, and nothing else is admitted.
         assert.deepStrictEqual(
-          Apple.make(secretOptions(keys, {
-            appBundleIdentifier: "com.example.app",
-            audience: [clientId, "com.example.app"]
-          })).oidc?.audience,
+          Apple.make(
+            secretOptions(keys, {
+              appBundleIdentifier: "com.example.app",
+              audience: [clientId, "com.example.app"]
+            })
+          ).oidc?.audience,
           [clientId, "com.example.app"]
         )
-      }))
+      })
+    )
   })
 
   describe("clientSecret", () => {
     it.effect("mints an ES256 assertion that verifies against the signing key", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const keys = yield* AppleKeys
         const provider = Apple.make(secretOptions(keys))
         const secret = yield* resolveClientSecret(provider)
@@ -139,20 +143,22 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         assert.strictEqual(verified.payload.iss, teamId)
         assert.strictEqual(verified.payload.iat, 0)
         assert.strictEqual(verified.payload.exp, 3600)
-      }))
+      })
+    )
 
     it.effect("mints a fresh one for every token request", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         // The whole point of the effectful shape: the assertion expires, so it
         // must not be resolved once and kept in a layer.
         const first = yield* resolveClientSecret(provider)
         const second = yield* resolveClientSecret(provider)
         assert.isTrue(Option.isSome(first) && Option.isSome(second))
-      }))
+      })
+    )
 
     it.effect("clamps the lifetime to the six months Apple accepts", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const keys = yield* AppleKeys
         const secret = yield* Apple.clientSecret({
           ...secretOptions(keys),
@@ -162,26 +168,30 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
           jwtVerify(Redacted.value(secret), keys.publicKey, { currentDate: new Date(0) })
         )
         assert.strictEqual(verified.payload.exp, Duration.toSeconds(Apple.maximumSecretTtl))
-      }))
+      })
+    )
 
     it.effect("reports a key it cannot sign with, without quoting it", () =>
-      Effect.gen(function*() {
-        const result = yield* Effect.result(Apple.clientSecret({
-          clientId,
-          teamId,
-          keyId,
-          privateKey: Redacted.make("-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----")
-        }))
+      Effect.gen(function* () {
+        const result = yield* Effect.result(
+          Apple.clientSecret({
+            clientId,
+            teamId,
+            keyId,
+            privateKey: Redacted.make("-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----")
+          })
+        )
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure._tag, "OAuthProviderError")
         assert.strictEqual(result.failure.reason, "ClientSecretUnavailable")
-      }))
+      })
+    )
   })
 
   describe("makeConfig", () => {
     it.effect("builds the provider and proves the key works", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const keys = yield* AppleKeys
         const provider = yield* Apple.makeConfig({
           clientId: Config.string("APPLE_CLIENT_ID"),
@@ -190,21 +200,26 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
           privateKey: Config.redacted("APPLE_PRIVATE_KEY"),
           appBundleIdentifier: Config.string("APPLE_BUNDLE_ID")
         }).pipe(
-          Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-            APPLE_CLIENT_ID: clientId,
-            APPLE_TEAM_ID: teamId,
-            APPLE_KEY_ID: keyId,
-            APPLE_PRIVATE_KEY: Redacted.value(keys.privateKey),
-            APPLE_BUNDLE_ID: "com.example.app"
-          })))
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                APPLE_CLIENT_ID: clientId,
+                APPLE_TEAM_ID: teamId,
+                APPLE_KEY_ID: keyId,
+                APPLE_PRIVATE_KEY: Redacted.value(keys.privateKey),
+                APPLE_BUNDLE_ID: "com.example.app"
+              })
+            )
+          )
         )
         assert.strictEqual(provider.clientId, clientId)
         assert.strictEqual(provider.oidc?.audience, "com.example.app")
         assert.isTrue(Option.isSome(yield* resolveClientSecret(provider)))
-      }))
+      })
+    )
 
     it.effect("dies at build time on a key that is not one", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // A `.p8` that cannot sign is a deployment that can never complete a
         // sign-in. It is a defect at boot, not a failure on somebody's first
         // callback — and not a `ConfigError` either, since the setting was
@@ -216,16 +231,21 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
             keyId: Config.string("APPLE_KEY_ID"),
             privateKey: Config.redacted("APPLE_PRIVATE_KEY")
           }).pipe(
-            Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-              APPLE_CLIENT_ID: clientId,
-              APPLE_TEAM_ID: teamId,
-              APPLE_KEY_ID: keyId,
-              APPLE_PRIVATE_KEY: "not-a-pem-at-all"
-            })))
+            Effect.provide(
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({
+                  APPLE_CLIENT_ID: clientId,
+                  APPLE_TEAM_ID: teamId,
+                  APPLE_KEY_ID: keyId,
+                  APPLE_PRIVATE_KEY: "not-a-pem-at-all"
+                })
+              )
+            )
           )
         )
         assert.isTrue(exit._tag === "Failure" && Cause.hasDies(exit.cause))
-      }))
+      })
+    )
   })
 
   describe("nameOf", () => {
@@ -240,12 +260,13 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         // The address in there is Apple's *unsigned* echo, and is never read:
         // the identity's address comes from the token.
         assert.strictEqual(Apple.nameOf(JSON.stringify({ email: "evil@example.com" })), null)
-      }))
+      })
+    )
   })
 
   describe("userInfo", () => {
     it.effect("takes the identity from the token and the name from the callback", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         const info = yield* provider.userInfo(
           MockProvider.tokensOf("apple-access-token", { idTokenClaims: claims() }),
@@ -255,29 +276,30 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         assert.strictEqual(info.email, "ada@privaterelay.appleid.com")
         assert.isTrue(info.emailVerified)
         assert.strictEqual(info.name, "Ada Lovelace")
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("falls back to the address on every later sign-in", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         // Apple sends `user` exactly once, on the first authorization.
-        const info = yield* provider.userInfo(
-          MockProvider.tokensOf("apple-access-token", { idTokenClaims: claims() })
-        )
+        const info = yield* provider.userInfo(MockProvider.tokensOf("apple-access-token", { idTokenClaims: claims() }))
         assert.strictEqual(info.name, "ada@privaterelay.appleid.com")
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("fails closed when the flow handed it no verified claims", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         const result = yield* Effect.result(provider.userInfo(MockProvider.tokensOf("apple-access-token")))
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("fails when the token carries no address", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
         const result = yield* Effect.result(
           provider.userInfo(MockProvider.tokensOf("apple-access-token", { idTokenClaims: claims({ email: null }) }))
@@ -285,7 +307,8 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "UserInfoFailed")
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
   })
 })
 
@@ -295,24 +318,33 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/providers/Apple audiences", (it) 
     audience: string | ReadonlyArray<string>,
     minted: string
   ) =>
-    Effect.gen(function*() {
-      const token = Redacted.make(yield* Effect.promise(() => signer.sign({ sub: "s" }, {
-        issuer: Apple.issuer,
-        audience: minted
-      })))
-      return yield* Effect.result(verify({
-        providerId: Apple.id,
-        token,
-        issuer: Apple.issuer,
-        audience,
-        keys: signer.jwks,
-        nonce: null,
-        algorithms: ["RS256"]
-      }))
+    Effect.gen(function* () {
+      const token = Redacted.make(
+        yield* Effect.promise(() =>
+          signer.sign(
+            { sub: "s" },
+            {
+              issuer: Apple.issuer,
+              audience: minted
+            }
+          )
+        )
+      )
+      return yield* Effect.result(
+        verify({
+          providerId: Apple.id,
+          token,
+          issuer: Apple.issuer,
+          audience,
+          keys: signer.jwks,
+          nonce: null,
+          algorithms: ["RS256"]
+        })
+      )
     })
 
   it.effect("admits a token minted for any stated audience, and no other", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const signer = yield* MockProvider.IdTokenSigner
       const audience = [clientId, "com.example.app"]
 
@@ -326,7 +358,8 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/providers/Apple audiences", (it) 
       // A list of permitted audiences is still a closed one.
       const other = yield* verifying(signer, audience, "com.someone.else")
       assert.strictEqual(other._tag, "Failure")
-    }))
+    })
+  )
 })
 
 // -----------------------------------------------------------------------------
@@ -346,29 +379,31 @@ const server = MockProvider.mockServer()
  * fetched JWKS, and the `.p8` is the block's P-256 pair — both are services, so
  * the provider can only be described inside `Layer.unwrap`.
  */
-const appleHttp = Layer.unwrap(Effect.gen(function*() {
-  const signer = yield* MockProvider.IdTokenSigner
-  const keys = yield* AppleKeys
-  const apple = Apple.make({
-    clientId,
-    teamId,
-    keyId,
-    privateKey: keys.privateKey,
-    jwks: signer.jwks,
-    algorithms: ["RS256"]
+const appleHttp = Layer.unwrap(
+  Effect.gen(function* () {
+    const signer = yield* MockProvider.IdTokenSigner
+    const keys = yield* AppleKeys
+    const apple = Apple.make({
+      clientId,
+      teamId,
+      keyId,
+      privateKey: keys.privateKey,
+      jwks: signer.jwks,
+      algorithms: ["RS256"]
+    })
+    return Layer.mergeAll(
+      AuthHandlers.layer(AuthTest.TestApi).pipe(
+        Layer.provideMerge(AuthTest.layerFlow({ providers: [apple], fetch: server.fetch }))
+      ),
+      AuthTest.layerPlatform
+    )
   })
-  return Layer.mergeAll(
-    AuthHandlers.layer(AuthTest.TestApi).pipe(
-      Layer.provideMerge(AuthTest.layerFlow({ providers: [apple], fetch: server.fetch }))
-    ),
-    AuthTest.layerPlatform
-  )
-})).pipe(Layer.provideMerge(MockProvider.IdTokenSigner.layer), Layer.provideMerge(AppleKeys.layer))
+).pipe(Layer.provideMerge(MockProvider.IdTokenSigner.layer), Layer.provideMerge(AppleKeys.layer))
 
 describe.sequential("oauth/providers/Apple form_post", () => {
   layer(appleHttp)((it) => {
     it.effect("completes a sign-in through the POST callback and its GET twin", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const keys = yield* AppleKeys
         const email = uniqueEmail("apple")
@@ -449,6 +484,7 @@ describe.sequential("oauth/providers/Apple form_post", () => {
           })
         )
         assert.strictEqual(verified.payload.sub, clientId)
-      }))
+      })
+    )
   })
 })

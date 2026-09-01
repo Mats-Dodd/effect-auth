@@ -218,62 +218,64 @@ export interface OAuthProviderConfig {
    * There is no partial OIDC: adding this block turns the `id_token` from
    * something the flow tolerates into something it demands.
    */
-  readonly oidc?: {
-    /** The provider's OIDC issuer URL, and the issuer its accounts are stored under. */
-    readonly issuer: string
-    /**
-     * The issuer an `id_token` must claim, derived from the token's own claims.
-     *
-     * **When to use**
-     *
-     * Multi-tenant providers, where the expected `iss` is not one string but a
-     * function of the tenant the token names — Microsoft Entra derives it from
-     * `tid`. Returning `null` rejects the token.
-     *
-     * **Gotchas**
-     *
-     * It runs on the token's payload **before** the signature has been checked
-     * against that issuer, so it decides what to *expect*, never what to
-     * believe. A provider that accepts any tenant must still constrain the
-     * shape of the issuer it derives, or the check is not one; when it is
-     * absent, the block's `issuer` is the expected value, as it is for every
-     * single-tenant provider.
-     */
-    readonly issuerOf?: ((claims: Readonly<Record<string, unknown>>) => string | null) | undefined
-    /**
-     * Where the signing keys come from: a JWKS URL to fetch, or a key set
-     * already resolved.
-     *
-     * **When to use**
-     *
-     * `jwksUrl` for every real provider. `jwks` for keys pinned into the
-     * application, and for tests, which hand in a `jose` `createLocalJWKSet`
-     * resolver so that verification runs with no network at all.
-     */
-    readonly keys: { readonly jwksUrl: string } | { readonly jwks: KeyResolver }
-    /**
-     * The audience an `id_token` must carry, when it is not simply
-     * {@link OAuthProviderConfig.clientId}.
-     *
-     * **When to use**
-     *
-     * Where one deployment accepts tokens minted for more than one client —
-     * Apple, whose native applications receive tokens addressed to the app's
-     * bundle identifier rather than to the web Services ID.
-     *
-     * **Gotchas**
-     *
-     * A list is a list of *permitted* audiences, not a requirement that all be
-     * present. Keep it as short as the deployment genuinely needs: every entry
-     * is another client whose tokens are accepted here.
-     */
-    readonly audience?: string | ReadonlyArray<string> | undefined
-    /**
-     * The JWS algorithms accepted on an `id_token`. Defaults to whatever the
-     * resolved key admits, which for a JWKS is always asymmetric.
-     */
-    readonly algorithms?: ReadonlyArray<string> | undefined
-  } | undefined
+  readonly oidc?:
+    | {
+        /** The provider's OIDC issuer URL, and the issuer its accounts are stored under. */
+        readonly issuer: string
+        /**
+         * The issuer an `id_token` must claim, derived from the token's own claims.
+         *
+         * **When to use**
+         *
+         * Multi-tenant providers, where the expected `iss` is not one string but a
+         * function of the tenant the token names — Microsoft Entra derives it from
+         * `tid`. Returning `null` rejects the token.
+         *
+         * **Gotchas**
+         *
+         * It runs on the token's payload **before** the signature has been checked
+         * against that issuer, so it decides what to *expect*, never what to
+         * believe. A provider that accepts any tenant must still constrain the
+         * shape of the issuer it derives, or the check is not one; when it is
+         * absent, the block's `issuer` is the expected value, as it is for every
+         * single-tenant provider.
+         */
+        readonly issuerOf?: ((claims: Readonly<Record<string, unknown>>) => string | null) | undefined
+        /**
+         * Where the signing keys come from: a JWKS URL to fetch, or a key set
+         * already resolved.
+         *
+         * **When to use**
+         *
+         * `jwksUrl` for every real provider. `jwks` for keys pinned into the
+         * application, and for tests, which hand in a `jose` `createLocalJWKSet`
+         * resolver so that verification runs with no network at all.
+         */
+        readonly keys: { readonly jwksUrl: string } | { readonly jwks: KeyResolver }
+        /**
+         * The audience an `id_token` must carry, when it is not simply
+         * {@link OAuthProviderConfig.clientId}.
+         *
+         * **When to use**
+         *
+         * Where one deployment accepts tokens minted for more than one client —
+         * Apple, whose native applications receive tokens addressed to the app's
+         * bundle identifier rather than to the web Services ID.
+         *
+         * **Gotchas**
+         *
+         * A list is a list of *permitted* audiences, not a requirement that all be
+         * present. Keep it as short as the deployment genuinely needs: every entry
+         * is another client whose tokens are accepted here.
+         */
+        readonly audience?: string | ReadonlyArray<string> | undefined
+        /**
+         * The JWS algorithms accepted on an `id_token`. Defaults to whatever the
+         * resolved key admits, which for a JWKS is always asymmetric.
+         */
+        readonly algorithms?: ReadonlyArray<string> | undefined
+      }
+    | undefined
   /**
    * Whether, and how, this provider's stored tokens may be refreshed.
    *
@@ -290,10 +292,12 @@ export interface OAuthProviderConfig {
    * Parameters the flow owns cannot be overridden here; see
    * {@link reservedTokenParams}.
    */
-  readonly tokenRefresh?: {
-    readonly enabled?: boolean | undefined
-    readonly params?: Readonly<Record<string, string>> | undefined
-  } | undefined
+  readonly tokenRefresh?:
+    | {
+        readonly enabled?: boolean | undefined
+        readonly params?: Readonly<Record<string, string>> | undefined
+      }
+    | undefined
   /**
    * Overrides the redirect URI, which otherwise is
    * `<baseUrl><basePath>/callback/<id>`.
@@ -339,13 +343,15 @@ export interface OAuthProviderConfig {
    * that only when the provider's exchange genuinely is not an OAuth2 token
    * request.
    */
-  readonly exchange?: ((options: {
-    readonly code: string
-    readonly codeVerifier: string
-    readonly redirectUri: string
-    /** The generic token request for these inputs, for overrides that only decorate it. */
-    readonly fallback: Effect.Effect<OAuthTokens, OAuthProviderError>
-  }) => Effect.Effect<OAuthTokens, OAuthProviderError, HttpClient.HttpClient>) | undefined
+  readonly exchange?:
+    | ((options: {
+        readonly code: string
+        readonly codeVerifier: string
+        readonly redirectUri: string
+        /** The generic token request for these inputs, for overrides that only decorate it. */
+        readonly fallback: Effect.Effect<OAuthTokens, OAuthProviderError>
+      }) => Effect.Effect<OAuthTokens, OAuthProviderError, HttpClient.HttpClient>)
+    | undefined
   /**
    * Resolves the tokens into an identity, calling the provider's user-info
    * endpoints where it needs to.
@@ -500,9 +506,8 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
    * @category layers
    * @since 1.0.0
    */
-  static readonly layer = (
-    providers: ReadonlyArray<OAuthProviderConfig>
-  ): Layer.Layer<OAuthProviders> => Layer.succeed(OAuthProviders)(makeRegistry(providers))
+  static readonly layer = (providers: ReadonlyArray<OAuthProviderConfig>): Layer.Layer<OAuthProviders> =>
+    Layer.succeed(OAuthProviders)(makeRegistry(providers))
 }
 
 /**
@@ -524,9 +529,7 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
  * @category constructors
  * @since 1.0.0
  */
-export const makeRegistry = (
-  providers: Iterable<OAuthProviderConfig>
-): OAuthProvidersService => {
+export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthProvidersService => {
   const byId = Object.create(null) as Record<string, OAuthProviderConfig>
   const ids: Array<string> = []
   for (const provider of providers) {
@@ -732,7 +735,7 @@ export const fetchJson = (options: {
   readonly accessToken: Redacted.Redacted<string>
   readonly headers?: Readonly<Record<string, string>> | undefined
 }): Effect.Effect<JsonResponse, OAuthProviderError, HttpClient.HttpClient> =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient
     const request = Request.get(options.url, {
       acceptJson: true,

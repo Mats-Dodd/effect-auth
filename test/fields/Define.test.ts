@@ -32,14 +32,13 @@ const auth = Auth.define({
 
 const DefineApi = HttpApi.make("define-app").addHttpApi(auth.Api)
 
-const layerDefine = auth.handlers(DefineApi).pipe(
-  Layer.provideMerge(AuthTest.layer({ user: { model: auth.model } })),
-  Layer.merge(AuthTest.layerPlatform)
-)
+const layerDefine = auth
+  .handlers(DefineApi)
+  .pipe(Layer.provideMerge(AuthTest.layer({ user: { model: auth.model } })), Layer.merge(AuthTest.layerPlatform))
 
 layer(layerDefine)("fields/Define", (it) => {
   it.effect("serves the fields it declared", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* TestHttpClient.makeClient(DefineApi)
       const email = uniqueEmail("defined")
 
@@ -50,17 +49,19 @@ layer(layerDefine)("fields/Define", (it) => {
 
       const current = yield* client.auth.getSession()
       assert.strictEqual(current.user.tier, "gold")
-    }))
+    })
+  )
 
   it.effect("reads the same field back through its own store view", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const store = yield* auth.UserStore
       const email = uniqueEmail("defined-store")
       const created = yield* store.create(
         yield* auth.model.makeInsert({ name: testName, email, emailVerified: true, image: null })
       )
       assert.strictEqual(created.tier, "bronze")
-    }))
+    })
+  )
 
   it("derives one model, and everything from it", () => {
     assert.deepStrictEqual(auth.model.extraKeys, ["tier"])

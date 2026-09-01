@@ -140,11 +140,7 @@ export const mockServer = (): MockServer => {
   const requests: Array<RecordedRequest> = []
 
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string"
-      ? input
-      : input instanceof URL
-      ? input.toString()
-      : (input as Request).url
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url
     const record: RecordedRequest = {
       url,
       method: init?.method ?? "GET",
@@ -263,9 +259,7 @@ export const discoveryUrl = `${providerOrigin}/.well-known/openid-configuration`
  * @category constructors
  * @since 1.0.0
  */
-export const discoveryDocument = (
-  overrides?: Readonly<Record<string, unknown>>
-): Record<string, unknown> => {
+export const discoveryDocument = (overrides?: Readonly<Record<string, unknown>>): Record<string, unknown> => {
   const document: Record<string, unknown> = {
     issuer: providerOrigin,
     authorization_endpoint: authorizeUrl,
@@ -317,7 +311,7 @@ export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthPro
   authorizationUrl: authorizeUrl,
   tokenUrl,
   scopes: ["profile", "email"],
-  userInfo: Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  userInfo: Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const response = yield* fetchJson({
       providerId: "mock",
       url: userInfoUrl,
@@ -375,7 +369,7 @@ export const oidcProvider = (
     keys: typeof keys === "function" ? { jwks: keys } : keys,
     algorithms: ["RS256"]
   },
-  userInfo: Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  userInfo: Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const claims = tokens.idTokenClaims
     if (claims === null || claims.email === null) {
       return yield* Effect.fail(providerError("oidc", "UserInfoFailed"))
@@ -397,10 +391,7 @@ export const oidcProvider = (
  * @category constructors
  * @since 1.0.0
  */
-export const tokensOf = (
-  accessToken: string,
-  overrides?: Partial<OAuthTokens>
-): OAuthTokens => ({
+export const tokensOf = (accessToken: string, overrides?: Partial<OAuthTokens>): OAuthTokens => ({
   accessToken: Redacted.make(accessToken),
   tokenType: "bearer",
   refreshToken: null,
@@ -505,8 +496,9 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
         .setProtectedHeader({ alg: "RS256", kid: "k1" })
         .setIssuer(options?.issuer ?? providerOrigin)
         .setAudience(options?.audience ?? "mock-client-id")
-      return (options?.expiresAt === null ? unsigned : unsigned.setExpirationTime(options?.expiresAt ?? 3600))
-        .sign(pair.privateKey)
+      return (options?.expiresAt === null ? unsigned : unsigned.setExpirationTime(options?.expiresAt ?? 3600)).sign(
+        pair.privateKey
+      )
     }
     return { jwks, keySet, sign }
   })
@@ -525,7 +517,6 @@ export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
  * @since 1.0.0
  */
 export const safeHttpLayer = (fetch: typeof globalThis.fetch): Layer.Layer<HttpClient.HttpClient> =>
-  Layer.effect(
-    HttpClient.HttpClient,
-    HttpClient.HttpClient.useSync(refuseRedirects)
-  ).pipe(Layer.provide(layerFetch(fetch)))
+  Layer.effect(HttpClient.HttpClient, HttpClient.HttpClient.useSync(refuseRedirects)).pipe(
+    Layer.provide(layerFetch(fetch))
+  )

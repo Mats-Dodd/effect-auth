@@ -19,7 +19,7 @@ layer(AuthTest.layer())("domain/Verifications", (it) => {
   })
 
   it.effect("hands a payload back to whoever claims the token", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const verifications = yield* Verifications
       const subject = uniqueEmail("invite")
 
@@ -39,10 +39,11 @@ layer(AuthTest.layer())("domain/Verifications", (it) => {
       // Single use: the row went with the claim.
       const replayed = yield* Effect.flip(verifications.claim(invite, issued.token))
       assert.strictEqual(replayed._tag, "InvalidToken")
-    }))
+    })
+  )
 
   it.effect("answers `null` for a purpose that declares no payload", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const verifications = yield* Verifications
       const subject = uniqueEmail("ping")
 
@@ -54,10 +55,11 @@ layer(AuthTest.layer())("domain/Verifications", (it) => {
       })
       const claimed = yield* verifications.claim(ping, issued.token)
       assert.strictEqual(claimed.payload, null)
-    }))
+    })
+  )
 
   it.effect("refuses a token of another purpose, and nonsense", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const verifications = yield* Verifications
       const subject = uniqueEmail("crossed")
 
@@ -75,38 +77,42 @@ layer(AuthTest.layer())("domain/Verifications", (it) => {
 
       const nonsense = yield* Effect.flip(verifications.claim(ping, Redacted.make("not-a-subject-token")))
       assert.strictEqual(nonsense._tag, "InvalidToken")
-    }))
+    })
+  )
 
   it.effect("retires the siblings of a claim, and expires on time", () =>
-    AuthTest.freshClock(Effect.gen(function*() {
-      const verifications = yield* Verifications
-      const subject = uniqueEmail("siblings")
+    AuthTest.freshClock(
+      Effect.gen(function* () {
+        const verifications = yield* Verifications
+        const subject = uniqueEmail("siblings")
 
-      const first = yield* verifications.issue({
-        purpose: ping,
-        subject,
-        ttl: Duration.minutes(10),
-        payload: null
-      })
-      const second = yield* verifications.issue({
-        purpose: ping,
-        subject,
-        ttl: Duration.minutes(10),
-        payload: null
-      })
+        const first = yield* verifications.issue({
+          purpose: ping,
+          subject,
+          ttl: Duration.minutes(10),
+          payload: null
+        })
+        const second = yield* verifications.issue({
+          purpose: ping,
+          subject,
+          ttl: Duration.minutes(10),
+          payload: null
+        })
 
-      // Two outstanding links for one subject; retiring takes both.
-      assert.strictEqual(yield* verifications.retire(ping, subject), 2)
-      assert.strictEqual((yield* Effect.flip(verifications.claim(ping, first.token)))._tag, "InvalidToken")
-      assert.strictEqual((yield* Effect.flip(verifications.claim(ping, second.token)))._tag, "InvalidToken")
+        // Two outstanding links for one subject; retiring takes both.
+        assert.strictEqual(yield* verifications.retire(ping, subject), 2)
+        assert.strictEqual((yield* Effect.flip(verifications.claim(ping, first.token)))._tag, "InvalidToken")
+        assert.strictEqual((yield* Effect.flip(verifications.claim(ping, second.token)))._tag, "InvalidToken")
 
-      const third = yield* verifications.issue({
-        purpose: ping,
-        subject,
-        ttl: Duration.minutes(10),
-        payload: null
+        const third = yield* verifications.issue({
+          purpose: ping,
+          subject,
+          ttl: Duration.minutes(10),
+          payload: null
+        })
+        yield* TestClock.adjust(Duration.minutes(11))
+        assert.strictEqual((yield* Effect.flip(verifications.claim(ping, third.token)))._tag, "InvalidToken")
       })
-      yield* TestClock.adjust(Duration.minutes(11))
-      assert.strictEqual((yield* Effect.flip(verifications.claim(ping, third.token)))._tag, "InvalidToken")
-    })))
+    )
+  )
 })

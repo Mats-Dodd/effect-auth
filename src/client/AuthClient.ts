@@ -332,10 +332,7 @@ export interface Options<
    * atoms below stay typed by that group either way.
    */
   readonly api?:
-    | (
-      & HttpApi.HttpApi<ApiId, Groups>
-      & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } }
-    )
+    | (HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } })
     | undefined
   /**
    * The user model the API was declared with — `makeAuthApi(model)`'s.
@@ -454,11 +451,7 @@ export interface AuthClient<F extends UserFields = {}> {
   /** Asks for a reset link. Succeeds whether or not the address has an account. */
   readonly requestPasswordReset: Atom.AtomResultFn<RequestPasswordReset, Ok, RateLimited>
   /** Sets a new password from a reset token. Every session is revoked, so this invalidates {@link sessionKey}. */
-  readonly resetPassword: Atom.AtomResultFn<
-    ResetPassword,
-    Ok,
-    InvalidToken | PasswordPolicyViolation
-  >
+  readonly resetPassword: Atom.AtomResultFn<ResetPassword, Ok, InvalidToken | PasswordPolicyViolation>
   /** Changes the caller's password. Requires a fresh session. */
   readonly changePassword: Atom.AtomResultFn<
     ChangePassword,
@@ -470,7 +463,11 @@ export interface AuthClient<F extends UserFields = {}> {
   /** Consumes a verification token. `emailVerified` changes, so this invalidates {@link sessionKey}. */
   readonly verifyEmail: Atom.AtomResultFn<VerifyEmail, Ok, InvalidToken>
   /** Begins an OAuth sign-in; succeeds with the URL to navigate to. See {@link AuthClient.signInSocialUrl}. */
-  readonly signInSocial: Atom.AtomResultFn<SignInSocial, OAuthRedirect, OAuthProviderError | PolicyRefused | RateLimited>
+  readonly signInSocial: Atom.AtomResultFn<
+    SignInSocial,
+    OAuthRedirect,
+    OAuthProviderError | PolicyRefused | RateLimited
+  >
   /** Begins linking a provider to the signed-in account. */
   readonly linkSocial: Atom.AtomResultFn<LinkSocial, OAuthRedirect, OAuthProviderError | PolicyRefused | Unauthorized>
   /** Removes one of the caller's sign-in methods. Invalidates {@link accountsKey}. */
@@ -596,7 +593,9 @@ export const make = <
   ApiId extends string = string,
   Groups extends HttpApiGroup.Constraint = AuthApiGroupOf<{}>,
   F extends UserFields = {}
->(options?: Options<ApiId, Groups, F> | undefined): AuthClient<F> => {
+>(
+  options?: Options<ApiId, Groups, F> | undefined
+): AuthClient<F> => {
   const getToken = options?.bearerToken
   const httpClient = options?.httpClient ?? layerFetch(options?.credentials ?? "include")
   const forClient = HttpApiMiddleware.layerClient(Authenticated, ({ next, request }) => {
@@ -676,14 +675,11 @@ export const make = <
       service.mutation("auth", "requestPasswordReset"),
       undefined
     ),
-    resetPassword: withPayload<ResetPassword>()(
-      service.mutation("auth", "resetPassword"),
-      [sessionKey, sessionsKey]
-    ),
-    changePassword: withPayload<ChangePassword>()(
-      service.mutation("auth", "changePassword"),
-      [sessionKey, sessionsKey]
-    ),
+    resetPassword: withPayload<ResetPassword>()(service.mutation("auth", "resetPassword"), [sessionKey, sessionsKey]),
+    changePassword: withPayload<ChangePassword>()(service.mutation("auth", "changePassword"), [
+      sessionKey,
+      sessionsKey
+    ]),
     sendVerificationEmail: withPayload<SendVerificationEmail>()(
       service.mutation("auth", "sendVerificationEmail"),
       undefined
@@ -695,21 +691,16 @@ export const make = <
 
     updateUser: withPayload<UpdateUserOf<F>>()(updateUserMutation, [sessionKey]),
     changeEmail: withPayload<ChangeEmail>()(service.mutation("auth", "changeEmail"), undefined),
-    confirmEmailChange: withQuery<TokenArgument>()(
-      service.mutation("auth", "confirmEmailChange"),
-      [sessionKey]
-    ),
-    verifyEmailChange: withQuery<TokenArgument>()(
-      service.mutation("auth", "verifyEmailChange"),
-      [sessionKey]
-    ),
+    confirmEmailChange: withQuery<TokenArgument>()(service.mutation("auth", "confirmEmailChange"), [sessionKey]),
+    verifyEmailChange: withQuery<TokenArgument>()(service.mutation("auth", "verifyEmailChange"), [sessionKey]),
     // A `"Deleted"` answer leaves nothing behind, so every atom that reads the
     // caller goes with it. A `"ConfirmationSent"` one invalidates three atoms
     // that had not changed, which costs three refetches and no correctness.
-    deleteUser: withPayload<DeleteUser>()(
-      service.mutation("auth", "deleteUser"),
-      [sessionKey, sessionsKey, accountsKey]
-    ),
+    deleteUser: withPayload<DeleteUser>()(service.mutation("auth", "deleteUser"), [
+      sessionKey,
+      sessionsKey,
+      accountsKey
+    ]),
     setPassword: withPayload<SetPassword>()(service.mutation("auth", "setPassword"), [accountsKey]),
     getAccessToken: withPayload<SelectAccount>()(service.mutation("auth", "getAccessToken"), undefined),
     refreshToken: withPayload<SelectAccount>()(service.mutation("auth", "refreshToken"), undefined),
@@ -760,10 +751,7 @@ export const run = <Arg, A, E>(
   self: Atom.AtomResultFn<Arg, A, E>,
   arg: Arg
 ): Effect.Effect<A, E, AtomRegistry.AtomRegistry> =>
-  Effect.flatMap(
-    Atom.set(self, arg),
-    () => Atom.getResult(self, { suspendOnWaiting: true })
-  )
+  Effect.flatMap(Atom.set(self, arg), () => Atom.getResult(self, { suspendOnWaiting: true }))
 
 /**
  * Sends the browser to a URL.

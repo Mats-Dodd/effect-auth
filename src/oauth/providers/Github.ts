@@ -103,10 +103,7 @@ export interface SelectedEmail {
  * @category combinators
  * @since 1.0.0
  */
-export const selectEmail = (
-  profileEmail: string | null,
-  emails: ReadonlyArray<GithubEmail>
-): SelectedEmail | null => {
+export const selectEmail = (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null => {
   const primary = emails.find((entry) => entry.primary)
   if (primary !== undefined && primary.verified) {
     return { email: primary.email, emailVerified: true }
@@ -176,12 +173,15 @@ export const decodeEmails = (body: unknown): ReadonlyArray<GithubEmail> =>
   Option.match(readEmailList(body), {
     onNone: () => [],
     onSome: (entries) =>
-      Array.getSomes(Array.map(entries, (entry) =>
-        Option.map(readEmailEntry(entry), (fields) => ({
-          email: fields.email,
-          primary: fields.primary !== undefined,
-          verified: fields.verified !== undefined
-        }))))
+      Array.getSomes(
+        Array.map(entries, (entry) =>
+          Option.map(readEmailEntry(entry), (fields) => ({
+            email: fields.email,
+            primary: fields.primary !== undefined,
+            verified: fields.verified !== undefined
+          }))
+        )
+      )
   })
 
 // -----------------------------------------------------------------------------
@@ -244,7 +244,7 @@ export const make = (options: Options): OAuthProviderConfig => {
   const apiUrl = trimTrailingSlashes(options.apiUrl ?? defaultApiUrl)
   const scopes = [...defaultScopes, ...(options.scopes ?? [])]
 
-  const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const accessToken = tokens.accessToken
     const headers = { "user-agent": "effect-auth" }
 
@@ -326,9 +326,7 @@ interface Settings {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig = (
-  options: ConfigOptions
-): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(
     Config.unwrap<Settings>({
       clientId: options.clientId,

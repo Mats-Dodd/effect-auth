@@ -142,16 +142,23 @@ const isRouterLiteralEscape = (high: number, low: number): boolean => {
         low === 51 || // %23 #
         low === 52 || // %24 $
         low === 54 || // %26 &
-        low === 66 || low === 98 || // %2B +
-        low === 67 || low === 99 || // %2C ,
-        low === 70 || low === 102 // %2F /
+        low === 66 ||
+        low === 98 || // %2B +
+        low === 67 ||
+        low === 99 || // %2C ,
+        low === 70 ||
+        low === 102 // %2F /
       )
     case 51: // "3"
       return (
-        low === 65 || low === 97 || // %3A :
-        low === 66 || low === 98 || // %3B ;
-        low === 68 || low === 100 || // %3D =
-        low === 70 || low === 102 // %3F ?
+        low === 65 ||
+        low === 97 || // %3A :
+        low === 66 ||
+        low === 98 || // %3B ;
+        low === 68 ||
+        low === 100 || // %3D =
+        low === 70 ||
+        low === 102 // %3F ?
       )
     case 52: // "4"
       return low === 48 // %40 @
@@ -185,20 +192,23 @@ const stripQueryAndDecode = (raw: string): string => {
   let shouldDecode = false
   for (let i = 1; i < path.length; i++) {
     const charCode = path.charCodeAt(i)
-    if (charCode === 37) { // "%"
+    if (charCode === 37) {
+      // "%"
       const high = path.charCodeAt(i + 1)
       const low = path.charCodeAt(i + 2)
       if (!isRouterLiteralEscape(high, low)) {
         shouldDecode = true
       } else {
-        if (high === 50 && low === 53) { // %25 → %2525, so decodeURI yields one "%"
+        if (high === 50 && low === 53) {
+          // %25 → %2525, so decodeURI yields one "%"
           shouldDecode = true
           path = path.slice(0, i + 1) + "25" + path.slice(i + 1)
           i += 2
         }
         i += 2
       }
-    } else if (charCode === 63 || charCode === 59 || charCode === 35) { // "?" ";" "#"
+    } else if (charCode === 63 || charCode === 59 || charCode === 35) {
+      // "?" ";" "#"
       path = path.slice(0, i)
       break
     }
@@ -257,11 +267,8 @@ export const requestPath = (request: HttpServerRequest.HttpServerRequest): strin
  * @category combinators
  * @since 1.0.0
  */
-export const keyFor = (
-  bucket: Bucket,
-  path: string,
-  client: Option.Option<string>
-): string => `effect-auth:${bucket.name}:${path}:${Option.getOrElse(client, () => sharedKey)}`
+export const keyFor = (bucket: Bucket, path: string, client: Option.Option<string>): string =>
+  `effect-auth:${bucket.name}:${path}:${Option.getOrElse(client, () => sharedKey)}`
 
 // -----------------------------------------------------------------------------
 // Consumption
@@ -296,12 +303,8 @@ export const retryAfterSeconds = (retryAfter: Duration.Duration): number =>
  */
 export const consume = (
   bucket: Bucket
-): Effect.Effect<
-  void,
-  RateLimited,
-  AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest
-> =>
-  Effect.gen(function*() {
+): Effect.Effect<void, RateLimited, AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest> =>
+  Effect.gen(function* () {
     const config = yield* AuthConfig
     const limiter = yield* RateLimiter.RateLimiter
     const request = yield* HttpServerRequest.HttpServerRequest
@@ -327,18 +330,20 @@ export const consumeWith = (options: {
   readonly bucket: Bucket
   readonly request: HttpServerRequest.HttpServerRequest
 }): Effect.Effect<void, RateLimited> =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const { bucket, config, limiter, request } = options
     if (!config.rateLimit.enabled) return
     const key = keyFor(bucket, requestPath(request), clientAddress(config, request))
 
-    const result = yield* Effect.result(limiter.consume({
-      algorithm: "fixed-window",
-      onExceeded: "fail",
-      window: bucket.window,
-      limit: bucket.limit,
-      key
-    }))
+    const result = yield* Effect.result(
+      limiter.consume({
+        algorithm: "fixed-window",
+        onExceeded: "fail",
+        window: bucket.window,
+        limit: bucket.limit,
+        key
+      })
+    )
     if (result._tag === "Success") return
 
     const reason = result.failure.reason
@@ -367,11 +372,8 @@ export const consumeWith = (options: {
 export const limit = <A, E, R>(
   bucket: Bucket,
   effect: Effect.Effect<A, E, R>
-): Effect.Effect<
-  A,
-  E | RateLimited,
-  R | AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest
-> => Effect.flatMap(consume(bucket), () => effect)
+): Effect.Effect<A, E | RateLimited, R | AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest> =>
+  Effect.flatMap(consume(bucket), () => effect)
 
 // -----------------------------------------------------------------------------
 // Layer
@@ -426,6 +428,4 @@ export const layerStore = (
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<RateLimiter.RateLimiter> = RateLimiter.layer.pipe(
-  Layer.provide(layerStore())
-)
+export const layer: Layer.Layer<RateLimiter.RateLimiter> = RateLimiter.layer.pipe(Layer.provide(layerStore()))

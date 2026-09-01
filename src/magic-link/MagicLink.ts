@@ -388,13 +388,13 @@ export type VerifyError = InvalidToken | SignUpDisabled | PolicyRefused
 export type VerifyOutcome =
   | ({ readonly _tag: "Success" } & VerifyResult)
   | {
-    readonly _tag: "Failure"
-    readonly error: VerifyError
-    /** The validated error URL, carrying `?error=<code>`. */
-    readonly redirectTo: string
-    /** The safe, closed-set error code that was appended. */
-    readonly code: string
-  }
+      readonly _tag: "Failure"
+      readonly error: VerifyError
+      /** The validated error URL, carrying `?error=<code>`. */
+      readonly redirectTo: string
+      /** The safe, closed-set error code that was appended. */
+      readonly code: string
+    }
 
 /**
  * The safe error code a failed link reports in the redirect's query string.
@@ -470,9 +470,7 @@ export interface MagicLinkService {
    * would have started. It is raised only after the token has been claimed, so
    * a refused link is spent rather than left replayable.
    */
-  readonly verify: (
-    options: VerifyOptions
-  ) => Effect.Effect<VerifyResult, VerifyError | PersistenceError>
+  readonly verify: (options: VerifyOptions) => Effect.Effect<VerifyResult, VerifyError | PersistenceError>
 
   /**
    * {@link MagicLinkService.verify}, resolved into somewhere to send a browser.
@@ -551,7 +549,7 @@ export type Requirements =
  * @since 1.0.0
  */
 export const make: (options?: Options) => Effect.Effect<MagicLinkService, never, Requirements> = Effect.fnUntraced(
-  function*(options?: Options) {
+  function* (options?: Options) {
     const settings = makeConfig(options)
     const config = yield* AuthConfig
     const emails = yield* MagicLinkEmails
@@ -578,10 +576,9 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * layer: what goes in ends up in a link sent to somebody's mailbox, and an
      * open redirect there is a phishing page with this deployment's name on it.
      */
-    const target = (candidate: string | undefined): string | null =>
-      Option.getOrNull(validateUrl(config, candidate))
+    const target = (candidate: string | undefined): string | null => Option.getOrNull(validateUrl(config, candidate))
 
-    const request = Effect.fnUntraced(function*(options: RequestOptions) {
+    const request = Effect.fnUntraced(function* (options: RequestOptions) {
       const email = normalizeEmail(options.email)
       // The lookup runs on both paths. Its result decides what the mailer is
       // told, never what the caller observes.
@@ -642,7 +639,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * The event is published outside it, after the commit, as `Events.ts`
      * requires.
      */
-    const create = Effect.fnUntraced(function*(email: string, name: string | null) {
+    const create = Effect.fnUntraced(function* (email: string, name: string | null) {
       const candidate = yield* insertRow(UserModel.insert, {
         name: name ?? email,
         email,
@@ -666,30 +663,32 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * Destroys an unverified account's sign-in methods and sessions, and marks
      * the address verified. See the module header for why.
      */
-    const reclaim = Effect.fnUntraced(function*(user: User) {
-      const outcome = yield* transaction.run(Effect.gen(function*() {
-        // Serialize on the USER row for the length of the transaction. The set
-        // of a user's sign-in methods is being destroyed, and a concurrent link
-        // must not add one between the read and the delete. A `FOR UPDATE` on
-        // the account rows alone (below) cannot see a row a racing link is about
-        // to *insert* — under READ COMMITTED that is a phantom, unblocked — so
-        // both sides contend on the user row instead. `Accounts`' link paths
-        // take the same lock before they insert.
-        yield* users.lockUserRow(user.id)
-        const linked = yield* accounts.listByUserIdForUpdate(user.id)
-        yield* accounts.deleteByUserId(user.id)
-        const revoked = yield* sessionStore.deleteByUserId(user.id)
-        // An outstanding link is a way in as much as a password is, and it
-        // outlives the session that asked for it. The one that matters most is
-        // `change-email-verify`: on an unverified account the change-email flow
-        // has no first hop, so whoever registered this address could already
-        // have a live link that moves the account to a mailbox of their own —
-        // and following it after the reclaim would hand back everything this
-        // transaction just took away.
-        yield* retireUserSubjectTokens(verifications, user.id)
-        const updated = yield* users.update(user.id, { emailVerified: true })
-        return { linked, revoked, updated }
-      }))
+    const reclaim = Effect.fnUntraced(function* (user: User) {
+      const outcome = yield* transaction.run(
+        Effect.gen(function* () {
+          // Serialize on the USER row for the length of the transaction. The set
+          // of a user's sign-in methods is being destroyed, and a concurrent link
+          // must not add one between the read and the delete. A `FOR UPDATE` on
+          // the account rows alone (below) cannot see a row a racing link is about
+          // to *insert* — under READ COMMITTED that is a phantom, unblocked — so
+          // both sides contend on the user row instead. `Accounts`' link paths
+          // take the same lock before they insert.
+          yield* users.lockUserRow(user.id)
+          const linked = yield* accounts.listByUserIdForUpdate(user.id)
+          yield* accounts.deleteByUserId(user.id)
+          const revoked = yield* sessionStore.deleteByUserId(user.id)
+          // An outstanding link is a way in as much as a password is, and it
+          // outlives the session that asked for it. The one that matters most is
+          // `change-email-verify`: on an unverified account the change-email flow
+          // has no first hop, so whoever registered this address could already
+          // have a live link that moves the account to a mailbox of their own —
+          // and following it after the reclaim would hand back everything this
+          // transaction just took away.
+          yield* retireUserSubjectTokens(verifications, user.id)
+          const updated = yield* users.update(user.id, { emailVerified: true })
+          return { linked, revoked, updated }
+        })
+      )
 
       for (const account of outcome.linked) {
         yield* publishSafely(events, {
@@ -729,7 +728,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * {@link Options.revokeUnprovenAccounts} decides is whether whoever set that
      * account up keeps their way into it.
      */
-    const settle = Effect.fnUntraced(function*(user: User) {
+    const settle = Effect.fnUntraced(function* (user: User) {
       if (user.emailVerified) return Option.some(user)
       const updated = settings.revokeUnprovenAccounts
         ? yield* reclaim(user)
@@ -751,13 +750,13 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * one live: somebody with a few minutes of mailbox access would otherwise keep
      * a working key.
      */
-    const claim = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
+    const claim = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
       const claimed = yield* verifications.claim(magicLinkPurpose, token)
       yield* verifications.retire(magicLinkPurpose, claimed.subject)
       return claimed
     })
 
-    const resolve = Effect.fnUntraced(function*(email: string, payload: MagicLinkPayload) {
+    const resolve = Effect.fnUntraced(function* (email: string, payload: MagicLinkPayload) {
       const found = yield* users.findByEmail(email)
       if (Option.isNone(found)) {
         if (settings.disableSignUp) {
@@ -774,11 +773,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       return { user: settled.value, userCreated: false }
     })
 
-    const finish = Effect.fnUntraced(function*(
-      email: string,
-      payload: MagicLinkPayload,
-      options: VerifyOptions
-    ) {
+    const finish = Effect.fnUntraced(function* (email: string, payload: MagicLinkPayload, options: VerifyOptions) {
       const { user, userCreated } = yield* resolve(email, payload)
 
       // After the claim, deliberately: only somebody holding a token this
@@ -812,7 +807,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
         userCreated,
         redirectTo: resolveUrl(
           config,
-          userCreated ? payload.newUserCallbackURL ?? payload.callbackURL : payload.callbackURL
+          userCreated ? (payload.newUserCallbackURL ?? payload.callbackURL) : payload.callbackURL
         )
       } satisfies VerifyResult
     })
@@ -830,13 +825,13 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * identically.
      */
     const spend = (claimed: Claimed<MagicLinkPayload>, options: VerifyOptions) =>
-      Effect.retry(
-        finish(normalizeEmail(claimed.subject), claimed.payload, options),
-        { while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error), times: 1 }
-      )
+      Effect.retry(finish(normalizeEmail(claimed.subject), claimed.payload, options), {
+        while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error),
+        times: 1
+      })
 
     const verify = Effect.fnUntraced(
-      function*(options: VerifyOptions) {
+      function* (options: VerifyOptions) {
         return yield* spend(yield* claim(options.token), options)
       },
       (effect) => Effect.withSpan(effect, "MagicLink.verify")
@@ -845,7 +840,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
     const failure = redirectFailure(config, errorCode)
 
     const complete = Effect.fnUntraced(
-      function*(options: VerifyOptions) {
+      function* (options: VerifyOptions) {
         const claimed = yield* Effect.result(claim(options.token))
         if (claimed._tag === "Failure") {
           if (claimed.failure._tag === "PersistenceError") return yield* Effect.fail(claimed.failure)

@@ -214,11 +214,7 @@ export interface SessionCachePayload<F extends UserFields = {}> {
  * @category combinators
  * @since 1.0.0
  */
-export const cacheExpiry = (
-  config: AuthConfigService,
-  session: Session,
-  now: DateTime.Utc
-): DateTime.Utc =>
+export const cacheExpiry = (config: AuthConfigService, session: Session, now: DateTime.Utc): DateTime.Utc =>
   DateTime.min(
     DateTime.addDuration(now, config.cookieCache.maxAge),
     DateTime.min(refreshDueAt(session, config), session.expiresAt)
@@ -289,10 +285,7 @@ export interface SessionCacheService<F extends UserFields = {}> {
    * cookie-transport optimisation, and a caller that authenticated with a
    * bearer token must not be handed one.
    */
-  readonly write: (
-    session: Session,
-    user: UserOf<F>
-  ) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
+  readonly write: (session: Session, user: UserOf<F>) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
 
   /**
    * Expires the cache cookie on the response being built.
@@ -306,9 +299,7 @@ export interface SessionCacheService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class SessionCache extends Context.Service<SessionCache, SessionCacheService>()(
-  "effect-auth/SessionCache"
-) {}
+export class SessionCache extends Context.Service<SessionCache, SessionCacheService>()("effect-auth/SessionCache") {}
 
 /**
  * {@link SessionCache}, seen through a model's custom fields.
@@ -355,11 +346,11 @@ export const sessionSnapshot = (session: Session): Effect.Effect<UserRow> => Eff
  * @category constructors
  * @since 1.0.0
  */
-export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
-  SessionCacheService<F>,
-  never,
-  AuthConfig | Hmac | Token
-> = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
+export const make: <F extends UserFields>(
+  model: UserModel<F>
+) => Effect.Effect<SessionCacheService<F>, never, AuthConfig | Hmac | Token> = Effect.fnUntraced(function* <
+  F extends UserFields
+>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const hmac = yield* Hmac
   const tokens = yield* Token
@@ -381,29 +372,33 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   if (config.cookieCache.enabled && hidden.length > 0) {
     // Said once when the stack is built so a deployment knows why enabling the
     // cache produced no cache hits for this model.
-    yield* annotateAuthLogs(Effect.logWarning(
-      `the session cookie cache is enabled and the user model hides ${
-        hidden.join(", ")
-      }: the session cookie cache has been disabled because hidden fields cannot be reconstructed safely.`
-    ))
+    yield* annotateAuthLogs(
+      Effect.logWarning(
+        `the session cookie cache is enabled and the user model hides ${hidden.join(
+          ", "
+        )}: the session cookie cache has been disabled because hidden fields cannot be reconstructed safely.`
+      )
+    )
   }
 
-  const encode = Effect.fnUntraced(function*(payload: SessionCachePayload<F>) {
-    const json = yield* Effect.orDie(encodeEnvelope({
-      v: payloadVersion,
-      version: payload.version,
-      tokenHash: payload.tokenHash,
-      expiresAt: payload.expiresAt,
-      session: yield* sessionSnapshot(payload.session),
-      // `toPublic` as well as the schema: the projection drops a hidden field
-      // from the *value*, so it cannot reach the encoder in the first place.
-      user: yield* Effect.orDie(encodeUser(model.toPublic(payload.user)))
-    }))
+  const encode = Effect.fnUntraced(function* (payload: SessionCachePayload<F>) {
+    const json = yield* Effect.orDie(
+      encodeEnvelope({
+        v: payloadVersion,
+        version: payload.version,
+        tokenHash: payload.tokenHash,
+        expiresAt: payload.expiresAt,
+        session: yield* sessionSnapshot(payload.session),
+        // `toPublic` as well as the schema: the projection drops a hidden field
+        // from the *value*, so it cannot reach the encoder in the first place.
+        user: yield* Effect.orDie(encodeUser(model.toPublic(payload.user)))
+      })
+    )
     const mac = yield* hmac.sign(encodeUtf8(`${macContext}${json}`))
     return `${Encoding.encodeBase64Url(json)}${cacheCookieSeparator}${Encoding.encodeBase64Url(mac)}`
   })
 
-  const decode = Effect.fnUntraced(function*(value: string) {
+  const decode = Effect.fnUntraced(function* (value: string) {
     const at = value.indexOf(cacheCookieSeparator)
     if (at <= 0 || at === value.length - 1) return Option.none<SessionCachePayload<F>>()
 
@@ -439,7 +434,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     })
   })
 
-  const read = Effect.fnUntraced(function*(credential: Redacted.Redacted<string>) {
+  const read = Effect.fnUntraced(function* (credential: Redacted.Redacted<string>) {
     if (!enabled) return Option.none<SessionWithUser<F>>()
 
     const request = yield* HttpServerRequest.HttpServerRequest
@@ -464,7 +459,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     return Option.some<SessionWithUser<F>>({ session: payload.value.session, user: payload.value.user })
   })
 
-  const write = Effect.fnUntraced(function*(session: Session, user: UserOf<F>) {
+  const write = Effect.fnUntraced(function* (session: Session, user: UserOf<F>) {
     if (!enabled) return
 
     // Cookie transports only, whoever is asking. The middleware decides that
@@ -503,9 +498,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   })
 
   const clear = Effect.suspend(() =>
-    enabled
-      ? HttpApiBuilder.securitySetCookie(security, "", expiredSessionCookieOptions(config))
-      : Effect.void
+    enabled ? HttpApiBuilder.securitySetCookie(security, "", expiredSessionCookieOptions(config)) : Effect.void
   )
 
   return sessionCacheOf(model).of({ enabled, encode, decode, read, write, clear })

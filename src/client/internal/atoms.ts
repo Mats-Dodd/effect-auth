@@ -30,9 +30,7 @@ import { Atom } from "effect/unstable/reactivity"
  *
  * @internal
  */
-export type ReactivityKeys =
-  | ReadonlyArray<unknown>
-  | Record.ReadonlyRecord<string, ReadonlyArray<unknown>>
+export type ReactivityKeys = ReadonlyArray<unknown> | Record.ReadonlyRecord<string, ReadonlyArray<unknown>>
 
 /**
  * The part of a mutation atom's argument every wrapper below writes.
@@ -97,24 +95,26 @@ export const rewrite = <Req, Arg, A, E>(
  *
  * @internal
  */
-export const withPayload = <P>() =>
-<A, E>(
-  self: Atom.AtomResultFn<PayloadRequest<P>, A, E>,
-  reactivityKeys: ReactivityKeys | undefined
-): Atom.AtomResultFn<P, A, E> =>
-  rewrite<PayloadRequest<P>, P, A, E>(self, (payload) => ({ payload, reactivityKeys }))
+export const withPayload =
+  <P>() =>
+  <A, E>(
+    self: Atom.AtomResultFn<PayloadRequest<P>, A, E>,
+    reactivityKeys: ReactivityKeys | undefined
+  ): Atom.AtomResultFn<P, A, E> =>
+    rewrite<PayloadRequest<P>, P, A, E>(self, (payload) => ({ payload, reactivityKeys }))
 
 /**
  * A mutation an application drives with the query parameters alone.
  *
  * @internal
  */
-export const withQuery = <Q>() =>
-<A, E>(
-  self: Atom.AtomResultFn<QueryRequest<Q>, A, E>,
-  reactivityKeys: ReactivityKeys | undefined
-): Atom.AtomResultFn<Q, A, E> =>
-  rewrite<QueryRequest<Q>, Q, A, E>(self, (query) => ({ query, reactivityKeys }))
+export const withQuery =
+  <Q>() =>
+  <A, E>(
+    self: Atom.AtomResultFn<QueryRequest<Q>, A, E>,
+    reactivityKeys: ReactivityKeys | undefined
+  ): Atom.AtomResultFn<Q, A, E> =>
+    rewrite<QueryRequest<Q>, Q, A, E>(self, (query) => ({ query, reactivityKeys }))
 
 /**
  * A mutation with no request of its own.
@@ -142,7 +142,4 @@ export const withoutPayload = <A, E>(
  * @internal
  */
 export const layerFetch = (credentials: RequestCredentials): Layer.Layer<HttpClient.HttpClient> =>
-  Layer.provide(
-    FetchHttpClient.layer,
-    Layer.succeed(FetchHttpClient.RequestInit, { credentials })
-  )
+  Layer.provide(FetchHttpClient.layer, Layer.succeed(FetchHttpClient.RequestInit, { credentials }))

@@ -187,7 +187,7 @@ const make = (): EvictingStore => {
           // is exactly the state an absent key is rebuilt in, so a bucket that
           // has reached it may go. A bucket in debt refills later, and the
           // arithmetic says so.
-          bucket.expiresAt = bucket.lastRefill + ((options.limit - bucket.tokens) * refillRateMillis)
+          bucket.expiresAt = bucket.lastRefill + (options.limit - bucket.tokens) * refillRateMillis
           return newTokenCount
         })
       ),
@@ -247,7 +247,7 @@ const make = (): EvictingStore => {
             const ttlTotal = state.observedTokens * refillRateMillis
             const elapsed = ttlTotal - ttl
             const windowNumber = Math.floor((state.observedTokens - 1) / state.learnedLimit)
-            const remaining = (windowNumber * state.learnedWindowMillis) - elapsed
+            const remaining = windowNumber * state.learnedWindowMillis - elapsed
 
             return {
               delay: remaining <= 0 ? Duration.zero : Duration.millis(remaining),
@@ -309,7 +309,7 @@ const make = (): EvictingStore => {
               return
             }
 
-            const learnedWindowMillis = clampAdaptiveDurationMillis((now - state.learningStartedAt) + retryAfterMillis)
+            const learnedWindowMillis = clampAdaptiveDurationMillis(now - state.learningStartedAt + retryAfterMillis)
             state.phase = "learned"
             state.epoch += 1
             state.cooldownUntil = state.learningStartedAt + learnedWindowMillis
@@ -360,9 +360,7 @@ export const makeStore = (
   Effect.suspend(() => {
     const evicting = make()
     return Effect.as(
-      Effect.forkScoped(
-        Effect.repeat(evicting.sweep, Schedule.spaced(options?.sweepInterval ?? defaultSweepInterval))
-      ),
+      Effect.forkScoped(Effect.repeat(evicting.sweep, Schedule.spaced(options?.sweepInterval ?? defaultSweepInterval))),
       evicting
     )
   })

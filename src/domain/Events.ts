@@ -543,19 +543,16 @@ export const defaultCapacity = 256
  * @category constructors
  * @since 1.0.0
  */
-export const make: (
-  options?: { readonly capacity?: number | undefined }
-) => Effect.Effect<AuthEventsService> = Effect.fnUntraced(function*(
-  options?: { readonly capacity?: number | undefined }
-) {
-  const pubsub = yield* PubSub.dropping<AuthEvent>(options?.capacity ?? defaultCapacity)
-  return AuthEvents.of({
-    pubsub,
-    publish: (event) => Effect.asVoid(PubSub.publish(pubsub, event)),
-    stream: Stream.fromPubSub(pubsub),
-    subscribe: PubSub.subscribe(pubsub)
+export const make: (options?: { readonly capacity?: number | undefined }) => Effect.Effect<AuthEventsService> =
+  Effect.fnUntraced(function* (options?: { readonly capacity?: number | undefined }) {
+    const pubsub = yield* PubSub.dropping<AuthEvent>(options?.capacity ?? defaultCapacity)
+    return AuthEvents.of({
+      pubsub,
+      publish: (event) => Effect.asVoid(PubSub.publish(pubsub, event)),
+      stream: Stream.fromPubSub(pubsub),
+      subscribe: PubSub.subscribe(pubsub)
+    })
   })
-})
 
 /**
  * Provides {@link AuthEvents} over a dropping hub.
@@ -604,11 +601,7 @@ export const emit = (event: AuthEvent): Effect.Effect<void, never, AuthEvents> =
  * @category combinators
  * @since 1.0.0
  */
-export const publishSafely = (
-  events: AuthEventsService,
-  event: AuthEvent
-): Effect.Effect<void> =>
-  Effect.catchCause(
-    events.publish(event),
-    (cause) => annotateAuthLogs(Effect.logDebug("an auth event was not published", cause))
+export const publishSafely = (events: AuthEventsService, event: AuthEvent): Effect.Effect<void> =>
+  Effect.catchCause(events.publish(event), (cause) =>
+    annotateAuthLogs(Effect.logDebug("an auth event was not published", cause))
   )

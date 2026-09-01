@@ -313,9 +313,7 @@ describe("http/AuthApi", () => {
       readonly components: unknown
     }
     const elsewhere = Object.fromEntries(
-      Object.entries(spec.paths).filter(([path]) =>
-        path !== "/auth/get-access-token" && path !== "/auth/refresh-token"
-      )
+      Object.entries(spec.paths).filter(([path]) => path !== "/auth/get-access-token" && path !== "/auth/refresh-token")
     )
     const json = JSON.stringify({ paths: elsewhere, components: spec.components })
     assert.isFalse(json.includes(`"accessToken"`))
@@ -385,9 +383,7 @@ describe("http/AuthApi", () => {
       // field that quietly became optional. Regenerate with `vitest -u` and
       // read the diff before accepting it.
       const spec = OpenApi.fromApi(AuthApi)
-      await expect(JSON.stringify(spec, null, 2)).toMatchFileSnapshot(
-        "./__snapshots__/openapi.json"
-      )
+      await expect(JSON.stringify(spec, null, 2)).toMatchFileSnapshot("./__snapshots__/openapi.json")
     })
 
     it("documents the cookie and bearer security schemes", () => {
@@ -445,10 +441,7 @@ describe("http/AuthApi", () => {
       for (const entry of contract.filter((entry) => entry.authenticated)) {
         const operations = paths[entry.path]
         const operation = operations?.[entry.method.toLowerCase()]
-        assert.isTrue(
-          operation !== undefined && Object.hasOwn(operation.responses, "401"),
-          entry.identifier
-        )
+        assert.isTrue(operation !== undefined && Object.hasOwn(operation.responses, "401"), entry.identifier)
       }
     })
 
@@ -467,7 +460,7 @@ describe("http/AuthApi", () => {
 
   describe("payloads", () => {
     it.effect("decodes a password into a Redacted that renders as <redacted>", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const payload = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(SignInEmailPayload))({
           email: "ada@example.com",
           password: testPasswordText
@@ -476,16 +469,24 @@ describe("http/AuthApi", () => {
         assert.strictEqual(Redacted.value(payload.password), testPasswordText)
         assert.strictEqual(String(payload.password), "<redacted>")
         assert.isFalse(JSON.stringify(payload).includes(testPasswordText))
-      }))
+      })
+    )
 
     it.effect("rejects malformed and oversized public input before handlers run", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const decode = Schema.decodeUnknownEffect(Schema.toCodecJson(SignInEmailPayload))
         assert.isTrue(Option.isNone(yield* Effect.option(decode({ email: "not-an-email", password: "valid" }))))
-        assert.isTrue(Option.isNone(yield* Effect.option(decode({
-          email: "ada@example.com",
-          password: "x".repeat(4097)
-        }))))
-      }))
+        assert.isTrue(
+          Option.isNone(
+            yield* Effect.option(
+              decode({
+                email: "ada@example.com",
+                password: "x".repeat(4097)
+              })
+            )
+          )
+        )
+      })
+    )
   })
 })

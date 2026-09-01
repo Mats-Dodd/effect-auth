@@ -27,13 +27,11 @@ const captureLogs = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 
 describe("crypto/redaction", () => {
   it.effect("renders a redacted password as <redacted> in a log line", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const password = Redacted.make(plaintext)
 
       const { lines } = yield* captureLogs(
-        Effect.log("hashing password", { password }).pipe(
-          Effect.annotateLogs("password", password)
-        )
+        Effect.log("hashing password", { password }).pipe(Effect.annotateLogs("password", password))
       )
 
       assert.strictEqual(lines.length, 1)
@@ -41,7 +39,8 @@ describe("crypto/redaction", () => {
       assert.notInclude(line, plaintext)
       assert.notInclude(line, "correct")
       assert.include(line, "<redacted>")
-    }))
+    })
+  )
 
   it("renders a redacted password as <redacted> through String and JSON", () => {
     const password = Redacted.make(plaintext)
@@ -53,7 +52,7 @@ describe("crypto/redaction", () => {
   })
 
   it.effect("mints tokens that never render in plaintext", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const tokens = yield* Token.Token
       const token = yield* tokens.generateToken
       const raw = Redacted.value(token)
@@ -62,24 +61,22 @@ describe("crypto/redaction", () => {
       assert.strictEqual(String(token), "<redacted>")
 
       const { lines } = yield* captureLogs(
-        Effect.log("issued session token", { token }).pipe(
-          Effect.annotateLogs("token", token)
-        )
+        Effect.log("issued session token", { token }).pipe(Effect.annotateLogs("token", token))
       )
 
       assert.strictEqual(lines.length, 1)
       assert.notInclude(lines[0]!, raw)
       assert.include(lines[0]!, "<redacted>")
-    }).pipe(Effect.provide(Token.layer.pipe(Layer.provide(layerWebCrypto)))))
+    }).pipe(Effect.provide(Token.layer.pipe(Layer.provide(layerWebCrypto))))
+  )
 
   it.effect("keeps the plaintext out of a rendered PasswordHashError", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hasher = yield* PasswordHasher.PasswordHasher
       const password = Redacted.make(plaintext)
 
-      const cause = yield* Effect.flatMap(
-        Effect.exit(hasher.verify(password, "this-is-not-a-hash")),
-        (exit) => exit._tag === "Failure" ? Effect.succeed(exit.cause) : Effect.die("expected a failure")
+      const cause = yield* Effect.flatMap(Effect.exit(hasher.verify(password, "this-is-not-a-hash")), (exit) =>
+        exit._tag === "Failure" ? Effect.succeed(exit.cause) : Effect.die("expected a failure")
       )
 
       const rendered = Cause.pretty(cause)
@@ -94,14 +91,16 @@ describe("crypto/redaction", () => {
       const { lines } = yield* captureLogs(Effect.logError("hash failed", failure))
       assert.strictEqual(lines.length, 1)
       assert.notInclude(lines[0]!, plaintext)
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto)))))
+    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto))))
+  )
 
   it.effect("keeps the plaintext out of a hash it produced", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hasher = yield* PasswordHasher.PasswordHasher
       const hash = yield* hasher.hash(Redacted.make(plaintext))
 
       assert.notInclude(hash, plaintext)
       assert.notInclude(hash, "correct")
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt({ N: 1024, r: 8 }).pipe(Layer.provide(layerWebCrypto)))))
+    }).pipe(Effect.provide(PasswordHasher.layerScrypt({ N: 1024, r: 8 }).pipe(Layer.provide(layerWebCrypto))))
+  )
 })

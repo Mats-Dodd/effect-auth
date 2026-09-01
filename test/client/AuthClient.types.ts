@@ -22,7 +22,10 @@ import { AuthApi, type AuthApiGroup } from "../../src/http/AuthApi.js"
 
 const S = AtomHttpApi.Service()("x", {
   api: AuthApi,
-  httpClient: Layer.succeed(HttpClient.HttpClient, HttpClient.make(() => Effect.die("no"))) as any
+  httpClient: Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make(() => Effect.die("no"))
+  ) as any
 })
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
@@ -60,24 +63,9 @@ eq<
     E.OAuthProviderError | Hooks.PolicyRefused | E.Unauthorized
   >
 >(true)
-eq<
-  Exact<
-    Atom.Failure<ReturnType<typeof S.mutation<"auth", "verifyEmail">>>,
-    E.InvalidToken
-  >
->(true)
-eq<
-  Exact<
-    Atom.Failure<ReturnType<typeof S.mutation<"auth", "revokeSession">>>,
-    E.NotFound | E.Unauthorized
-  >
->(true)
-eq<
-  Exact<
-    Atom.Failure<ReturnType<typeof S.mutation<"auth", "updateUser">>>,
-    E.UserNotFound | E.Unauthorized
-  >
->(true)
+eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "verifyEmail">>>, E.InvalidToken>>(true)
+eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "revokeSession">>>, E.NotFound | E.Unauthorized>>(true)
+eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "updateUser">>>, E.UserNotFound | E.Unauthorized>>(true)
 eq<
   Exact<
     Atom.Failure<ReturnType<typeof S.mutation<"auth", "changeEmail">>>,
@@ -85,10 +73,7 @@ eq<
   >
 >(true)
 eq<
-  Exact<
-    Atom.Failure<ReturnType<typeof S.mutation<"auth", "verifyEmailChange">>>,
-    E.InvalidToken | E.UserAlreadyExists
-  >
+  Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "verifyEmailChange">>>, E.InvalidToken | E.UserAlreadyExists>
 >(true)
 eq<
   Exact<
@@ -145,9 +130,7 @@ built(AuthClient.make({ api: AuthApi }))
 // ---------------------------------------------------------------------------
 
 /** Somebody else's group, sharing only the name. */
-const Impostor = HttpApiGroup.make("auth").add(
-  HttpApiEndpoint.get("ping", "/ping", { success: Schema.String })
-)
+const Impostor = HttpApiGroup.make("auth").add(HttpApiEndpoint.get("ping", "/ping", { success: Schema.String }))
 const ImpostorApi = HttpApi.make("app").add(Impostor)
 
 AuthClient.make({
@@ -179,18 +162,8 @@ type MutationArg<Endpoint extends AuthEndpoint> = WriteArg<ReturnType<typeof S.m
 
 eq<Exact<WriteArg<AuthClient.AuthClient["signUp"]>, MutationArg<"signUpEmail">["payload"]>>(true)
 eq<Exact<WriteArg<AuthClient.AuthClient["signIn"]>, MutationArg<"signInEmail">["payload"]>>(true)
-eq<
-  Exact<
-    WriteArg<AuthClient.AuthClient["changePassword"]>,
-    MutationArg<"changePassword">["payload"]
-  >
->(true)
-eq<
-  Exact<
-    WriteArg<AuthClient.AuthClient["unlinkAccount"]>,
-    MutationArg<"unlinkAccount">["payload"]
-  >
->(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["changePassword"]>, MutationArg<"changePassword">["payload"]>>(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["unlinkAccount"]>, MutationArg<"unlinkAccount">["payload"]>>(true)
 eq<Exact<WriteArg<AuthClient.AuthClient["updateUser"]>, MutationArg<"updateUser">["payload"]>>(true)
 eq<Exact<WriteArg<AuthClient.AuthClient["changeEmail"]>, MutationArg<"changeEmail">["payload"]>>(true)
 eq<Exact<WriteArg<AuthClient.AuthClient["deleteUser"]>, MutationArg<"deleteUser">["payload"]>>(true)
@@ -198,9 +171,7 @@ eq<Exact<WriteArg<AuthClient.AuthClient["setPassword"]>, MutationArg<"setPasswor
 eq<Exact<WriteArg<AuthClient.AuthClient["getAccessToken"]>, MutationArg<"getAccessToken">["payload"]>>(true)
 // The query-parameter endpoints: their argument is the query, not a payload.
 eq<Exact<WriteArg<AuthClient.AuthClient["verifyEmail"]>, MutationArg<"verifyEmail">["query"]>>(true)
-eq<
-  Exact<WriteArg<AuthClient.AuthClient["confirmEmailChange"]>, MutationArg<"confirmEmailChange">["query"]>
->(true)
+eq<Exact<WriteArg<AuthClient.AuthClient["confirmEmailChange"]>, MutationArg<"confirmEmailChange">["query"]>>(true)
 eq<Exact<WriteArg<AuthClient.AuthClient["verifyEmailChange"]>, MutationArg<"verifyEmailChange">["query"]>>(true)
 // And the endpoints that take nothing accept nothing.
 eq<Exact<WriteArg<AuthClient.AuthClient["signOut"]>, void>>(true)

@@ -32,9 +32,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 
 /** One plugin's group. */
-const Ping = HttpApiGroup.make("collide").add(
-  HttpApiEndpoint.get("ping", "/collide/ping", { success: Schema.String })
-)
+const Ping = HttpApiGroup.make("collide").add(HttpApiEndpoint.get("ping", "/collide/ping", { success: Schema.String }))
 
 /** Somebody else's group, which happens to be called the same thing. */
 const PingAndPong = HttpApiGroup.make("collide")
@@ -48,14 +46,12 @@ const pingSurvives = HttpApi.make("collide-app").add(PingAndPong).add(Ping)
 const pongSurvives = HttpApi.make("collide-app").add(Ping).add(PingAndPong)
 
 const pingAndPongHandlers = AuthHandlers.forGroup(PingAndPong, (handlers) =>
-  Effect.succeed(
-    handlers
-      .handle("ping", () => Effect.succeed("ping"))
-      .handle("pong", () => Effect.succeed("pong"))
-  ))
+  Effect.succeed(handlers.handle("ping", () => Effect.succeed("ping")).handle("pong", () => Effect.succeed("pong")))
+)
 
 const pingHandlers = AuthHandlers.forGroup(Ping, (handlers) =>
-  Effect.succeed(handlers.handle("ping", () => Effect.succeed("ping"))))
+  Effect.succeed(handlers.handle("ping", () => Effect.succeed("ping")))
+)
 
 /** What one group's handler layer published, read back off its context key. */
 const routesOf = (context: Context.Context<never>, group: { readonly key: string }): ReadonlyArray<string> => {
@@ -77,7 +73,7 @@ describe("http/group collisions", () => {
   })
 
   it.effect("are refused by the pin, and die at build when forced past it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // @ts-expect-error — `groups.collide` is `Ping | PingAndPong`, not the
       // group these handlers implement. This line is the pin.
       const forced = pingAndPongHandlers(pingSurvives)
@@ -91,10 +87,11 @@ describe("http/group collisions", () => {
       if (exit._tag !== "Failure") return
       assert.isTrue(Cause.hasDies(exit.cause))
       assert.include(String(Cause.squash(exit.cause)), "pong")
-    }))
+    })
+  )
 
   it.effect("serve only the surviving group, in the shape that does not die", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // @ts-expect-error — the same pin, the other way round: a narrower group
       // is not the `Ping | PingAndPong` this API carries either.
       const forced = pingHandlers(pongSurvives)
@@ -106,5 +103,6 @@ describe("http/group collisions", () => {
       // no start-up failure to point at.
       const context = yield* Effect.scoped(Layer.build(forced))
       assert.deepStrictEqual([...routesOf(context, Ping)], ["/collide/ping"])
-    }))
+    })
+  )
 })

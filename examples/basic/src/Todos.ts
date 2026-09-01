@@ -17,37 +17,36 @@ import { auth, freeTodoLimit } from "./Auth.js"
 /**
  * An in-memory list, so the example has exactly one moving part: the auth.
  */
-export const layer = HttpApiBuilder.group(
-  AppApi,
-  "todos",
-  (handlers) =>
-    Effect.gen(function*() {
-      const items = yield* Ref.make<ReadonlyArray<Todo>>([])
-      const nextId = yield* Ref.make(1)
+export const layer = HttpApiBuilder.group(AppApi, "todos", (handlers) =>
+  Effect.gen(function* () {
+    const items = yield* Ref.make<ReadonlyArray<Todo>>([])
+    const nextId = yield* Ref.make(1)
 
-      return handlers
-        .handle("list", () =>
-          Effect.gen(function*() {
-            const user = yield* auth.CurrentUser
-            const all = yield* Ref.get(items)
-            return all.filter((todo) => todo.ownerId === user.id)
-          }))
-        .handle("create", ({ payload }) =>
-          Effect.gen(function*() {
-            const user = yield* auth.CurrentUser
-            const all = yield* Ref.get(items)
-            const mine = all.filter((todo) => todo.ownerId === user.id)
+    return handlers
+      .handle("list", () =>
+        Effect.gen(function* () {
+          const user = yield* auth.CurrentUser
+          const all = yield* Ref.get(items)
+          return all.filter((todo) => todo.ownerId === user.id)
+        })
+      )
+      .handle("create", ({ payload }) =>
+        Effect.gen(function* () {
+          const user = yield* auth.CurrentUser
+          const all = yield* Ref.get(items)
+          const mine = all.filter((todo) => todo.ownerId === user.id)
 
-            // The deployment's own user field, decided in the application's own
-            // handler. Upgrading is `POST /auth/update-user`.
-            if (user.plan === "free" && mine.length >= freeTodoLimit) {
-              return yield* new TodoLimitReached({ limit: freeTodoLimit })
-            }
+          // The deployment's own user field, decided in the application's own
+          // handler. Upgrading is `POST /auth/update-user`.
+          if (user.plan === "free" && mine.length >= freeTodoLimit) {
+            return yield* new TodoLimitReached({ limit: freeTodoLimit })
+          }
 
-            const id = yield* Ref.getAndUpdate(nextId, (n) => n + 1)
-            const todo: Todo = { id, ownerId: user.id, title: payload.title, done: false }
-            yield* Ref.update(items, (rest) => [...rest, todo])
-            return todo
-          }))
-    })
+          const id = yield* Ref.getAndUpdate(nextId, (n) => n + 1)
+          const todo: Todo = { id, ownerId: user.id, title: payload.title, done: false }
+          yield* Ref.update(items, (rest) => [...rest, todo])
+          return todo
+        })
+      )
+  })
 )

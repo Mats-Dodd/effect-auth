@@ -48,10 +48,10 @@ describe("oauth/providers/Github", () => {
         ]),
         { email: "ada@example.com", emailVerified: true }
       )
-      assert.deepStrictEqual(
-        Github.selectEmail(null, [{ email: "ada@example.com", primary: true, verified: false }]),
-        { email: "ada@example.com", emailVerified: false }
-      )
+      assert.deepStrictEqual(Github.selectEmail(null, [{ email: "ada@example.com", primary: true, verified: false }]), {
+        email: "ada@example.com",
+        emailVerified: false
+      })
     })
 
     it("never trusts the public profile address on its own", () => {
@@ -59,14 +59,12 @@ describe("oauth/providers/Github", () => {
       // carries that entry's flag; absent from the list, it is unverified —
       // otherwise anybody could claim a local account by typing its address
       // into a GitHub profile.
+      assert.deepStrictEqual(Github.selectEmail("ada@example.com", []), {
+        email: "ada@example.com",
+        emailVerified: false
+      })
       assert.deepStrictEqual(
-        Github.selectEmail("ada@example.com", []),
-        { email: "ada@example.com", emailVerified: false }
-      )
-      assert.deepStrictEqual(
-        Github.selectEmail("Ada@Example.com", [
-          { email: "ada@example.com", primary: false, verified: true }
-        ]),
+        Github.selectEmail("Ada@Example.com", [{ email: "ada@example.com", primary: false, verified: true }]),
         { email: "Ada@Example.com", emailVerified: true }
       )
     })
@@ -136,7 +134,7 @@ describe("oauth/providers/Github", () => {
 
   describe("makeConfig", () => {
     it.effect("builds the same value from the environment", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = yield* Github.makeConfig({
           clientId: Config.string("GITHUB_CLIENT_ID"),
           clientSecret: Config.redacted("GITHUB_CLIENT_SECRET"),
@@ -148,34 +146,36 @@ describe("oauth/providers/Github", () => {
         assert.deepStrictEqual(yield* secretOf(provider), Option.some("github-secret-from-the-environment"))
         assert.strictEqual(provider.authorizationUrl, "https://github.acme.internal/login/oauth/authorize")
       }).pipe(
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-          GITHUB_CLIENT_ID: "Iv1.from-the-environment",
-          GITHUB_CLIENT_SECRET: "github-secret-from-the-environment",
-          GITHUB_WEB_URL: "https://github.acme.internal"
-        })))
-      ))
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              GITHUB_CLIENT_ID: "Iv1.from-the-environment",
+              GITHUB_CLIENT_SECRET: "github-secret-from-the-environment",
+              GITHUB_WEB_URL: "https://github.acme.internal"
+            })
+          )
+        )
+      )
+    )
 
     it.effect("fails rather than defaulting when a credential is absent", () =>
-      Effect.gen(function*() {
-        const result = yield* Effect.result(Github.makeConfig({
-          clientId: Config.string("GITHUB_CLIENT_ID"),
-          clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
-        }))
+      Effect.gen(function* () {
+        const result = yield* Effect.result(
+          Github.makeConfig({
+            clientId: Config.string("GITHUB_CLIENT_ID"),
+            clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
+          })
+        )
         assert.strictEqual(result._tag, "Failure")
-      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({})))))
+      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))))
+    )
   })
 
   describe("userInfo", () => {
-    const withProfile = (
-      profile: unknown,
-      emails: { readonly body: unknown; readonly status?: number }
-    ) => {
+    const withProfile = (profile: unknown, emails: { readonly body: unknown; readonly status?: number }) => {
       const server = MockProvider.mockServer()
       server.on(`${githubApi}/user`, () => MockProvider.json(profile))
-      server.on(
-        `${githubApi}/user/emails`,
-        () => MockProvider.json(emails.body, emails.status ?? 200)
-      )
+      server.on(`${githubApi}/user/emails`, () => MockProvider.json(emails.body, emails.status ?? 200))
       return {
         server,
         run: Effect.result(github.userInfo(MockProvider.tokensOf("github-access-token"))).pipe(
@@ -189,7 +189,7 @@ describe("oauth/providers/Github", () => {
         { id: 1234567, login: "ada", name: "Ada Lovelace", email: null, avatar_url: "https://cdn.test/ada.png" },
         { body: [{ email: "ada@example.com", primary: true, verified: true }] }
       )
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -212,7 +212,7 @@ describe("oauth/providers/Github", () => {
         { id: 42, login: "ada", email: "ada@example.com" },
         { body: { message: "Requires authentication" }, status: 403 }
       )
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -226,7 +226,7 @@ describe("oauth/providers/Github", () => {
         { id: 42, login: "ada" },
         { body: [{ email: "ada@example.com", primary: true, verified: true }] }
       )
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -237,7 +237,7 @@ describe("oauth/providers/Github", () => {
 
     it.effect("fails when there is no address to be had", () => {
       const { run } = withProfile({ id: 42, login: "ada" }, { body: [], status: 403 })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
@@ -250,7 +250,7 @@ describe("oauth/providers/Github", () => {
         { login: "ada" },
         { body: [{ email: "ada@example.com", primary: true, verified: true }] }
       )
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
@@ -286,16 +286,19 @@ describe("oauth/providers/Google", () => {
       prompt: "consent",
       hostedDomain: "acme.test"
     })
-    assert.deepStrictEqual({ ...restricted.authorizationParams }, {
-      access_type: "online",
-      prompt: "consent",
-      hd: "acme.test"
-    })
+    assert.deepStrictEqual(
+      { ...restricted.authorizationParams },
+      {
+        access_type: "online",
+        prompt: "consent",
+        hd: "acme.test"
+      }
+    )
   })
 
   it.effect("takes the identity from the verified id_token, with no request at all", () => {
     const server = MockProvider.mockServer()
-    return Effect.gen(function*() {
+    return Effect.gen(function* () {
       const info = yield* google.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
       assert.strictEqual(info.id, "google-subject-1")
       assert.strictEqual(info.email, "ada@example.com")
@@ -309,10 +312,13 @@ describe("oauth/providers/Google", () => {
   it.effect("consults the userinfo endpoint only when the token carries no address", () => {
     const server = MockProvider.mockServer()
     server.on(Google.userInfoUrl, () =>
-      MockProvider.json({ sub: "somebody-else", email: "ada@example.com", email_verified: true, name: "From userinfo" }))
-    return Effect.gen(function*() {
+      MockProvider.json({ sub: "somebody-else", email: "ada@example.com", email_verified: true, name: "From userinfo" })
+    )
+    return Effect.gen(function* () {
       const info = yield* google.userInfo(
-        MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null, name: null, picture: null }) })
+        MockProvider.tokensOf("google-access-token", {
+          idTokenClaims: claims({ email: null, name: null, picture: null })
+        })
       )
       // The address may come from the bearer-authenticated body; the subject
       // never does — it stays the one the signature covered.
@@ -326,13 +332,15 @@ describe("oauth/providers/Google", () => {
 
   it.effect("refuses a token from outside the configured hosted domain", () => {
     const server = MockProvider.mockServer()
-    server.on(Google.userInfoUrl, () => MockProvider.json({ sub: "s", email: "ada@personal.test", email_verified: true }))
+    server.on(Google.userInfoUrl, () =>
+      MockProvider.json({ sub: "s", email: "ada@personal.test", email_verified: true })
+    )
     const restricted = Google.make({
       clientId: "google-client",
       clientSecret: Redacted.make("google-client-secret"),
       hostedDomain: "acme.test"
     })
-    return Effect.gen(function*() {
+    return Effect.gen(function* () {
       // `hd` on the authorization request only pre-filters Google's account
       // chooser and can be stripped from the URL, so the restriction is only
       // real if the *claim* is checked. A personal account carries none.
@@ -361,9 +369,7 @@ describe("oauth/providers/Google", () => {
       // And the check runs before the userinfo fallback, so a token with no
       // address does not even reach the network.
       const noAddress = yield* Effect.result(
-        restricted.userInfo(
-          MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null }) })
-        )
+        restricted.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null }) }))
       )
       assert.strictEqual(noAddress._tag, "Failure")
       assert.strictEqual(server.requests.length, 0)
@@ -371,7 +377,7 @@ describe("oauth/providers/Google", () => {
   })
 
   it.effect("builds the same value from the environment", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const provider = yield* Google.makeConfig({
         clientId: Config.string("GOOGLE_CLIENT_ID"),
         clientSecret: Config.redacted("GOOGLE_CLIENT_SECRET"),
@@ -383,16 +389,21 @@ describe("oauth/providers/Google", () => {
       assert.strictEqual(provider.oidc?.issuer, "https://accounts.google.com")
       assert.strictEqual(provider.authorizationParams?.hd, "acme.test")
     }).pipe(
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-        GOOGLE_CLIENT_ID: "0123.from-the-environment",
-        GOOGLE_CLIENT_SECRET: "google-secret-from-the-environment",
-        GOOGLE_HOSTED_DOMAIN: "acme.test"
-      })))
-    ))
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            GOOGLE_CLIENT_ID: "0123.from-the-environment",
+            GOOGLE_CLIENT_SECRET: "google-secret-from-the-environment",
+            GOOGLE_HOSTED_DOMAIN: "acme.test"
+          })
+        )
+      )
+    )
+  )
 
   it.effect("fails closed when the flow handed it no verified claims", () => {
     const server = MockProvider.mockServer()
-    return Effect.gen(function*() {
+    return Effect.gen(function* () {
       const result = yield* Effect.result(google.userInfo(MockProvider.tokensOf("google-access-token")))
       assert.strictEqual(result._tag, "Failure")
       if (result._tag !== "Failure") return
@@ -450,7 +461,11 @@ describe("oauth/providers/Discord", () => {
         "https://cdn.discordapp.com/avatars/80351110224678912/8342729096ea3675442027381ff50dfe.png"
       )
       assert.strictEqual(
-        Discord.avatarUrl({ id: "80351110224678912", avatar: "a_1269e74af4df7417b13759eae50c83dc", discriminator: "0" }),
+        Discord.avatarUrl({
+          id: "80351110224678912",
+          avatar: "a_1269e74af4df7417b13759eae50c83dc",
+          discriminator: "0"
+        }),
         "https://cdn.discordapp.com/avatars/80351110224678912/a_1269e74af4df7417b13759eae50c83dc.gif"
       )
     })
@@ -494,7 +509,7 @@ describe("oauth/providers/Discord", () => {
         email: "ada@example.com",
         verified: true
       })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -523,7 +538,7 @@ describe("oauth/providers/Discord", () => {
         // but a literal `true` counts as a claim.
         verified: false
       })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -536,7 +551,7 @@ describe("oauth/providers/Discord", () => {
       // Discord omits `email` entirely rather than sending null, and an identity
       // with no address can be neither linked nor provisioned.
       const { run } = withProfile({ id: "1", username: "ada", discriminator: "0", avatar: null, verified: true })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
@@ -546,7 +561,7 @@ describe("oauth/providers/Discord", () => {
 
     it.effect("fails when the profile carries no id", () => {
       const { run } = withProfile({ username: "ada", email: "ada@example.com" })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Failure")
       })
@@ -554,7 +569,7 @@ describe("oauth/providers/Discord", () => {
   })
 
   it.effect("builds the same value from the environment", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const provider = yield* Discord.makeConfig({
         clientId: Config.string("DISCORD_CLIENT_ID"),
         clientSecret: Config.redacted("DISCORD_CLIENT_SECRET"),
@@ -565,12 +580,17 @@ describe("oauth/providers/Discord", () => {
       assert.deepStrictEqual(yield* secretOf(provider), Option.some("discord-secret-from-the-environment"))
       assert.strictEqual(provider.authorizationParams?.prompt, "consent")
     }).pipe(
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-        DISCORD_CLIENT_ID: "discord-from-the-environment",
-        DISCORD_CLIENT_SECRET: "discord-secret-from-the-environment",
-        DISCORD_PROMPT: "consent"
-      })))
-    ))
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            DISCORD_CLIENT_ID: "discord-from-the-environment",
+            DISCORD_CLIENT_SECRET: "discord-secret-from-the-environment",
+            DISCORD_PROMPT: "consent"
+          })
+        )
+      )
+    )
+  )
 })
 
 describe("oauth/providers/Gitlab", () => {
@@ -620,7 +640,7 @@ describe("oauth/providers/Gitlab", () => {
   describe("userInfo", () => {
     it.effect("reads the identity from the API, with the numeric id as a string", () => {
       const { run, server } = withProfile(active)
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -637,7 +657,7 @@ describe("oauth/providers/Gitlab", () => {
 
     it.effect("believes email_verified when GitLab does state it", () => {
       const { run } = withProfile({ ...active, email_verified: true })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.isTrue(result._tag === "Success" && result.success.emailVerified)
       })
@@ -645,7 +665,7 @@ describe("oauth/providers/Gitlab", () => {
 
     it.effect("refuses an account that is not active", () => {
       // A blocked, deactivated or banned account still holds a working token.
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         for (const state of ["blocked", "deactivated", "banned", "ldap_blocked"]) {
           const { run } = withProfile({ ...active, state })
           const result = yield* run
@@ -662,7 +682,7 @@ describe("oauth/providers/Gitlab", () => {
 
     it.effect("refuses a locked account", () => {
       const { run } = withProfile({ ...active, locked: true })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Failure")
       })
@@ -675,7 +695,7 @@ describe("oauth/providers/Gitlab", () => {
         baseUrl: "https://gitlab.acme.internal"
       })
       const { run, server } = withProfile(active, enterprise)
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Success")
         assert.strictEqual(server.requests[0]?.url, "https://gitlab.acme.internal/api/v4/user")
@@ -684,7 +704,7 @@ describe("oauth/providers/Gitlab", () => {
 
     it.effect("fails when the profile carries no address", () => {
       const { run } = withProfile({ ...active, email: undefined })
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* run
         assert.strictEqual(result._tag, "Failure")
       })
@@ -692,7 +712,7 @@ describe("oauth/providers/Gitlab", () => {
   })
 
   it.effect("builds the same value from the environment", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const provider = yield* Gitlab.makeConfig({
         clientId: Config.string("GITLAB_CLIENT_ID"),
         clientSecret: Config.redacted("GITLAB_CLIENT_SECRET"),
@@ -702,10 +722,15 @@ describe("oauth/providers/Gitlab", () => {
       assert.deepStrictEqual(yield* secretOf(provider), Option.some("gitlab-secret-from-the-environment"))
       assert.strictEqual(provider.authorizationUrl, "https://gitlab.acme.internal/oauth/authorize")
     }).pipe(
-      Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-        GITLAB_CLIENT_ID: "gitlab-from-the-environment",
-        GITLAB_CLIENT_SECRET: "gitlab-secret-from-the-environment",
-        GITLAB_BASE_URL: "https://gitlab.acme.internal"
-      })))
-    ))
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromUnknown({
+            GITLAB_CLIENT_ID: "gitlab-from-the-environment",
+            GITLAB_CLIENT_SECRET: "gitlab-secret-from-the-environment",
+            GITLAB_BASE_URL: "https://gitlab.acme.internal"
+          })
+        )
+      )
+    )
+  )
 })

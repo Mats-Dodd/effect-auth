@@ -22,7 +22,7 @@ import { expectSome, forUser, newPassword, testName, testPassword, uniqueEmail }
  * {@link uniqueEmail}: two tests registering `ada@example.com` would collide on
  * the unique index rather than testing anything.
  */
-const register = Effect.fnUntraced(function*(email: string) {
+const register = Effect.fnUntraced(function* (email: string) {
   const passwords = yield* Passwords
   return yield* passwords.signUp({ name: testName, email, password: testPassword })
 })
@@ -31,7 +31,7 @@ const register = Effect.fnUntraced(function*(email: string) {
  * Removes a user's password credential, leaving them as an OAuth-only user
  * would be: a row in `users`, and no `local:credential` account.
  */
-const dropCredential = Effect.fnUntraced(function*(userId: UserId) {
+const dropCredential = Effect.fnUntraced(function* (userId: UserId) {
   const accounts = yield* AccountStore
   const credential = yield* expectSome(
     yield* accounts.findByIssuerAccountId(CredentialIssuer, userId),
@@ -49,13 +49,13 @@ const dropCredential = Effect.fnUntraced(function*(userId: UserId) {
  * row it wrote always carries a hash. A store migrated from another system may
  * not, which is the case `setPassword` has to fill in rather than duplicate.
  */
-const clearPasswordHash = Effect.fnUntraced(function*(accountId: AccountId) {
+const clearPasswordHash = Effect.fnUntraced(function* (accountId: AccountId) {
   const sql = yield* SqlClient.SqlClient
   yield* Effect.orDie(sql`UPDATE accounts SET password_hash = NULL WHERE id = ${accountId}`)
 })
 
 /** The most recent e-mail of a kind sent to one address. */
-const mailTo = Effect.fnUntraced(function*(kind: "verification" | "reset", address: string) {
+const mailTo = Effect.fnUntraced(function* (kind: "verification" | "reset", address: string) {
   const emails = yield* AuthTest.TestEmails
   return yield* expectSome(yield* emails.last(kind, address), `expected a ${kind} e-mail for ${address}`)
 })
@@ -67,7 +67,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
   describe("signUp", () => {
     it.effect("creates a user, a credential account and a session, and emits both events", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const accounts = yield* AccountStore
         const sessions = yield* Sessions
         const email = uniqueEmail("signup")
@@ -92,10 +92,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const established = yield* expectSome(result.session, "expected a session")
         const verified = yield* sessions.verify(established.token)
         assert.strictEqual(verified.user.id, result.user.id)
-      }))
+      })
+    )
 
     it.effect("normalizes the e-mail address on the way in", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const users = yield* UserStore
         const email = uniqueEmail("normalize")
@@ -111,18 +112,20 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         // ... and the lookup on sign-in normalizes too.
         const signedIn = yield* passwords.signIn({ email: email.toUpperCase(), password: testPassword })
         assert.strictEqual(signedIn.user.id, user.id)
-      }))
+      })
+    )
 
     it.effect("refuses a duplicate address with UserAlreadyExists", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("duplicate")
         yield* register(email)
         const failure = yield* Effect.flip(register(email))
         assert.strictEqual(failure._tag, "UserAlreadyExists")
-      }))
+      })
+    )
 
     it.effect("enforces the password policy at both ends", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const config = yield* AuthConfig
         const shortEmail = uniqueEmail("short")
@@ -149,14 +152,16 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const users = yield* UserStore
         assert.strictEqual(Option.isNone(yield* users.findByEmail(shortEmail)), true)
         assert.strictEqual(Option.isNone(yield* users.findByEmail(longEmail)), true)
-      }))
+      })
+    )
 
     it.layer(AuthTest.layer({ emailPassword: { autoSignIn: false } }))("with autoSignIn off", (it) => {
       it.effect("withholds the session", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { session } = yield* register(uniqueEmail("no-auto-sign-in"))
           assert.strictEqual(Option.isNone(session), true)
-        }))
+        })
+      )
     })
   })
 
@@ -166,26 +171,21 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
   describe("signIn", () => {
     it.effect("accepts the right password and rejects the wrong one identically to an unknown user", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const email = uniqueEmail("signin")
         const { user } = yield* register(email)
 
-        const { events, result } = yield* AuthTest.recordingEvents(
-          passwords.signIn({ email, password: testPassword })
-        )
+        const { events, result } = yield* AuthTest.recordingEvents(passwords.signIn({ email, password: testPassword }))
         assert.strictEqual(result.user.id, user.id)
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SignedIn"])
 
-        const wrong = yield* Effect.flip(
-          passwords.signIn({ email, password: Redacted.make("wrong-password") })
-        )
-        const unknown = yield* Effect.flip(
-          passwords.signIn({ email: uniqueEmail("nobody"), password: testPassword })
-        )
+        const wrong = yield* Effect.flip(passwords.signIn({ email, password: Redacted.make("wrong-password") }))
+        const unknown = yield* Effect.flip(passwords.signIn({ email: uniqueEmail("nobody"), password: testPassword }))
         assert.strictEqual(wrong._tag, "InvalidCredentials")
         assert.strictEqual(unknown._tag, "InvalidCredentials")
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
   describe("verifyEmail", () => {
     it.effect("sendVerificationEmail is silent for an unknown or already-verified address", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const emails = yield* AuthTest.TestEmails
         const users = yield* UserStore
@@ -211,7 +211,8 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         yield* users.update(user.id, { emailVerified: true })
         yield* passwords.sendVerificationEmail({ email })
         assert.strictEqual((yield* emails.to(email)).length, 1)
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
     "with verification required",
     (it) => {
       it.effect("withholds the session and sends a verification mail on sign-up", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const config = yield* AuthConfig
           const email = uniqueEmail("must-verify")
 
@@ -237,10 +238,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           assert.strictEqual(url.origin, new URL(config.baseUrl).origin)
           assert.strictEqual(url.pathname, config.emailPaths.verifyEmail)
           assert.strictEqual(url.searchParams.get("token"), Redacted.value(mail.token))
-        }))
+        })
+      )
 
       it.effect("refuses an unverified address, and opens the door once it is verified", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const passwords = yield* Passwords
           const email = uniqueEmail("unverified")
           yield* register(email)
@@ -254,10 +256,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
           const signedIn = yield* passwords.signIn({ email, password: testPassword })
           assert.strictEqual(signedIn.user.emailVerified, true)
-        }))
+        })
+      )
 
       it.effect("consumes the token exactly once and emits EmailVerified", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const passwords = yield* Passwords
           const email = uniqueEmail("single-use")
           const { user } = yield* register(email)
@@ -269,34 +272,39 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           // Replaying the link is refused: the row was deleted by the claim.
           const replay = yield* Effect.flip(passwords.verifyEmail(mail.token))
           assert.strictEqual(replay._tag, "InvalidToken")
-        }))
+        })
+      )
 
       it.effect("refuses a malformed token, a forged subject and an expired one", () =>
-        AuthTest.freshClock(Effect.gen(function*() {
-          const passwords = yield* Passwords
-          const config = yield* AuthConfig
-          const email = uniqueEmail("bad-token")
-          yield* register(email)
-          const mail = yield* mailTo("verification", email)
+        AuthTest.freshClock(
+          Effect.gen(function* () {
+            const passwords = yield* Passwords
+            const config = yield* AuthConfig
+            const email = uniqueEmail("bad-token")
+            yield* register(email)
+            const mail = yield* mailTo("verification", email)
 
-          assert.strictEqual(
-            (yield* Effect.flip(passwords.verifyEmail(Redacted.make("nonsense"))))._tag,
-            "InvalidToken"
-          )
+            assert.strictEqual(
+              (yield* Effect.flip(passwords.verifyEmail(Redacted.make("nonsense"))))._tag,
+              "InvalidToken"
+            )
 
-          // The secret half is genuine but the subject names another address, so
-          // the identifier does not match and the claim finds nothing.
-          const parts = yield* expectSome(decodeSubjectToken(mail.token), "expected a subject token")
-          const forged = Redacted.make(
-            `${
-              btoa(uniqueEmail("mallory")).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")
-            }.${Redacted.value(parts.secret)}`
-          )
-          assert.strictEqual((yield* Effect.flip(passwords.verifyEmail(forged)))._tag, "InvalidToken")
+            // The secret half is genuine but the subject names another address, so
+            // the identifier does not match and the claim finds nothing.
+            const parts = yield* expectSome(decodeSubjectToken(mail.token), "expected a subject token")
+            const forged = Redacted.make(
+              `${btoa(uniqueEmail("mallory"))
+                .replaceAll("+", "-")
+                .replaceAll("/", "_")
+                .replaceAll("=", "")}.${Redacted.value(parts.secret)}`
+            )
+            assert.strictEqual((yield* Effect.flip(passwords.verifyEmail(forged)))._tag, "InvalidToken")
 
-          yield* TestClock.adjust(Duration.sum(config.tokens.emailVerificationTtl, Duration.millis(1)))
-          assert.strictEqual((yield* Effect.flip(passwords.verifyEmail(mail.token)))._tag, "InvalidToken")
-        })))
+            yield* TestClock.adjust(Duration.sum(config.tokens.emailVerificationTtl, Duration.millis(1)))
+            assert.strictEqual((yield* Effect.flip(passwords.verifyEmail(mail.token)))._tag, "InvalidToken")
+          })
+        )
+      )
     }
   )
 
@@ -306,7 +314,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
   describe("reset", () => {
     it.effect("requestReset says nothing about an unknown address", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const emails = yield* AuthTest.TestEmails
         const email = uniqueEmail("reset-known")
@@ -320,10 +328,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const known = yield* AuthTest.recordingEvents(passwords.requestReset({ email }))
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(known.events, user.id)), ["PasswordResetRequested"])
         assert.strictEqual((yield* emails.to(email)).length, 1)
-      }))
+      })
+    )
 
     it.effect("keeps an untrusted landing page out of the e-mailed link", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const config = yield* AuthConfig
         const email = uniqueEmail("redirect")
@@ -343,10 +352,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         yield* passwords.requestReset({ email, redirectTo: "/welcome" })
         const allowed = new URL(Redacted.value((yield* mailTo("reset", email)).url))
         assert.strictEqual(allowed.searchParams.get("callbackURL"), `${new URL(config.baseUrl).origin}/welcome`)
-      }))
+      })
+    )
 
     it.effect("resetPassword replaces the hash, revokes every session, and burns the token", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const sessions = yield* Sessions
         const email = uniqueEmail("reset-full")
@@ -359,9 +369,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         yield* passwords.requestReset({ email })
         const mail = yield* mailTo("reset", email)
 
-        const { events } = yield* AuthTest.recordingEvents(
-          passwords.resetPassword({ token: mail.token, newPassword })
-        )
+        const { events } = yield* AuthTest.recordingEvents(passwords.resetPassword({ token: mail.token, newPassword }))
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SessionRevoked", "PasswordChanged"])
 
         // Every device is signed out.
@@ -381,10 +389,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           passwords.resetPassword({ token: mail.token, newPassword: Redacted.make("third-password-x") })
         )
         assert.strictEqual(replay._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("a completed reset retires every other outstanding reset link", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const email = uniqueEmail("reset-retire")
         yield* register(email)
@@ -406,10 +415,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         )
         assert.strictEqual(replay._tag, "InvalidToken")
         yield* passwords.signIn({ email, password: newPassword })
-      }))
+      })
+    )
 
     it.effect("a completed reset retires the change-email link the account was the subject of", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const verifications = yield* Verifications
         const email = uniqueEmail("reset-retire-move")
@@ -434,10 +444,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         // to the address it names.
         const moved = yield* Effect.flip(verifications.claim(changeEmailVerifyPurpose, move.token))
         assert.strictEqual(moved._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("changing a password from inside a session retires pending reset links too", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const email = uniqueEmail("reset-superseded")
         const { user } = yield* register(email)
@@ -455,10 +466,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           passwords.resetPassword({ token: pending.token, newPassword: Redacted.make("attacker-password") })
         )
         assert.strictEqual(refused._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("changing a password from inside a session retires a pending change-email link too", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const verifications = yield* Verifications
         const { user } = yield* register(uniqueEmail("change-retire-move"))
@@ -482,31 +494,35 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
         const moved = yield* Effect.flip(verifications.claim(changeEmailVerifyPurpose, move.token))
         assert.strictEqual(moved._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("resetPassword refuses an expired token and a policy violation", () =>
-      AuthTest.freshClock(Effect.gen(function*() {
-        const passwords = yield* Passwords
-        const config = yield* AuthConfig
-        const email = uniqueEmail("reset-expiry")
-        yield* register(email)
-        yield* passwords.requestReset({ email })
-        const mail = yield* mailTo("reset", email)
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const passwords = yield* Passwords
+          const config = yield* AuthConfig
+          const email = uniqueEmail("reset-expiry")
+          yield* register(email)
+          yield* passwords.requestReset({ email })
+          const mail = yield* mailTo("reset", email)
 
-        // The policy is checked before the token is claimed, so a rejected
-        // password does not burn the link.
-        const violation = yield* Effect.flip(
-          passwords.resetPassword({ token: mail.token, newPassword: Redacted.make("tiny") })
-        )
-        assert.strictEqual(violation._tag, "PasswordPolicyViolation")
+          // The policy is checked before the token is claimed, so a rejected
+          // password does not burn the link.
+          const violation = yield* Effect.flip(
+            passwords.resetPassword({ token: mail.token, newPassword: Redacted.make("tiny") })
+          )
+          assert.strictEqual(violation._tag, "PasswordPolicyViolation")
 
-        yield* TestClock.adjust(Duration.sum(config.tokens.passwordResetTtl, Duration.millis(1)))
-        const expired = yield* Effect.flip(passwords.resetPassword({ token: mail.token, newPassword }))
-        assert.strictEqual(expired._tag, "InvalidToken")
-      })))
+          yield* TestClock.adjust(Duration.sum(config.tokens.passwordResetTtl, Duration.millis(1)))
+          const expired = yield* Effect.flip(passwords.resetPassword({ token: mail.token, newPassword }))
+          assert.strictEqual(expired._tag, "InvalidToken")
+        })
+      )
+    )
 
     it.effect("resetPassword gives an OAuth-only user a password credential", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const accounts = yield* AccountStore
         const email = uniqueEmail("reset-oauth-only")
@@ -527,15 +543,13 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           "reset should create the missing credential account"
         )
         assert.notStrictEqual(created.passwordHash, null)
-        assert.strictEqual(
-          (yield* passwords.signIn({ email, password: newPassword })).user.id,
-          user.id
-        )
-      }))
+        assert.strictEqual((yield* passwords.signIn({ email, password: newPassword })).user.id, user.id)
+      })
+    )
 
     it.layer(AuthTest.layer({ emailDelivery: "failing" }))("with a mailer that refuses delivery", (it) => {
       it.effect("does not change what the caller sees", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           // The endpoint answers 200 either way, so a bounced message must not
           // turn into an error that distinguishes a known address from an
           // unknown one.
@@ -554,7 +568,8 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           const mail = yield* mailTo("reset", email)
           yield* passwords.resetPassword({ token: mail.token, newPassword })
           yield* passwords.signIn({ email, password: newPassword })
-        }))
+        })
+      )
     })
   })
 
@@ -564,7 +579,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
   describe("changePassword", () => {
     it.effect("replaces the hash and signs the other devices out", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const sessions = yield* Sessions
         const email = uniqueEmail("change")
@@ -572,12 +587,14 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const current = yield* expectSome(session, "expected a session")
         const other = yield* sessions.create({ userId: user.id })
 
-        const { events } = yield* AuthTest.recordingEvents(passwords.changePassword({
-          userId: user.id,
-          currentPassword: testPassword,
-          newPassword,
-          currentSessionId: current.session.id
-        }))
+        const { events } = yield* AuthTest.recordingEvents(
+          passwords.changePassword({
+            userId: user.id,
+            currentPassword: testPassword,
+            newPassword,
+            currentSessionId: current.session.id
+          })
+        )
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["SessionRevoked", "PasswordChanged"])
 
         // The caller keeps their session; the other device does not.
@@ -589,10 +606,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           "InvalidCredentials"
         )
         yield* passwords.signIn({ email, password: newPassword })
-      }))
+      })
+    )
 
     it.effect("keeps every session when revokeOtherSessions is false", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const sessions = yield* Sessions
         const { user } = yield* register(uniqueEmail("change-keep"))
@@ -605,31 +623,37 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           revokeOtherSessions: false
         })
         assert.strictEqual((yield* sessions.verify(other.token)).session.id, other.session.id)
-      }))
+      })
+    )
 
     it.effect("refuses a wrong current password and a policy violation", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const email = uniqueEmail("change-refused")
         const { user } = yield* register(email)
 
-        const wrong = yield* Effect.flip(passwords.changePassword({
-          userId: user.id,
-          currentPassword: Redacted.make("not-the-password"),
-          newPassword
-        }))
+        const wrong = yield* Effect.flip(
+          passwords.changePassword({
+            userId: user.id,
+            currentPassword: Redacted.make("not-the-password"),
+            newPassword
+          })
+        )
         assert.strictEqual(wrong._tag, "InvalidCredentials")
 
-        const violation = yield* Effect.flip(passwords.changePassword({
-          userId: user.id,
-          currentPassword: testPassword,
-          newPassword: Redacted.make("tiny")
-        }))
+        const violation = yield* Effect.flip(
+          passwords.changePassword({
+            userId: user.id,
+            currentPassword: testPassword,
+            newPassword: Redacted.make("tiny")
+          })
+        )
         assert.strictEqual(violation._tag, "PasswordPolicyViolation")
 
         // Neither attempt changed anything.
         yield* passwords.signIn({ email, password: testPassword })
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -638,27 +662,29 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
   describe("verifyPassword", () => {
     it.effect("answers true for the stored password and false for anything else", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const { user } = yield* register(uniqueEmail("verify-password"))
 
         assert.isTrue(yield* passwords.verifyPassword(user.id, testPassword))
         assert.isFalse(yield* passwords.verifyPassword(user.id, Redacted.make("not-the-password")))
-      }))
+      })
+    )
 
     it.effect("answers false, rather than failing, for a user who has no password at all", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const { user } = yield* register(uniqueEmail("verify-no-credential"))
         yield* dropCredential(user.id)
 
         assert.isFalse(yield* passwords.verifyPassword(user.id, testPassword))
-      }))
+      })
+    )
   })
 
   describe("setPassword", () => {
     it.effect("gives a user with no credential their first password, and links it", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const accounts = yield* AccountStore
         const sessions = yield* Sessions
@@ -667,9 +693,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const current = yield* expectSome(session, "expected a session")
         yield* dropCredential(user.id)
 
-        const { events } = yield* AuthTest.recordingEvents(
-          passwords.setPassword({ userId: user.id, newPassword })
-        )
+        const { events } = yield* AuthTest.recordingEvents(passwords.setPassword({ userId: user.id, newPassword }))
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, user.id)), ["AccountLinked"])
         const linked = events.find((event) => event._tag === "AccountLinked")
         assert.strictEqual(linked?._tag === "AccountLinked" ? linked.providerId : null, "credential")
@@ -685,10 +709,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         // invalidated: no password was replaced, so no session was revoked.
         yield* passwords.signIn({ email, password: newPassword })
         assert.strictEqual((yield* sessions.verify(current.token)).session.id, current.session.id)
-      }))
+      })
+    )
 
     it.effect("can never replace a password: a user who has one is told so", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const email = uniqueEmail("set-password-twice")
         const { user } = yield* register(email)
@@ -702,10 +727,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           (yield* Effect.flip(passwords.signIn({ email, password: newPassword })))._tag,
           "InvalidCredentials"
         )
-      }))
+      })
+    )
 
     it.effect("enforces the password policy before writing anything", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const accounts = yield* AccountStore
         const { user } = yield* register(uniqueEmail("set-password-policy"))
@@ -716,10 +742,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         )
         assert.strictEqual(failure._tag, "PasswordPolicyViolation")
         assert.isTrue(Option.isNone(yield* accounts.findByIssuerAccountId(CredentialIssuer, user.id)))
-      }))
+      })
+    )
 
     it.effect("fills in a credential row that carries no hash", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const accounts = yield* AccountStore
         const email = uniqueEmail("set-password-hashless")
@@ -741,7 +768,8 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
         yield* passwords.setPassword({ userId: user.id, newPassword })
         yield* passwords.signIn({ email, password: newPassword })
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -756,7 +784,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
     it.layer(AuthTest.layer({ hasher: hasher.layer }))((it) => {
       it.effect("verifies exactly one hash, with or without a credential to check", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const passwords = yield* Passwords
           const { user } = yield* register(uniqueEmail("verify-timing"))
 
@@ -772,7 +800,8 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           const none = hasher.state.verifies
           assert.isFalse(yield* passwords.verifyPassword(user.id, testPassword))
           assert.strictEqual(hasher.state.verifies - none, 1)
-        }))
+        })
+      )
     })
   })
 
@@ -784,7 +813,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
 
     it.layer(AuthTest.layer({ hasher: hasher.layer }))((it) => {
       it.effect("verifies a hash even when the address is unknown", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           // This is the anti-enumeration defence: if the missing-user path
           // returned early, sign-in latency would answer "does this address have
           // an account?" for anyone who cared to measure it.
@@ -803,10 +832,11 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           const known = hasher.state.verifies
           yield* passwords.signIn({ email, password: testPassword })
           assert.strictEqual(hasher.state.verifies - known, 1)
-        }))
+        })
+      )
 
       it.effect("verifies a hash even when the user has no password credential", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const passwords = yield* Passwords
           const accounts = yield* AccountStore
           const email = uniqueEmail("timing-oauth-only")
@@ -823,7 +853,8 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
           const failure = yield* Effect.flip(passwords.signIn({ email, password: testPassword }))
           assert.strictEqual(failure._tag, "InvalidCredentials")
           assert.strictEqual(hasher.state.verifies - before, 1)
-        }))
+        })
+      )
     })
   })
 })
@@ -839,15 +870,14 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
  */
 describe("domain/Passwords/signUp (registration race)", () => {
   it.effect("answers UserAlreadyExists to the loser of a concurrent registration, not a 500", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // Both fibers pass the pre-flight lookup before either insert lands, so
       // this is the path where the unique index — not the lookup — is what
       // refuses the second one.
       const email = uniqueEmail("race")
-      const results = yield* Effect.all(
-        [Effect.result(register(email)), Effect.result(register(email))],
-        { concurrency: 2 }
-      )
+      const results = yield* Effect.all([Effect.result(register(email)), Effect.result(register(email))], {
+        concurrency: 2
+      })
 
       const successes = results.filter((result) => result._tag === "Success")
       const failures = results.filter((result) => result._tag === "Failure")
@@ -858,7 +888,8 @@ describe("domain/Passwords/signUp (registration race)", () => {
           assert.strictEqual(failure.failure._tag, "UserAlreadyExists")
         }
       }
-    }).pipe(Effect.provide(AuthTest.layer())))
+    }).pipe(Effect.provide(AuthTest.layer()))
+  )
 })
 
 /**
@@ -868,7 +899,7 @@ describe("domain/Passwords/signUp (registration race)", () => {
  */
 describe("domain/Passwords/setPassword (race)", () => {
   it.effect("gives the loser of two concurrent first-passwords PasswordAlreadySet, not a 500", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const email = uniqueEmail("set-password-race")
       const { user } = yield* register(email)
@@ -902,5 +933,6 @@ describe("domain/Passwords/setPassword (race)", () => {
         Effect.result(passwords.signIn({ email, password: Redacted.make("a-second-password") }))
       ])
       assert.strictEqual(attempts.filter((attempt) => attempt._tag === "Success").length, 1)
-    }).pipe(Effect.provide(AuthTest.layer())))
+    }).pipe(Effect.provide(AuthTest.layer()))
+  )
 })

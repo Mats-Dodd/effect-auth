@@ -51,12 +51,7 @@ const standalone = handlers(MagicLinkApi)
 
 // The identifier of the service produced follows the *consuming* API, and the
 // requirements stay exactly `HandlerServices`.
-eq<
-  Exact<
-    typeof composed,
-    Layer.Layer<HttpApiGroup.Service<"app", "magicLink">, never, HandlerServices>
-  >
->(true)
+eq<Exact<typeof composed, Layer.Layer<HttpApiGroup.Service<"app", "magicLink">, never, HandlerServices>>>(true)
 eq<
   Exact<
     typeof standalone,
@@ -69,9 +64,7 @@ eq<
 // ---------------------------------------------------------------------------
 
 /** Somebody else's group, sharing only the name. */
-const Impostor = HttpApiGroup.make("magicLink").add(
-  HttpApiEndpoint.get("ping", "/ping", { success: Schema.String })
-)
+const Impostor = HttpApiGroup.make("magicLink").add(HttpApiEndpoint.get("ping", "/ping", { success: Schema.String }))
 
 // @ts-expect-error — `groups.magicLink` is not this plugin's group; the handlers
 // would have been built against endpoints this API does not declare.
@@ -96,12 +89,7 @@ const client = MagicLinkClient.make({ baseUrl: "http://localhost:3000" })
 // type rather than being told about it. The user is the base model's public
 // projection: this group is not parameterized by a deployment's custom user
 // fields, and `GET /session` is where those are read.
-eq<
-  Exact<
-    typeof client.signIn,
-    Atom.AtomResultFn<MagicLinkClient.SignIn, Ok, RateLimited>
-  >
->(true)
+eq<Exact<typeof client.signIn, Atom.AtomResultFn<MagicLinkClient.SignIn, Ok, RateLimited>>>(true)
 eq<
   Exact<
     typeof client.exchange,

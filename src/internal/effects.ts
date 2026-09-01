@@ -64,10 +64,7 @@ export const revalidateRewrite = <I, A extends { readonly email: string }>(
   answer: I,
   normalizeEmail: (email: string) => string
 ): Effect.Effect<A> =>
-  Effect.map(
-    makeInsert(answer),
-    (validated) => Object.assign(validated, { email: normalizeEmail(validated.email) })
-  )
+  Effect.map(makeInsert(answer), (validated) => Object.assign(validated, { email: normalizeEmail(validated.email) }))
 
 /**
  * The annotations every log this library writes carries.

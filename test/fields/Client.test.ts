@@ -34,7 +34,7 @@ const registry = Effect.acquireRelease(
 )
 
 const harness = (options?: { readonly signedIn?: boolean | undefined }) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const stub = Stub.make({ signedIn: options?.signedIn, user: userJson })
     const client = AuthClient.make({ api: FieldsApi, model, httpClient: stub.layer })
     const reg = yield* registry
@@ -43,12 +43,10 @@ const harness = (options?: { readonly signedIn?: boolean | undefined }) =>
 
 describe("fields/AuthClient", () => {
   it.effect("decodes the custom fields of the session's user", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg } = yield* harness({ signedIn: true })
 
-      const session = yield* Atom.getResult(client.session).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, reg)
-      )
+      const session = yield* Atom.getResult(client.session).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       // Typed, not merely present: `plan` is the literal union the model
       // declared, so this comparison would not compile against the base client.
@@ -58,10 +56,11 @@ describe("fields/AuthClient", () => {
       // Hidden fields are absent from the `json` variant, so there is no key to
       // read and nothing for a devtools panel to show.
       assert.isFalse(Object.hasOwn(session.user, "apiSecret"))
-    }))
+    })
+  )
 
   it.effect("sends a custom field in the sign-up payload", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
 
       const registered = yield* AuthClient.run(client.signUp, {
@@ -74,10 +73,11 @@ describe("fields/AuthClient", () => {
       assert.strictEqual(registered.user.plan, "pro")
       assert.strictEqual(registered.session?.userId, registered.user.id)
       assert.deepStrictEqual(stub.calls, ["POST /auth/sign-up/email"])
-    }))
+    })
+  )
 
   it.effect("carries the custom fields through sign-in", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg } = yield* harness()
 
       const signedIn = yield* AuthClient.run(client.signIn, {
@@ -86,5 +86,6 @@ describe("fields/AuthClient", () => {
       }).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       assert.strictEqual(signedIn.user.plan, "pro")
-    }))
+    })
+  )
 })

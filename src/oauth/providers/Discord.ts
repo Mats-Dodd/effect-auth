@@ -220,7 +220,7 @@ export interface Options {
  * @since 1.0.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
-  const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const response = yield* fetchJson({ providerId: id, url: userInfoUrl, accessToken: tokens.accessToken })
     const decoded = readProfile(response.body)
     if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
@@ -299,9 +299,7 @@ interface Settings {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig = (
-  options: ConfigOptions
-): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(
     Config.unwrap<Settings>({
       clientId: options.clientId,

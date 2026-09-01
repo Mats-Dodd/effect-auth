@@ -187,9 +187,7 @@ export function purpose(name: string, payload?: PurposePayload): TokenPurpose<un
     name,
     payload: json,
     decodePayload: (stored) =>
-      stored === null
-        ? Effect.fail(new InvalidToken())
-        : Effect.mapError(decode(stored), () => new InvalidToken())
+      stored === null ? Effect.fail(new InvalidToken()) : Effect.mapError(decode(stored), () => new InvalidToken())
   }
 }
 
@@ -223,7 +221,6 @@ export const emailVerifyPurpose: TokenPurpose<null> = purpose("email-verify")
  * @since 1.0.0
  */
 export const passwordResetPurpose: TokenPurpose<null> = purpose("password-reset")
-
 
 /**
  * What travels with either hop of an e-mail change: the address being moved to.
@@ -297,10 +294,7 @@ export const changeEmailVerifyPurpose: TokenPurpose<ChangeEmailPayload> = purpos
  * @category constructors
  * @since 1.0.0
  */
-export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose(
-  "delete-account",
-  DeleteAccountPayload
-)
+export const deleteAccountPurpose: TokenPurpose<DeleteAccountPayload> = purpose("delete-account", DeleteAccountPayload)
 
 /**
  * Every purpose this library mints tokens under whose subject is a **user id**.
@@ -472,11 +466,11 @@ export class Verifications extends Context.Service<Verifications, VerificationsS
  * @category constructors
  * @since 1.0.0
  */
-export const make: Effect.Effect<VerificationsService, never, Token | VerificationStore> = Effect.gen(function*() {
+export const make: Effect.Effect<VerificationsService, never, Token | VerificationStore> = Effect.gen(function* () {
   const tokens = yield* Token
   const store = yield* VerificationStore
 
-  const issue = Effect.fnUntraced(function*<P>(options: IssueOptions<P>) {
+  const issue = Effect.fnUntraced(function* <P>(options: IssueOptions<P>) {
     const secret = yield* tokens.generateToken
     const valueHash = yield* tokens.hashToken(secret)
     const now = yield* DateTime.now
@@ -484,9 +478,10 @@ export const make: Effect.Effect<VerificationsService, never, Token | Verificati
     const identifier = identifierOf(options.purpose, options.subject)
     // A payload that does not fit the schema its own purpose declared is a
     // programming error, not a request the caller can fix.
-    const payload = options.purpose.payload === null
-      ? null
-      : yield* Effect.orDie(Schema.encodeEffect(options.purpose.payload)(options.payload))
+    const payload =
+      options.purpose.payload === null
+        ? null
+        : yield* Effect.orDie(Schema.encodeEffect(options.purpose.payload)(options.payload))
     const row = yield* insertRow(VerificationModel.insert, {
       identifier,
       valueHash,
@@ -501,10 +496,7 @@ export const make: Effect.Effect<VerificationsService, never, Token | Verificati
     } satisfies Issued
   })
 
-  const claim = Effect.fnUntraced(function*<P>(
-    purpose: TokenPurpose<P>,
-    token: Redacted.Redacted<string>
-  ) {
+  const claim = Effect.fnUntraced(function* <P>(purpose: TokenPurpose<P>, token: Redacted.Redacted<string>) {
     const parts = yield* Effect.fromOption(decodeSubjectToken(token), () => new InvalidToken())
     const valueHash = yield* tokens.hashToken(parts.secret)
     const identifier = identifierOf(purpose, parts.subject)

@@ -164,10 +164,8 @@ const redirectStatuses: ReadonlySet<number> = new Set([301, 302, 303, 307, 308])
  * @category guards
  * @since 1.0.0
  */
-export const isRedirectResponse = (response: {
-  readonly status: number
-  readonly type?: string
-}): boolean => response.type === "opaqueredirect" || response.status === 0 || redirectStatuses.has(response.status)
+export const isRedirectResponse = (response: { readonly status: number; readonly type?: string }): boolean =>
+  response.type === "opaqueredirect" || response.status === 0 || redirectStatuses.has(response.status)
 
 // -----------------------------------------------------------------------------
 // Remote key sets
@@ -185,13 +183,15 @@ export const isRedirectResponse = (response: {
  * @category errors
  * @since 1.0.0
  */
-export class JwksUnavailable
-  extends Schema.TaggedError<JwksUnavailable>("effect-auth/JwksUnavailable")("JwksUnavailable", {
+export class JwksUnavailable extends Schema.TaggedError<JwksUnavailable>("effect-auth/JwksUnavailable")(
+  "JwksUnavailable",
+  {
     jwksUrl: Schema.String
-  }, {
+  },
+  {
     description: "A provider's JWKS endpoint could not be read"
-  })
-{}
+  }
+) {}
 
 /**
  * One key of a JSON Web Key Set, as a provider publishes it.
@@ -332,14 +332,12 @@ export const jwksRequestTimeout: Duration.Duration = Duration.seconds(10)
  * @category constructors
  * @since 1.0.0
  */
-export const makeJwks: (
-  options?: JwksOptions
-) => Effect.Effect<JwksService, never, HttpClient.HttpClient> = Effect.fnUntraced(
-  function*(options?: JwksOptions) {
+export const makeJwks: (options?: JwksOptions) => Effect.Effect<JwksService, never, HttpClient.HttpClient> =
+  Effect.fnUntraced(function* (options?: JwksOptions) {
     const client = yield* HttpClient.HttpClient
     const timeToLive = options?.timeToLive ?? Duration.minutes(10)
 
-    const fetchKeys = Effect.fnUntraced(function*(jwksUrl: string) {
+    const fetchKeys = Effect.fnUntraced(function* (jwksUrl: string) {
       const unavailable = new JwksUnavailable({ jwksUrl })
       const response = yield* Effect.mapError(
         Effect.timeout(client.execute(HttpClientRequest.get(jwksUrl, { acceptJson: true })), jwksRequestTimeout),
@@ -357,7 +355,7 @@ export const makeJwks: (
       capacity: options?.capacity ?? 16,
       // Only a key set earns the cache. A provider that was unreachable once is
       // asked again on the next callback rather than refused for ten minutes.
-      timeToLive: (exit: Exit.Exit<KeyResolver, JwksUnavailable>) => Exit.isSuccess(exit) ? timeToLive : Duration.zero
+      timeToLive: (exit: Exit.Exit<KeyResolver, JwksUnavailable>) => (Exit.isSuccess(exit) ? timeToLive : Duration.zero)
     })
 
     // The rotation path, rate-limited: a successful refresh is served to every
@@ -365,7 +363,7 @@ export const makeJwks: (
     // costs the provider at most one fetch per window.
     const refreshCooldown = options?.refreshCooldown ?? Duration.seconds(30)
     const refreshCache = yield* Cache.makeWith(
-      Effect.fnUntraced(function*(jwksUrl: string) {
+      Effect.fnUntraced(function* (jwksUrl: string) {
         yield* Cache.invalidate(cache, jwksUrl)
         return yield* Cache.get(cache, jwksUrl)
       }),
@@ -380,8 +378,7 @@ export const makeJwks: (
       keys: (jwksUrl) => Cache.get(cache, jwksUrl),
       refresh: (jwksUrl) => Cache.get(refreshCache, jwksUrl)
     })
-  }
-)
+  })
 
 /**
  * Provides {@link Jwks} over the ambient `HttpClient`.
@@ -397,9 +394,8 @@ export const layerJwks: Layer.Layer<Jwks, never, HttpClient.HttpClient> = Layer.
  * @category layers
  * @since 1.0.0
  */
-export const layerJwksWith = (
-  options: JwksOptions
-): Layer.Layer<Jwks, never, HttpClient.HttpClient> => Layer.effect(Jwks, makeJwks(options))
+export const layerJwksWith = (options: JwksOptions): Layer.Layer<Jwks, never, HttpClient.HttpClient> =>
+  Layer.effect(Jwks, makeJwks(options))
 
 // -----------------------------------------------------------------------------
 // Verification
@@ -411,7 +407,9 @@ export const layerJwksWith = (
  * and therefore the only one allowed to trigger a JWKS refresh.
  */
 const isNoMatchingKey = (cause: unknown): boolean =>
-  typeof cause === "object" && cause !== null && "code" in cause &&
+  typeof cause === "object" &&
+  cause !== null &&
+  "code" in cause &&
   (cause as { readonly code?: unknown }).code === "ERR_JWKS_NO_MATCHING_KEY"
 
 /** Internal marker distinguishing the refreshable failure inside {@link verify}. */
@@ -457,7 +455,7 @@ const audienceOf = (aud: string | ReadonlyArray<string> | undefined): ReadonlyAr
  * @category combinators
  * @since 1.0.0
  */
-export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
+export const verify = Effect.fnUntraced(function* (options: VerifyOptions) {
   const invalid = new ProviderError({ providerId: options.providerId, reason: "IdTokenInvalid" })
   const now = yield* DateTime.now
 
@@ -467,9 +465,10 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   // and compared below. Either way, exactly one comparison decides it. Both
   // arms come out of the one `typeof`, which is the only place the configured
   // shape is known.
-  const expectedIssuer = typeof options.issuer === "string"
-    ? { fixed: options.issuer, derive: undefined }
-    : { fixed: undefined, derive: options.issuer }
+  const expectedIssuer =
+    typeof options.issuer === "string"
+      ? { fixed: options.issuer, derive: undefined }
+      : { fixed: undefined, derive: options.issuer }
 
   const attempt = (keys: KeyResolver) =>
     Effect.tryPromise({
@@ -487,7 +486,8 @@ export const verify = Effect.fnUntraced(function*(options: VerifyOptions) {
   const verified = yield* Effect.catch(attempt(options.keys), (error) =>
     error !== unknownKeyId || options.freshKeys === undefined
       ? Effect.fail(invalid)
-      : Effect.catch(Effect.flatMap(options.freshKeys, attempt), () => Effect.fail(invalid)))
+      : Effect.catch(Effect.flatMap(options.freshKeys, attempt), () => Effect.fail(invalid))
+  )
 
   const payload = verified.payload
   const claims = yield* Effect.mapError(decodeClaims(payload), () => invalid)

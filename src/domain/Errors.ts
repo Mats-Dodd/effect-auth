@@ -83,12 +83,14 @@ export type NotFound = HttpApiError.NotFound
  * @category errors
  * @since 1.0.0
  */
-export class InvalidCredentials
-  extends Schema.TaggedError<InvalidCredentials>("effect-auth/InvalidCredentials")("InvalidCredentials", {}, {
+export class InvalidCredentials extends Schema.TaggedError<InvalidCredentials>("effect-auth/InvalidCredentials")(
+  "InvalidCredentials",
+  {},
+  {
     description: "The credentials provided did not match a known sign-in method",
     httpApiStatus: 401
-  })
-{}
+  }
+) {}
 
 /**
  * The account exists and the password was correct, but the address has not been
@@ -97,12 +99,14 @@ export class InvalidCredentials
  * @category errors
  * @since 1.0.0
  */
-export class EmailNotVerified
-  extends Schema.TaggedError<EmailNotVerified>("effect-auth/EmailNotVerified")("EmailNotVerified", {}, {
+export class EmailNotVerified extends Schema.TaggedError<EmailNotVerified>("effect-auth/EmailNotVerified")(
+  "EmailNotVerified",
+  {},
+  {
     description: "The account's e-mail address has not been verified",
     httpApiStatus: 403
-  })
-{}
+  }
+) {}
 
 /**
  * Sign-up was attempted with an e-mail address that already has an account.
@@ -110,12 +114,14 @@ export class EmailNotVerified
  * @category errors
  * @since 1.0.0
  */
-export class UserAlreadyExists
-  extends Schema.TaggedError<UserAlreadyExists>("effect-auth/UserAlreadyExists")("UserAlreadyExists", {}, {
+export class UserAlreadyExists extends Schema.TaggedError<UserAlreadyExists>("effect-auth/UserAlreadyExists")(
+  "UserAlreadyExists",
+  {},
+  {
     description: "An account already exists for that e-mail address",
     httpApiStatus: 409
-  })
-{}
+  }
+) {}
 
 /**
  * An operation referenced a user that does not exist.
@@ -129,12 +135,14 @@ export class UserAlreadyExists
  * @category errors
  * @since 1.0.0
  */
-export class UserNotFound
-  extends Schema.TaggedError<UserNotFound>("effect-auth/UserNotFound")("UserNotFound", {}, {
+export class UserNotFound extends Schema.TaggedError<UserNotFound>("effect-auth/UserNotFound")(
+  "UserNotFound",
+  {},
+  {
     description: "No user matched the request",
     httpApiStatus: 404
-  })
-{}
+  }
+) {}
 
 /**
  * The requested password does not satisfy the configured policy.
@@ -149,14 +157,18 @@ export class UserNotFound
  */
 export class PasswordPolicyViolation extends Schema.TaggedError<PasswordPolicyViolation>(
   "effect-auth/PasswordPolicyViolation"
-)("PasswordPolicyViolation", {
-  reason: Schema.Literals(["TooShort", "TooLong"]),
-  minLength: Schema.Finite,
-  maxLength: Schema.Finite
-}, {
-  description: "The password did not satisfy the configured password policy",
-  httpApiStatus: 422
-}) {}
+)(
+  "PasswordPolicyViolation",
+  {
+    reason: Schema.Literals(["TooShort", "TooLong"]),
+    minLength: Schema.Finite,
+    maxLength: Schema.Finite
+  },
+  {
+    description: "The password did not satisfy the configured password policy",
+    httpApiStatus: 422
+  }
+) {}
 
 /**
  * A change-email request named the address the account already has.
@@ -172,12 +184,14 @@ export class PasswordPolicyViolation extends Schema.TaggedError<PasswordPolicyVi
  * @category errors
  * @since 1.0.0
  */
-export class EmailUnchanged
-  extends Schema.TaggedError<EmailUnchanged>("effect-auth/EmailUnchanged")("EmailUnchanged", {}, {
+export class EmailUnchanged extends Schema.TaggedError<EmailUnchanged>("effect-auth/EmailUnchanged")(
+  "EmailUnchanged",
+  {},
+  {
     description: "The requested address is the one the account already has",
     httpApiStatus: 400
-  })
-{}
+  }
+) {}
 
 /**
  * `setPassword` was called for a user who already has a password.
@@ -194,12 +208,14 @@ export class EmailUnchanged
  * @category errors
  * @since 1.0.0
  */
-export class PasswordAlreadySet
-  extends Schema.TaggedError<PasswordAlreadySet>("effect-auth/PasswordAlreadySet")("PasswordAlreadySet", {}, {
+export class PasswordAlreadySet extends Schema.TaggedError<PasswordAlreadySet>("effect-auth/PasswordAlreadySet")(
+  "PasswordAlreadySet",
+  {},
+  {
     description: "The account already has a password credential",
     httpApiStatus: 409
-  })
-{}
+  }
+) {}
 
 // -----------------------------------------------------------------------------
 // Sessions
@@ -211,12 +227,14 @@ export class PasswordAlreadySet
  * @category errors
  * @since 1.0.0
  */
-export class SessionExpired
-  extends Schema.TaggedError<SessionExpired>("effect-auth/SessionExpired")("SessionExpired", {}, {
+export class SessionExpired extends Schema.TaggedError<SessionExpired>("effect-auth/SessionExpired")(
+  "SessionExpired",
+  {},
+  {
     description: "The session has expired",
     httpApiStatus: 401
-  })
-{}
+  }
+) {}
 
 /**
  * The session is valid but too old for a sensitive operation.
@@ -230,14 +248,16 @@ export class SessionExpired
  * @category errors
  * @since 1.0.0
  */
-export class SessionNotFresh
-  extends Schema.TaggedError<SessionNotFresh>("effect-auth/SessionNotFresh")("SessionNotFresh", {
+export class SessionNotFresh extends Schema.TaggedError<SessionNotFresh>("effect-auth/SessionNotFresh")(
+  "SessionNotFresh",
+  {
     freshAgeSeconds: Schema.Finite
-  }, {
+  },
+  {
     description: "The session is not fresh enough for this operation",
     httpApiStatus: 403
-  })
-{}
+  }
+) {}
 
 // -----------------------------------------------------------------------------
 // Verification values
@@ -255,10 +275,14 @@ export class SessionNotFresh
  * @category errors
  * @since 1.0.0
  */
-export class InvalidToken extends Schema.TaggedError<InvalidToken>("effect-auth/InvalidToken")("InvalidToken", {}, {
-  description: "The verification token is invalid or has already been used",
-  httpApiStatus: 400
-}) {}
+export class InvalidToken extends Schema.TaggedError<InvalidToken>("effect-auth/InvalidToken")(
+  "InvalidToken",
+  {},
+  {
+    description: "The verification token is invalid or has already been used",
+    httpApiStatus: 400
+  }
+) {}
 
 /**
  * A verification token was well-formed and known, but its lifetime has passed.
@@ -275,10 +299,14 @@ export class InvalidToken extends Schema.TaggedError<InvalidToken>("effect-auth/
  * @category errors
  * @since 1.0.0
  */
-export class TokenExpired extends Schema.TaggedError<TokenExpired>("effect-auth/TokenExpired")("TokenExpired", {}, {
-  description: "The verification token has expired",
-  httpApiStatus: 400
-}) {}
+export class TokenExpired extends Schema.TaggedError<TokenExpired>("effect-auth/TokenExpired")(
+  "TokenExpired",
+  {},
+  {
+    description: "The verification token has expired",
+    httpApiStatus: 400
+  }
+) {}
 
 // -----------------------------------------------------------------------------
 // OAuth
@@ -296,12 +324,14 @@ export class TokenExpired extends Schema.TaggedError<TokenExpired>("effect-auth/
  * @category errors
  * @since 1.0.0
  */
-export class OAuthStateMismatch
-  extends Schema.TaggedError<OAuthStateMismatch>("effect-auth/OAuthStateMismatch")("OAuthStateMismatch", {}, {
+export class OAuthStateMismatch extends Schema.TaggedError<OAuthStateMismatch>("effect-auth/OAuthStateMismatch")(
+  "OAuthStateMismatch",
+  {},
+  {
     description: "The OAuth state did not match a pending authorization request",
     httpApiStatus: 400
-  })
-{}
+  }
+) {}
 
 /**
  * The set of safe, non-leaking reasons an OAuth exchange can fail.
@@ -356,15 +386,17 @@ export type OAuthFailureReason = typeof OAuthFailureReason.Type
  * @category errors
  * @since 1.0.0
  */
-export class OAuthProviderError
-  extends Schema.TaggedError<OAuthProviderError>("effect-auth/OAuthProviderError")("OAuthProviderError", {
+export class OAuthProviderError extends Schema.TaggedError<OAuthProviderError>("effect-auth/OAuthProviderError")(
+  "OAuthProviderError",
+  {
     providerId: Schema.String,
     reason: OAuthFailureReason
-  }, {
+  },
+  {
     description: "The OAuth provider exchange failed",
     httpApiStatus: 502
-  })
-{}
+  }
+) {}
 
 /**
  * Why a stored provider token could not be turned into a usable access token.
@@ -414,15 +446,17 @@ export type TokenRefreshReason = typeof TokenRefreshReason.Type
  * @category errors
  * @since 1.0.0
  */
-export class TokenRefreshFailed
-  extends Schema.TaggedError<TokenRefreshFailed>("effect-auth/TokenRefreshFailed")("TokenRefreshFailed", {
+export class TokenRefreshFailed extends Schema.TaggedError<TokenRefreshFailed>("effect-auth/TokenRefreshFailed")(
+  "TokenRefreshFailed",
+  {
     accountId: AccountId,
     reason: TokenRefreshReason
-  }, {
+  },
+  {
     description: "The provider tokens for that account could not be refreshed",
     httpApiStatus: 400
-  })
-{}
+  }
+) {}
 
 /**
  * Why an OIDC discovery document could not be turned into a provider.
@@ -467,15 +501,17 @@ export type DiscoveryFailureReason = typeof DiscoveryFailureReason.Type
  * @category errors
  * @since 1.0.0
  */
-export class DiscoveryError
-  extends Schema.TaggedError<DiscoveryError>("effect-auth/DiscoveryError")("DiscoveryError", {
+export class DiscoveryError extends Schema.TaggedError<DiscoveryError>("effect-auth/DiscoveryError")(
+  "DiscoveryError",
+  {
     id: Schema.String,
     reason: DiscoveryFailureReason
-  }, {
+  },
+  {
     description: "An OIDC discovery document could not be turned into a provider",
     httpApiStatus: 500
-  })
-{}
+  }
+) {}
 
 // -----------------------------------------------------------------------------
 // Accounts
@@ -497,14 +533,16 @@ export class DiscoveryError
  * @category errors
  * @since 1.0.0
  */
-export class AccountAlreadyLinked
-  extends Schema.TaggedError<AccountAlreadyLinked>("effect-auth/AccountAlreadyLinked")("AccountAlreadyLinked", {
+export class AccountAlreadyLinked extends Schema.TaggedError<AccountAlreadyLinked>("effect-auth/AccountAlreadyLinked")(
+  "AccountAlreadyLinked",
+  {
     providerId: Schema.String
-  }, {
+  },
+  {
     description: "An account with that e-mail address already exists and cannot be linked implicitly",
     httpApiStatus: 409
-  })
-{}
+  }
+) {}
 
 /**
  * Unlinking the account would leave the user with no way to sign in.
@@ -514,10 +552,14 @@ export class AccountAlreadyLinked
  */
 export class CannotUnlinkLastAccount extends Schema.TaggedError<CannotUnlinkLastAccount>(
   "effect-auth/CannotUnlinkLastAccount"
-)("CannotUnlinkLastAccount", {}, {
-  description: "Refusing to remove the only remaining sign-in method",
-  httpApiStatus: 409
-}) {}
+)(
+  "CannotUnlinkLastAccount",
+  {},
+  {
+    description: "Refusing to remove the only remaining sign-in method",
+    httpApiStatus: 409
+  }
+) {}
 
 // -----------------------------------------------------------------------------
 // Cross-cutting
@@ -535,12 +577,16 @@ export class CannotUnlinkLastAccount extends Schema.TaggedError<CannotUnlinkLast
  * @category errors
  * @since 1.0.0
  */
-export class RateLimited extends Schema.TaggedError<RateLimited>("effect-auth/RateLimited")("RateLimited", {
-  retryAfterSeconds: Schema.Finite
-}, {
-  description: "Too many requests",
-  httpApiStatus: 429
-}) {}
+export class RateLimited extends Schema.TaggedError<RateLimited>("effect-auth/RateLimited")(
+  "RateLimited",
+  {
+    retryAfterSeconds: Schema.Finite
+  },
+  {
+    description: "Too many requests",
+    httpApiStatus: 429
+  }
+) {}
 
 /**
  * The `AuthEmails` implementation failed to deliver a message.
@@ -554,15 +600,17 @@ export class RateLimited extends Schema.TaggedError<RateLimited>("effect-auth/Ra
  * @category errors
  * @since 1.0.0
  */
-export class EmailDeliveryError
-  extends Schema.TaggedError<EmailDeliveryError>("effect-auth/EmailDeliveryError")("EmailDeliveryError", {
+export class EmailDeliveryError extends Schema.TaggedError<EmailDeliveryError>("effect-auth/EmailDeliveryError")(
+  "EmailDeliveryError",
+  {
     reason: Schema.String,
     cause: Schema.optional(Schema.Defect())
-  }, {
+  },
+  {
     description: "The e-mail could not be delivered",
     httpApiStatus: 500
-  })
-{}
+  }
+) {}
 
 /**
  * The password hasher could not complete an operation.
@@ -577,15 +625,17 @@ export class EmailDeliveryError
  * @category errors
  * @since 1.0.0
  */
-export class PasswordHashError
-  extends Schema.TaggedError<PasswordHashError>("effect-auth/PasswordHashError")("PasswordHashError", {
+export class PasswordHashError extends Schema.TaggedError<PasswordHashError>("effect-auth/PasswordHashError")(
+  "PasswordHashError",
+  {
     reason: Schema.String,
     cause: Schema.optional(Schema.Defect())
-  }, {
+  },
+  {
     description: "The password hashing primitive failed",
     httpApiStatus: 500
-  })
-{}
+  }
+) {}
 
 /**
  * Every error `effect-auth` can raise.

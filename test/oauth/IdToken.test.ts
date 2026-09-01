@@ -32,15 +32,17 @@ const verifying = (
     readonly nonce?: string | null
   }
 ) =>
-  Effect.result(verify({
-    providerId: "google",
-    token,
-    issuer: overrides?.issuer ?? issuer,
-    audience: overrides?.audience ?? audience,
-    keys,
-    nonce: overrides?.nonce ?? null,
-    algorithms: ["RS256"]
-  }))
+  Effect.result(
+    verify({
+      providerId: "google",
+      token,
+      issuer: overrides?.issuer ?? issuer,
+      audience: overrides?.audience ?? audience,
+      keys,
+      nonce: overrides?.nonce ?? null,
+      algorithms: ["RS256"]
+    })
+  )
 
 /**
  * One key pair for the whole file: verification is network-free because
@@ -51,16 +53,20 @@ const verifying = (
 layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
   describe("verify", () => {
     it.effect("accepts a well-formed token and projects its claims", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
-        const token = yield* sign(signer, {
-          sub: "provider-subject",
-          email: "ada@example.com",
-          email_verified: true,
-          name: "Ada Lovelace",
-          picture: "https://cdn.test/ada.png",
-          nonce: "the-nonce"
-        }, { expiresAt })
+        const token = yield* sign(
+          signer,
+          {
+            sub: "provider-subject",
+            email: "ada@example.com",
+            email_verified: true,
+            name: "Ada Lovelace",
+            picture: "https://cdn.test/ada.png",
+            nonce: "the-nonce"
+          },
+          { expiresAt }
+        )
 
         const result = yield* verifying(token, signer.jwks, { nonce: "the-nonce" })
         assert.strictEqual(result._tag, "Success")
@@ -75,10 +81,11 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
         assert.strictEqual(claims.picture, "https://cdn.test/ada.png")
         assert.strictEqual(claims.nonce, "the-nonce")
         assert.strictEqual(DateTime.toEpochMillis(claims.expiresAt), expiresAt * 1000)
-      }))
+      })
+    )
 
     it.effect("reads the string spelling of email_verified, and defaults it to false", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const asString = yield* sign(signer, { sub: "s", email_verified: "true" }, { expiresAt })
         const stringy = yield* verifying(asString, signer.jwks)
@@ -92,10 +99,11 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
           assert.isFalse(missing.success.emailVerified)
           assert.isNull(missing.success.email)
         }
-      }))
+      })
+    )
 
     it.effect("refuses a token signed by a key the provider does not publish", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         // The one place a second key pair is worth its cost: a forgery is a
         // token that verifies perfectly against the wrong key set.
@@ -109,42 +117,47 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
           assert.strictEqual(result.failure.reason, "IdTokenInvalid")
           assert.strictEqual(result.failure.providerId, "google")
         }
-      }))
+      })
+    )
 
     it.effect("refuses another issuer's token", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const token = yield* sign(signer, { sub: "s" }, { issuer: "https://evil.test", expiresAt })
         const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses a token minted for another audience", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const token = yield* sign(signer, { sub: "s" }, { audience: "someone-elses-client", expiresAt })
         const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses a token with no sub", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const token = yield* sign(signer, { email: "ada@example.com" }, { expiresAt })
         const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses a token with no exp, however well signed", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const token = yield* sign(signer, { sub: "s" }, { expiresAt: null })
         const result = yield* verifying(token, signer.jwks)
         assert.strictEqual(result._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses a token whose nonce is absent or wrong when one was minted", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
 
         const withoutNonce = yield* sign(signer, { sub: "s" }, { expiresAt })
@@ -154,22 +167,26 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
         const otherNonce = yield* sign(signer, { sub: "s", nonce: "somebody-elses" }, { expiresAt })
         const wrong = yield* verifying(otherNonce, signer.jwks, { nonce: "the-nonce" })
         assert.strictEqual(wrong._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("expires by the Effect clock", () =>
       // The block's `TestClock` is shared: this test moves one of its own, so
       // that the hour it burns is not also burnt by its siblings.
-      AuthTest.freshClock(Effect.gen(function*() {
-        const signer = yield* MockProvider.IdTokenSigner
-        const token = yield* sign(signer, { sub: "s" }, { expiresAt })
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const signer = yield* MockProvider.IdTokenSigner
+          const token = yield* sign(signer, { sub: "s" }, { expiresAt })
 
-        const fresh = yield* verifying(token, signer.jwks)
-        assert.strictEqual(fresh._tag, "Success")
+          const fresh = yield* verifying(token, signer.jwks)
+          assert.strictEqual(fresh._tag, "Success")
 
-        yield* TestClock.adjust(Duration.seconds(expiresAt + 1))
-        const stale = yield* verifying(token, signer.jwks)
-        assert.strictEqual(stale._tag, "Failure")
-      })))
+          yield* TestClock.adjust(Duration.seconds(expiresAt + 1))
+          const stale = yield* verifying(token, signer.jwks)
+          assert.strictEqual(stale._tag, "Failure")
+        })
+      )
+    )
   })
 
   describe("isRedirectResponse", () => {
@@ -211,26 +228,27 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
     })
 
     /** The service over a stubbed transport, wrapped exactly as the flow wraps it. */
-    const over = (fetch: typeof globalThis.fetch) =>
-      layerJwks.pipe(Layer.provide(MockProvider.safeHttpLayer(fetch)))
+    const over = (fetch: typeof globalThis.fetch) => layerJwks.pipe(Layer.provide(MockProvider.safeHttpLayer(fetch)))
 
     it.effect("fetches the key set over the HttpClient, and fetches it once", () => {
       const server = MockProvider.mockServer()
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const { body, token } = yield* published
         server.on(jwksUrl, () => MockProvider.json(body))
 
         const jwks = yield* Jwks
         const keys = yield* jwks.keys(jwksUrl)
-        const result = yield* Effect.result(verify({
-          providerId: "remote",
-          token,
-          issuer,
-          audience,
-          keys,
-          nonce: null,
-          algorithms: ["RS256"]
-        }))
+        const result = yield* Effect.result(
+          verify({
+            providerId: "remote",
+            token,
+            issuer,
+            audience,
+            keys,
+            nonce: null,
+            algorithms: ["RS256"]
+          })
+        )
         assert.strictEqual(result._tag, "Success")
         if (result._tag === "Success") assert.strictEqual(result.success.subject, "remote-subject")
 
@@ -244,7 +262,7 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
 
     it.effect("refetches a rotated key set when a token names an unknown kid", () => {
       const server = MockProvider.mockServer()
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const { body: oldBody } = yield* published
         // The provider's next key: not in the published set the cache warmed
         // up on, exactly what an emergency rotation looks like.
@@ -294,7 +312,7 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
     it.effect("refuses a JWKS endpoint that answers with a redirect", () => {
       const server = MockProvider.mockServer()
       server.on(jwksUrl, () => MockProvider.redirect("http://169.254.169.254/latest/meta-data/"))
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const jwks = yield* Jwks
         const result = yield* Effect.result(jwks.keys(jwksUrl))
         assert.strictEqual(result._tag, "Failure")
@@ -307,7 +325,7 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
     it.effect("caches a key set but never a failure", () => {
       const server = MockProvider.mockServer()
       server.on(jwksUrl, () => MockProvider.json({ message: "no" }, 503))
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const { body } = yield* published
         const jwks = yield* Jwks
 
@@ -326,7 +344,7 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
     it.effect("refuses a body that is not a key set", () => {
       const server = MockProvider.mockServer()
       server.on(jwksUrl, () => MockProvider.json({ keys: "not a list" }))
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const jwks = yield* Jwks
         const result = yield* Effect.result(jwks.keys(jwksUrl))
         assert.strictEqual(result._tag, "Failure")

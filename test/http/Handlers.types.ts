@@ -36,18 +36,8 @@ const standalone = AuthHandlers.layer(AuthApi)
 // The identifier of the service produced follows the *consuming* API, and the
 // requirements stay exactly `HandlerServices` — no group of the consumer's own
 // leaks into either channel.
-eq<
-  Exact<
-    typeof composed,
-    Layer.Layer<HttpApiGroup.Service<"app", "auth">, never, HandlerServices>
-  >
->(true)
-eq<
-  Exact<
-    typeof standalone,
-    Layer.Layer<HttpApiGroup.Service<"effect-auth", "auth">, never, HandlerServices>
-  >
->(true)
+eq<Exact<typeof composed, Layer.Layer<HttpApiGroup.Service<"app", "auth">, never, HandlerServices>>>(true)
+eq<Exact<typeof standalone, Layer.Layer<HttpApiGroup.Service<"effect-auth", "auth">, never, HandlerServices>>>(true)
 
 // ---------------------------------------------------------------------------
 // Rejected: the loose shapes the old `HttpApiGroup.Constraint` constraint let
@@ -56,9 +46,7 @@ eq<
 // ---------------------------------------------------------------------------
 
 /** Somebody else's group, sharing only the name. */
-const Impostor = HttpApiGroup.make("auth").add(
-  HttpApiEndpoint.get("ping", "/ping", { success: Schema.String })
-)
+const Impostor = HttpApiGroup.make("auth").add(HttpApiEndpoint.get("ping", "/ping", { success: Schema.String }))
 const ImpostorApi = HttpApi.make("app").add(Impostor)
 
 // @ts-expect-error — `groups.auth` is not `typeof AuthApiGroup`; the handlers
@@ -84,7 +72,8 @@ AuthHandlers.layer(TodosApi)
 // ---------------------------------------------------------------------------
 
 const todos = AuthHandlers.forGroup(Todos, (handlers) =>
-  Effect.succeed(handlers.handle("listTodos", () => Effect.succeed(["write the plan"]))))
+  Effect.succeed(handlers.handle("listTodos", () => Effect.succeed(["write the plan"])))
+)
 
 const TodoAppApi = HttpApi.make("app").addHttpApi(AuthApi).add(Todos)
 

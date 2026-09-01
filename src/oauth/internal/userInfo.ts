@@ -48,17 +48,16 @@ const readUserInfo = Schema.decodeUnknownOption(UserInfoBody)
  *
  * @internal
  */
-export const identityOf = (
-  claims: IdTokenClaims,
-  name?: string | null | undefined
-): OAuthUserInfo | null =>
-  claims.email === null ? null : {
-    id: claims.subject,
-    email: claims.email,
-    emailVerified: claims.emailVerified,
-    name: name ?? claims.name ?? claims.email,
-    image: claims.picture
-  }
+export const identityOf = (claims: IdTokenClaims, name?: string | null | undefined): OAuthUserInfo | null =>
+  claims.email === null
+    ? null
+    : {
+        id: claims.subject,
+        email: claims.email,
+        emailVerified: claims.emailVerified,
+        name: name ?? claims.name ?? claims.email,
+        image: claims.picture
+      }
 
 /**
  * The identity a provider's userinfo endpoint reports, for a token that carried
@@ -81,7 +80,7 @@ export const fetchIdentity = (options: {
   readonly accessToken: Redacted.Redacted<string>
   readonly claims: IdTokenClaims
 }): Effect.Effect<OAuthUserInfo, OAuthProviderError, HttpClient.HttpClient> =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const response = yield* fetchJson({
       providerId: options.providerId,
       url: options.url,

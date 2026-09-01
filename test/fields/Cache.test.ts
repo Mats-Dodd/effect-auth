@@ -34,7 +34,7 @@ const payloadText = (value: string): string => {
 
 layer(AuthTest.layer({ cookieCache: { enabled: true }, user: { model } }))("fields/Cache", (it) => {
   it.effect("carries a deployment's own field, and never a hidden one", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const service = yield* cache
       assert.isFalse(service.enabled)
       const store = yield* users
@@ -80,5 +80,6 @@ layer(AuthTest.layer({ cookieCache: { enabled: true }, user: { model } }))("fiel
       // Decoding can only reconstruct the declared default, which is why the
       // service is disabled for request-path reads above.
       assert.strictEqual(read.user.apiSecret, null)
-    }))
+    })
+  )
 })

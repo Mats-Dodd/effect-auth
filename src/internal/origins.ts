@@ -25,9 +25,8 @@ export const webProtocols: ReadonlySet<string> = new Set(["http:", "https:"])
  * @internal
  */
 export const originOf = (url: string): Option.Option<string> =>
-  Option.flatMap(
-    decodeUrl(url),
-    (parsed) => webProtocols.has(parsed.protocol) ? Option.some(parsed.origin) : Option.none()
+  Option.flatMap(decodeUrl(url), (parsed) =>
+    webProtocols.has(parsed.protocol) ? Option.some(parsed.origin) : Option.none()
   )
 
 /**

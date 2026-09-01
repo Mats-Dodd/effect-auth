@@ -99,13 +99,7 @@ export const multiTenantIds: ReadonlyArray<string> = ["common", "organizations",
  * @category constructors
  * @since 1.0.0
  */
-export const defaultScopes: ReadonlyArray<string> = [
-  "openid",
-  "profile",
-  "email",
-  "User.Read",
-  "offline_access"
-]
+export const defaultScopes: ReadonlyArray<string> = ["openid", "profile", "email", "User.Read", "offline_access"]
 
 /**
  * The endpoints one authority-and-tenant pair serves.
@@ -215,8 +209,9 @@ export const emailVerifiedOf = (claims: {
   const email = claims.email
   if (email === undefined) return false
   if (claims.email_verified !== undefined) return true
-  return (claims.verified_primary_email ?? []).includes(email) ||
-    (claims.verified_secondary_email ?? []).includes(email)
+  return (
+    (claims.verified_primary_email ?? []).includes(email) || (claims.verified_secondary_email ?? []).includes(email)
+  )
 }
 
 // -----------------------------------------------------------------------------
@@ -339,7 +334,7 @@ export const make = (options: Options): OAuthProviderConfig => {
     return issuerOfTenant(endpoints.authority, tenant)
   }
 
-  const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const verified = tokens.idTokenClaims
     // The flow verifies the token before calling this and refuses the callback
     // when there is none. A null here would mean the OIDC path was skipped.
@@ -439,9 +434,7 @@ interface Settings {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig = (
-  options: ConfigOptions
-): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(
     Config.unwrap<Settings>({
       clientId: options.clientId,

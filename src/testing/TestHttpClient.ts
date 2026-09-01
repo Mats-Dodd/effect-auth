@@ -68,57 +68,54 @@ export interface ClientOptions {
  * @category constructors
  * @since 1.0.0
  */
-export const makeClient = Effect.fnUntraced(
-  function*<ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api: HttpApi.HttpApi<ApiId, Groups>,
-    options?: ClientOptions
-  ) {
-    const cookies = options?.cookies ?? (yield* Ref.make(Cookies.empty))
-    const handler = yield* HttpRouter.toHttpEffect(HttpApiBuilder.layer(api))
+export const makeClient = Effect.fnUntraced(function* <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+  api: HttpApi.HttpApi<ApiId, Groups>,
+  options?: ClientOptions
+) {
+  const cookies = options?.cookies ?? (yield* Ref.make(Cookies.empty))
+  const handler = yield* HttpRouter.toHttpEffect(HttpApiBuilder.layer(api))
 
-    const respond = (request: HttpClientRequest.HttpClientRequest) =>
-      Effect.gen(function*() {
-        const sent = yield* Ref.make(Option.none<HttpServerResponse.HttpServerResponse>())
-        yield* HttpEffect.toHandled(handler, (_request, response) => Ref.set(sent, Option.some(response))).pipe(
-          Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromClientRequest(request))
-        )
-        const response = yield* Ref.get(sent)
-        return HttpServerResponse.toClientResponse(
-          Option.getOrElse(response, () => HttpServerResponse.empty({ status: 500 }))
-        )
-      })
+  const respond = (request: HttpClientRequest.HttpClientRequest) =>
+    Effect.gen(function* () {
+      const sent = yield* Ref.make(Option.none<HttpServerResponse.HttpServerResponse>())
+      yield* HttpEffect.toHandled(handler, (_request, response) => Ref.set(sent, Option.some(response))).pipe(
+        Effect.provideService(HttpServerRequest.HttpServerRequest, HttpServerRequest.fromClientRequest(request))
+      )
+      const response = yield* Ref.get(sent)
+      return HttpServerResponse.toClientResponse(
+        Option.getOrElse(response, () => HttpServerResponse.empty({ status: 500 }))
+      )
+    })
 
-    // `HttpClient.make` takes a callback that may need nothing, and the router
-    // built above still needs whatever the consumer's own groups and the
-    // platform need. For a concrete API the compiler discharges that itself; for
-    // one whose groups are still a type parameter it cannot, so the requirement
-    // is discharged explicitly, from the context this effect already runs on.
-    const context = yield* Effect.context<Effect.Services<ReturnType<typeof respond>>>()
-    const router = HttpClient.make((request) => Effect.provideContext(respond(request), context))
+  // `HttpClient.make` takes a callback that may need nothing, and the router
+  // built above still needs whatever the consumer's own groups and the
+  // platform need. For a concrete API the compiler discharges that itself; for
+  // one whose groups are still a type parameter it cannot, so the requirement
+  // is discharged explicitly, from the context this effect already runs on.
+  const context = yield* Effect.context<Effect.Services<ReturnType<typeof respond>>>()
+  const router = HttpClient.make((request) => Effect.provideContext(respond(request), context))
 
-    const withHeaders = options?.headers === undefined
+  const withHeaders =
+    options?.headers === undefined
       ? router
       : HttpClient.mapRequest(router, HttpClientRequest.setHeaders(options.headers))
 
-    const httpClient = options?.bearerToken === undefined
-      ? HttpClient.withCookiesRef(withHeaders, cookies)
-      : withHeaders
+  const httpClient = options?.bearerToken === undefined ? HttpClient.withCookiesRef(withHeaders, cookies) : withHeaders
 
-    const client = yield* HttpApiClient.makeWith(api, {
-      httpClient,
-      baseUrl: options?.baseUrl ?? testBaseUrl
-    }).pipe(
-      Effect.provide(
-        HttpApiMiddleware.layerClient(Authenticated, ({ next, request }) => {
-          const token = options?.bearerToken?.()
-          return next(token === undefined ? request : HttpClientRequest.bearerToken(request, token))
-        })
-      )
+  const client = yield* HttpApiClient.makeWith(api, {
+    httpClient,
+    baseUrl: options?.baseUrl ?? testBaseUrl
+  }).pipe(
+    Effect.provide(
+      HttpApiMiddleware.layerClient(Authenticated, ({ next, request }) => {
+        const token = options?.bearerToken?.()
+        return next(token === undefined ? request : HttpClientRequest.bearerToken(request, token))
+      })
     )
+  )
 
-    return { client, cookies } as const
-  }
-)
+  return { client, cookies } as const
+})
 
 /**
  * Registers an account and returns the client that is signed in as it.
@@ -132,11 +129,13 @@ export const makeClient = Effect.fnUntraced(
  * @category constructors
  * @since 1.0.0
  */
-export const signedUp = Effect.fnUntraced(function*(options?: ClientOptions & {
-  readonly email?: string | undefined
-  readonly password?: string | undefined
-  readonly name?: string | undefined
-}) {
+export const signedUp = Effect.fnUntraced(function* (
+  options?: ClientOptions & {
+    readonly email?: string | undefined
+    readonly password?: string | undefined
+    readonly name?: string | undefined
+  }
+) {
   const created = yield* makeClient(TestApi, options)
   const email = options?.email ?? "ada@example.com"
   const password = options?.password ?? "correct horse battery staple"
@@ -182,10 +181,16 @@ export const refusedStatus = <A, E, R>(request: Effect.Effect<A, E, R>): Effect.
   Effect.match(request, {
     onSuccess: () => 200,
     onFailure: (error) =>
-      typeof error === "object" && error !== null && "reason" in error &&
-        typeof error.reason === "object" && error.reason !== null && "response" in error.reason &&
-        typeof error.reason.response === "object" && error.reason.response !== null &&
-        "status" in error.reason.response && typeof error.reason.response.status === "number"
+      typeof error === "object" &&
+      error !== null &&
+      "reason" in error &&
+      typeof error.reason === "object" &&
+      error.reason !== null &&
+      "response" in error.reason &&
+      typeof error.reason.response === "object" &&
+      error.reason.response !== null &&
+      "status" in error.reason.response &&
+      typeof error.reason.response.status === "number"
         ? error.reason.response.status
         : 0
   })
@@ -212,9 +217,7 @@ export const responseCookie = (
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCookie = (
-  cookies: Ref.Ref<Cookies.Cookies>
-): Effect.Effect<Option.Option<Cookies.Cookie>> =>
+export const sessionCookie = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Effect<Option.Option<Cookies.Cookie>> =>
   Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, insecureSessionCookieName))
 
 /**
@@ -242,8 +245,7 @@ export const responseCacheCookie = (
 export const sessionCacheCookie = (
   cookies: Ref.Ref<Cookies.Cookies>,
   name: string = insecureSessionCacheCookieName
-): Effect.Effect<Option.Option<Cookies.Cookie>> =>
-  Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, name))
+): Effect.Effect<Option.Option<Cookies.Cookie>> => Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, name))
 
 /**
  * The value of the session cookie, `""` when it was expired away, and
@@ -252,13 +254,8 @@ export const sessionCacheCookie = (
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCookieValue = (
-  cookies: Ref.Ref<Cookies.Cookies>
-): Effect.Effect<string> =>
-  Effect.map(
-    sessionCookie(cookies),
-    Option.match({ onNone: () => "<absent>", onSome: (cookie) => cookie.value })
-  )
+export const sessionCookieValue = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Effect<string> =>
+  Effect.map(sessionCookie(cookies), Option.match({ onNone: () => "<absent>", onSome: (cookie) => cookie.value }))
 
 /**
  * Reads the `token` query parameter out of a link that was e-mailed.

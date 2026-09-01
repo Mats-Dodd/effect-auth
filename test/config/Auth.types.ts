@@ -130,27 +130,22 @@ const _configured: Layer.Layer<
     // A discovered provider is the entry that puts `DiscoveryError` and
     // `HttpClient` in the list's type — and it composes with the ones that only
     // read the environment.
-    Effect.flatMap(
-      Config.redacted("OIDC_CLIENT_SECRET"),
-      (clientSecret) =>
-        OidcDiscovery.make({
-          id: "acme",
-          issuer: "https://id.acme.test",
-          clientId: "acme-client",
-          clientSecret
-        })
+    Effect.flatMap(Config.redacted("OIDC_CLIENT_SECRET"), (clientSecret) =>
+      OidcDiscovery.make({
+        id: "acme",
+        issuer: "https://id.acme.test",
+        clientId: "acme-client",
+        clientSecret
+      })
     )
   ]
 })
 
-const _configuredPlain: Layer.Layer<
-  Exposed,
-  Config.ConfigError,
-  SqlClient.SqlClient | AuthEmails.AuthEmails
-> = Auth.layerConfig({
-  baseUrl: Config.string("BASE_URL"),
-  secret: Config.redacted("AUTH_SECRET")
-})
+const _configuredPlain: Layer.Layer<Exposed, Config.ConfigError, SqlClient.SqlClient | AuthEmails.AuthEmails> =
+  Auth.layerConfig({
+    baseUrl: Config.string("BASE_URL"),
+    secret: Config.redacted("AUTH_SECRET")
+  })
 
 // ---------------------------------------------------------------------------
 // The gate that matters: `AuthHandlers.layer` provided with either entry point

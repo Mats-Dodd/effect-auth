@@ -35,10 +35,7 @@ import { testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** A deployment whose plugin and whose domain services see the same hooks. */
 const deployment = (hooks: AuthHooksService) =>
-  MagicLinkTest.layerMagicLink().pipe(
-    Layer.provide(hooksLayer(hooks)),
-    Layer.provideMerge(AuthTest.layer({ hooks }))
-  )
+  MagicLinkTest.layerMagicLink().pipe(Layer.provide(hooksLayer(hooks)), Layer.provideMerge(AuthTest.layer({ hooks })))
 
 /** {@link deployment}, with the endpoints in front of it. */
 const httpDeployment = (hooks: AuthHooksService) =>
@@ -55,10 +52,7 @@ const makeClient = () => TestHttpClient.makeClient(MagicLinkTest.TestApi)
 
 /** The token out of the most recent link mailed to an address. */
 const linkToken = (email: string) =>
-  Effect.flatMap(
-    AuthTest.TestEmails,
-    (emails) => emails.tokenFor(MagicLinkTest.magicLinkKind, email)
-  )
+  Effect.flatMap(AuthTest.TestEmails, (emails) => emails.tokenFor(MagicLinkTest.magicLinkKind, email))
 
 /**
  * The refusal a failure carries, failing the test when it is something else.
@@ -85,7 +79,7 @@ describe.sequential("magic-link/Hooks", () => {
     })
   )("a policy that vets the accounts links create", (it) => {
     it.effect("refuses the account, and leaves no row behind", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("refused")
         const magic = yield* MagicLink
         const users = yield* UserStore
@@ -97,10 +91,11 @@ describe.sequential("magic-link/Hooks", () => {
         // Nothing was written: the refusal happened before the insert, and the
         // transaction the provisioning holds would have taken it back anyway.
         assert.isTrue(Option.isNone(yield* users.findByEmail(email)))
-      }))
+      })
+    )
 
     it.effect("writes the rewrite the hook made onto the account it creates", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("rewritten")
         const magic = yield* MagicLink
         const users = yield* UserStore
@@ -117,7 +112,8 @@ describe.sequential("magic-link/Hooks", () => {
         // And the link still did its job: a session, on a verified address.
         assert.strictEqual(verified.session.userId, verified.user.id)
         assert.isTrue(verified.user.emailVerified)
-      }))
+      })
+    )
   })
 
   layer(
@@ -128,7 +124,7 @@ describe.sequential("magic-link/Hooks", () => {
     })
   )("a policy whose after-hook fails", (it) => {
     it.effect("leaves no user row when the related write is refused", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("aborted")
         const magic = yield* MagicLink
         const users = yield* UserStore
@@ -141,7 +137,8 @@ describe.sequential("magic-link/Hooks", () => {
         // an `afterUserCreate` that cannot write takes the user down with it,
         // exactly as it does on the password and OAuth sources.
         assert.isTrue(Option.isNone(yield* users.findByEmail(email)))
-      }))
+      })
+    )
   })
 
   layer(
@@ -151,13 +148,11 @@ describe.sequential("magic-link/Hooks", () => {
           ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed" }))
           : Effect.succeed(candidate),
       beforeSessionCreate: ({ user }) =>
-        user.email.startsWith("banned-")
-          ? Effect.fail(new PolicyRefused({ code: "account_suspended" }))
-          : Effect.void
+        user.email.startsWith("banned-") ? Effect.fail(new PolicyRefused({ code: "account_suspended" })) : Effect.void
     })
   )("the endpoints under a policy", (it) => {
     it.effect("redirects a refused link to its own error page with the hook's code", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-refused")
         const { client, cookies } = yield* makeClient()
         const users = yield* UserStore
@@ -182,10 +177,11 @@ describe.sequential("magic-link/Hooks", () => {
         assert.isTrue(Option.isNone(yield* users.findByEmail(email)))
         assert.isTrue(Option.isNone(TestHttpClient.responseCookie(response)))
         assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCookie(cookies)))
-      }))
+      })
+    )
 
     it.effect("refuses a banned account's link without minting a session", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("banned")
         const { client, cookies } = yield* makeClient()
 
@@ -209,10 +205,11 @@ describe.sequential("magic-link/Hooks", () => {
         assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCookie(cookies)))
         const unauthorized = yield* Effect.flip(client.auth.getSession())
         assert.strictEqual(unauthorized._tag, "Unauthorized")
-      }))
+      })
+    )
 
     it.effect("answers the JSON twin with the typed refusal", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("banned")
         const { client } = yield* makeClient()
 
@@ -225,10 +222,11 @@ describe.sequential("magic-link/Hooks", () => {
         // A caller that reads bodies gets the error itself, carrying the code
         // the deployment wrote — not a redirect, and not an opaque 500.
         assert.strictEqual(refusal(refused).code, "account_suspended")
-      }))
+      })
+    )
 
     it.effect("burns the refused link, so it cannot be tried again", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("banned")
         const { client } = yield* makeClient()
 
@@ -244,6 +242,7 @@ describe.sequential("magic-link/Hooks", () => {
         // old link live again.
         const second = yield* Effect.flip(client.magicLink.exchange({ payload: { token } }))
         assert.strictEqual(second._tag, "InvalidToken")
-      }))
+      })
+    )
   })
 })

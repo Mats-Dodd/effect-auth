@@ -175,36 +175,43 @@ export class MagicLinkApiGroup extends HttpApiGroup.make("magicLink")
       payload: MagicLinkSignInPayload,
       success: Ok,
       error: RateLimited
-    }).annotateMerge(OpenApi.annotations({
-      summary: "Send a sign-in link to an e-mail address",
-      description:
-        "Always answers 200 for a well-formed address, whether or not it has an account and whether or not the message could be delivered: a distinguishable answer would tell an unauthenticated caller who is registered here. With disableSignUp on, an address with no account is answered identically and sent nothing."
-    })),
+    }).annotateMerge(
+      OpenApi.annotations({
+        summary: "Send a sign-in link to an e-mail address",
+        description:
+          "Always answers 200 for a well-formed address, whether or not it has an account and whether or not the message could be delivered: a distinguishable answer would tell an unauthenticated caller who is registered here. With disableSignUp on, an address with no account is answered identically and sent nothing."
+      })
+    ),
     HttpApiEndpoint.get("verify", "/verify", {
       query: MagicLinkVerifyQuery,
       success: Redirect,
       error: RateLimited
-    }).annotateMerge(OpenApi.annotations({
-      summary: "Follow a sign-in link",
-      description:
-        "Claims the single-use token, establishes the session, sets the cookie and redirects. Every failure is a redirect too — to the errorCallbackURL the link was minted with, carrying ?error=invalid_token or ?error=sign_up_disabled — because the person arrived here by a top-level browser navigation and has to land on a page. A deployment hook that refuses the account or the session redirects to that same errorCallbackURL carrying ?error=policy_refused&code=..., with the code that hook chose; the link is spent either way."
-    })),
+    }).annotateMerge(
+      OpenApi.annotations({
+        summary: "Follow a sign-in link",
+        description:
+          "Claims the single-use token, establishes the session, sets the cookie and redirects. Every failure is a redirect too — to the errorCallbackURL the link was minted with, carrying ?error=invalid_token or ?error=sign_up_disabled — because the person arrived here by a top-level browser navigation and has to land on a page. A deployment hook that refuses the account or the session redirects to that same errorCallbackURL carrying ?error=policy_refused&code=..., with the code that hook chose; the link is spent either way."
+      })
+    ),
     HttpApiEndpoint.post("exchange", "/exchange", {
       payload: MagicLinkExchangePayload,
       success: SessionWithUser,
       error: [InvalidToken, SignUpDisabled, PolicyRefused, RateLimited]
-    }).annotateMerge(OpenApi.annotations({
-      summary: "Exchange a sign-in link's token for a session",
-      description:
-        "The JSON twin of verify, for a single-page application or a mobile client that would rather read a body than follow a redirect. It sets the session cookie as well, so a browser using it is signed in either way. PolicyRefused is a deployment's own hook declining the account this link would have created or the session it would have started, and carries the code that hook chose; it is raised only after the token has been claimed, so the link is spent whichever way it went."
-    }))
+    }).annotateMerge(
+      OpenApi.annotations({
+        summary: "Exchange a sign-in link's token for a session",
+        description:
+          "The JSON twin of verify, for a single-page application or a mobile client that would rather read a body than follow a redirect. It sets the session cookie as well, so a browser using it is signed in either way. PolicyRefused is a deployment's own hook declining the account this link would have created or the session it would have started, and carries the code that hook chose; it is raised only after the token has been claimed, so the link is spent whichever way it went."
+      })
+    )
   )
   .prefix(magicLinkPrefix)
-  .annotateMerge(OpenApi.annotations({
-    title: "Magic link",
-    description: "Passwordless sign-in by a single-use link sent to an e-mail address."
-  }))
-{}
+  .annotateMerge(
+    OpenApi.annotations({
+      title: "Magic link",
+      description: "Passwordless sign-in by a single-use link sent to an e-mail address."
+    })
+  ) {}
 
 /**
  * The magic link endpoints as a standalone `HttpApi`.

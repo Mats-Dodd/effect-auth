@@ -57,7 +57,7 @@ describe("fields/Default", () => {
   })
 
   it.effect("round-trips a user through the empty model exactly as `User` does", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const row = {
         id: "01930000-0000-7000-8000-000000000001",
         name: "Ada",
@@ -73,7 +73,8 @@ describe("fields/Default", () => {
 
       const encoded = yield* Schema.encodeEffect(baseUserModel.json)(throughModel)
       assert.deepStrictEqual(encoded, row)
-    }))
+    })
+  )
 
   it("keeps the two response payloads on the base model's projection", () => {
     assert.strictEqual(SessionWithUser.fields.user, baseUserModel.json)
@@ -81,21 +82,20 @@ describe("fields/Default", () => {
   })
 
   it.effect("carries no custom fields and needs no defaults", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       assert.deepStrictEqual(baseUserModel.extraKeys, [])
       assert.deepStrictEqual(yield* baseUserModel.extraDefaults, {})
-    }))
+    })
+  )
 
   it.effect("defaults the ambient model reference to the base model", () =>
     Effect.map(UserModelRef, (model) => {
       assert.strictEqual(model, baseUserModel)
-    }))
+    })
+  )
 
   it("refuses a custom field that cannot be provisioned", () => {
-    assert.throws(
-      () => makeUserModel({ nickname: Schema.String }),
-      /not provisionable/
-    )
+    assert.throws(() => makeUserModel({ nickname: Schema.String }), /not provisionable/)
   })
 
   it("refuses custom fields whose columns collide", () => {
@@ -116,17 +116,12 @@ describe("fields/Default", () => {
   })
 
   it("refuses a custom field that redeclares a base one", () => {
-    assert.throws(
-      () => makeUserModel({ email: UserField.withDefault(Schema.String, () => "") }),
-      /redeclare/
-    )
+    assert.throws(() => makeUserModel({ email: UserField.withDefault(Schema.String, () => "") }), /redeclare/)
   })
 
   it("accepts a `required` field whose schema defaults itself", () => {
     const model = makeUserModel({
-      nickname: UserField.required(
-        Schema.String.pipe(Schema.withConstructorDefault(Effect.succeed("anonymous")))
-      )
+      nickname: UserField.required(Schema.String.pipe(Schema.withConstructorDefault(Effect.succeed("anonymous"))))
     })
     assert.deepStrictEqual(model.extraKeys, ["nickname"])
     assert.isTrue(

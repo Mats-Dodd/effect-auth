@@ -33,85 +33,88 @@ interface TokenCall extends TokenSelector {
  * block shares one deployment: `reset` at the top of a test is what makes
  * `starts` mean "this test's", and is why the block is sequential.
  */
-class StubFlow extends Context.Service<StubFlow, {
-  /** The next outcome `GET /callback/:providerId` will resolve to. */
-  readonly setOutcome: (outcome: CallbackOutcome) => Effect.Effect<void>
-  /** What the two token methods will answer with. */
-  readonly setTokens: (tokens: RefreshedTokens) => Effect.Effect<void>
-  /** Every `start` the handlers made since the last `reset`. */
-  readonly starts: Effect.Effect<ReadonlyArray<StartOptions>>
-  /** Every token method call the handlers made since the last `reset`. */
-  readonly tokenCalls: Effect.Effect<ReadonlyArray<TokenCall>>
-  /** Forgets the recorded calls and everything staged. */
-  readonly reset: Effect.Effect<void>
-}>()("test/http/StubFlow") {}
+class StubFlow extends Context.Service<
+  StubFlow,
+  {
+    /** The next outcome `GET /callback/:providerId` will resolve to. */
+    readonly setOutcome: (outcome: CallbackOutcome) => Effect.Effect<void>
+    /** What the two token methods will answer with. */
+    readonly setTokens: (tokens: RefreshedTokens) => Effect.Effect<void>
+    /** Every `start` the handlers made since the last `reset`. */
+    readonly starts: Effect.Effect<ReadonlyArray<StartOptions>>
+    /** Every token method call the handlers made since the last `reset`. */
+    readonly tokenCalls: Effect.Effect<ReadonlyArray<TokenCall>>
+    /** Forgets the recorded calls and everything staged. */
+    readonly reset: Effect.Effect<void>
+  }
+>()("test/http/StubFlow") {}
 
-const stubLayer = Layer.effectContext(Effect.gen(function*() {
-  const started = yield* Ref.make<ReadonlyArray<StartOptions>>([])
-  const outcome = yield* Ref.make<Option.Option<CallbackOutcome>>(Option.none())
-  const tokens = yield* Ref.make<Option.Option<RefreshedTokens>>(Option.none())
-  const calls = yield* Ref.make<ReadonlyArray<TokenCall>>([])
+const stubLayer = Layer.effectContext(
+  Effect.gen(function* () {
+    const started = yield* Ref.make<ReadonlyArray<StartOptions>>([])
+    const outcome = yield* Ref.make<Option.Option<CallbackOutcome>>(Option.none())
+    const tokens = yield* Ref.make<Option.Option<RefreshedTokens>>(Option.none())
+    const calls = yield* Ref.make<ReadonlyArray<TokenCall>>([])
 
-  /** Records the selector the handler built, and answers what was staged. */
-  const answerTokens = (method: TokenCall["method"]) => (selector: TokenSelector) =>
-    Effect.flatMap(
-      Ref.update(calls, (all) => [...all, { ...selector, method }]),
-      () =>
-        Effect.flatMap(
-          Ref.get(tokens),
-          Option.match({
-            onNone: () => Effect.die("no provider tokens were staged"),
-            onSome: Effect.succeed
-          })
-        )
+    /** Records the selector the handler built, and answers what was staged. */
+    const answerTokens = (method: TokenCall["method"]) => (selector: TokenSelector) =>
+      Effect.flatMap(
+        Ref.update(calls, (all) => [...all, { ...selector, method }]),
+        () =>
+          Effect.flatMap(
+            Ref.get(tokens),
+            Option.match({
+              onNone: () => Effect.die("no provider tokens were staged"),
+              onSome: Effect.succeed
+            })
+          )
+      )
+
+    return Context.make(StubFlow, {
+      setOutcome: (next: CallbackOutcome) => Ref.set(outcome, Option.some(next)),
+      setTokens: (next: RefreshedTokens) => Ref.set(tokens, Option.some(next)),
+      starts: Ref.get(started),
+      tokenCalls: Ref.get(calls),
+      reset: Effect.andThen(
+        Effect.andThen(Ref.set(started, []), Ref.set(outcome, Option.none())),
+        Effect.andThen(Ref.set(tokens, Option.none()), Ref.set(calls, []))
+      )
+    }).pipe(
+      Context.add(OAuthFlow, {
+        start: (options) =>
+          Effect.as(
+            Ref.update(started, (all) => [...all, options]),
+            {
+              providerId: options.providerId,
+              url: `https://provider.test/authorize?client_id=x&state=nonce&provider=${options.providerId}`,
+              state: Redacted.make("nonce"),
+              expiresAt: DateTime.makeUnsafe(0)
+            }
+          ),
+        callback: () => Effect.die("the handlers must call `complete`, not `callback`"),
+        accessToken: answerTokens("accessToken"),
+        refreshTokens: answerTokens("refreshTokens"),
+        complete: () =>
+          Effect.flatMap(
+            Ref.get(outcome),
+            Option.match({
+              onNone: () => Effect.die("no outcome was staged"),
+              onSome: Effect.succeed
+            })
+          )
+      })
     )
-
-  return Context.make(StubFlow, {
-    setOutcome: (next: CallbackOutcome) => Ref.set(outcome, Option.some(next)),
-    setTokens: (next: RefreshedTokens) => Ref.set(tokens, Option.some(next)),
-    starts: Ref.get(started),
-    tokenCalls: Ref.get(calls),
-    reset: Effect.andThen(
-      Effect.andThen(Ref.set(started, []), Ref.set(outcome, Option.none())),
-      Effect.andThen(Ref.set(tokens, Option.none()), Ref.set(calls, []))
-    )
-  }).pipe(
-    Context.add(OAuthFlow, {
-      start: (options) =>
-        Effect.as(
-          Ref.update(started, (all) => [...all, options]),
-          {
-            providerId: options.providerId,
-            url: `https://provider.test/authorize?client_id=x&state=nonce&provider=${options.providerId}`,
-            state: Redacted.make("nonce"),
-            expiresAt: DateTime.makeUnsafe(0)
-          }
-        ),
-      callback: () => Effect.die("the handlers must call `complete`, not `callback`"),
-      accessToken: answerTokens("accessToken"),
-      refreshTokens: answerTokens("refreshTokens"),
-      complete: () =>
-        Effect.flatMap(
-          Ref.get(outcome),
-          Option.match({
-            onNone: () => Effect.die("no outcome was staged"),
-            onSome: Effect.succeed
-          })
-        )
-    })
-  )
-}))
+  })
+)
 
 /** The whole server stack, with the stub standing in for the flow. */
 const stubbed = Layer.mergeAll(
-  AuthHandlers.layer(AuthTest.TestApi).pipe(
-    Layer.provideMerge(stubLayer.pipe(Layer.provideMerge(AuthTest.layer())))
-  ),
+  AuthHandlers.layer(AuthTest.TestApi).pipe(Layer.provideMerge(stubLayer.pipe(Layer.provideMerge(AuthTest.layer())))),
   AuthTest.layerPlatform
 )
 
 /** A real session for a signed-up user, minted outside any HTTP request. */
-const mintSession = Effect.fnUntraced(function*(email: string) {
+const mintSession = Effect.fnUntraced(function* (email: string) {
   const users = yield* UserStore
   const accounts = yield* AccountStore
   const sessions = yield* Sessions
@@ -122,7 +125,7 @@ const mintSession = Effect.fnUntraced(function*(email: string) {
 })
 
 /** The one account a freshly signed-up user holds: their credential. */
-const onlyAccount = Effect.fnUntraced(function*(userId: User["id"]) {
+const onlyAccount = Effect.fnUntraced(function* (userId: User["id"]) {
   const accounts = yield* AccountStore
   return (yield* accounts.listByUserId(userId))[0]!
 })
@@ -153,7 +156,7 @@ const stateBinding = (state: string): TestHttpClient.ClientOptions => ({
 })
 
 /** Signs a new account up, and mints a session for it outside the browser. */
-const withSession = Effect.fnUntraced(function*(label: string) {
+const withSession = Effect.fnUntraced(function* (label: string) {
   const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail(label) })
   return yield* mintSession(browser.email)
 })
@@ -161,7 +164,7 @@ const withSession = Effect.fnUntraced(function*(label: string) {
 describe.sequential("http/Handlers OAuth", () => {
   layer(stubbed)((it) => {
     it.effect("answers the authorization URL to navigate to", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
@@ -186,10 +189,11 @@ describe.sequential("http/Handlers OAuth", () => {
         assert.strictEqual(options?.rememberMe, false)
         // A sign-in is not a link: nobody is being attached to anybody.
         assert.isTrue(options?.linkUserId === undefined || options.linkUserId === null)
-      }))
+      })
+    )
 
     it.effect("emits the state-binding cookie holding the raw state on signInSocial", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
@@ -206,15 +210,14 @@ describe.sequential("http/Handlers OAuth", () => {
 
         // Deleting `setOAuthStateCookie` from the handler must break this: the
         // callback binding has nothing to compare against without it.
-        const cookie = Option.getOrThrow(
-          TestHttpClient.responseCookie(response, insecureOAuthStateCookieName)
-        )
+        const cookie = Option.getOrThrow(TestHttpClient.responseCookie(response, insecureOAuthStateCookieName))
         assert.strictEqual(cookie.value, "nonce")
         assert.strictEqual(cookie.options?.httpOnly, true)
-      }))
+      })
+    )
 
     it.effect("round-trips signInSocial's cookie through the jar to the callback", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const minted = yield* withSession("callback-roundtrip")
         const stub = yield* StubFlow
         yield* stub.reset
@@ -254,18 +257,16 @@ describe.sequential("http/Handlers OAuth", () => {
 
         assert.strictEqual(response.status, 302)
         assert.strictEqual(response.headers["location"], "http://localhost:3000/welcome")
-        assert.strictEqual(
-          yield* TestHttpClient.sessionCookieValue(cookies),
-          Redacted.value(minted.token)
-        )
+        assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), Redacted.value(minted.token))
         // The single-use state cookie is expired on the successful callback.
         const cleared = TestHttpClient.responseCookie(response, insecureOAuthStateCookieName)
         assert.isTrue(Option.isSome(cleared))
         assert.strictEqual(Option.getOrThrow(cleared).value, "")
-      }))
+      })
+    )
 
     it.effect("passes the signed-in user along when a provider is being linked", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("link") })
@@ -273,17 +274,19 @@ describe.sequential("http/Handlers OAuth", () => {
 
         const [options] = yield* stub.starts
         assert.strictEqual(options?.linkUserId, browser.user.id)
-      }))
+      })
+    )
 
     it.effect("refuses to start a link for a caller with no session", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
         const error = yield* Effect.flip(client.auth.linkSocial({ payload: { providerId: "github" } }))
         assert.strictEqual(error._tag, "Unauthorized")
-      }))
+      })
+    )
 
     it.effect("sets the session cookie and redirects where the flow says", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const minted = yield* withSession("callback-cookie")
         const stub = yield* StubFlow
         yield* stub.reset
@@ -313,17 +316,15 @@ describe.sequential("http/Handlers OAuth", () => {
 
         assert.strictEqual(response.status, 302)
         assert.strictEqual(response.headers["location"], "http://localhost:3000/welcome")
-        assert.strictEqual(
-          yield* TestHttpClient.sessionCookieValue(fresh.cookies),
-          Redacted.value(minted.token)
-        )
+        assert.strictEqual(yield* TestHttpClient.sessionCookieValue(fresh.cookies), Redacted.value(minted.token))
         // The browser is now signed in as that user.
         const current = yield* fresh.client.auth.getSession()
         assert.strictEqual(current.user.id, minted.user.id)
-      }))
+      })
+    )
 
     it.effect("sets no cookie when the callback only linked an account", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const minted = yield* withSession("callback-link")
         const stub = yield* StubFlow
         yield* stub.reset
@@ -353,10 +354,11 @@ describe.sequential("http/Handlers OAuth", () => {
         assert.strictEqual(response.status, 302)
         assert.strictEqual(response.headers["location"], "http://localhost:3000/settings")
         assert.isTrue(Option.isNone(TestHttpClient.responseCookie(response)))
-      }))
+      })
+    )
 
     it.effect("writes a browser-session cookie when the flow was started with rememberMe: false", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const minted = yield* withSession("callback-remember")
         const stub = yield* StubFlow
         yield* stub.reset
@@ -386,10 +388,11 @@ describe.sequential("http/Handlers OAuth", () => {
         // No `Max-Age`: the cookie dies with the window, which is what the
         // person asked for — and what the password path already did.
         assert.strictEqual(cookie.options?.maxAge, undefined)
-      }))
+      })
+    )
 
     it.effect("redirects to the error URL with a safe code, rather than failing", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         yield* stub.setOutcome({
@@ -411,15 +414,13 @@ describe.sequential("http/Handlers OAuth", () => {
 
         // A browser that arrived by a top-level navigation leaves by one.
         assert.strictEqual(response.status, 302)
-        assert.strictEqual(
-          response.headers["location"],
-          "http://localhost:3000/oops?error=state_mismatch"
-        )
+        assert.strictEqual(response.headers["location"], "http://localhost:3000/oops?error=state_mismatch")
         assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
-      }))
+      })
+    )
 
     it.effect("turns away a callback whose browser never started the flow", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         // Staged, but it must never be reached: the binding is checked before
@@ -444,10 +445,7 @@ describe.sequential("http/Handlers OAuth", () => {
         // (baseUrl), not the errorURL a consumed state row would have carried,
         // and it carries the same safe `state_mismatch` code.
         assert.strictEqual(response.status, 302)
-        assert.strictEqual(
-          response.headers["location"],
-          "http://localhost:3000/?error=state_mismatch"
-        )
+        assert.strictEqual(response.headers["location"], "http://localhost:3000/?error=state_mismatch")
         // No session was minted for the victim.
         assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
         // The state cookie is expired on a mismatch too, not only on success —
@@ -457,7 +455,8 @@ describe.sequential("http/Handlers OAuth", () => {
         assert.strictEqual(Option.getOrThrow(cleared).value, "")
         // The flow was never asked to complete.
         assert.deepStrictEqual(yield* stub.starts, [])
-      }))
+      })
+    )
 
     // ---------------------------------------------------------------------------
     // Provider tokens
@@ -468,7 +467,7 @@ describe.sequential("http/Handlers OAuth", () => {
     // ---------------------------------------------------------------------------
 
     it.effect("hands the flow the caller's own user id, and answers the credential", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("access-token") })
@@ -490,10 +489,11 @@ describe.sequential("http/Handlers OAuth", () => {
         assert.deepStrictEqual(yield* stub.tokenCalls, [
           { method: "accessToken", userId: browser.user.id, accountId: account.id }
         ])
-      }))
+      })
+    )
 
     it.effect("spends the refresh token only when asked to, and reports the new pair", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("refresh-token") })
@@ -507,10 +507,11 @@ describe.sequential("http/Handlers OAuth", () => {
         assert.deepStrictEqual(yield* stub.tokenCalls, [
           { method: "refreshTokens", userId: browser.user.id, accountId: account.id }
         ])
-      }))
+      })
+    )
 
     it.effect("refuses a caller with no session, without asking the flow anything", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
         const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail("token-no-session") })
@@ -520,13 +521,14 @@ describe.sequential("http/Handlers OAuth", () => {
         const error = yield* Effect.flip(client.auth.getAccessToken({ payload: { accountId: account.id } }))
         assert.strictEqual(error._tag, "Unauthorized")
         assert.deepStrictEqual(yield* stub.tokenCalls, [])
-      }))
+      })
+    )
   })
 })
 
 layer(AuthTest.layerHttp())("http/Handlers without any OAuth provider", (it) => {
   it.effect("reports an unknown provider instead of requiring an HttpClient", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
       const error = yield* Effect.flip(client.auth.signInSocial({ payload: { providerId: "github" } }))
 
@@ -535,10 +537,11 @@ layer(AuthTest.layerHttp())("http/Handlers without any OAuth provider", (it) => 
         assert.strictEqual(error.reason, "UnknownProvider")
         assert.strictEqual(error.providerId, "github")
       }
-    }))
+    })
+  )
 
   it.effect("still answers the callback with a redirect carrying a safe code", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
       const [, response] = yield* client.auth.oauthCallback({
         params: { providerId: "github" },
@@ -547,9 +550,7 @@ layer(AuthTest.layerHttp())("http/Handlers without any OAuth provider", (it) => 
       })
 
       assert.strictEqual(response.status, 302)
-      assert.strictEqual(
-        response.headers["location"],
-        "http://localhost:3000/?error=unknown_provider"
-      )
-    }))
+      assert.strictEqual(response.headers["location"], "http://localhost:3000/?error=unknown_provider")
+    })
+  )
 })

@@ -18,14 +18,14 @@ import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "..
  */
 describe("domain/lifecycle", () => {
   it.effect("sign-up, verify, sign-in, browse for a fortnight, change password, sign out", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const sessions = yield* Sessions
       const emails = yield* AuthTest.TestEmails
       const config = yield* AuthConfig
       const email = uniqueEmail("journey")
 
-      const journey = Effect.gen(function*() {
+      const journey = Effect.gen(function* () {
         // --- register -----------------------------------------------------
         const { session: noSession, user } = yield* passwords.signUp({
           name: testName,
@@ -70,10 +70,7 @@ describe("domain/lifecycle", () => {
         // it was kept alive; it is no longer fresh, though.
         const current = yield* sessions.verify(signedIn.token)
         assert.strictEqual(yield* sessions.isFresh(current.session), false)
-        assert.strictEqual(
-          (yield* Effect.flip(sessions.requireFresh(current.session)))._tag,
-          "SessionNotFresh"
-        )
+        assert.strictEqual((yield* Effect.flip(sessions.requireFresh(current.session)))._tag, "SessionNotFresh")
 
         // --- change the password on a second device ------------------------
         const phone = yield* sessions.create({ userId: user.id })
@@ -84,10 +81,7 @@ describe("domain/lifecycle", () => {
           currentSessionId: phone.session.id
         })
         // The laptop was signed out by the change; the phone was not.
-        assert.strictEqual(
-          (yield* Effect.flip(sessions.verify(signedIn.token)))._tag,
-          "Unauthorized"
-        )
+        assert.strictEqual((yield* Effect.flip(sessions.verify(signedIn.token)))._tag, "Unauthorized")
         assert.strictEqual((yield* sessions.verify(phone.token)).session.id, phone.session.id)
 
         // --- sign out ------------------------------------------------------
@@ -100,10 +94,7 @@ describe("domain/lifecycle", () => {
         assert.strictEqual(yield* sessions.isFresh(again.session), true)
 
         const expected = DateTime.addDuration(yield* DateTime.now, config.session.expiresIn)
-        assert.strictEqual(
-          DateTime.toEpochMillis(again.session.expiresAt),
-          DateTime.toEpochMillis(expected)
-        )
+        assert.strictEqual(DateTime.toEpochMillis(again.session.expiresAt), DateTime.toEpochMillis(expected))
         return user
       })
 
@@ -117,10 +108,11 @@ describe("domain/lifecycle", () => {
         "SignedOut",
         "SignedIn"
       ])
-    }).pipe(Effect.provide(AuthTest.layer({ emailPassword: { requireEmailVerification: true } }))))
+    }).pipe(Effect.provide(AuthTest.layer({ emailPassword: { requireEmailVerification: true } })))
+  )
 
   it.effect("a password user links GitHub, signs in through it, and unlinks again", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const accounts = yield* Accounts
       const sessions = yield* Sessions
@@ -138,10 +130,7 @@ describe("domain/lifecycle", () => {
         email,
         emailVerified: true
       }
-      assert.strictEqual(
-        (yield* Effect.flip(accounts.linkOAuth(identity)))._tag,
-        "AccountAlreadyLinked"
-      )
+      assert.strictEqual((yield* Effect.flip(accounts.linkOAuth(identity)))._tag, "AccountAlreadyLinked")
 
       // Confirm the address, and the same callback now links.
       yield* passwords.sendVerificationEmail({ email })
@@ -161,18 +150,16 @@ describe("domain/lifecycle", () => {
       yield* accounts.unlink(linked.account.id, user.id)
       const held = yield* accounts.listForUser(user.id)
       assert.strictEqual(held.length, 1)
-      assert.strictEqual(
-        (yield* Effect.flip(accounts.unlink(held[0]!.id, user.id)))._tag,
-        "CannotUnlinkLastAccount"
-      )
+      assert.strictEqual((yield* Effect.flip(accounts.unlink(held[0]!.id, user.id)))._tag, "CannotUnlinkLastAccount")
 
       // The password still works.
       const signedIn = yield* passwords.signIn({ email, password: testPassword })
       assert.strictEqual(signedIn.user.id, user.id)
-    }).pipe(Effect.provide(AuthTest.layer())))
+    }).pipe(Effect.provide(AuthTest.layer()))
+  )
 
   it.effect("a reset link recovers an account and signs every device out", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const sessions = yield* Sessions
       const emails = yield* AuthTest.TestEmails
@@ -196,5 +183,6 @@ describe("domain/lifecycle", () => {
       const recovered = yield* passwords.signIn({ email, password: newPassword })
       assert.strictEqual(recovered.user.id, user.id)
       assert.strictEqual((yield* sessions.list(user.id)).length, 1)
-    }).pipe(Effect.provide(AuthTest.layer())))
+    }).pipe(Effect.provide(AuthTest.layer()))
+  )
 })

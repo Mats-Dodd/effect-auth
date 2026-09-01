@@ -101,9 +101,7 @@ export {
  * @category constructors
  * @since 1.0.0
  */
-export const testSecret: Redacted.Redacted<string> = Redacted.make(
-  "effect-auth-test-secret-do-not-use-in-production"
-)
+export const testSecret: Redacted.Redacted<string> = Redacted.make("effect-auth-test-secret-do-not-use-in-production")
 
 /**
  * The default base URL: plain HTTP, so the session cookie is written under its
@@ -334,10 +332,7 @@ const databases = new WeakMap<
  */
 export const layerDatabaseFor = <F extends UserFields>(
   model: UserModel<F>
-): Layer.Layer<
-  SqlClient.SqlClient | PgliteClient.PgliteClient,
-  Migrator.MigrationError | SqlError.SqlError
-> => {
+): Layer.Layer<SqlClient.SqlClient | PgliteClient.PgliteClient, Migrator.MigrationError | SqlError.SqlError> => {
   const existing = databases.get(model)
   if (existing !== undefined) return existing
   const created = Migrations.layerFor(model).pipe(Layer.provideMerge(PgliteClient.layer()))
@@ -357,10 +352,11 @@ export const layerStoresFor = <F extends UserFields>(
 ): Layer.Layer<
   AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
   Migrator.MigrationError | SqlError.SqlError
-> => SqlStores.layerFor(model).pipe(
-  Layer.provide(authConfigLayer(testConfig())),
-  Layer.provideMerge(layerDatabaseFor(model))
-)
+> =>
+  SqlStores.layerFor(model).pipe(
+    Layer.provide(authConfigLayer(testConfig())),
+    Layer.provideMerge(layerDatabaseFor(model))
+  )
 
 /**
  * A fresh in-memory PGlite database with `effect-auth`'s migrations applied.
@@ -449,10 +445,7 @@ export const layer = <F extends UserFields = {}>(
 ): Layer.Layer<
   Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
-> =>
-  options?.user?.model === undefined
-    ? deployment(options, baseUserModel)
-    : deployment(options, options.user.model)
+> => (options?.user?.model === undefined ? deployment(options, baseUserModel) : deployment(options, options.user.model))
 
 /** {@link layer}, once the model has been settled on. See `Auth.stack`. */
 const deployment = <F extends UserFields>(
@@ -548,9 +541,7 @@ const flowDeployment = <F extends UserFields>(
  */
 export const layerPlatform: Layer.Layer<
   Path.Path | Etag.Generator | HttpPlatform.HttpPlatform | FileSystem.FileSystem
-> = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.layer).pipe(
-  Layer.provideMerge(FileSystem.layerNoop({}))
-)
+> = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.layer).pipe(Layer.provideMerge(FileSystem.layerNoop({})))
 
 /**
  * An application API that embeds `effect-auth`'s group, exactly as a consumer
@@ -590,14 +581,8 @@ export const TestApi = HttpApi.make("test-app").addHttpApi(AuthApi)
  * @category layers
  * @since 1.0.0
  */
-export function layerHttpApi<
-  ApiId extends string,
-  Groups extends HttpApiGroup.Constraint,
-  F extends UserFields = {}
->(
-  api:
-    & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
+  api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
   options?: Options<F>
 ): HttpApiLayer<ApiId>
 export function layerHttpApi<
@@ -606,16 +591,12 @@ export function layerHttpApi<
   Extra,
   F extends UserFields = {}
 >(
-  api:
-    & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
   options: Options<F> | undefined,
   extra: Layer.Layer<Extra, never, DeploymentServices>
 ): HttpApiLayer<ApiId, Extra>
 export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
-  api:
-    & HttpApi.HttpApi<ApiId, Groups>
-    & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
   options?: Options<F>,
   // `Layer<never, …>` accepts a layer providing anything at all — the output
   // channel is contravariant — so this is the widest parameter, not the
@@ -642,11 +623,7 @@ export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.C
  * @category models
  * @since 1.0.0
  */
-export type DeploymentServices =
-  | Services
-  | SqlClient.SqlClient
-  | PgliteClient.PgliteClient
-  | TestEmails
+export type DeploymentServices = Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails
 
 /**
  * What {@link layerHttpApi} builds: the deployment, the handlers of the API's
@@ -925,14 +902,12 @@ export interface Recorded<A> {
 export const recordingEvents = <A, E, R>(
   body: Effect.Effect<A, E, R>
 ): Effect.Effect<Recorded<A>, E, R | AuthEvents | Scope.Scope> =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const hub = yield* AuthEvents
     const subscription = yield* hub.subscribe
     const result = yield* body
     const buffered = yield* PubSub.remaining(subscription)
-    const events: ReadonlyArray<AuthEvent> = buffered === 0
-      ? []
-      : yield* PubSub.takeUpTo(subscription, buffered)
+    const events: ReadonlyArray<AuthEvent> = buffered === 0 ? [] : yield* PubSub.takeUpTo(subscription, buffered)
     return { result, events }
   })
 

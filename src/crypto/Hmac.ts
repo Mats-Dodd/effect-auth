@@ -70,10 +70,7 @@ export class Hmac extends Context.Service<Hmac, HmacService>()("effect-auth/Hmac
  * @category constructors
  * @since 1.0.0
  */
-export const make = (
-  crypto: Crypto,
-  secret: Redacted.Redacted<string>
-): Effect.Effect<HmacService> =>
+export const make = (crypto: Crypto, secret: Redacted.Redacted<string>): Effect.Effect<HmacService> =>
   Effect.map(
     Effect.promise(() =>
       crypto.subtle.importKey(

@@ -109,13 +109,17 @@ export type ProvisionSource =
  * @category errors
  * @since 1.0.0
  */
-export class PolicyRefused extends Schema.TaggedError<PolicyRefused>("effect-auth/PolicyRefused")("PolicyRefused", {
-  code: Schema.String,
-  detail: Schema.optional(Schema.String)
-}, {
-  description: "A deployment policy refused the operation",
-  httpApiStatus: 403
-}) {}
+export class PolicyRefused extends Schema.TaggedError<PolicyRefused>("effect-auth/PolicyRefused")(
+  "PolicyRefused",
+  {
+    code: Schema.String,
+    detail: Schema.optional(Schema.String)
+  },
+  {
+    description: "A deployment policy refused the operation",
+    httpApiStatus: 403
+  }
+) {}
 
 // -----------------------------------------------------------------------------
 // Service
@@ -203,9 +207,7 @@ export interface AuthHooksOf<F extends UserFields> {
    * *after* the token has been claimed, so a refused link is spent rather than
    * left replayable.
    */
-  readonly beforeUserDelete?: (options: {
-    readonly user: UserOf<F>
-  }) => Effect.Effect<void, PolicyRefused>
+  readonly beforeUserDelete?: (options: { readonly user: UserOf<F> }) => Effect.Effect<void, PolicyRefused>
 
   /**
    * Consulted before a provider identity is attached to a user that already
@@ -274,9 +276,7 @@ export const AuthHooks: Context.Reference<AuthHooksService> = Context.Reference<
  * @category services
  * @since 1.0.0
  */
-export const hooksOf = <F extends UserFields>(
-  _model: UserModel<F>
-): Context.Reference<AuthHooksOf<F>> =>
+export const hooksOf = <F extends UserFields>(_model: UserModel<F>): Context.Reference<AuthHooksOf<F>> =>
   Context.Reference<AuthHooksOf<F>>("effect-auth/AuthHooks", { defaultValue: () => ({}) })
 
 // -----------------------------------------------------------------------------
@@ -320,12 +320,13 @@ const sequence = <O>(
 export const combine = (first: AuthHooksService, second: AuthHooksService): AuthHooksService => {
   const firstCreate = first.beforeUserCreate
   const secondCreate = second.beforeUserCreate
-  const beforeUserCreate = firstCreate === undefined
-    ? secondCreate
-    : secondCreate === undefined
-    ? firstCreate
-    : (options: { readonly candidate: UserInsertOf<{}>; readonly source: ProvisionSource }) =>
-      Effect.flatMap(firstCreate(options), (candidate) => secondCreate({ ...options, candidate }))
+  const beforeUserCreate =
+    firstCreate === undefined
+      ? secondCreate
+      : secondCreate === undefined
+        ? firstCreate
+        : (options: { readonly candidate: UserInsertOf<{}>; readonly source: ProvisionSource }) =>
+            Effect.flatMap(firstCreate(options), (candidate) => secondCreate({ ...options, candidate }))
 
   const afterUserCreate = sequence(first.afterUserCreate, second.afterUserCreate)
   const beforeSessionCreate = sequence(first.beforeSessionCreate, second.beforeSessionCreate)
@@ -402,4 +403,7 @@ export const layer = (hooks: AuthHooksService): Layer.Layer<never> => Layer.succ
  * @since 1.0.0
  */
 export const append = (hooks: AuthHooksService): Layer.Layer<never> =>
-  Layer.effect(AuthHooks, Effect.map(AuthHooks, (installed) => combine(installed, hooks)))
+  Layer.effect(
+    AuthHooks,
+    Effect.map(AuthHooks, (installed) => combine(installed, hooks))
+  )

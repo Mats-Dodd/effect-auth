@@ -100,13 +100,15 @@ export type VerificationId = typeof VerificationId.Type
  * @category models
  * @since 1.0.0
  */
-export const Email = Schema.String.pipe(Schema.check(
-  Schema.isMinLength(3),
-  Schema.isMaxLength(320),
-  // Deliberately pragmatic rather than an RFC-5322 parser: one visible local
-  // part, one visible domain, no whitespace. Delivery remains the final proof.
-  Schema.isPattern(/^[^\s@]+@[^\s@]+$/)
-))
+export const Email = Schema.String.pipe(
+  Schema.check(
+    Schema.isMinLength(3),
+    Schema.isMaxLength(320),
+    // Deliberately pragmatic rather than an RFC-5322 parser: one visible local
+    // part, one visible domain, no whitespace. Delivery remains the final proof.
+    Schema.isPattern(/^[^\s@]+@[^\s@]+$/)
+  )
+)
 
 /**
  * Normalizes an e-mail address for storage and lookup: surrounding whitespace
@@ -337,7 +339,7 @@ export type UserFields = VariantSchema.Struct.Fields
  * @category models
  * @since 1.0.0
  */
-export type BaseUserFields = typeof User[typeof VariantSchema.TypeId]
+export type BaseUserFields = (typeof User)[typeof VariantSchema.TypeId]
 
 /**
  * The field declarations of a user model parameterized by `F`: the base fields
@@ -495,9 +497,8 @@ export type UserCreateOf<F extends UserFields> = typeof User.jsonCreate.Type & U
  * @category models
  * @since 1.0.0
  */
-export type UserCreateEncodedOf<F extends UserFields> =
-  & typeof User.jsonCreate.Encoded
-  & UserExtrasEncoded<F, "jsonCreate">
+export type UserCreateEncodedOf<F extends UserFields> = typeof User.jsonCreate.Encoded &
+  UserExtrasEncoded<F, "jsonCreate">
 
 /**
  * The JSON update variant of a model parameterized by `F` — the shape a profile
@@ -514,9 +515,8 @@ export type UserPatchOf<F extends UserFields> = typeof User.jsonUpdate.Type & Us
  * @category models
  * @since 1.0.0
  */
-export type UserPatchEncodedOf<F extends UserFields> =
-  & typeof User.jsonUpdate.Encoded
-  & UserExtrasEncoded<F, "jsonUpdate">
+export type UserPatchEncodedOf<F extends UserFields> = typeof User.jsonUpdate.Encoded &
+  UserExtrasEncoded<F, "jsonUpdate">
 
 /**
  * The base fields every caller supplies when it provisions a user.
@@ -799,16 +799,16 @@ export interface AnyUserModel {
  * @category models
  * @since 1.0.0
  */
-export interface UserFieldWithDefault<S extends Schema.Top & Schema.WithoutConstructorDefault> extends
-  VariantSchema.Field<{
-    readonly select: S
-    readonly insert: Schema.withConstructorDefault<S>
-    readonly update: S
-    readonly json: S
-    readonly jsonCreate: Schema.optionalKey<S>
-    readonly jsonUpdate: Schema.optionalKey<S>
-  }>
-{}
+export interface UserFieldWithDefault<
+  S extends Schema.Top & Schema.WithoutConstructorDefault
+> extends VariantSchema.Field<{
+  readonly select: S
+  readonly insert: Schema.withConstructorDefault<S>
+  readonly update: S
+  readonly json: S
+  readonly jsonCreate: Schema.optionalKey<S>
+  readonly jsonUpdate: Schema.optionalKey<S>
+}> {}
 
 /**
  * The four constructors a custom user field is declared with.
@@ -972,9 +972,9 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
   const shadowed = Object.keys(fields).filter((key) => Object.hasOwn(baseFields, key))
   if (shadowed.length > 0) {
     throw new Error(
-      `effect-auth: the custom user fields ${
-        shadowed.join(", ")
-      } redeclare fields the base user model already has. A custom field is added to the base user, never laid over one of its fields — every part of the library, and every deployment's own code, depends on a user having the base fields with the base types.`
+      `effect-auth: the custom user fields ${shadowed.join(
+        ", "
+      )} redeclare fields the base user model already has. A custom field is added to the base user, never laid over one of its fields — every part of the library, and every deployment's own code, depends on a user having the base fields with the base types.`
     )
   }
   // The column is the snake_case of the key, so two keys can be distinct in
@@ -994,9 +994,9 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
   }
   if (collisions.length > 0) {
     throw new Error(
-      `effect-auth: the custom user fields ${
-        collisions.join(", ")
-      } map to a users column another field already occupies. Column names are the snake_case of the field name; choose keys whose snake_case forms are distinct from each other and from the base columns.`
+      `effect-auth: the custom user fields ${collisions.join(
+        ", "
+      )} map to a users column another field already occupies. Column names are the snake_case of the field name; choose keys whose snake_case forms are distinct from each other and from the base columns.`
     )
   }
 
@@ -1051,9 +1051,9 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
 
   if (extraKeys.length > 0 && Option.isNone(insert.makeOption(provisioningSample))) {
     throw new Error(
-      `effect-auth: the custom user fields ${
-        extraKeys.join(", ")
-      } are not provisionable. Every custom field must be constructible from the base user fields alone — OAuth sign-in, plugins and the base-typed UserStore all create users without stating one — so declare it with UserField.withDefault, UserField.readOnly or UserField.hidden, or give its schema a constructor default of its own.`
+      `effect-auth: the custom user fields ${extraKeys.join(
+        ", "
+      )} are not provisionable. Every custom field must be constructible from the base user fields alone — OAuth sign-in, plugins and the base-typed UserStore all create users without stating one — so declare it with UserField.withDefault, UserField.readOnly or UserField.hidden, or give its schema a constructor default of its own.`
     )
   }
 
@@ -1068,12 +1068,13 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
 
   const makeInsert = (input: UserInsertInput) => insertRow(insert, input)
 
-  const extraDefaults: Effect.Effect<UserRow> = extraKeys.length === 0
-    ? Effect.succeed<UserRow>({})
-    : Effect.map(
-      Effect.flatMap(makeInsert(provisioningSample), (row) => Effect.orDie(encodeInsert(row))),
-      (encoded) => pickKeys(encoded, extraKeys)
-    )
+  const extraDefaults: Effect.Effect<UserRow> =
+    extraKeys.length === 0
+      ? Effect.succeed<UserRow>({})
+      : Effect.map(
+          Effect.flatMap(makeInsert(provisioningSample), (row) => Effect.orDie(encodeInsert(row))),
+          (encoded) => pickKeys(encoded, extraKeys)
+        )
 
   const completeInsert = (row: UserRow) =>
     extraKeys.length === 0 || extraKeys.every((key) => Object.hasOwn(row, key))
@@ -1205,10 +1206,9 @@ export const baseUserModel: UserModel<{}> = makeUserModel({})
  * @category services
  * @since 1.0.0
  */
-export const UserModelRef: Context.Reference<AnyUserModel> = Context.Reference<AnyUserModel>(
-  "effect-auth/UserModel",
-  { defaultValue: () => baseUserModel }
-)
+export const UserModelRef: Context.Reference<AnyUserModel> = Context.Reference<AnyUserModel>("effect-auth/UserModel", {
+  defaultValue: () => baseUserModel
+})
 
 // -----------------------------------------------------------------------------
 // Public (JSON) projections
@@ -1269,12 +1269,10 @@ export type AccountPublic = typeof Account.json.Type
  * @category models
  * @since 1.0.0
  */
-export interface SessionWithUserSchema<F extends UserFields> extends
-  Schema.Struct<{
-    readonly user: UserModel<F>["json"]
-    readonly session: typeof SessionPublic
-  }>
-{}
+export interface SessionWithUserSchema<F extends UserFields> extends Schema.Struct<{
+  readonly user: UserModel<F>["json"]
+  readonly session: typeof SessionPublic
+}> {}
 
 /**
  * The payload every endpoint that establishes or reads a session returns, for a
@@ -1316,12 +1314,10 @@ export type SessionWithUser = SessionWithUserOf<{}>
  * @category models
  * @since 1.0.0
  */
-export interface SignUpResponseSchema<F extends UserFields> extends
-  Schema.Struct<{
-    readonly user: UserModel<F>["json"]
-    readonly session: Schema.NullOr<typeof SessionPublic>
-  }>
-{}
+export interface SignUpResponseSchema<F extends UserFields> extends Schema.Struct<{
+  readonly user: UserModel<F>["json"]
+  readonly session: Schema.NullOr<typeof SessionPublic>
+}> {}
 
 /**
  * The payload sign-up returns, for a model parameterized by `F`.
@@ -1370,9 +1366,9 @@ export type SignUpResponse = SignUpResponseOf<{}>
  * @category models
  * @since 1.0.0
  */
-export interface UserResponseSchema<F extends UserFields> extends
-  Schema.Struct<{ readonly user: UserModel<F>["json"] }>
-{}
+export interface UserResponseSchema<F extends UserFields> extends Schema.Struct<{
+  readonly user: UserModel<F>["json"]
+}> {}
 
 /**
  * The payload an endpoint that answers with a user and nothing else returns —

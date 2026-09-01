@@ -225,10 +225,7 @@ export interface SessionsService<F extends UserFields = {}> {
    * session exists. Ownership is enforced inside the delete statement, so this
    * cannot end somebody else's session.
    */
-  readonly revoke: (
-    sessionId: SessionId,
-    userId: UserId
-  ) => Effect.Effect<void, NotFound | PersistenceError>
+  readonly revoke: (sessionId: SessionId, userId: UserId) => Effect.Effect<void, NotFound | PersistenceError>
 
   /**
    * Revokes every session of a user and answers how many were removed. Used by
@@ -239,10 +236,7 @@ export interface SessionsService<F extends UserFields = {}> {
   /**
    * Revokes every session of a user except the one given.
    */
-  readonly revokeOthers: (
-    userId: UserId,
-    currentSessionId: SessionId
-  ) => Effect.Effect<number, PersistenceError>
+  readonly revokeOthers: (userId: UserId, currentSessionId: SessionId) => Effect.Effect<number, PersistenceError>
 
   /**
    * The user's live sessions, newest first. Expired rows are not listed.
@@ -279,9 +273,7 @@ export class Sessions extends Context.Service<Sessions, SessionsService>()("effe
  * @category services
  * @since 1.0.0
  */
-export const sessionsOf = <F extends UserFields>(
-  _model: UserModel<F>
-): Context.Service<Sessions, SessionsService<F>> =>
+export const sessionsOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<Sessions, SessionsService<F>> =>
   Context.Service<Sessions, SessionsService<F>>("effect-auth/Sessions")
 
 // -----------------------------------------------------------------------------
@@ -297,114 +289,108 @@ export const sessionsOf = <F extends UserFields>(
  */
 export const make: <F extends UserFields>(
   model: UserModel<F>
-) => Effect.Effect<
-  SessionsService<F>,
-  never,
-  AuthConfig | Token | SessionStore | AuthEvents
-> = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
-  const config = yield* AuthConfig
-  const tokens = yield* Token
-  const store = yield* sessionStoreOf(model)
-  const events = yield* AuthEvents
+) => Effect.Effect<SessionsService<F>, never, AuthConfig | Token | SessionStore | AuthEvents> = Effect.fnUntraced(
+  function* <F extends UserFields>(model: UserModel<F>) {
+    const config = yield* AuthConfig
+    const tokens = yield* Token
+    const store = yield* sessionStoreOf(model)
+    const events = yield* AuthEvents
 
-  const create = Effect.fnUntraced(function*(options: CreateOptions) {
-    const token = yield* tokens.generateToken
-    const tokenHash = yield* tokens.hashToken(token)
-    const now = yield* DateTime.now
-    // `rememberMe` defaults to `true`: only an explicit `false` shortens the
-    // lifetime. The flag is stored as well as consumed here, so the rolling
-    // refresh can rebuild the same short TTL and the HTTP layer can re-issue a
-    // cookie with the matching `Max-Age`.
-    const rememberMe = options.rememberMe !== false
-    const ttl = rememberMe
-      ? config.session.expiresIn
-      : config.session.rememberMeDisabledExpiresIn
-    const row = yield* insertRow(SessionModel.insert, {
-      tokenHash,
-      userId: options.userId,
-      expiresAt: DateTime.addDuration(now, ttl),
-      ipAddress: options.ipAddress ?? null,
-      userAgent: options.userAgent ?? null,
-      rememberMe
+    const create = Effect.fnUntraced(function* (options: CreateOptions) {
+      const token = yield* tokens.generateToken
+      const tokenHash = yield* tokens.hashToken(token)
+      const now = yield* DateTime.now
+      // `rememberMe` defaults to `true`: only an explicit `false` shortens the
+      // lifetime. The flag is stored as well as consumed here, so the rolling
+      // refresh can rebuild the same short TTL and the HTTP layer can re-issue a
+      // cookie with the matching `Max-Age`.
+      const rememberMe = options.rememberMe !== false
+      const ttl = rememberMe ? config.session.expiresIn : config.session.rememberMeDisabledExpiresIn
+      const row = yield* insertRow(SessionModel.insert, {
+        tokenHash,
+        userId: options.userId,
+        expiresAt: DateTime.addDuration(now, ttl),
+        ipAddress: options.ipAddress ?? null,
+        userAgent: options.userAgent ?? null,
+        rememberMe
+      })
+      const session = yield* store.create(row)
+      return { session, token } satisfies CreatedSession
     })
-    const session = yield* store.create(row)
-    return { session, token } satisfies CreatedSession
-  })
 
-  const verify = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
-    const tokenHash = yield* tokens.hashToken(token)
-    const found = yield* store.findByTokenHash(tokenHash)
-    const { session, user } = yield* Effect.fromOption(found, () => new Unauthorized())
-    const now = yield* DateTime.now
+    const verify = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+      const tokenHash = yield* tokens.hashToken(token)
+      const found = yield* store.findByTokenHash(tokenHash)
+      const { session, user } = yield* Effect.fromOption(found, () => new Unauthorized())
+      const now = yield* DateTime.now
 
-    if (isExpired(session, now)) {
-      // The row is dead weight and the presented token is already useless, so
-      // dropping it is safe; a storage failure here must not change the answer.
-      yield* Effect.ignore(store.deleteById(session.id, session.userId))
-      return yield* Effect.fail(new SessionExpired())
-    }
+      if (isExpired(session, now)) {
+        // The row is dead weight and the presented token is already useless, so
+        // dropping it is safe; a storage failure here must not change the answer.
+        yield* Effect.ignore(store.deleteById(session.id, session.userId))
+        return yield* Effect.fail(new SessionExpired())
+      }
 
-    if (!isRefreshDue(session, config, now)) {
-      return { session, user, refreshed: false } satisfies VerifiedSession<F>
-    }
+      if (!isRefreshDue(session, config, now)) {
+        return { session, user, refreshed: false } satisfies VerifiedSession<F>
+      }
 
-    const expiresAt = DateTime.addDuration(now, grantedLifetime(session, config))
-    const touched = yield* store.touch(session.id, expiresAt)
-    // A `None` means the session was revoked between the read and the update.
-    const refreshed = yield* Effect.fromOption(touched, () => new Unauthorized())
-    return { session: refreshed, user, refreshed: true } satisfies VerifiedSession<F>
-  })
+      const expiresAt = DateTime.addDuration(now, grantedLifetime(session, config))
+      const touched = yield* store.touch(session.id, expiresAt)
+      // A `None` means the session was revoked between the read and the update.
+      const refreshed = yield* Effect.fromOption(touched, () => new Unauthorized())
+      return { session: refreshed, user, refreshed: true } satisfies VerifiedSession<F>
+    })
 
-  const signOut = Effect.fnUntraced(function*(session: Session) {
-    const removed = yield* store.deleteById(session.id, session.userId)
-    if (!removed) return
-    yield* publishSafely(events, { _tag: "SignedOut", userId: session.userId, sessionId: session.id })
-  })
+    const signOut = Effect.fnUntraced(function* (session: Session) {
+      const removed = yield* store.deleteById(session.id, session.userId)
+      if (!removed) return
+      yield* publishSafely(events, { _tag: "SignedOut", userId: session.userId, sessionId: session.id })
+    })
 
-  const revoke = Effect.fnUntraced(function*(sessionId: SessionId, userId: UserId) {
-    const removed = yield* store.deleteById(sessionId, userId)
-    if (!removed) {
-      return yield* Effect.fail(new NotFound())
-    }
-    yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 })
-  })
+    const revoke = Effect.fnUntraced(function* (sessionId: SessionId, userId: UserId) {
+      const removed = yield* store.deleteById(sessionId, userId)
+      if (!removed) {
+        return yield* Effect.fail(new NotFound())
+      }
+      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 })
+    })
 
-  const revokeAll = Effect.fnUntraced(function*(userId: UserId) {
-    const count = yield* store.deleteByUserId(userId)
-    yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId: null, scope: "all", count })
-    return count
-  })
+    const revokeAll = Effect.fnUntraced(function* (userId: UserId) {
+      const count = yield* store.deleteByUserId(userId)
+      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId: null, scope: "all", count })
+      return count
+    })
 
-  const revokeOthers = Effect.fnUntraced(function*(userId: UserId, currentSessionId: SessionId) {
-    const count = yield* store.deleteByUserIdExcept(userId, currentSessionId)
-    yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId: null, scope: "others", count })
-    return count
-  })
+    const revokeOthers = Effect.fnUntraced(function* (userId: UserId, currentSessionId: SessionId) {
+      const count = yield* store.deleteByUserIdExcept(userId, currentSessionId)
+      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId: null, scope: "others", count })
+      return count
+    })
 
-  const isFresh = (session: Session): Effect.Effect<boolean> =>
-    Effect.map(DateTime.now, (now) => isFreshAt(session, config, now))
+    const isFresh = (session: Session): Effect.Effect<boolean> =>
+      Effect.map(DateTime.now, (now) => isFreshAt(session, config, now))
 
-  const requireFresh = Effect.fnUntraced(function*(session: Session) {
-    const fresh = yield* isFresh(session)
-    if (!fresh) {
-      return yield* Effect.fail(
-        new SessionNotFresh({ freshAgeSeconds: Duration.toSeconds(config.session.freshAge) })
-      )
-    }
-  })
+    const requireFresh = Effect.fnUntraced(function* (session: Session) {
+      const fresh = yield* isFresh(session)
+      if (!fresh) {
+        return yield* Effect.fail(new SessionNotFresh({ freshAgeSeconds: Duration.toSeconds(config.session.freshAge) }))
+      }
+    })
 
-  return sessionsOf(model).of({
-    create,
-    verify,
-    signOut,
-    revoke,
-    revokeAll,
-    revokeOthers,
-    list: (userId) => store.listByUserId(userId),
-    isFresh,
-    requireFresh
-  })
-})
+    return sessionsOf(model).of({
+      create,
+      verify,
+      signOut,
+      revoke,
+      revokeAll,
+      revokeOthers,
+      list: (userId) => store.listByUserId(userId),
+      isFresh,
+      requireFresh
+    })
+  }
+)
 
 /**
  * Provides {@link Sessions} for the user model given: `verify` answers with that
@@ -424,6 +410,5 @@ export const layerFor = <F extends UserFields>(
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<Sessions, never, AuthConfig | Token | SessionStore | AuthEvents> = layerFor(
-  baseUserModel
-)
+export const layer: Layer.Layer<Sessions, never, AuthConfig | Token | SessionStore | AuthEvents> =
+  layerFor(baseUserModel)

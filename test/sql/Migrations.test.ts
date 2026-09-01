@@ -10,41 +10,40 @@ interface TableRow {
 
 describe("sql/Migrations", () => {
   it.effect("applies every migration to an empty database", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const applied = yield* Migrations.run
 
-      assert.deepStrictEqual(applied.map(([id]) => id), [1, 2, 3, 4, 5])
-      assert.deepStrictEqual(applied.map(([, name]) => name), [
-        "create_users",
-        "create_sessions",
-        "create_accounts",
-        "create_verifications",
-        "session_remember_me"
-      ])
+      assert.deepStrictEqual(
+        applied.map(([id]) => id),
+        [1, 2, 3, 4, 5]
+      )
+      assert.deepStrictEqual(
+        applied.map(([, name]) => name),
+        ["create_users", "create_sessions", "create_accounts", "create_verifications", "session_remember_me"]
+      )
 
       const sql = yield* SqlClient.SqlClient
       const tables = yield* sql<TableRow>`SELECT table_name AS "name" FROM information_schema.tables
         WHERE table_schema = 'public' ORDER BY table_name`
 
-      assert.deepStrictEqual(tables.map((row) => row.name), [
-        "accounts",
-        "effect_auth_migrations",
-        "sessions",
-        "users",
-        "verifications"
-      ])
-    }).pipe(Effect.provide(PgliteClient.layer())))
+      assert.deepStrictEqual(
+        tables.map((row) => row.name),
+        ["accounts", "effect_auth_migrations", "sessions", "users", "verifications"]
+      )
+    }).pipe(Effect.provide(PgliteClient.layer()))
+  )
 
   it.effect("is idempotent on a second run", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       yield* Migrations.run
       const second = yield* Migrations.run
 
       assert.deepStrictEqual(second, [])
-    }).pipe(Effect.provide(PgliteClient.layer())))
+    }).pipe(Effect.provide(PgliteClient.layer()))
+  )
 
   it.effect("adds the sessions.remember_me flag, defaulted so existing rows are remembered", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       yield* Migrations.run
 
       const sql = yield* SqlClient.SqlClient
@@ -64,10 +63,11 @@ describe("sql/Migrations", () => {
       const rows = yield* sql<{ readonly rememberMe: unknown }>`SELECT remember_me AS "rememberMe"
         FROM sessions WHERE id = 's-remember'`
       assert.strictEqual(rows[0]?.rememberMe, true)
-    }).pipe(Effect.provide(PgliteClient.layer())))
+    }).pipe(Effect.provide(PgliteClient.layer()))
+  )
 
   it.effect("creates the indexes the stores rely on", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       yield* Migrations.run
 
       const sql = yield* SqlClient.SqlClient
@@ -75,19 +75,18 @@ describe("sql/Migrations", () => {
         WHERE schemaname = 'public' ORDER BY indexname`
       const names = indexes.map((row) => row.name)
 
-      for (
-        const expected of [
-          "users_email_unique",
-          "sessions_token_hash_unique",
-          "sessions_user_id_idx",
-          "accounts_issuer_account_id_unique",
-          "accounts_user_id_idx",
-          "verifications_identifier_idx"
-        ]
-      ) {
+      for (const expected of [
+        "users_email_unique",
+        "sessions_token_hash_unique",
+        "sessions_user_id_idx",
+        "accounts_issuer_account_id_unique",
+        "accounts_user_id_idx",
+        "verifications_identifier_idx"
+      ]) {
         assert.include(names as Array<string>, expected)
       }
-    }).pipe(Effect.provide(PgliteClient.layer())))
+    }).pipe(Effect.provide(PgliteClient.layer()))
+  )
 })
 
 describe("sql/Migrations.make", () => {
@@ -102,7 +101,7 @@ describe("sql/Migrations.make", () => {
   })
 
   it.effect("records a plugin's migrations in a bookkeeping table of its own", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // Sequenced, as a plugin whose tables reference this library's must be.
       yield* Migrations.run
       const applied = yield* plugin.run
@@ -116,9 +115,10 @@ describe("sql/Migrations.make", () => {
       const tables = yield* sql<TableRow>`SELECT table_name AS "name" FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name LIKE '%migrations' ORDER BY table_name`
 
-      assert.deepStrictEqual(tables.map((row) => row.name), [
-        "effect_auth_migrations",
-        "effect_auth_plugin_migrations"
-      ])
-    }).pipe(Effect.provide(PgliteClient.layer())))
+      assert.deepStrictEqual(
+        tables.map((row) => row.name),
+        ["effect_auth_migrations", "effect_auth_plugin_migrations"]
+      )
+    }).pipe(Effect.provide(PgliteClient.layer()))
+  )
 })

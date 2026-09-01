@@ -48,8 +48,9 @@ export const signedUp = (email: string, options?: TestHttpClient.ClientOptions) 
  */
 export const maxAgeSeconds = (
   response: HttpClientResponse.HttpClientResponse,
-  read: (response: HttpClientResponse.HttpClientResponse) => Option.Option<Cookies.Cookie> =
-    TestHttpClient.responseCookie
+  read: (
+    response: HttpClientResponse.HttpClientResponse
+  ) => Option.Option<Cookies.Cookie> = TestHttpClient.responseCookie
 ): number | undefined => {
   const cookie = read(response)
   if (Option.isNone(cookie)) return undefined

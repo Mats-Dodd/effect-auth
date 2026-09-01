@@ -32,7 +32,8 @@ const wellBehaved = Effect.sync(() => {
       token_type: "bearer",
       refresh_token: "rotated-refresh-token",
       expires_in: tokenLifetime
-    }))
+    })
+  )
   return server
 })
 
@@ -69,7 +70,7 @@ interface AccountOptions {
  * Every test in the block shares one database, so `label` must be distinct: the
  * account's `(issuer, accountId)` is derived from it.
  */
-const linked = Effect.fnUntraced(function*(label: string, options?: AccountOptions) {
+const linked = Effect.fnUntraced(function* (label: string, options?: AccountOptions) {
   const users = yield* UserStore
   const accounts = yield* AccountStore
   const email = uniqueEmail(label)
@@ -80,25 +81,27 @@ const linked = Effect.fnUntraced(function*(label: string, options?: AccountOptio
   const expiresIn = options?.expiresIn === undefined ? tokenLifetime : options.expiresIn
   const now = yield* DateTime.now
   const account = yield* accounts.create(
-    yield* Effect.orDie(Account.insert.makeEffect({
-      issuer: oauthIssuer(providerId),
-      accountId: `subject-${email}`,
-      providerId,
-      userId: user.id,
-      accessToken: options?.accessToken === undefined ? "stored-access-token" : options.accessToken,
-      refreshToken: options?.refreshToken === undefined ? "stored-refresh-token" : options.refreshToken,
-      idToken: null,
-      accessTokenExpiresAt: expiresIn === null ? null : DateTime.addDuration(now, Duration.seconds(expiresIn)),
-      refreshTokenExpiresAt: null,
-      scope: options?.scope === undefined ? "profile email" : options.scope,
-      passwordHash: null
-    }))
+    yield* Effect.orDie(
+      Account.insert.makeEffect({
+        issuer: oauthIssuer(providerId),
+        accountId: `subject-${email}`,
+        providerId,
+        userId: user.id,
+        accessToken: options?.accessToken === undefined ? "stored-access-token" : options.accessToken,
+        refreshToken: options?.refreshToken === undefined ? "stored-refresh-token" : options.refreshToken,
+        idToken: null,
+        accessTokenExpiresAt: expiresIn === null ? null : DateTime.addDuration(now, Duration.seconds(expiresIn)),
+        refreshTokenExpiresAt: null,
+        scope: options?.scope === undefined ? "profile email" : options.scope,
+        passwordHash: null
+      })
+    )
   )
   return { account, user }
 })
 
 /** The account as it is stored now. */
-const reload = Effect.fnUntraced(function*(id: Account["id"], userId: User["id"]) {
+const reload = Effect.fnUntraced(function* (id: Account["id"], userId: User["id"]) {
   const accounts = yield* AccountStore
   return yield* expectSome(yield* accounts.findByIdAndUserId(id, userId), "expected the account to still exist")
 })
@@ -107,7 +110,7 @@ describe.sequential("oauth/Refresh", () => {
   layer(flowLayer)((it) => {
     describe("accessToken", () => {
       it.effect("hands back the stored token without spending anything when it has life left", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("fresh-token")
@@ -121,40 +124,44 @@ describe.sequential("oauth/Refresh", () => {
 
           // The whole point of the expiry arithmetic: no round trip, no write.
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 0)
-        }))
+        })
+      )
 
       it.effect("refreshes a token that is inside the skew, and sends a well-formed request", () =>
-        AuthTest.freshClock(Effect.gen(function*() {
-          yield* wellBehaved
-          const flow = yield* OAuthFlow
-          const { account, user } = yield* linked("near-expiry")
+        AuthTest.freshClock(
+          Effect.gen(function* () {
+            yield* wellBehaved
+            const flow = yield* OAuthFlow
+            const { account, user } = yield* linked("near-expiry")
 
-          // Four seconds left: inside `accessTokenSkew`, which is five.
-          yield* TestClock.adjust(Duration.seconds(tokenLifetime - 4))
-          const result = yield* flow.accessToken({ userId: user.id, accountId: account.id })
-          assert.strictEqual(Redacted.value(result.accessToken), "refreshed-access-token")
+            // Four seconds left: inside `accessTokenSkew`, which is five.
+            yield* TestClock.adjust(Duration.seconds(tokenLifetime - 4))
+            const result = yield* flow.accessToken({ userId: user.id, accountId: account.id })
+            assert.strictEqual(Redacted.value(result.accessToken), "refreshed-access-token")
 
-          const request = server.to(MockProvider.tokenUrl)[0]
-          assert.isDefined(request)
-          if (request === undefined) return
-          assert.strictEqual(request.method, "POST")
-          assert.strictEqual(request.redirect, "manual")
-          const form = MockProvider.formOf(request)
-          assert.strictEqual(form.get("grant_type"), "refresh_token")
-          assert.strictEqual(form.get("refresh_token"), "stored-refresh-token")
-          assert.strictEqual(form.get("client_id"), "mock-client-id")
-          assert.strictEqual(form.get("client_secret"), "mock-client-secret")
-          // A configured extra rides along; one the flow owns does not.
-          assert.strictEqual(form.get("scope"), "profile email offline_access")
-          assert.strictEqual(form.getAll("client_id").length, 1)
-          // Nothing of the authorization-code grant survives into a refresh.
-          assert.isNull(form.get("code"))
-          assert.isNull(form.get("code_verifier"))
-          assert.isNull(form.get("redirect_uri"))
-        })))
+            const request = server.to(MockProvider.tokenUrl)[0]
+            assert.isDefined(request)
+            if (request === undefined) return
+            assert.strictEqual(request.method, "POST")
+            assert.strictEqual(request.redirect, "manual")
+            const form = MockProvider.formOf(request)
+            assert.strictEqual(form.get("grant_type"), "refresh_token")
+            assert.strictEqual(form.get("refresh_token"), "stored-refresh-token")
+            assert.strictEqual(form.get("client_id"), "mock-client-id")
+            assert.strictEqual(form.get("client_secret"), "mock-client-secret")
+            // A configured extra rides along; one the flow owns does not.
+            assert.strictEqual(form.get("scope"), "profile email offline_access")
+            assert.strictEqual(form.getAll("client_id").length, 1)
+            // Nothing of the authorization-code grant survives into a refresh.
+            assert.isNull(form.get("code"))
+            assert.isNull(form.get("code_verifier"))
+            assert.isNull(form.get("redirect_uri"))
+          })
+        )
+      )
 
       it.effect("treats a token the provider gave no expiry for as one that has not expired", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("no-expiry", { expiresIn: null })
@@ -162,20 +169,22 @@ describe.sequential("oauth/Refresh", () => {
           const result = yield* flow.accessToken({ userId: user.id, accountId: account.id })
           assert.strictEqual(Redacted.value(result.accessToken), "stored-access-token")
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 0)
-        }))
+        })
+      )
 
       it.effect("refreshes an account that has no access token at all", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("no-access-token", { accessToken: null, expiresIn: null })
 
           const result = yield* flow.accessToken({ userId: user.id, accountId: account.id })
           assert.strictEqual(Redacted.value(result.accessToken), "refreshed-access-token")
-        }))
+        })
+      )
 
       it.effect("answers AccessTokenMissing when there is nothing to hand over and no way to get one", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("nothing-to-hand-over", {
@@ -189,10 +198,11 @@ describe.sequential("oauth/Refresh", () => {
           if (failure._tag !== "TokenRefreshFailed") return
           assert.strictEqual(failure.reason, "AccessTokenMissing")
           assert.strictEqual(failure.accountId, account.id)
-        }))
+        })
+      )
 
       it.effect("hands an expiring token back rather than failing when it cannot be refreshed", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           // Expired an hour ago, and no refresh token: the caller gets what
@@ -205,12 +215,13 @@ describe.sequential("oauth/Refresh", () => {
           const result = yield* flow.accessToken({ userId: user.id, accountId: account.id })
           assert.strictEqual(Redacted.value(result.accessToken), "stored-access-token")
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 0)
-        }))
+        })
+      )
     })
 
     describe("refreshTokens", () => {
       it.effect("spends the refresh token whatever the stored expiry says, and stores what comes back", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("unconditional")
@@ -223,10 +234,9 @@ describe.sequential("oauth/Refresh", () => {
           assert.isNotNull(result.accessTokenExpiresAt)
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 1)
 
-          assert.deepStrictEqual(
-            AuthTest.tagsOf(events.filter((event) => event.userId === user.id)),
-            ["TokensRefreshed"]
-          )
+          assert.deepStrictEqual(AuthTest.tagsOf(events.filter((event) => event.userId === user.id)), [
+            "TokensRefreshed"
+          ])
           const refreshed = events.find((event) => event._tag === "TokensRefreshed")
           assert.strictEqual(refreshed?._tag === "TokensRefreshed" ? refreshed.accountId : null, account.id)
           assert.strictEqual(refreshed?._tag === "TokensRefreshed" ? refreshed.providerId : null, "mock")
@@ -234,10 +244,11 @@ describe.sequential("oauth/Refresh", () => {
           const stored = yield* reload(account.id, user.id)
           assert.strictEqual(stored.accessToken, "refreshed-access-token")
           assert.strictEqual(stored.refreshToken, "rotated-refresh-token")
-        }))
+        })
+      )
 
       it.effect("keeps the stored refresh token, and the granted scope, when the response omits them", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           server.on(MockProvider.tokenUrl, () =>
             MockProvider.json({
@@ -247,7 +258,8 @@ describe.sequential("oauth/Refresh", () => {
               // A provider that echoes a *narrower* scope on a refresh must not
               // be able to shrink what the person consented to.
               scope: "profile"
-            }))
+            })
+          )
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("kept-refresh-token")
 
@@ -258,33 +270,31 @@ describe.sequential("oauth/Refresh", () => {
           const stored = yield* reload(account.id, user.id)
           assert.strictEqual(stored.refreshToken, "stored-refresh-token")
           assert.strictEqual(stored.scope, "profile email")
-        }))
+        })
+      )
 
       it.effect("refuses an account that is not the caller's, exactly as it refuses one that is not there", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const mine = yield* linked("mine")
           const theirs = yield* linked("theirs")
 
-          const notMine = yield* Effect.flip(
-            flow.refreshTokens({ userId: mine.user.id, accountId: theirs.account.id })
-          )
+          const notMine = yield* Effect.flip(flow.refreshTokens({ userId: mine.user.id, accountId: theirs.account.id }))
           assert.strictEqual(notMine._tag, "NotFound")
 
-          const nobodys = yield* Effect.flip(
-            flow.accessToken({ userId: mine.user.id, accountId: theirs.account.id })
-          )
+          const nobodys = yield* Effect.flip(flow.accessToken({ userId: mine.user.id, accountId: theirs.account.id }))
           assert.strictEqual(nobodys._tag, "NotFound")
 
           // Neither probe reached the provider.
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 0)
-        }))
+        })
+      )
     })
 
     describe("failure reasons", () => {
       it.effect("reports an account whose provider this deployment does not serve", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           // Expiring, so the refresh path is the one under test: the account's
@@ -300,10 +310,11 @@ describe.sequential("oauth/Refresh", () => {
           // to try with.
           const stored = yield* flow.accessToken({ userId: user.id, accountId: account.id })
           assert.strictEqual(Redacted.value(stored.accessToken), "stored-access-token")
-        }))
+        })
+      )
 
       it.effect("reports a provider whose refresh tokens must not be spent", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("refresh-disabled", { providerId: "frozen" })
@@ -313,10 +324,11 @@ describe.sequential("oauth/Refresh", () => {
           if (failure._tag !== "TokenRefreshFailed") return
           assert.strictEqual(failure.reason, "RefreshNotSupported")
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 0)
-        }))
+        })
+      )
 
       it.effect("reports an account that never got a refresh token", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("no-refresh-token", { refreshToken: null })
@@ -326,14 +338,14 @@ describe.sequential("oauth/Refresh", () => {
           if (failure._tag !== "TokenRefreshFailed") return
           assert.strictEqual(failure.reason, "RefreshTokenMissing")
           assert.strictEqual(server.to(MockProvider.tokenUrl).length, 0)
-        }))
+        })
+      )
 
       it.effect("reports a provider that answered and refused, without echoing what it said", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
-          server.on(
-            MockProvider.tokenUrl,
-            () => MockProvider.json({ error: "invalid_grant", error_description: "token revoked by the user" })
+          server.on(MockProvider.tokenUrl, () =>
+            MockProvider.json({ error: "invalid_grant", error_description: "token revoked by the user" })
           )
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("refresh-rejected")
@@ -349,10 +361,11 @@ describe.sequential("oauth/Refresh", () => {
           const stored = yield* reload(account.id, user.id)
           assert.strictEqual(stored.accessToken, "stored-access-token")
           assert.strictEqual(stored.refreshToken, "stored-refresh-token")
-        }))
+        })
+      )
 
       it.effect("reports a 4xx from the token endpoint as a refusal too", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           server.on(MockProvider.tokenUrl, () => MockProvider.json({ error: "invalid_client" }, 401))
           const flow = yield* OAuthFlow
@@ -362,10 +375,11 @@ describe.sequential("oauth/Refresh", () => {
           assert.strictEqual(failure._tag, "TokenRefreshFailed")
           if (failure._tag !== "TokenRefreshFailed") return
           assert.strictEqual(failure.reason, "RefreshRejected")
-        }))
+        })
+      )
 
       it.effect("reports a token endpoint that answers with a redirect as unavailable, and follows nothing", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           server.on(MockProvider.tokenUrl, () => MockProvider.redirect("http://169.254.169.254/latest/meta-data/"))
           const flow = yield* OAuthFlow
@@ -379,12 +393,13 @@ describe.sequential("oauth/Refresh", () => {
           assert.strictEqual(server.requests.length, 1)
           assert.strictEqual(server.requests[0]?.redirect, "manual")
           assert.isUndefined(server.requests.find((request) => request.url.startsWith("http://169.254.169.254")))
-        }))
+        })
+      )
     })
 
     describe("the refreshed account", () => {
       it.effect("carries the id_token the refresh returned, and keeps the old one when it returns none", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved
           const flow = yield* OAuthFlow
           const { account, user } = yield* linked("id-token")
@@ -395,20 +410,19 @@ describe.sequential("oauth/Refresh", () => {
               token_type: "bearer",
               id_token: "a-fresh-id-token",
               expires_in: tokenLifetime
-            }))
+            })
+          )
           const withId = yield* flow.refreshTokens({ userId: user.id, accountId: account.id })
           assert.strictEqual(withId.idToken === null ? null : Redacted.value(withId.idToken), "a-fresh-id-token")
 
           yield* wellBehaved
           const without = yield* flow.refreshTokens({ userId: user.id, accountId: account.id })
-          assert.strictEqual(
-            without.idToken === null ? null : Redacted.value(without.idToken),
-            "a-fresh-id-token"
-          )
+          assert.strictEqual(without.idToken === null ? null : Redacted.value(without.idToken), "a-fresh-id-token")
 
           const stored = yield* reload(account.id, user.id)
           assert.strictEqual(stored.idToken, "a-fresh-id-token")
-        }))
+        })
+      )
     })
   })
 })

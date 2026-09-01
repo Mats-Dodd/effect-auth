@@ -68,7 +68,7 @@ export const expectSome = <A>(option: Option.Option<A>, message: string): Effect
  * one — `autoSignIn` on, verification not required. A test of the branch that
  * establishes none reads `signUp`'s own `Option` instead.
  */
-export const signUpUser = Effect.fnUntraced(function*(email: string) {
+export const signUpUser = Effect.fnUntraced(function* (email: string) {
   const passwords = yield* Passwords
   const result = yield* passwords.signUp({ name: testName, email, password: testPassword })
   const created = yield* expectSome(result.session, "sign-up should establish a session")

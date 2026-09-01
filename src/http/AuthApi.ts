@@ -63,10 +63,8 @@ import { Authenticated, AuthoritativeSession } from "./Middleware.js"
  * @category models
  * @since 1.0.0
  */
-const nonEmptyBounded = (maxLength: number) => Schema.String.pipe(Schema.check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(maxLength)
-))
+const nonEmptyBounded = (maxLength: number) =>
+  Schema.String.pipe(Schema.check(Schema.isMinLength(1), Schema.isMaxLength(maxLength)))
 
 /** Conservative wire limits applied before values reach crypto, storage, or a mailer. */
 export const Secret = Schema.Redacted(nonEmptyBounded(4096))
@@ -141,10 +139,7 @@ export type OAuthRedirect = typeof OAuthRedirect.Type
  * @category models
  * @since 1.0.0
  */
-export const Redirect = HttpApiSchema.WithHeaders(
-  HttpApiSchema.Empty(302),
-  { location: Schema.String }
-)
+export const Redirect = HttpApiSchema.WithHeaders(HttpApiSchema.Empty(302), { location: Schema.String })
 
 // -----------------------------------------------------------------------------
 // Payloads
@@ -179,12 +174,10 @@ export const SignUpEmailPayload = Schema.Struct({
  * @category models
  * @since 1.0.0
  */
-export interface SignUpEmailPayloadSchema<F extends UserFields> extends
-  Schema.Codec<
-    typeof SignUpEmailPayload.Type & UserExtras<F, "jsonCreate">,
-    typeof SignUpEmailPayload.Encoded & UserExtrasEncoded<F, "jsonCreate">
-  >
-{}
+export interface SignUpEmailPayloadSchema<F extends UserFields> extends Schema.Codec<
+  typeof SignUpEmailPayload.Type & UserExtras<F, "jsonCreate">,
+  typeof SignUpEmailPayload.Encoded & UserExtrasEncoded<F, "jsonCreate">
+> {}
 
 /**
  * The body of `POST /auth/sign-up/email` for a model parameterized by `F`:
@@ -201,9 +194,8 @@ export interface SignUpEmailPayloadSchema<F extends UserFields> extends
  * @category constructors
  * @since 1.0.0
  */
-export const makeSignUpEmailPayload = <F extends UserFields>(
-  model: UserModel<F>
-): SignUpEmailPayloadSchema<F> => model.withExtras(SignUpEmailPayload, "jsonCreate")
+export const makeSignUpEmailPayload = <F extends UserFields>(model: UserModel<F>): SignUpEmailPayloadSchema<F> =>
+  model.withExtras(SignUpEmailPayload, "jsonCreate")
 
 /**
  * The type of a {@link makeSignUpEmailPayload}.
@@ -337,12 +329,10 @@ export const UpdateUserPayload = Schema.Struct({
  * @category models
  * @since 1.0.0
  */
-export interface UpdateUserPayloadSchema<F extends UserFields> extends
-  Schema.Codec<
-    typeof UpdateUserPayload.Type & UserExtras<F, "jsonUpdate">,
-    typeof UpdateUserPayload.Encoded & UserExtrasEncoded<F, "jsonUpdate">
-  >
-{}
+export interface UpdateUserPayloadSchema<F extends UserFields> extends Schema.Codec<
+  typeof UpdateUserPayload.Type & UserExtras<F, "jsonUpdate">,
+  typeof UpdateUserPayload.Encoded & UserExtrasEncoded<F, "jsonUpdate">
+> {}
 
 /**
  * The body of `POST /auth/update-user` for a model parameterized by `F`:
@@ -357,9 +347,8 @@ export interface UpdateUserPayloadSchema<F extends UserFields> extends
  * @category constructors
  * @since 1.0.0
  */
-export const makeUpdateUserPayload = <F extends UserFields>(
-  model: UserModel<F>
-): UpdateUserPayloadSchema<F> => model.withExtras(UpdateUserPayload, "jsonUpdate")
+export const makeUpdateUserPayload = <F extends UserFields>(model: UserModel<F>): UpdateUserPayloadSchema<F> =>
+  model.withExtras(UpdateUserPayload, "jsonUpdate")
 
 /**
  * The type of a {@link makeUpdateUserPayload}.
@@ -642,42 +631,52 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         payload: makeSignUpEmailPayload(model),
         success: makeSignUpResponse(model),
         error: [UserAlreadyExists, PasswordPolicyViolation, PolicyRefused, RateLimited]
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Create an account with an e-mail address and password",
-        description:
-          "Sets the session cookie and answers a session, unless the configuration withholds one (email verification required, or autoSignIn off), in which case session is null. Sends a verification mail when one is configured. PolicyRefused is a deployment's own hook declining the registration, and nothing was written when it is returned; a hook that instead declines only the session answers 200 with session null, because the account does exist."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Create an account with an e-mail address and password",
+          description:
+            "Sets the session cookie and answers a session, unless the configuration withholds one (email verification required, or autoSignIn off), in which case session is null. Sends a verification mail when one is configured. PolicyRefused is a deployment's own hook declining the registration, and nothing was written when it is returned; a hook that instead declines only the session answers 200 with session null, because the account does exist."
+        })
+      ),
       HttpApiEndpoint.post("signInEmail", "/sign-in/email", {
         payload: SignInEmailPayload,
         success: makeSessionWithUser(model),
         error: [InvalidCredentials, EmailNotVerified, PolicyRefused, RateLimited]
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Sign in with an e-mail address and password",
-        description:
-          "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it. PolicyRefused is a deployment's own hook declining the session — a suspension, say — and is raised only after the password has been verified, so it is never an answer somebody guessing an address can obtain."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Sign in with an e-mail address and password",
+          description:
+            "Answers InvalidCredentials identically for an unknown address and a wrong password, and takes the same time to do it. PolicyRefused is a deployment's own hook declining the session — a suspension, say — and is raised only after the password has been verified, so it is never an answer somebody guessing an address can obtain."
+        })
+      ),
       HttpApiEndpoint.post("signOut", "/sign-out", {
         success: Ok
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Revoke the current session and clear the cookie"
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Revoke the current session and clear the cookie"
+          })
+        ),
       HttpApiEndpoint.get("getSession", "/session", {
         success: makeSessionWithUser(model)
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Read the current session and its user",
-          description: "Performs the rolling refresh, and re-sets the cookie when the expiry moved."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Read the current session and its user",
+            description: "Performs the rolling refresh, and re-sets the cookie when the expiry moved."
+          })
+        ),
       HttpApiEndpoint.get("listSessions", "/sessions", {
         success: Schema.Array(SessionPublic)
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "List the caller's unexpired sessions"
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "List the caller's unexpired sessions"
+          })
+        ),
       HttpApiEndpoint.post("revokeSession", "/revoke-session", {
         payload: RevokeSessionPayload,
         success: Ok,
@@ -688,17 +687,21 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // must not still be able to drive it through the cache's snapshot: this
         // reads the row anyway, so the annotation costs it nothing.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Revoke one of the caller's sessions",
-          description: "A session belonging to another user is reported as NotFound."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Revoke one of the caller's sessions",
+            description: "A session belonging to another user is reported as NotFound."
+          })
+        ),
       HttpApiEndpoint.post("revokeSessions", "/revoke-sessions", {
         success: Ok
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Revoke every session of the caller, including this one"
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Revoke every session of the caller, including this one"
+          })
+        ),
       HttpApiEndpoint.post("revokeOtherSessions", "/revoke-other-sessions", {
         success: Ok
       })
@@ -706,26 +709,32 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // Revoking the caller's other sessions is a mutation keyed on the
         // current session's id, which must be the row's and not a snapshot's.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Revoke every session of the caller except this one"
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Revoke every session of the caller except this one"
+          })
+        ),
       HttpApiEndpoint.post("requestPasswordReset", "/request-password-reset", {
         payload: RequestPasswordResetPayload,
         success: Ok,
         error: RateLimited
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Send a password reset link",
-        description: "Always succeeds for a well-formed address, whether or not it has an account."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Send a password reset link",
+          description: "Always succeeds for a well-formed address, whether or not it has an account."
+        })
+      ),
       HttpApiEndpoint.post("resetPassword", "/reset-password", {
         payload: ResetPasswordPayload,
         success: Ok,
         error: [InvalidToken, PasswordPolicyViolation]
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Set a new password using a reset token",
-        description:
-          "The token is single-use, and every existing session is revoked on success. An expired token is reported as InvalidToken: consumption is a single conditional delete, so a used, an unknown and an expired token are indistinguishable by design."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Set a new password using a reset token",
+          description:
+            "The token is single-use, and every existing session is revoked on success. An expired token is reported as InvalidToken: consumption is a single conditional delete, so a used, an unknown and an expired token are indistinguishable by design."
+        })
+      ),
       HttpApiEndpoint.post("changePassword", "/change-password", {
         payload: ChangePasswordPayload,
         success: Ok,
@@ -735,63 +744,77 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // The password it checks has to be the one in the database, not one a
         // snapshot remembered: see `AuthoritativeSession`.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Change the caller's password",
-          description: "Requires the current password and a session no older than the configured freshAge."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Change the caller's password",
+            description: "Requires the current password and a session no older than the configured freshAge."
+          })
+        ),
       HttpApiEndpoint.post("sendVerificationEmail", "/send-verification-email", {
         payload: SendVerificationEmailPayload,
         success: Ok,
         error: RateLimited
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Send an e-mail verification link",
-        description: "Always succeeds for a well-formed address, whether or not it has an account."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Send an e-mail verification link",
+          description: "Always succeeds for a well-formed address, whether or not it has an account."
+        })
+      ),
       HttpApiEndpoint.get("verifyEmail", "/verify-email", {
         query: VerifyEmailQuery,
         success: Ok,
         error: InvalidToken
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Consume an e-mail verification token",
-        description: "An expired token is reported as InvalidToken, for the reason given on reset-password."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Consume an e-mail verification token",
+          description: "An expired token is reported as InvalidToken, for the reason given on reset-password."
+        })
+      ),
       HttpApiEndpoint.post("signInSocial", "/sign-in/social", {
         payload: SignInSocialPayload,
         success: OAuthRedirect,
         error: [OAuthProviderError, PolicyRefused, RateLimited]
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Begin an OAuth sign-in",
-        description:
-          "Mints single-use state and a PKCE S256 challenge, then returns the authorization URL. Unauthenticated and it writes a row per call, so it is rate limited on the same policy as the credential endpoints. PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the account it provisions or the session it mints is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Begin an OAuth sign-in",
+          description:
+            "Mints single-use state and a PKCE S256 challenge, then returns the authorization URL. Unauthenticated and it writes a row per call, so it is rate limited on the same policy as the credential endpoints. PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the account it provisions or the session it mints is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one."
+        })
+      ),
       HttpApiEndpoint.get("oauthCallback", "/callback/:providerId", {
         params: OAuthCallbackParams,
         query: OAuthCallbackQuery,
         success: Redirect,
         error: [OAuthStateMismatch, OAuthProviderError]
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Complete an OAuth flow",
-        description:
-          "Consumes the state atomically, exchanges the code, links or creates the account, sets the cookie and redirects to the validated callbackURL."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Complete an OAuth flow",
+          description:
+            "Consumes the state atomically, exchanges the code, links or creates the account, sets the cookie and redirects to the validated callbackURL."
+        })
+      ),
       HttpApiEndpoint.get("listAccounts", "/accounts", {
         success: Schema.Array(AccountPublic)
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "List the caller's sign-in methods"
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "List the caller's sign-in methods"
+          })
+        ),
       HttpApiEndpoint.post("linkSocial", "/link-social", {
         payload: LinkSocialPayload,
         success: OAuthRedirect,
         error: [OAuthProviderError, PolicyRefused]
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Begin linking an OAuth provider to the signed-in account",
-          description:
-            "PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the link is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Begin linking an OAuth provider to the signed-in account",
+            description:
+              "PolicyRefused belongs to the flow this starts rather than to this call: a deployment hook that declines the link is reported by the callback, which redirects with ?error=policy_refused&code=... because a browser that arrived by a top-level navigation has to leave by one."
+          })
+        ),
       HttpApiEndpoint.post("unlinkAccount", "/unlink-account", {
         payload: UnlinkAccountPayload,
         success: Ok,
@@ -800,21 +823,25 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         .middleware(Authenticated)
         // Unlinking counts the sign-in methods a user has *now*.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Remove one of the caller's sign-in methods",
-          description: "Refuses to remove the last one, and requires a fresh session."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Remove one of the caller's sign-in methods",
+            description: "Refuses to remove the last one, and requires a fresh session."
+          })
+        ),
       HttpApiEndpoint.post("updateUser", "/update-user", {
         payload: makeUpdateUserPayload(model),
         success: makeUserResponse(model),
         error: UserNotFound
       })
         .middleware(Authenticated)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Edit the caller's own profile",
-          description:
-            "Patches the fields the body names — the base name and image, plus whichever of the deployment's own user fields a client may write. An absent key leaves the column alone; an explicit null image clears it. The address is not editable here: moving an account to another one is the change-email flow."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Edit the caller's own profile",
+            description:
+              "Patches the fields the body names — the base name and image, plus whichever of the deployment's own user fields a client may write. An absent key leaves the column alone; an explicit null image clears it. The address is not editable here: moving an account to another one is the change-email flow."
+          })
+        ),
       HttpApiEndpoint.post("changeEmail", "/change-email", {
         payload: ChangeEmailPayload,
         success: Ok,
@@ -824,29 +851,35 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // The current address decides which hop is sent, and whether it is
         // verified is a fact about the row, not about a snapshot.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Start moving the account to another e-mail address",
-          description:
-            "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns. PolicyRefused is a deployment's own hook declining the change, and carries the code that hook chose."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Start moving the account to another e-mail address",
+            description:
+              "Answers 200 whether or not the address is free: telling a caller that an address is taken would make this an oracle for who is registered. Requires a fresh session. A verified current address gets a confirmation link first; an unverified one goes straight to verifying the new address. Nothing has changed when this returns. PolicyRefused is a deployment's own hook declining the change, and carries the code that hook chose."
+          })
+        ),
       HttpApiEndpoint.get("confirmEmailChange", "/change-email/confirm", {
         query: TokenQuery,
         success: Ok,
         error: InvalidToken
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Confirm an e-mail change from the current address",
-        description:
-          "Consumes the first-hop token and sends the second hop to the new address. Nothing about the account has changed yet."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Confirm an e-mail change from the current address",
+          description:
+            "Consumes the first-hop token and sends the second hop to the new address. Nothing about the account has changed yet."
+        })
+      ),
       HttpApiEndpoint.get("verifyEmailChange", "/change-email/verify", {
         query: TokenQuery,
         success: Ok,
         error: [InvalidToken, UserAlreadyExists]
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Complete an e-mail change from the new address",
-        description:
-          "Consumes the second-hop token and moves the account, which ends up verified — the link was delivered to the address it names. UserAlreadyExists means somebody claimed that address between the two hops."
-      })),
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Complete an e-mail change from the new address",
+          description:
+            "Consumes the second-hop token and moves the account, which ends up verified — the link was delivered to the address it names. UserAlreadyExists means somebody claimed that address between the two hops."
+        })
+      ),
       HttpApiEndpoint.post("deleteUser", "/delete-user", {
         payload: DeleteUserPayload,
         success: DeleteUserResponse,
@@ -856,11 +889,13 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // A password is verified against the stored hash, and the row is about
         // to be destroyed: neither may be decided from a snapshot.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Delete the caller's own account",
-          description:
-            "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed. PolicyRefused is a deployment's own hook declining the deletion, and is raised only once the caller has proved who they are."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Delete the caller's own account",
+            description:
+              "With user.deleteUser.confirmByEmail off this needs a fresh session and answers Deleted, having removed the row, its sessions and its sign-in methods. With it on it mails a confirmation link and answers ConfirmationSent, and nothing is removed until that link is followed. PolicyRefused is a deployment's own hook declining the deletion, and is raised only once the caller has proved who they are."
+          })
+        ),
       HttpApiEndpoint.get("deleteUserCallback", "/delete-user/callback", {
         query: TokenQuery,
         success: Redirect,
@@ -868,11 +903,13 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
       })
         .middleware(Authenticated)
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Complete an account deletion from the mailed link",
-          description:
-            "The link has to be followed by the account's own signed-in browser: the token is claimed first and only then checked against the caller, so a link presented by anybody else is burnt as well as refused. A deployment hook that refuses the deletion is not an error here but a redirect carrying ?error=policy_refused&code=..., because the browser arrived by a top-level navigation and has to leave by one — and the link is spent either way."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Complete an account deletion from the mailed link",
+            description:
+              "The link has to be followed by the account's own signed-in browser: the token is claimed first and only then checked against the caller, so a link presented by anybody else is burnt as well as refused. A deployment hook that refuses the deletion is not an error here but a redirect carrying ?error=policy_refused&code=..., because the browser arrived by a top-level navigation and has to leave by one — and the link is spent either way."
+          })
+        ),
       HttpApiEndpoint.post("setPassword", "/set-password", {
         payload: SetPasswordPayload,
         success: Ok,
@@ -882,11 +919,13 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // Whether a credential already exists is exactly what this endpoint
         // branches on.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Give an account without one its first password",
-          description:
-            "For an account provisioned through a provider. It can never replace an existing password — that is change-password, or the reset flow — and requires a fresh session. Nothing is revoked: no credential was invalidated."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Give an account without one its first password",
+            description:
+              "For an account provisioned through a provider. It can never replace an existing password — that is change-password, or the reset flow — and requires a fresh session. Nothing is revoked: no credential was invalidated."
+          })
+        ),
       HttpApiEndpoint.post("getAccessToken", "/get-access-token", {
         payload: AccountSelection,
         success: AccessTokenResponse,
@@ -897,11 +936,13 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // may run rotates the one on the row. A session revoked elsewhere must
         // not still be able to spend either through a snapshot of itself.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "A usable provider access token for one of the caller's accounts",
-          description:
-            "Refreshes first only if the stored token is about to expire. An account that is not the caller's is reported as NotFound, exactly as one that does not exist."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "A usable provider access token for one of the caller's accounts",
+            description:
+              "Refreshes first only if the stored token is about to expire. An account that is not the caller's is reported as NotFound, exactly as one that does not exist."
+          })
+        ),
       HttpApiEndpoint.post("refreshToken", "/refresh-token", {
         payload: AccountSelection,
         success: RefreshTokenResponse,
@@ -913,26 +954,32 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         // has no business anywhere near it. Both handlers read the account row
         // anyway, so the annotation costs this endpoint nothing.
         .annotate(AuthoritativeSession, true)
-        .annotateMerge(OpenApi.annotations({
-          summary: "Spend one of the caller's refresh tokens",
-          description:
-            "Unconditional, unlike get-access-token. For a client that has learnt the stored access token is no good. The granted scope is never overwritten by a refresh."
-        })),
+        .annotateMerge(
+          OpenApi.annotations({
+            summary: "Spend one of the caller's refresh tokens",
+            description:
+              "Unconditional, unlike get-access-token. For a client that has learnt the stored access token is no good. The granted scope is never overwritten by a refresh."
+          })
+        ),
       HttpApiEndpoint.post("oauthCallbackForm", "/callback/:providerId", {
         params: OAuthCallbackParams,
         payload: OAuthCallbackForm,
         success: Redirect
-      }).annotateMerge(OpenApi.annotations({
-        summary: "Receive a form_post OAuth callback",
-        description:
-          "Providers configured with response_mode=form_post (Apple) return the code by posting a form to this path. A cross-site POST carries no SameSite=Lax cookie, so this endpoint does not complete the flow: it answers a 302 to the GET twin with the same parameters as a query string, and that top-level navigation does carry the cookies."
-      }))
+      }).annotateMerge(
+        OpenApi.annotations({
+          summary: "Receive a form_post OAuth callback",
+          description:
+            "Providers configured with response_mode=form_post (Apple) return the code by posting a form to this path. A cross-site POST carries no SameSite=Lax cookie, so this endpoint does not complete the flow: it answers a 302 to the GET twin with the same parameters as a query string, and that top-level navigation does carry the cookies."
+        })
+      )
     )
     .prefix("/auth")
-    .annotateMerge(OpenApi.annotations({
-      title: "Auth",
-      description: "Sessions, e-mail/password sign-in, and OAuth account linking."
-    }))
+    .annotateMerge(
+      OpenApi.annotations({
+        title: "Auth",
+        description: "Sessions, e-mail/password sign-in, and OAuth account linking."
+      })
+    )
 
 /**
  * The type {@link makeAuthApiGroup} builds, for a model parameterized by `F`.

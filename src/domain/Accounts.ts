@@ -158,8 +158,7 @@ export const canLinkImplicitly = (options: {
   readonly localEmailVerified: boolean
   readonly trustedProviders: ReadonlyArray<string>
 }): boolean =>
-  options.providerEmailVerified &&
-  (options.trustedProviders.includes(options.providerId) || options.localEmailVerified)
+  options.providerEmailVerified && (options.trustedProviders.includes(options.providerId) || options.localEmailVerified)
 
 // -----------------------------------------------------------------------------
 // Service
@@ -264,7 +263,7 @@ export const make: () => Effect.Effect<
   AccountsService,
   never,
   AuthConfig | AuthEvents | UserStore | AccountStore | WithAuthTransaction
-> = Effect.fnUntraced(function*() {
+> = Effect.fnUntraced(function* () {
   const config = yield* AuthConfig
   const users = yield* UserStore
   const accounts = yield* AccountStore
@@ -280,7 +279,7 @@ export const make: () => Effect.Effect<
   // the candidate a policy is shown and what validates the row it answers with.
   const model = yield* UserModelRef
 
-  const insertAccount = Effect.fnUntraced(function*(userId: UserId, identity: OAuthIdentity) {
+  const insertAccount = Effect.fnUntraced(function* (userId: UserId, identity: OAuthIdentity) {
     const tokens = identity.tokens
     const row = yield* insertRow(Account.insert, {
       issuer: identity.issuer,
@@ -316,12 +315,14 @@ export const make: () => Effect.Effect<
    * no concurrent reclaim can be operating on it.
    */
   const linkExisting = (userId: UserId, identity: OAuthIdentity) =>
-    transaction.run(Effect.gen(function*() {
-      yield* users.lockUserRow(userId)
-      return yield* insertAccount(userId, identity)
-    }))
+    transaction.run(
+      Effect.gen(function* () {
+        yield* users.lockUserRow(userId)
+        return yield* insertAccount(userId, identity)
+      })
+    )
 
-  const refreshTokens = Effect.fnUntraced(function*(account: Account, identity: OAuthIdentity) {
+  const refreshTokens = Effect.fnUntraced(function* (account: Account, identity: OAuthIdentity) {
     if (identity.tokens === undefined) return account
     const updated = yield* accounts.updateTokens(account.id, identity.tokens)
     return Option.getOrElse(updated, () => account)
@@ -364,7 +365,7 @@ export const make: () => Effect.Effect<
    * It opens no transaction: the caller's is what makes a refusal, or a failing
    * `afterUserCreate`, take the account row down with the user.
    */
-  const provision = Effect.fnUntraced(function*(identity: OAuthIdentity, email: string) {
+  const provision = Effect.fnUntraced(function* (identity: OAuthIdentity, email: string) {
     const source: ProvisionSource = {
       _tag: "OAuth",
       providerId: identity.providerId,
@@ -387,9 +388,7 @@ export const make: () => Effect.Effect<
     )
 
     const before = hooks.beforeUserCreate
-    const row = before === undefined
-      ? candidate
-      : yield* rewritten(yield* before({ candidate, source }))
+    const row = before === undefined ? candidate : yield* rewritten(yield* before({ candidate, source }))
     const user = yield* users.create(row)
 
     const after = hooks.afterUserCreate
@@ -408,7 +407,7 @@ export const make: () => Effect.Effect<
       issuer: account.issuer
     })
 
-  const attemptLinkOAuth = Effect.fnUntraced(function*(identity: OAuthIdentity) {
+  const attemptLinkOAuth = Effect.fnUntraced(function* (identity: OAuthIdentity) {
     // 1. The provider identity is already known: an ordinary sign-in.
     const existing = yield* accounts.findByIssuerAccountId(identity.issuer, identity.accountId)
     if (Option.isSome(existing)) {
@@ -449,11 +448,13 @@ export const make: () => Effect.Effect<
     }
 
     // 3. A new person. The user and their first sign-in method commit together.
-    const result = yield* transaction.run(Effect.gen(function*() {
-      const user = yield* provision(identity, email)
-      const account = yield* insertAccount(user.id, identity)
-      return { user, account }
-    }))
+    const result = yield* transaction.run(
+      Effect.gen(function* () {
+        const user = yield* provision(identity, email)
+        const account = yield* insertAccount(user.id, identity)
+        return { user, account }
+      })
+    )
 
     yield* publishSafely(events, {
       _tag: "UserCreated",
@@ -480,7 +481,7 @@ export const make: () => Effect.Effect<
       times: 1
     })
 
-  const linkToUser = Effect.fnUntraced(function*(userId: UserId, identity: OAuthIdentity) {
+  const linkToUser = Effect.fnUntraced(function* (userId: UserId, identity: OAuthIdentity) {
     const found = yield* users.findById(userId)
     const owner = yield* Effect.fromOption(found, () => new UserNotFound())
 
@@ -506,24 +507,26 @@ export const make: () => Effect.Effect<
     return { user: owner, account, userCreated: false, accountCreated: true } satisfies LinkResult
   })
 
-  const unlink = Effect.fnUntraced(function*(accountId: AccountId, userId: UserId) {
-    const removed = yield* transaction.run(Effect.gen(function*() {
-      // Locking read: a concurrent unlink of a *different* method now waits
-      // here rather than counting the same two rows we are counting.
-      const held = yield* accounts.listByUserIdForUpdate(userId)
-      const target = held.find((account) => account.id === accountId)
-      if (target === undefined) {
-        return yield* Effect.fail(new NotFound())
-      }
-      if (held.length <= 1) {
-        return yield* Effect.fail(new CannotUnlinkLastAccount())
-      }
-      const deleted = yield* accounts.deleteById(accountId, userId)
-      if (!deleted) {
-        return yield* Effect.fail(new NotFound())
-      }
-      return target
-    }))
+  const unlink = Effect.fnUntraced(function* (accountId: AccountId, userId: UserId) {
+    const removed = yield* transaction.run(
+      Effect.gen(function* () {
+        // Locking read: a concurrent unlink of a *different* method now waits
+        // here rather than counting the same two rows we are counting.
+        const held = yield* accounts.listByUserIdForUpdate(userId)
+        const target = held.find((account) => account.id === accountId)
+        if (target === undefined) {
+          return yield* Effect.fail(new NotFound())
+        }
+        if (held.length <= 1) {
+          return yield* Effect.fail(new CannotUnlinkLastAccount())
+        }
+        const deleted = yield* accounts.deleteById(accountId, userId)
+        if (!deleted) {
+          return yield* Effect.fail(new NotFound())
+        }
+        return target
+      })
+    )
 
     yield* publishSafely(events, {
       _tag: "AccountUnlinked",

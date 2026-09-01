@@ -16,13 +16,7 @@
 import { assert, layer } from "@effect/vitest"
 import { Effect, Layer, Option, Ref, Schema } from "effect"
 import type { HttpServerResponse as HttpServerResponseType } from "effect/unstable/http"
-import {
-  HttpClientRequest,
-  HttpEffect,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse
-} from "effect/unstable/http"
+import { HttpClientRequest, HttpEffect, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import { userStoreOf } from "../../src/domain/Stores.js"
 import { insecureSessionCookieName } from "../../src/http/Cookies.js"
@@ -38,20 +32,16 @@ import { FieldsApi, model } from "./model.js"
  * without anything in the middleware's own signature having moved.
  */
 const ProfileGroup = HttpApiGroup.make("profile").add(
-  HttpApiEndpoint.get("plan", "/profile/plan", { success: Schema.String })
-    .middleware(Authenticated)
+  HttpApiEndpoint.get("plan", "/profile/plan", { success: Schema.String }).middleware(Authenticated)
 )
 
 const ProfileApi = FieldsApi.add(ProfileGroup)
 
 const ProfileHandlers = HttpApiBuilder.group(ProfileApi, "profile", (handlers) =>
-  Effect.succeed(
-    handlers.handle("plan", () => Effect.map(currentUserOf(model), (user) => user.plan))
-  ))
-
-const layerFields = ProfileHandlers.pipe(
-  Layer.provideMerge(AuthTest.layerHttpApi(ProfileApi, { user: { model } }))
+  Effect.succeed(handlers.handle("plan", () => Effect.map(currentUserOf(model), (user) => user.plan)))
 )
+
+const layerFields = ProfileHandlers.pipe(Layer.provideMerge(AuthTest.layerHttpApi(ProfileApi, { user: { model } })))
 
 const makeClient = () => TestHttpClient.makeClient(ProfileApi)
 
@@ -77,7 +67,7 @@ const users = userStoreOf(model)
  * The router is built the same way `TestHttpClient.makeClient` builds it, from
  * the services this block already provides.
  */
-const rawPost = Effect.fnUntraced(function*(
+const rawPost = Effect.fnUntraced(function* (
   path: string,
   body: Record<string, unknown>,
   headers?: Record<string, string>
@@ -98,12 +88,11 @@ const rawPost = Effect.fnUntraced(function*(
 })
 
 /** The `user` half of a raw response body, as a plain record. */
-const userOf = (body: unknown): Record<string, unknown> =>
-  (body as { readonly user: Record<string, unknown> }).user
+const userOf = (body: unknown): Record<string, unknown> => (body as { readonly user: Record<string, unknown> }).user
 
 layer(layerFields)("fields/Http", (it) => {
   it.effect("takes a custom field at sign-up and answers with it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("signup-pro")
       const { client } = yield* makeClient()
 
@@ -118,10 +107,11 @@ layer(layerFields)("fields/Http", (it) => {
       // `apiSecret` is hidden: absent from the JSON variant, and therefore from
       // the response body and from the type the client decoded.
       assert.isFalse(Object.hasOwn(registered.user, "apiSecret"))
-    }))
+    })
+  )
 
   it.effect("fills a custom field in when the client states nothing", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("signup-default")
       const { client } = yield* makeClient()
 
@@ -130,10 +120,11 @@ layer(layerFields)("fields/Http", (it) => {
       })
 
       assert.strictEqual(registered.user.plan, "free")
-    }))
+    })
+  )
 
   it.effect("carries the custom fields through sign-in and GET /session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("session")
       const { client } = yield* makeClient()
 
@@ -149,10 +140,11 @@ layer(layerFields)("fields/Http", (it) => {
       assert.strictEqual(current.user.plan, "pro")
       assert.strictEqual(current.user.role, "user")
       assert.isFalse(Object.hasOwn(current.user, "apiSecret"))
-    }))
+    })
+  )
 
   it.effect("never puts a hidden field on the wire", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("hidden-http")
       const { client } = yield* makeClient()
 
@@ -166,10 +158,11 @@ layer(layerFields)("fields/Http", (it) => {
 
       assert.notInclude(JSON.stringify(registered), "apiSecret")
       assert.notInclude(JSON.stringify(current), "apiSecret")
-    }))
+    })
+  )
 
   it.effect("patches a custom field through update-user, and leaves the rest alone", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("update-plan")
       const { client } = yield* makeClient()
 
@@ -195,10 +188,11 @@ layer(layerFields)("fields/Http", (it) => {
       // And the write landed: the application's own endpoint reads it back off
       // `CurrentUser` on the next request.
       assert.strictEqual(yield* client.profile.plan(), "pro")
-    }))
+    })
+  )
 
   it.effect("drops an application-owned field a raw sign-up body tries to set", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("signup-raw-role")
 
       const { body, status } = yield* rawPost("/auth/sign-up/email", {
@@ -226,10 +220,11 @@ layer(layerFields)("fields/Http", (it) => {
       const stored = yield* expectSome(yield* store.findByEmail(email), "the account was not created")
       assert.strictEqual(stored.role, "user")
       assert.strictEqual(stored.apiSecret, null)
-    }))
+    })
+  )
 
   it.effect("drops an application-owned field a raw update-user body tries to set", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("update-raw-role")
       const { client, cookies } = yield* makeClient()
       yield* client.auth.signUpEmail({
@@ -254,10 +249,11 @@ layer(layerFields)("fields/Http", (it) => {
       const stored = yield* expectSome(yield* store.findByEmail(email), "the account went missing")
       assert.strictEqual(stored.role, "user")
       assert.strictEqual(stored.apiSecret, null)
-    }))
+    })
+  )
 
   it.effect("lets an application's own endpoint read a custom field", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("own-endpoint")
       const { client } = yield* makeClient()
 
@@ -269,5 +265,6 @@ layer(layerFields)("fields/Http", (it) => {
       // the user through the model, and provided it under the key this handler
       // reads.
       assert.strictEqual(yield* client.profile.plan(), "pro")
-    }))
+    })
+  )
 })

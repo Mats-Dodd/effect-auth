@@ -23,10 +23,7 @@ const config = (trusted: ReadonlyArray<string> = []): AuthConfig.AuthConfigServi
     trustedOrigins: trusted
   })
 
-const request = (options: {
-  readonly method?: string
-  readonly headers?: Record<string, string>
-}) =>
+const request = (options: { readonly method?: string; readonly headers?: Record<string, string> }) =>
   HttpServerRequest.fromWeb(
     new Request(`${baseUrl}/auth/sign-out`, {
       method: options.method ?? "POST",
@@ -39,9 +36,7 @@ const checking = (
   trusted: ReadonlyArray<string> = []
 ) =>
   Effect.result(
-    checkOrigin(config(trusted)).pipe(
-      Effect.provideService(HttpServerRequest.HttpServerRequest, request(options))
-    )
+    checkOrigin(config(trusted)).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request(options)))
   )
 
 describe("http/OriginCheck", () => {
@@ -54,7 +49,7 @@ describe("http/OriginCheck", () => {
       assert.deepStrictEqual(originOf(""), Option.none())
     })
 
-    it("gives no origin to a scheme that has none, so \"null\" is never trusted", () => {
+    it('gives no origin to a scheme that has none, so "null" is never trusted', () => {
       // Every one of these parses, and every one of them has the *origin
       // string* "null". Admitting that would make `Origin: null` — a sandboxed
       // iframe, which `claimedOrigin` exists to refuse — trusted, and would let
@@ -170,10 +165,7 @@ describe("http/OriginCheck", () => {
     })
 
     it("falls back to the origin of the Referer", () => {
-      assert.deepStrictEqual(
-        claimedOrigin({ referer: "https://app.example.com/page?x=1" }),
-        Option.some(baseUrl)
-      )
+      assert.deepStrictEqual(claimedOrigin({ referer: "https://app.example.com/page?x=1" }), Option.some(baseUrl))
     })
 
     it("answers None only when the request claims nothing at all", () => {
@@ -189,60 +181,66 @@ describe("http/OriginCheck", () => {
 
   describe("checkOrigin", () => {
     it.effect("skips the read-only methods", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         assert.deepStrictEqual([...safeMethods].sort(), ["GET", "HEAD", "OPTIONS"])
         for (const method of ["GET", "HEAD", "OPTIONS"]) {
           const result = yield* checking({ method, headers: { origin: "https://evil.test" } })
           assert.isTrue(result._tag === "Success", method)
         }
-      }))
+      })
+    )
 
     it.effect("allows a request that claims no origin", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* checking({})
         assert.isTrue(result._tag === "Success")
-      }))
+      })
+    )
 
     it.effect("allows a trusted claimed origin, by header or by referer", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const byOrigin = yield* checking({ headers: { origin: baseUrl } })
         assert.isTrue(byOrigin._tag === "Success")
 
         const byReferer = yield* checking({ headers: { referer: `${baseUrl}/page` } })
         assert.isTrue(byReferer._tag === "Success")
 
-        const byConfigured = yield* checking(
-          { headers: { origin: "https://admin.example.com" } },
-          ["https://admin.example.com"]
-        )
+        const byConfigured = yield* checking({ headers: { origin: "https://admin.example.com" } }, [
+          "https://admin.example.com"
+        ])
         assert.isTrue(byConfigured._tag === "Success")
-      }))
+      })
+    )
 
     it.effect("refuses an untrusted claimed origin", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* checking({ headers: { origin: "https://evil.test" } })
         assert.isTrue(result._tag === "Failure")
         if (result._tag === "Failure") {
           assert.strictEqual(result.failure._tag, "Unauthorized")
         }
-      }))
+      })
+    )
 
     it.effect("refuses a look-alike host", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* checking({ headers: { origin: "https://app.example.com.evil.test" } })
         assert.isTrue(result._tag === "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses Origin: null — a sandboxed iframe is a browser, and it is not us", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* checking({ headers: { origin: "null" } })
         assert.isTrue(result._tag === "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses an unparseable Referer when there is no Origin", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* checking({ headers: { referer: "about:blank" } })
         assert.isTrue(result._tag === "Failure")
-      }))
+      })
+    )
   })
 })

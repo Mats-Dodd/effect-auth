@@ -89,9 +89,7 @@ const faulting = (rateLimit?: Parameters<typeof configLayer>[0]) =>
  * calls inside a test spend the *same* counter.
  */
 const attempt = (bucket: typeof credentials, options?: Parameters<typeof request>[0]) =>
-  Effect.result(consume(bucket)).pipe(
-    Effect.provideService(HttpServerRequest.HttpServerRequest, request(options))
-  )
+  Effect.result(consume(bucket)).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request(options)))
 
 it("does not trust forwarding headers by default", () => {
   const resolved = AuthConfig.make({
@@ -107,13 +105,9 @@ it("does not trust forwarding headers by default", () => {
  * time is what makes it run.
  */
 const evicting = (sweepInterval: Duration.Duration) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const store = yield* makeStore({ sweepInterval })
-    const limiter = yield* Effect.provideService(
-      RateLimiter.make,
-      RateLimiter.RateLimiterStore,
-      store.store
-    )
+    const limiter = yield* Effect.provideService(RateLimiter.make, RateLimiter.RateLimiterStore, store.store)
     // Let the swept fiber reach its first sleep, so an adjustment below wakes
     // it rather than racing it.
     yield* Effect.yieldNow
@@ -121,17 +115,15 @@ const evicting = (sweepInterval: Duration.Duration) =>
   })
 
 /** One consumption by `address`, against a limiter the test holds. */
-const spendBy = (
-  limiter: RateLimiter.RateLimiter,
-  bucket: typeof credentials,
-  address: string
-) =>
-  Effect.result(consumeWith({
-    config: config(["x-forwarded-for"]),
-    limiter,
-    bucket,
-    request: request({ headers: { "x-forwarded-for": address } })
-  }))
+const spendBy = (limiter: RateLimiter.RateLimiter, bucket: typeof credentials, address: string) =>
+  Effect.result(
+    consumeWith({
+      config: config(["x-forwarded-for"]),
+      limiter,
+      bucket,
+      request: request({ headers: { "x-forwarded-for": address } })
+    })
+  )
 
 describe("http/RateLimits", () => {
   describe("client identity", () => {
@@ -142,10 +134,7 @@ describe("http/RateLimits", () => {
         Option.some("203.0.113.7")
       )
       assert.deepStrictEqual(
-        clientAddress(
-          c,
-          request({ headers: { "x-real-ip": "198.51.100.4", "x-forwarded-for": "203.0.113.7" } })
-        ),
+        clientAddress(c, request({ headers: { "x-real-ip": "198.51.100.4", "x-forwarded-for": "203.0.113.7" } })),
         Option.some("198.51.100.4")
       )
     })
@@ -202,11 +191,7 @@ describe("http/RateLimits", () => {
           requestPath(request({ path: "/auth/sign-in/emai%6C?callbackURL=/x" })),
           Option.some("203.0.113.7")
         ),
-        keyFor(
-          credentials,
-          requestPath(request({ path: "/auth/sign-in/email" })),
-          Option.some("203.0.113.7")
-        )
+        keyFor(credentials, requestPath(request({ path: "/auth/sign-in/email" })), Option.some("203.0.113.7"))
       )
       // Any unreserved letter, upper- or lower-half hex, collapses the same way.
       assert.strictEqual(requestPath(request({ path: "/auth/%73ign-in/email" })), "/auth/sign-in/email")
@@ -240,7 +225,7 @@ describe("http/RateLimits", () => {
 // client address of its own — which is also what makes them concurrency-safe.
 layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (it) => {
   it.effect("allows the configured number of attempts and then refuses", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const headers = { "x-forwarded-for": "203.0.113.7" }
 
       for (let i = 0; i < credentials.limit; i++) {
@@ -254,10 +239,11 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
         assert.instanceOf(refused.failure, RateLimited)
         assert.isAtLeast(refused.failure.retryAfterSeconds, 1)
       }
-    }))
+    })
+  )
 
   it.effect("counts each path separately, so signing up does not spend sign-in's attempts", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const headers = { "x-forwarded-for": "203.0.113.8" }
 
       for (let i = 0; i < credentials.limit; i++) {
@@ -269,15 +255,21 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
 
       const other = yield* attempt(credentials, { path: "/auth/sign-up/email", headers })
       assert.strictEqual(other._tag, "Success")
-    }))
+    })
+  )
 
   it.effect("runs the effect only when a token was available", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const headers = { "x-forwarded-for": "203.0.113.10" }
       let ran = 0
 
       const spend = () =>
-        Effect.result(limit(email, Effect.sync(() => ++ran))).pipe(
+        Effect.result(
+          limit(
+            email,
+            Effect.sync(() => ++ran)
+          )
+        ).pipe(
           Effect.provideService(
             HttpServerRequest.HttpServerRequest,
             request({ path: "/auth/request-password-reset", headers })
@@ -292,11 +284,12 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
       const refused = yield* spend()
       assert.strictEqual(refused._tag, "Failure")
       assert.strictEqual(ran, email.limit)
-    }))
+    })
+  )
 
   it.layer(counting({ ipHeaders: [] }))("with no trusted headers", (it) => {
     it.effect("fails closed: two unidentifiable callers share one counter", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // Different claimed addresses, but nothing is configured to trust them,
         // so they are one caller as far as the counter is concerned.
         for (let i = 0; i < credentials.limit; i++) {
@@ -305,32 +298,35 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
         }
         const refused = yield* attempt(credentials, { headers: { "x-forwarded-for": "203.0.113.99" } })
         assert.strictEqual(refused._tag, "Failure")
-      }))
+      })
+    )
   })
 
   it.layer(faulting({ enabled: false }))("with the limits switched off", (it) => {
     it.effect("does nothing at all", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         for (let i = 0; i < credentials.limit + 2; i++) {
           const result = yield* attempt(credentials)
           assert.strictEqual(result._tag, "Success")
         }
-      }))
+      })
+    )
   })
 
   it.layer(faulting())("with a broken store", (it) => {
     it.effect("lets the request through", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* attempt(credentials)
         // A broken counter is a server fault, not the caller's: it is logged
         // and the request proceeds rather than taking sign-in down.
         assert.strictEqual(result._tag, "Success")
-      }))
+      })
+    )
   })
 
   it.layer(faulting({ failClosed: true }))("with a broken store, failing closed", (it) => {
     it.effect("refuses instead", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // The other trade: with a shared, remote store, "the counter is
         // unavailable" is something an attacker can arrange, and failing open
         // there removes every limit at once.
@@ -338,11 +334,9 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.instanceOf(result.failure, RateLimited)
-        assert.strictEqual(
-          result.failure.retryAfterSeconds,
-          retryAfterSeconds(credentials.window)
-        )
-      }))
+        assert.strictEqual(result.failure.retryAfterSeconds, retryAfterSeconds(credentials.window))
+      })
+    )
   })
 })
 
@@ -351,7 +345,7 @@ layer(counting({ ipHeaders: ["x-forwarded-for"] }))("http/RateLimits/consume", (
 // its size is the sweep, not the traffic.
 describe("http/RateLimits/eviction", () => {
   it.effect("drops a window that has expired, the next time the sweep runs", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { limiter, store } = yield* evicting(Duration.minutes(1))
 
       // Three spoofed addresses, and therefore three counters.
@@ -369,10 +363,11 @@ describe("http/RateLimits/eviction", () => {
       // The sweep is what collects them.
       yield* TestClock.adjust(Duration.minutes(1))
       assert.strictEqual(yield* store.size, 0)
-    }).pipe(Effect.scoped))
+    }).pipe(Effect.scoped)
+  )
 
   it.effect("keeps counting correctly across an eviction", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { limiter, store } = yield* evicting(Duration.seconds(1))
       const address = "203.0.113.4"
 
@@ -397,5 +392,6 @@ describe("http/RateLimits/eviction", () => {
       const allowedAgain = yield* spendBy(limiter, credentials, address)
       assert.strictEqual(allowedAgain._tag, "Success")
       assert.strictEqual(yield* store.size, 1)
-    }).pipe(Effect.scoped))
+    }).pipe(Effect.scoped)
+  )
 })

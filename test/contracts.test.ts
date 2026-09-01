@@ -18,7 +18,7 @@ const userEncoded = {
 
 describe("domain/Schema", () => {
   it.effect("round-trips a User", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const user = yield* Schema.decodeEffect(User)(userEncoded)
 
       assert.strictEqual(user.name, "Ada Lovelace")
@@ -29,10 +29,11 @@ describe("domain/Schema", () => {
 
       const encoded = yield* Schema.encodeEffect(User)(user)
       assert.deepStrictEqual(encoded, userEncoded)
-    }))
+    })
+  )
 
   it.effect("builds an insert row with a generated id and timestamps", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const row = yield* User.insert.makeEffect({
         name: "Ada Lovelace",
         email: "ada@example.com",
@@ -45,10 +46,11 @@ describe("domain/Schema", () => {
       assert.strictEqual(row.id[14], "7")
       assert.strictEqual(DateTime.isUtc(row.createdAt), true)
       assert.strictEqual(DateTime.isUtc(row.updatedAt), true)
-    }))
+    })
+  )
 
   it.effect("keeps the session token hash out of the JSON variant", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const session = yield* Schema.decodeEffect(Session)({
         id: "0193f6f0-0000-7000-8000-000000000002",
         tokenHash: "R6dLdCTLmDbLDGe3AMv1M4L2GcTF7bpx6bnO2vFO8lM",
@@ -66,7 +68,8 @@ describe("domain/Schema", () => {
       const json = yield* Schema.encodeEffect(Session.json)(session)
       assert.strictEqual(Object.hasOwn(json, "tokenHash"), false)
       assert.strictEqual(Object.hasOwn(json, "id"), true)
-    }))
+    })
+  )
 
   it("normalizes e-mail addresses", () => {
     assert.strictEqual(normalizeEmail("  Ada@Example.COM "), "ada@example.com")
@@ -75,7 +78,7 @@ describe("domain/Schema", () => {
 
 describe("domain/Errors", () => {
   it.effect("encodes a tagged error", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const error = new PasswordPolicyViolation({ reason: "TooShort", minLength: 8, maxLength: 128 })
       const encoded = yield* Schema.encodeEffect(PasswordPolicyViolation)(error)
 
@@ -89,13 +92,15 @@ describe("domain/Errors", () => {
       const decoded = yield* Schema.decodeEffect(PasswordPolicyViolation)(encoded)
       assert.strictEqual(decoded instanceof PasswordPolicyViolation, true)
       assert.strictEqual(decoded.reason, "TooShort")
-    }))
+    })
+  )
 
   it.effect("is yieldable as a typed failure", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const failure = yield* Effect.flip(Effect.fail(new InvalidCredentials()))
       assert.strictEqual(failure._tag, "InvalidCredentials")
-    }))
+    })
+  )
 })
 
 describe("domain/Schema.scopesOf", () => {
@@ -187,10 +192,7 @@ describe("config/AuthEmails", () => {
     const url = verifyEmailUrl(config, Redacted.make("tok3n"))
 
     assert.strictEqual(String(url), "<redacted>")
-    assert.strictEqual(
-      Redacted.value(url),
-      "https://app.example.com/auth/verify-email?token=tok3n"
-    )
+    assert.strictEqual(Redacted.value(url), "https://app.example.com/auth/verify-email?token=tok3n")
   })
 
   it("keeps the proposed address out of the change-email link", () => {

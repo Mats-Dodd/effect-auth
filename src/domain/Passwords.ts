@@ -45,28 +45,12 @@ import {
 import { AuthEvents, passwordMethod, publishSafely } from "./Events.js"
 import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
 import { AuthHooks } from "./Hooks.js"
-import type {
-  Session,
-  SessionId,
-  UserExtras,
-  UserFields,
-  UserId,
-  UserInsertOf,
-  UserModel,
-  UserOf
-} from "./Schema.js"
+import type { Session, SessionId, UserExtras, UserFields, UserId, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 import { Account, baseUserModel, CredentialIssuer, normalizeEmail } from "./Schema.js"
 import type { CreatedSession } from "./Sessions.js"
 import { Sessions } from "./Sessions.js"
 import type { PersistenceError } from "./Stores.js"
-import {
-  AccountStore,
-  isUniqueViolation,
-  SessionStore,
-  UserStore,
-  userStoreOf,
-  WithAuthTransaction
-} from "./Stores.js"
+import { AccountStore, isUniqueViolation, SessionStore, UserStore, userStoreOf, WithAuthTransaction } from "./Stores.js"
 // The user-subject purposes, and the helper that retires them, are declared
 // beside the flows that mint most of them; nothing is read from that list
 // before a request runs.
@@ -367,9 +351,10 @@ export interface PasswordsService<F extends UserFields = {}> {
    * request fibre is kept as the default because it is what makes a broken
    * mailer visible in the request's own logs.
    */
-  readonly requestReset: (
-    options: { readonly email: string; readonly redirectTo?: string | undefined }
-  ) => Effect.Effect<void, PersistenceError>
+  readonly requestReset: (options: {
+    readonly email: string
+    readonly redirectTo?: string | undefined
+  }) => Effect.Effect<void, PersistenceError>
 
   /**
    * Claims a reset token, replaces the password hash, and revokes every session
@@ -385,9 +370,10 @@ export interface PasswordsService<F extends UserFields = {}> {
    * let the account be taken straight back out of the hands of somebody who has
    * just re-secured it.
    */
-  readonly resetPassword: (
-    options: { readonly token: Redacted.Redacted<string>; readonly newPassword: Redacted.Redacted<string> }
-  ) => Effect.Effect<void, InvalidToken | PasswordPolicyViolation | PasswordHashError | PersistenceError>
+  readonly resetPassword: (options: {
+    readonly token: Redacted.Redacted<string>
+    readonly newPassword: Redacted.Redacted<string>
+  }) => Effect.Effect<void, InvalidToken | PasswordPolicyViolation | PasswordHashError | PersistenceError>
 
   /**
    * Replaces a password after checking the current one.
@@ -447,18 +433,16 @@ export interface PasswordsService<F extends UserFields = {}> {
    */
   readonly setPassword: (
     options: SetPasswordOptions
-  ) => Effect.Effect<
-    void,
-    PasswordAlreadySet | PasswordPolicyViolation | PasswordHashError | PersistenceError
-  >
+  ) => Effect.Effect<void, PasswordAlreadySet | PasswordPolicyViolation | PasswordHashError | PersistenceError>
 
   /**
    * Mints an e-mail verification token and hands it to the `AuthEmails` seam.
    * Silently succeeds for an unknown or already-verified address.
    */
-  readonly sendVerificationEmail: (
-    options: { readonly email: string; readonly callbackURL?: string | undefined }
-  ) => Effect.Effect<void, PersistenceError>
+  readonly sendVerificationEmail: (options: {
+    readonly email: string
+    readonly callbackURL?: string | undefined
+  }) => Effect.Effect<void, PersistenceError>
 
   /**
    * Claims a verification token and marks the address verified.
@@ -469,9 +453,7 @@ export interface PasswordsService<F extends UserFields = {}> {
    * single conditional delete, so there is no row left to inspect. Both report
    * `InvalidToken`.
    */
-  readonly verifyEmail: (
-    token: Redacted.Redacted<string>
-  ) => Effect.Effect<UserOf<F>, InvalidToken | PersistenceError>
+  readonly verifyEmail: (token: Redacted.Redacted<string>) => Effect.Effect<UserOf<F>, InvalidToken | PersistenceError>
 }
 
 /**
@@ -518,7 +500,9 @@ export const passwordsOf = <F extends UserFields>(
  * @category constructors
  * @since 1.0.0
  */
-export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
+export const make: <F extends UserFields>(
+  model: UserModel<F>
+) => Effect.Effect<
   PasswordsService<F>,
   never,
   | AuthConfig
@@ -531,7 +515,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
   | SessionStore
   | AccountStore
   | WithAuthTransaction
-> = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
+> = Effect.fnUntraced(function* <F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const hasher = yield* PasswordHasher
   const users = yield* userStoreOf(model)
@@ -549,10 +533,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
   const dummyHash = yield* Effect.orDie(hasher.hash(Redacted.make(dummyPassword)))
 
-  const sendVerificationTo = Effect.fnUntraced(function*(
-    user: UserOf<F>,
-    callbackURL: string | undefined
-  ) {
+  const sendVerificationTo = Effect.fnUntraced(function* (user: UserOf<F>, callbackURL: string | undefined) {
     const issued = yield* verifications.issue({
       purpose: emailVerifyPurpose,
       subject: normalizeEmail(user.email),
@@ -588,7 +569,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
    * is what makes a refusal or a failing `afterUserCreate` abort the whole
    * sign-up rather than leave a user with no credential.
    */
-  const provision = Effect.fnUntraced(function*(candidate: UserInsertOf<F>) {
+  const provision = Effect.fnUntraced(function* (candidate: UserInsertOf<F>) {
     // The deployment's own columns are complete before the hook is asked — the
     // caller built this row with the model's own `makeInsert`, so this is a
     // no-op here — and the call is kept anyway because the three copies of this
@@ -605,9 +586,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     // re-normalized with it: every lookup in this library reads a user by
     // `normalizeEmail(…)`, so a rewritten address that skipped it would be a
     // row nothing could ever find again.
-    const row = before === undefined
-      ? completed
-      : yield* rewritten(yield* before({ candidate: completed, source: passwordSource }))
+    const row =
+      before === undefined
+        ? completed
+        : yield* rewritten(yield* before({ candidate: completed, source: passwordSource }))
 
     const user = yield* users.create(row)
 
@@ -620,7 +602,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
   const credentialAccountFor = (userId: UserId) => accounts.findByIssuerAccountId(CredentialIssuer, userId)
 
-  const createCredentialAccount = Effect.fnUntraced(function*(userId: UserId, passwordHash: string) {
+  const createCredentialAccount = Effect.fnUntraced(function* (userId: UserId, passwordHash: string) {
     const row = yield* insertRow(Account.insert, {
       issuer: CredentialIssuer,
       accountId: userId,
@@ -639,7 +621,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
   // ---------------------------------------------------------------------------
 
-  const signUp = Effect.fnUntraced(function*(options: SignUpOptions<F>) {
+  const signUp = Effect.fnUntraced(function* (options: SignUpOptions<F>) {
     yield* checkPolicy(options.password, config)
     const email = normalizeEmail(options.email)
 
@@ -650,35 +632,37 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     const passwordHash = yield* hasher.hash(options.password)
 
-    const user = yield* transaction.run(Effect.gen(function*() {
-      // Whatever the model declares beyond the base fields comes off the
-      // payload by name; anything the caller did not state is defaulted by the
-      // model itself.
-      const row = yield* model.makeInsert({
-        name: options.name,
-        email,
-        emailVerified: false,
-        image: options.image ?? null,
-        // Picked by the `jsonCreate` variant's keys, not the full `extraKeys`:
-        // the latter includes fields a deployment declared `readOnly` or
-        // `hidden`, which the type on `SignUpOptions` forbids but which a
-        // deployment feeding loosely-typed data straight to the domain layer
-        // could otherwise smuggle in (a `readOnly` `role: "admin"`, say). The
-        // runtime whitelist must match the declared one.
-        ...pickKeys(options, model.jsonCreateExtraKeys)
-      })
-      const created = yield* provision(row)
-      yield* createCredentialAccount(created.id, passwordHash)
-      return created
-    })).pipe(
-      // The pre-check above closes the ordinary case; this closes the race in
-      // which two sign-ups for one address interleave.
-      Effect.catchTag(
-        "PersistenceError",
-        (error): Effect.Effect<never, UserAlreadyExists | PersistenceError> =>
-          isUniqueViolation(error) ? Effect.fail(new UserAlreadyExists()) : Effect.fail(error)
+    const user = yield* transaction
+      .run(
+        Effect.gen(function* () {
+          // Whatever the model declares beyond the base fields comes off the
+          // payload by name; anything the caller did not state is defaulted by the
+          // model itself.
+          const row = yield* model.makeInsert({
+            name: options.name,
+            email,
+            emailVerified: false,
+            image: options.image ?? null,
+            // Picked by the `jsonCreate` variant's keys, not the full `extraKeys`:
+            // the latter includes fields a deployment declared `readOnly` or
+            // `hidden`, which the type on `SignUpOptions` forbids but which a
+            // deployment feeding loosely-typed data straight to the domain layer
+            // could otherwise smuggle in (a `readOnly` `role: "admin"`, say). The
+            // runtime whitelist must match the declared one.
+            ...pickKeys(options, model.jsonCreateExtraKeys)
+          })
+          const created = yield* provision(row)
+          yield* createCredentialAccount(created.id, passwordHash)
+          return created
+        })
       )
-    )
+      .pipe(
+        // The pre-check above closes the ordinary case; this closes the race in
+        // which two sign-ups for one address interleave.
+        Effect.catchTag("PersistenceError", (error): Effect.Effect<never, UserAlreadyExists | PersistenceError> =>
+          isUniqueViolation(error) ? Effect.fail(new UserAlreadyExists()) : Effect.fail(error)
+        )
+      )
 
     yield* publishSafely(events, {
       _tag: "UserCreated",
@@ -733,7 +717,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     return { user, session: Option.some(created) } satisfies SignUpResult<F>
   })
 
-  const signIn = Effect.fnUntraced(function*(options: SignInOptions) {
+  const signIn = Effect.fnUntraced(function* (options: SignInOptions) {
     const email = normalizeEmail(options.email)
     const found = yield* users.findByEmail(email)
 
@@ -742,9 +726,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     // address cost one more round trip than an unknown one — a smaller signal
     // than an unbalanced hash verify, but the same enumeration channel, and it
     // costs one indexed miss to close.
-    const account = yield* credentialAccountFor(
-      Option.isSome(found) ? found.value.id : absentUserId
-    )
+    const account = yield* credentialAccountFor(Option.isSome(found) ? found.value.id : absentUserId)
     const storedHash = Option.isSome(account) ? account.value.passwordHash : null
 
     // One verification runs on every path. When there is nothing real to check
@@ -786,9 +768,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     return { user, session: created.session, token: created.token } satisfies SignInResult<F>
   })
 
-  const requestReset = Effect.fnUntraced(function*(
-    options: { readonly email: string; readonly redirectTo?: string | undefined }
-  ) {
+  const requestReset = Effect.fnUntraced(function* (options: {
+    readonly email: string
+    readonly redirectTo?: string | undefined
+  }) {
     const found = yield* users.findByEmail(normalizeEmail(options.email))
     if (Option.isNone(found)) {
       // No row, no mail, no event — and no observable difference.
@@ -809,9 +792,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: user.id })
   })
 
-  const resetPassword = Effect.fnUntraced(function*(
-    options: { readonly token: Redacted.Redacted<string>; readonly newPassword: Redacted.Redacted<string> }
-  ) {
+  const resetPassword = Effect.fnUntraced(function* (options: {
+    readonly token: Redacted.Redacted<string>
+    readonly newPassword: Redacted.Redacted<string>
+  }) {
     yield* checkPolicy(options.newPassword, config)
     const claimed = yield* verifications.claim(passwordResetPurpose, options.token)
     const userId = claimed.subject as UserId
@@ -822,37 +806,39 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     // The hash update and the revocation commit together: a reset must never
     // leave a new password in place while an old session survives.
-    const revoked = yield* transaction.run(Effect.gen(function*() {
-      const updated = yield* accounts.updatePasswordHash(userId, passwordHash)
-      if (Option.isNone(updated)) {
-        // An OAuth-only user completing a reset gains a password credential.
-        // `beforeAccountLink` is deliberately not consulted for it: SPEC 13.1
-        // scopes that hook to *provider identities* attached to an existing
-        // user, never the synthetic `local:credential` account. Widening it to
-        // credential creation would be a v2 change to the hook's contract, not a
-        // fix here.
-        //
-        // The insert takes the user-row lock first, in this same transaction,
-        // so the credential row is not a phantom a concurrent magic-link
-        // reclaim's `FOR UPDATE` sweep could miss. Not attacker-reachable here
-        // (the reset token was mailed to the reclaimed address), but kept
-        // consistent with `setPassword` and `Accounts.linkExisting`.
-        yield* users.lockUserRow(userId)
-        yield* createCredentialAccount(userId, passwordHash)
-      }
-      // Every *other* outstanding link this user is the subject of dies with
-      // the one just used, not merely the other reset links. Two "forgot
-      // password" clicks mint two independent tokens, and somebody with a few
-      // minutes of mailbox access must not keep a working key to an account
-      // whose owner has just re-secured it — and a `change-email-verify` token
-      // is the strongest such key there is, because following it moves the
-      // account to the address that asked for it. On an account whose address
-      // was never verified, one of those may well be outstanding: the flow
-      // skips its first hop there, so whoever registered the address could
-      // have aimed the account at a mailbox of their own.
-      yield* retireUserSubjectTokens(verifications, userId)
-      return yield* sessionStore.deleteByUserId(userId)
-    }))
+    const revoked = yield* transaction.run(
+      Effect.gen(function* () {
+        const updated = yield* accounts.updatePasswordHash(userId, passwordHash)
+        if (Option.isNone(updated)) {
+          // An OAuth-only user completing a reset gains a password credential.
+          // `beforeAccountLink` is deliberately not consulted for it: SPEC 13.1
+          // scopes that hook to *provider identities* attached to an existing
+          // user, never the synthetic `local:credential` account. Widening it to
+          // credential creation would be a v2 change to the hook's contract, not a
+          // fix here.
+          //
+          // The insert takes the user-row lock first, in this same transaction,
+          // so the credential row is not a phantom a concurrent magic-link
+          // reclaim's `FOR UPDATE` sweep could miss. Not attacker-reachable here
+          // (the reset token was mailed to the reclaimed address), but kept
+          // consistent with `setPassword` and `Accounts.linkExisting`.
+          yield* users.lockUserRow(userId)
+          yield* createCredentialAccount(userId, passwordHash)
+        }
+        // Every *other* outstanding link this user is the subject of dies with
+        // the one just used, not merely the other reset links. Two "forgot
+        // password" clicks mint two independent tokens, and somebody with a few
+        // minutes of mailbox access must not keep a working key to an account
+        // whose owner has just re-secured it — and a `change-email-verify` token
+        // is the strongest such key there is, because following it moves the
+        // account to the address that asked for it. On an account whose address
+        // was never verified, one of those may well be outstanding: the flow
+        // skips its first hop there, so whoever registered the address could
+        // have aimed the account at a mailbox of their own.
+        yield* retireUserSubjectTokens(verifications, userId)
+        return yield* sessionStore.deleteByUserId(userId)
+      })
+    )
 
     yield* publishSafely(events, {
       _tag: "SessionRevoked",
@@ -864,10 +850,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     yield* publishSafely(events, { _tag: "PasswordChanged", userId, viaReset: true })
   })
 
-  const verifyPassword = Effect.fnUntraced(function*(
-    userId: UserId,
-    password: Redacted.Redacted<string>
-  ) {
+  const verifyPassword = Effect.fnUntraced(function* (userId: UserId, password: Redacted.Redacted<string>) {
     const account = yield* credentialAccountFor(userId)
     const storedHash = Option.isSome(account) ? account.value.passwordHash : null
     // One verification, always. A user with no credential is checked against the
@@ -877,7 +860,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     return storedHash !== null && matches
   })
 
-  const setPassword = Effect.fnUntraced(function*(options: SetPasswordOptions) {
+  const setPassword = Effect.fnUntraced(function* (options: SetPasswordOptions) {
     yield* checkPolicy(options.newPassword, config)
 
     const existing = yield* credentialAccountFor(options.userId)
@@ -902,26 +885,28 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     // lock; without it, this not-yet-committed credential row is a phantom the
     // reclaim's `FOR UPDATE` cannot see under READ COMMITTED, so a
     // pre-registrant could set a password on a row the defence had just swept.
-    const created = transaction.run(Effect.gen(function*() {
-      yield* users.lockUserRow(options.userId)
-      return yield* createCredentialAccount(options.userId, passwordHash)
-    })).pipe(
-      Effect.catchTag(
-        "PersistenceError",
-        (error): Effect.Effect<Account, PasswordAlreadySet | PersistenceError> =>
-          isUniqueViolation(error) ? Effect.fail(new PasswordAlreadySet()) : Effect.fail(error)
+    const created = transaction
+      .run(
+        Effect.gen(function* () {
+          yield* users.lockUserRow(options.userId)
+          return yield* createCredentialAccount(options.userId, passwordHash)
+        })
       )
-    )
+      .pipe(
+        Effect.catchTag("PersistenceError", (error): Effect.Effect<Account, PasswordAlreadySet | PersistenceError> =>
+          isUniqueViolation(error) ? Effect.fail(new PasswordAlreadySet()) : Effect.fail(error)
+        )
+      )
 
     const account = Option.isNone(existing)
       ? yield* created
-      // A credential row with no hash — nothing this library writes, but a
-      // migration from another system might. `None` means it was removed
-      // between the read and the write, which leaves the create as the answer.
-      : yield* Effect.flatMap(
-        accounts.updatePasswordHash(options.userId, passwordHash),
-        Option.match({ onNone: () => created, onSome: Effect.succeed })
-      )
+      : // A credential row with no hash — nothing this library writes, but a
+        // migration from another system might. `None` means it was removed
+        // between the read and the write, which leaves the create as the answer.
+        yield* Effect.flatMap(
+          accounts.updatePasswordHash(options.userId, passwordHash),
+          Option.match({ onNone: () => created, onSome: Effect.succeed })
+        )
 
     yield* publishSafely(events, {
       _tag: "AccountLinked",
@@ -932,7 +917,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     })
   })
 
-  const changePassword = Effect.fnUntraced(function*(options: ChangePasswordOptions) {
+  const changePassword = Effect.fnUntraced(function* (options: ChangePasswordOptions) {
     yield* checkPolicy(options.newPassword, config)
 
     if (!(yield* verifyPassword(options.userId, options.currentPassword))) {
@@ -964,9 +949,10 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     yield* publishSafely(events, { _tag: "PasswordChanged", userId: options.userId, viaReset: false })
   })
 
-  const sendVerificationEmail = Effect.fnUntraced(function*(
-    options: { readonly email: string; readonly callbackURL?: string | undefined }
-  ) {
+  const sendVerificationEmail = Effect.fnUntraced(function* (options: {
+    readonly email: string
+    readonly callbackURL?: string | undefined
+  }) {
     const found = yield* users.findByEmail(normalizeEmail(options.email))
     if (Option.isNone(found) || found.value.emailVerified) {
       return
@@ -974,7 +960,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
     yield* sendVerificationTo(found.value, options.callbackURL)
   })
 
-  const verifyEmail = Effect.fnUntraced(function*(token: Redacted.Redacted<string>) {
+  const verifyEmail = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
     const claimed = yield* verifications.claim(emailVerifyPurpose, token)
 
     const found = yield* users.findByEmail(normalizeEmail(claimed.subject))

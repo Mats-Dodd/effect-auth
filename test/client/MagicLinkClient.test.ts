@@ -21,7 +21,7 @@ const registry = Effect.acquireRelease(
  * share reactivity *keys*.
  */
 const harness = () =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const stub = Stub.make()
     const magicLink = MagicLinkClient.make({ httpClient: stub.layer })
     const auth = AuthClient.make({ httpClient: stub.layer })
@@ -60,12 +60,11 @@ const waitFor = <A>(
     return Effect.sync(() => cancel?.())
   })
 
-const settled = <A, E>(result: AsyncResult.AsyncResult<A, E>): boolean =>
-  result._tag !== "Initial" && !result.waiting
+const settled = <A, E>(result: AsyncResult.AsyncResult<A, E>): boolean => result._tag !== "Initial" && !result.waiting
 
 describe("MagicLinkClient", () => {
   it.effect("asks for a link with the payload alone", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { magicLink, reg, stub } = yield* harness()
 
       const answer = yield* AuthClient.run(magicLink.signIn, {
@@ -75,10 +74,11 @@ describe("MagicLinkClient", () => {
 
       assert.deepStrictEqual(answer, { success: true })
       assert.deepStrictEqual(stub.calls, ["POST /auth/magic-link/sign-in"])
-    }))
+    })
+  )
 
   it.effect("exchanges a token for a session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { magicLink, reg } = yield* harness()
 
       const result = yield* AuthClient.run(magicLink.exchange, {
@@ -89,10 +89,11 @@ describe("MagicLinkClient", () => {
       assert.strictEqual(result.session.userId, result.user.id)
       // `tokenHash` is Model.Sensitive: absent from the wire and from the type.
       assert.isFalse(Object.hasOwn(result.session, "tokenHash"))
-    }))
+    })
+  )
 
   it.effect("reports a spent link as InvalidToken", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { magicLink, reg, stub } = yield* harness()
       stub.rejectMagicLink()
 
@@ -105,10 +106,11 @@ describe("MagicLinkClient", () => {
         // The declared error union, decoded — not a defect.
         assert.strictEqual(result.failure._tag, "InvalidToken")
       }
-    }))
+    })
+  )
 
   it.effect("refetches an AuthClient's session atom when a link is exchanged", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { auth, magicLink, reg, stub } = yield* harness()
       yield* AtomRegistry.mount(reg, auth.session)
 
@@ -126,7 +128,8 @@ describe("MagicLinkClient", () => {
       const after = yield* waitFor(reg, auth.session, AsyncResult.isSuccess)
       assert.isTrue(AsyncResult.isSuccess(after))
       assert.strictEqual(stub.countOf("GET /auth/session"), 2)
-    }))
+    })
+  )
 
   describe("verifyUrl", () => {
     it("is path-relative when the client has no baseUrl, and escapes the token", () => {
@@ -139,10 +142,7 @@ describe("MagicLinkClient", () => {
 
     it("is absolute against the baseUrl the client was given", () => {
       const client = MagicLinkClient.make({ baseUrl: "https://app.test" })
-      assert.strictEqual(
-        client.verifyUrl("a-token"),
-        "https://app.test/auth/magic-link/verify?token=a-token"
-      )
+      assert.strictEqual(client.verifyUrl("a-token"), "https://app.test/auth/magic-link/verify?token=a-token")
     })
   })
 })

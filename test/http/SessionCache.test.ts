@@ -4,19 +4,14 @@ import { AuthConfig } from "../../src/config/AuthConfig.js"
 import * as HmacCrypto from "../../src/crypto/Hmac.js"
 import { baseUserModel, Session, SessionId, UserId } from "../../src/domain/Schema.js"
 import { refreshDueAt } from "../../src/domain/Sessions.js"
-import {
-  cacheExpiry,
-  make as makeSessionCache,
-  SessionCache,
-  sessionSnapshot
-} from "../../src/http/SessionCache.js"
+import { cacheExpiry, make as makeSessionCache, SessionCache, sessionSnapshot } from "../../src/http/SessionCache.js"
 import { ambientCrypto, encodeUtf8 } from "../../src/internal/crypto.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, signUpUser, uniqueEmail } from "../fixtures.js"
 
 layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (it) => {
   it.effect("round-trips a snapshot through the signed cookie value", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const cache = yield* SessionCache
       const { session, user } = yield* signUpUser(uniqueEmail("cache-roundtrip"))
       const now = yield* DateTime.now
@@ -34,10 +29,11 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
       assert.strictEqual(decoded.session.tokenHash, session.tokenHash)
       assert.strictEqual(decoded.user.id, user.id)
       assert.strictEqual(decoded.user.email, user.email)
-    }))
+    })
+  )
 
   it.effect("refuses a payload that was edited, and a tag that was", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const cache = yield* SessionCache
       const { session, user } = yield* signUpUser(uniqueEmail("cache-tamper"))
       const now = yield* DateTime.now
@@ -64,19 +60,21 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
 
       // And a value that is not two halves at all.
       assert.isTrue(Option.isNone(yield* cache.decode(payload!)))
-    }))
+    })
+  )
 
   it.effect("keeps the token hash out of the session half of a snapshot", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { session } = yield* signUpUser(uniqueEmail("cache-snapshot"))
       const snapshot = yield* sessionSnapshot(session)
 
       assert.isFalse("tokenHash" in snapshot)
       assert.strictEqual(snapshot["id"], session.id)
-    }))
+    })
+  )
 
   it.effect("expires a snapshot at the first of the three bounds", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const config = yield* AuthConfig
       const { session } = yield* signUpUser(uniqueEmail("cache-expiry"))
       const now = yield* DateTime.now
@@ -94,10 +92,11 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
         DateTime.toEpochMillis(cacheExpiry(config, session, late)),
         DateTime.toEpochMillis(refreshDueAt(session, config))
       )
-    }))
+    })
+  )
 
   it.effect("never outlives the session itself, whatever the other two bounds say", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const config = yield* AuthConfig
       const now = yield* DateTime.now
       // A session with a minute left: shorter than the five minute cache
@@ -120,10 +119,11 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
         DateTime.toEpochMillis(cacheExpiry(config, ending, now)),
         DateTime.toEpochMillis(ending.expiresAt)
       )
-    }))
+    })
+  )
 
   it.effect("refuses a snapshot another deployment's secret signed", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const cache = yield* SessionCache
       const { session, user } = yield* signUpUser(uniqueEmail("cache-secret"))
       const now = yield* DateTime.now
@@ -155,10 +155,11 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
       // about the payload.
       assert.isTrue(Option.isSome(yield* cache.decode(ours)))
       assert.isTrue(Option.isSome(yield* rogue.decode(theirs)))
-    }))
+    })
+  )
 
   it.effect("refuses a tag the shared Hmac produced for something that is not a snapshot", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const cache = yield* SessionCache
       const hmac = yield* HmacCrypto.Hmac
       const { session, user } = yield* signUpUser(uniqueEmail("cache-domain"))
@@ -186,7 +187,8 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
 
       // The same bytes with the context in front are the tag this module wrote.
       assert.isTrue(Option.isSome(yield* cache.decode(value)))
-    }))
+    })
+  )
 
   // Nested rather than a `describe` that provides `AuthTest.layer()` inside the
   // test body: an `it.layer` forks this block's memo map, so the deployment
@@ -194,9 +196,10 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
   // already booted instead of booting one to read a boolean.
   it.layer(AuthTest.layer())("with no deployment asking for it", (it) => {
     it.effect("is still provided, switched off", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const cache = yield* SessionCache
         assert.isFalse(cache.enabled)
-      }))
+      })
+    )
   })
 })

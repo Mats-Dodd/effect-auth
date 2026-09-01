@@ -26,21 +26,23 @@ const server = MockProvider.mockServer()
  * service — the signer has to exist before the providers can be described, and
  * generating its key pair is the one expensive thing in this file.
  */
-const oidcLayer = Layer.unwrap(Effect.gen(function*() {
-  const signer = yield* MockProvider.IdTokenSigner
-  return AuthTest.layerFlow({
-    providers: [MockProvider.oidcProvider(signer.jwks)],
-    fetch: server.fetch,
-    baseUrl: "https://app.example.com"
+const oidcLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const signer = yield* MockProvider.IdTokenSigner
+    return AuthTest.layerFlow({
+      providers: [MockProvider.oidcProvider(signer.jwks)],
+      fetch: server.fetch,
+      baseUrl: "https://app.example.com"
+    })
   })
-})).pipe(Layer.provideMerge(MockProvider.IdTokenSigner.layer))
+).pipe(Layer.provideMerge(MockProvider.IdTokenSigner.layer))
 
 /**
  * Every test here follows the same shape: start the flow, read the nonce out of
  * the authorization URL, mint an `id_token` for it, and see what the callback
  * makes of it. `claims` and `sign` are what each test bends.
  */
-const runOidc = Effect.fnUntraced(function*(options?: {
+const runOidc = Effect.fnUntraced(function* (options?: {
   readonly providerId?: string | undefined
   readonly claims?: ((nonce: string | null, email: string) => JWTPayload) | undefined
   readonly sign?: MockProvider.SignOptions | undefined
@@ -62,14 +64,13 @@ const runOidc = Effect.fnUntraced(function*(options?: {
 
   yield* Effect.sync(() =>
     server.on(MockProvider.tokenUrl, async () => {
-      const claims = options?.claims?.(nonce, email) ??
-        {
-          sub: email,
-          email,
-          email_verified: true,
-          name: testName,
-          nonce
-        }
+      const claims = options?.claims?.(nonce, email) ?? {
+        sub: email,
+        email,
+        email_verified: true,
+        name: testName,
+        nonce
+      }
       const idToken = await signer.sign(claims, options?.sign)
       return MockProvider.json({
         access_token: "provider-access-token",
@@ -83,11 +84,13 @@ const runOidc = Effect.fnUntraced(function*(options?: {
   return {
     nonce,
     email,
-    result: yield* Effect.result(flow.callback({
-      providerId,
-      code: "authorization-code",
-      state: Redacted.value(started.state)
-    }))
+    result: yield* Effect.result(
+      flow.callback({
+        providerId,
+        code: "authorization-code",
+        state: Redacted.value(started.state)
+      })
+    )
   }
 })
 
@@ -101,7 +104,7 @@ const assertIdTokenInvalid = (result: { readonly _tag: string; readonly failure?
 describe.sequential("oauth/Flow (OIDC)", () => {
   layer(oidcLayer)((it) => {
     it.effect("mints a nonce, verifies the id_token and takes the identity from its claims", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { email, nonce, result } = yield* runOidc()
         assert.isNotNull(nonce)
         assert.strictEqual(result._tag, "Success")
@@ -114,59 +117,69 @@ describe.sequential("oauth/Flow (OIDC)", () => {
         assert.strictEqual(done.account.issuer, MockProvider.providerOrigin)
         assert.strictEqual(done.account.accountId, email)
         assert.isNotNull(done.token)
-      }))
+      })
+    )
 
     it.effect("refuses a provider that returned no id_token at all", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { result } = yield* runOidc({ omitIdToken: true })
         assertIdTokenInvalid(result)
-      }))
+      })
+    )
 
     it.effect("refuses a token from another issuer", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { result } = yield* runOidc({ sign: { issuer: "https://evil.test" } })
         assertIdTokenInvalid(result)
-      }))
+      })
+    )
 
     it.effect("refuses a token minted for another audience", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { result } = yield* runOidc({ sign: { audience: "somebody-elses-client" } })
         assertIdTokenInvalid(result)
-      }))
+      })
+    )
 
     it.effect("refuses a token that has expired by the Effect clock", () =>
       // A clock of this test's own: the `exp` below is an absolute instant, so
       // it must be read against a clock nothing else in the block has moved.
       // The state row is unaffected — `Flow` issues and consumes it under the
       // context its layer was built with, which is the block's clock.
-      AuthTest.freshClock(Effect.gen(function*() {
-        yield* TestClock.adjust(Duration.seconds(61))
-        const { result } = yield* runOidc({ sign: { expiresAt: 60 } })
-        assertIdTokenInvalid(result)
-      })))
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          yield* TestClock.adjust(Duration.seconds(61))
+          const { result } = yield* runOidc({ sign: { expiresAt: 60 } })
+          assertIdTokenInvalid(result)
+        })
+      )
+    )
 
     it.effect("refuses a token whose nonce is somebody else's", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { result } = yield* runOidc({
           claims: (_nonce, email) => ({ sub: email, email, nonce: "a-nonce-from-another-session" })
         })
         assertIdTokenInvalid(result)
-      }))
+      })
+    )
 
     it.effect("refuses a token that carries no nonce, which is what a replay looks like", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { result } = yield* runOidc({
           claims: (_nonce, email) => ({ sub: email, email })
         })
         assertIdTokenInvalid(result)
-      }))
+      })
+    )
 
     it.effect("refuses a token with no subject", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { result } = yield* runOidc({
           claims: (nonce, email) => ({ email, nonce })
         })
         assertIdTokenInvalid(result)
-      }))
+      })
+    )
   })
 })

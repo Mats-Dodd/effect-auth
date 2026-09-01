@@ -169,7 +169,7 @@ export interface Options {
 export const make = (options: Options): OAuthProviderConfig => {
   const endpoints = endpointsOf(options.baseUrl)
 
-  const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const response = yield* fetchJson({
       providerId: id,
       url: endpoints.userInfoUrl,
@@ -249,9 +249,7 @@ interface Settings {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig = (
-  options: ConfigOptions
-): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(
     Config.unwrap<Settings>({
       clientId: options.clientId,

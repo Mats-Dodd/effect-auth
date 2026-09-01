@@ -69,7 +69,7 @@ export type HandlerServices = AuthConfig | MagicLink | RateLimiter.RateLimiter
  * @since 1.0.0
  */
 export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const config = yield* AuthConfig
     const magicLink = yield* MagicLink
     const limiter = yield* RateLimiter.RateLimiter
@@ -81,7 +81,7 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
 
     return handlers
       .handle("signIn", ({ payload, request }) =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           // The mail bucket, not the credential one: this endpoint sends a
           // message to an address somebody else may own.
           yield* rateLimit(emailBucket, request)
@@ -91,17 +91,20 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
           // The same answer for a known address, an unknown one, and a message
           // that could not be delivered.
           return AuthHandlers.acknowledged
-        }))
+        })
+      )
       .handle("verify", ({ query, request }) =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* rateLimit(credentials, request)
           // A query parameter is decoded as a plain string — query strings do not
           // go through the JSON codec — so it is redacted here, before anything
           // can log it.
-          const outcome = yield* magicLink.complete({
-            token: Redacted.make(query.token),
-            ...AuthHandlers.clientMeta(config, request)
-          }).pipe(AuthHandlers.serverFault)
+          const outcome = yield* magicLink
+            .complete({
+              token: Redacted.make(query.token),
+              ...AuthHandlers.clientMeta(config, request)
+            })
+            .pipe(AuthHandlers.serverFault)
 
           if (outcome._tag === "Success") {
             yield* setSessionCookie(config, outcome.session, outcome.token, {
@@ -115,14 +118,17 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
           // before either hook was asked, so the link is spent whichever way it
           // went, and no cookie is set: no session exists.
           return AuthHandlers.redirectTo(outcome.redirectTo)
-        }))
+        })
+      )
       .handle("exchange", ({ payload, request }) =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* rateLimit(credentials, request)
-          const result = yield* magicLink.verify({
-            token: payload.token,
-            ...AuthHandlers.clientMeta(config, request)
-          }).pipe(AuthHandlers.serverFault)
+          const result = yield* magicLink
+            .verify({
+              token: payload.token,
+              ...AuthHandlers.clientMeta(config, request)
+            })
+            .pipe(AuthHandlers.serverFault)
 
           // A browser calling this is signed in as well as answered, which is
           // what makes the two endpoints interchangeable.
@@ -130,5 +136,7 @@ export const handlers = AuthHandlers.forGroup(MagicLinkApiGroup, (handlers) =>
             persistent: result.rememberMe
           })
           return { user: result.user, session: result.session }
-        }))
-  }))
+        })
+      )
+  })
+)

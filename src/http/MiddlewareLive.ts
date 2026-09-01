@@ -114,9 +114,10 @@ export const setSessionCookie = (
   options?: { readonly persistent?: boolean | undefined } | undefined
 ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
   Effect.flatMap(remainingLifetime(session), (maxAge) => {
-    const attributes: NonNullable<Cookies.Cookie["options"]> = options?.persistent === false
-      ? { ...sessionCookieOptions(config, { maxAge }), maxAge: undefined }
-      : sessionCookieOptions(config, { maxAge })
+    const attributes: NonNullable<Cookies.Cookie["options"]> =
+      options?.persistent === false
+        ? { ...sessionCookieOptions(config, { maxAge }), maxAge: undefined }
+        : sessionCookieOptions(config, { maxAge })
     return HttpApiBuilder.securitySetCookie(sessionCookieSecurity(config), token, attributes)
   })
 
@@ -208,14 +209,14 @@ export const clearOAuthStateCookie = (
  * @category constructors
  * @since 1.0.0
  */
-export const make = Effect.fnUntraced(function*<F extends UserFields>(model: UserModel<F>) {
+export const make = Effect.fnUntraced(function* <F extends UserFields>(model: UserModel<F>) {
   const config = yield* AuthConfig
   const sessions = yield* sessionsOf(model)
   const cache = yield* sessionCacheOf(model)
   const currentUser = currentUserOf(model)
 
   const authenticate = (transport: { readonly cookie: boolean }) =>
-    Effect.fnUntraced(function*<A, E, R>(
+    Effect.fnUntraced(function* <A, E, R>(
       httpEffect: Effect.Effect<A, E, R>,
       options: {
         readonly credential: Redacted.Redacted<string>
@@ -295,8 +296,7 @@ export const make = Effect.fnUntraced(function*<F extends UserFields>(model: Use
       readonly credential: Redacted.Redacted<string>
       readonly endpoint: HttpApiEndpoint.Top
     }
-  ): Effect.Effect<A, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> =>
-    Effect.fail(new Unauthorized())
+  ): Effect.Effect<A, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> => Effect.fail(new Unauthorized())
 
   return Authenticated.of({
     secureSessionCookie: config.cookie.secure ? cookie : refused,

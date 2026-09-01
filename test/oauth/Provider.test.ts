@@ -26,7 +26,7 @@ describe("oauth/Provider", () => {
     })
 
     it.effect("answers UnknownProvider rather than returning nothing", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const registry = makeRegistry([github])
         const result = yield* Effect.result(registry.get("gitlab"))
         assert.strictEqual(result._tag, "Failure")
@@ -34,10 +34,11 @@ describe("oauth/Provider", () => {
         assert.strictEqual(result.failure._tag, "OAuthProviderError")
         assert.strictEqual(result.failure.reason, "UnknownProvider")
         assert.strictEqual(result.failure.providerId, "gitlab")
-      }))
+      })
+    )
 
     it.effect("cannot be walked into the prototype by a request path", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // `providerId` reaches the registry straight out of a URL path. On an
         // ordinary object `registry.find("__proto__")` or `"constructor"` would
         // hand back something truthy, and `toString` would be a function.
@@ -47,7 +48,8 @@ describe("oauth/Provider", () => {
           const result = yield* Effect.result(registry.get(hostile))
           assert.strictEqual(result._tag, "Failure", hostile)
         }
-      }))
+      })
+    )
 
     it("refuses two registrations of one id, rather than letting one win", () => {
       // A duplicate id is a deployment that cannot be served coherently: one of
@@ -63,27 +65,34 @@ describe("oauth/Provider", () => {
     })
 
     it.effect("is empty, not absent, when a deployment configures no providers", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const registry = yield* OAuthProviders
         assert.deepStrictEqual([...registry.ids], [])
         const result = yield* Effect.result(registry.get("github"))
         assert.strictEqual(result._tag, "Failure")
-      }).pipe(Effect.provide(OAuthProviders.layer([]))))
+      }).pipe(Effect.provide(OAuthProviders.layer([])))
+    )
 
     it.effect("gathers several provider values into a single registry", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const registry = yield* OAuthProviders
         assert.deepStrictEqual([...registry.ids], ["github", "google"])
-      }).pipe(Effect.provide(OAuthProviders.layer([
-        Github.make({ clientId: "id", clientSecret: Redacted.make("secret") }),
-        Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
-      ]))))
+      }).pipe(
+        Effect.provide(
+          OAuthProviders.layer([
+            Github.make({ clientId: "id", clientSecret: Redacted.make("secret") }),
+            Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
+          ])
+        )
+      )
+    )
 
     it.effect("keeps a single-provider registry usable on its own", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const registry = yield* OAuthProviders
         assert.deepStrictEqual([...registry.ids], ["mock"])
-      }).pipe(Effect.provide(OAuthProviders.layer([MockProvider.mockProvider()]))))
+      }).pipe(Effect.provide(OAuthProviders.layer([MockProvider.mockProvider()])))
+    )
   })
 
   describe("issuers", () => {
@@ -97,18 +106,16 @@ describe("oauth/Provider", () => {
 
   describe("reserved parameters", () => {
     it("covers everything the flow sets itself", () => {
-      for (
-        const key of [
-          "response_type",
-          "client_id",
-          "redirect_uri",
-          "scope",
-          "state",
-          "code_challenge",
-          "code_challenge_method",
-          "nonce"
-        ]
-      ) {
+      for (const key of [
+        "response_type",
+        "client_id",
+        "redirect_uri",
+        "scope",
+        "state",
+        "code_challenge",
+        "code_challenge_method",
+        "nonce"
+      ]) {
         assert.isTrue(reservedAuthorizationParams.has(key), key)
       }
     })
@@ -123,16 +130,18 @@ describe("oauth/Provider", () => {
 
   describe("fetchJson", () => {
     const call = (url: string) =>
-      Effect.result(fetchJson({
-        providerId: "mock",
-        url,
-        accessToken: Redacted.make("an-access-token")
-      }))
+      Effect.result(
+        fetchJson({
+          providerId: "mock",
+          url,
+          accessToken: Redacted.make("an-access-token")
+        })
+      )
 
     it.effect("reports a refusal as a status rather than an error", () => {
       const server = MockProvider.mockServer()
       server.on(MockProvider.userInfoUrl, () => MockProvider.json({ message: "no" }, 403))
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -144,7 +153,7 @@ describe("oauth/Provider", () => {
     it.effect("reads a body that is not JSON as no body at all", () => {
       const server = MockProvider.mockServer()
       server.on(MockProvider.userInfoUrl, () => new Response("<html>nope</html>", { status: 200 }))
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -155,7 +164,7 @@ describe("oauth/Provider", () => {
     it.effect("refuses a redirect, and reports it as ProviderUnavailable", () => {
       const server = MockProvider.mockServer()
       server.on(MockProvider.userInfoUrl, () => MockProvider.redirect("http://169.254.169.254/"))
-      return Effect.gen(function*() {
+      return Effect.gen(function* () {
         const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return

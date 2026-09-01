@@ -53,7 +53,7 @@ const defaultCacheSeconds = 300
 describe.sequential("http/SessionCache over HTTP", () => {
   layer(cached)("enabled", (it) => {
     it.effect("serves a second request from the cookie, with no session read", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("cache-hit")
         const { client, cookies } = yield* signedUp(email)
 
@@ -73,10 +73,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
         // A hit writes nothing: no session cookie, no fresh snapshot.
         assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(second)))
         assert.isTrue(Option.isNone(TestHttpClient.responseCookie(second)))
-      }))
+      })
+    )
 
     it.effect("falls back to the database when the snapshot is garbage", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("cache-garbage")
         const { client, cookies } = yield* signedUp(email)
         yield* client.auth.getSession()
@@ -90,29 +91,33 @@ describe.sequential("http/SessionCache over HTTP", () => {
         assert.strictEqual(store.state.reads, before + 1, "an unreadable snapshot is a miss")
         // And the miss leaves a fresh one behind.
         assert.isTrue(Option.isSome(TestHttpClient.responseCacheCookie(response)))
-      }))
+      })
+    )
 
     it.effect("reads the database for an endpoint that must see the row", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* signedUp(uniqueEmail("cache-authoritative"))
         yield* client.auth.getSession()
 
         const before = store.state.reads
         // `changePassword` is annotated `AuthoritativeSession`; the wrong
         // password is enough to prove the middleware went to the database first.
-        const error = yield* Effect.flip(client.auth.changePassword({
-          payload: {
-            currentPassword: Redacted.make("not the password"),
-            newPassword: Redacted.make("a new password entirely")
-          }
-        }))
+        const error = yield* Effect.flip(
+          client.auth.changePassword({
+            payload: {
+              currentPassword: Redacted.make("not the password"),
+              newPassword: Redacted.make("a new password entirely")
+            }
+          })
+        )
 
         assert.strictEqual(error._tag, "InvalidCredentials")
         assert.strictEqual(store.state.reads, before + 1, "an authoritative endpoint bypasses the cache")
-      }))
+      })
+    )
 
     it.effect("clears both cookies on sign-out", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client, cookies } = yield* signedUp(uniqueEmail("cache-sign-out"))
         yield* client.auth.getSession()
 
@@ -130,10 +135,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
 
         const error = yield* Effect.flip(client.auth.getSession())
         assert.strictEqual(error._tag, "Unauthorized")
-      }))
+      })
+    )
 
     it.effect("refuses a snapshot minted for another browser's session", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("cache-binding")
         const first = yield* signedUp(email)
         const mine = yield* first.client.auth.getSession()
@@ -165,10 +171,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
         assert.strictEqual(session.user.email, email)
         // And the miss replaced it with this browser's own.
         assert.isTrue(Option.isSome(TestHttpClient.responseCacheCookie(response)))
-      }))
+      })
+    )
 
     it.effect("writes no snapshot from an endpoint that must see the row", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* signedUp(uniqueEmail("cache-authoritative-write"))
         yield* client.auth.getSession()
 
@@ -182,10 +189,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
         // Bypassed in both directions: a snapshot taken here would be one this
         // endpoint had already decided not to trust.
         assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(response)))
-      }))
+      })
+    )
 
     it.effect("rewrites a cookie client's snapshot when the profile changes", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* signedUp(uniqueEmail("cache-update-user"))
         yield* client.auth.getSession()
 
@@ -201,10 +209,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
         const session = yield* client.auth.getSession()
         assert.strictEqual(store.state.reads, before, "the rewritten snapshot is a hit")
         assert.strictEqual(session.user.name, "Ada Byron")
-      }))
+      })
+    )
 
     it.effect("clears both cookies when every session is revoked", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client, cookies } = yield* signedUp(uniqueEmail("cache-revoke-all"))
         yield* client.auth.getSession()
 
@@ -218,10 +227,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
         // in behind a snapshot nothing reads the database for.
         const error = yield* Effect.flip(client.auth.getSession())
         assert.strictEqual(error._tag, "Unauthorized")
-      }))
+      })
+    )
 
     it.effect("clears both cookies when a password reset ends every session", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("cache-reset")
         const { client } = yield* signedUp(email)
         const emails = yield* AuthTest.TestEmails
@@ -243,10 +253,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
 
         const error = yield* Effect.flip(client.auth.getSession())
         assert.strictEqual(error._tag, "Unauthorized")
-      }))
+      })
+    )
 
     it.effect("leaves a bearer client out of it entirely", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const browser = yield* signedUp(uniqueEmail("cache-bearer"))
         const token = yield* TestHttpClient.sessionCookieValue(browser.cookies)
         const api = yield* makeClient({ bearerToken: () => token })
@@ -272,16 +283,19 @@ describe.sequential("http/SessionCache over HTTP", () => {
         })
         assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(updated)))
         assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCacheCookie(api.cookies)))
-      }))
+      })
+    )
 
     // A configuration variant: everything above the database is rebuilt for the
     // sub-block, and the database itself is inherited from the block above.
-    it.layer(AuthTest.layerHttp({
-      cookieCache: { enabled: true, version: "v2" },
-      sessionStore: store.layer
-    }))("when the version has been bumped", (it) => {
+    it.layer(
+      AuthTest.layerHttp({
+        cookieCache: { enabled: true, version: "v2" },
+        sessionStore: store.layer
+      })
+    )("when the version has been bumped", (it) => {
       it.effect("misses a snapshot written under the old version, then hits the new one", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client, cookies } = yield* signedUp(uniqueEmail("cache-version"))
           const cache = yield* SessionCache
           yield* client.auth.getSession()
@@ -313,16 +327,19 @@ describe.sequential("http/SessionCache over HTTP", () => {
           const [, hit] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
           assert.strictEqual(store.state.reads, before + 1)
           assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(hit)))
-        }))
+        })
+      )
     })
 
-    it.layer(AuthTest.layerHttp({
-      cookieCache: { enabled: true },
-      cookie: { secure: true },
-      sessionStore: store.layer
-    }))("when the deployment is served over TLS", (it) => {
+    it.layer(
+      AuthTest.layerHttp({
+        cookieCache: { enabled: true },
+        cookie: { secure: true },
+        sessionStore: store.layer
+      })
+    )("when the deployment is served over TLS", (it) => {
       it.effect("writes and reads the snapshot under the __Secure- name", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* signedUp(uniqueEmail("cache-secure"))
           const [, first] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
 
@@ -343,40 +360,36 @@ describe.sequential("http/SessionCache over HTTP", () => {
 
           // And it is the prefixed one that sign-out expires.
           const [, out] = yield* client.auth.signOut({ responseMode: "decoded-and-response" })
-          assert.strictEqual(
-            writtenValue(TestHttpClient.responseCacheCookie(out, secureSessionCacheCookieName)),
-            ""
-          )
-        }))
+          assert.strictEqual(writtenValue(TestHttpClient.responseCacheCookie(out, secureSessionCacheCookieName)), "")
+        })
+      )
     })
 
-    it.layer(AuthTest.layerHttp({ sessionStore: store.layer }))(
-      "when the deployment did not opt in",
-      (it) => {
-        it.effect("writes no snapshot at all, and reads the session every time", () =>
-          Effect.gen(function*() {
-            const { client, cookies } = yield* signedUp(uniqueEmail("cache-off"))
+    it.layer(AuthTest.layerHttp({ sessionStore: store.layer }))("when the deployment did not opt in", (it) => {
+      it.effect("writes no snapshot at all, and reads the session every time", () =>
+        Effect.gen(function* () {
+          const { client, cookies } = yield* signedUp(uniqueEmail("cache-off"))
 
-            const before = store.state.reads
-            const [, first] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
-            const [, second] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
+          const before = store.state.reads
+          const [, first] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
+          const [, second] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
 
-            assert.strictEqual(store.state.reads, before + 2, "the default deployment caches nothing")
-            assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(first)))
-            assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(second)))
-            assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCacheCookie(cookies)))
+          assert.strictEqual(store.state.reads, before + 2, "the default deployment caches nothing")
+          assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(first)))
+          assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(second)))
+          assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCacheCookie(cookies)))
 
-            // Nor does sign-out expire a cookie this deployment never wrote.
-            const [, out] = yield* client.auth.signOut({ responseMode: "decoded-and-response" })
-            assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(out)))
-          }))
-      }
-    )
+          // Nor does sign-out expire a cookie this deployment never wrote.
+          const [, out] = yield* client.auth.signOut({ responseMode: "decoded-and-response" })
+          assert.isTrue(Option.isNone(TestHttpClient.responseCacheCookie(out)))
+        })
+      )
+    })
 
     it.layer(movingClock)("as time passes", (it) => {
       describe.sequential("on the deployment's own clock", () => {
         it.effect("clamps the snapshot to the refresh instant, and refreshes when it arrives", () =>
-          Effect.gen(function*() {
+          Effect.gen(function* () {
             const { client } = yield* signedUp(uniqueEmail("cache-clamp"))
 
             // A fresh seven-day session becomes refresh-due in a day, so the
@@ -404,10 +417,11 @@ describe.sequential("http/SessionCache over HTTP", () => {
             assert.strictEqual(store.state.touches, touches + 1, "the refresh happens when it always did")
             assert.isTrue(Option.isSome(TestHttpClient.responseCookie(refreshed)))
             assert.strictEqual(cacheMaxAgeSeconds(refreshed), defaultCacheSeconds)
-          }))
+          })
+        )
 
         it.effect("keeps answering a session revoked elsewhere until the snapshot expires", () =>
-          Effect.gen(function*() {
+          Effect.gen(function* () {
             const email = uniqueEmail("cache-revoked-elsewhere")
             const owner = yield* signedUp(email)
             const other = yield* makeClient()
@@ -430,7 +444,8 @@ describe.sequential("http/SessionCache over HTTP", () => {
             yield* TestClock.adjust(Duration.minutes(6))
             const refused = yield* Effect.flip(other.client.auth.getSession())
             assert.strictEqual(refused._tag, "Unauthorized")
-          }))
+          })
+        )
       })
     })
   })

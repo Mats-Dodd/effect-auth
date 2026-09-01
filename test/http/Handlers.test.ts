@@ -12,7 +12,7 @@ const oneDay = Duration.toSeconds(Duration.days(1))
 
 layer(AuthTest.layerHttp())("http/Handlers", (it) => {
   it.effect("signs a person up, in, out, and refuses them afterwards", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("lifecycle")
       const { client, cookies } = yield* makeClient()
 
@@ -88,50 +88,62 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
 
       const refused = yield* Effect.flip(client.auth.getSession())
       assert.strictEqual(refused._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("answers the same InvalidCredentials for a wrong password and an unknown address", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("credentials")
       const { client } = yield* signedUp(email)
 
-      const wrongPassword = yield* Effect.flip(client.auth.signInEmail({
-        payload: { email, password: Redacted.make("not the password") }
-      }))
-      const unknownAddress = yield* Effect.flip(client.auth.signInEmail({
-        payload: { email: uniqueEmail("nobody"), password: Redacted.make("not the password") }
-      }))
+      const wrongPassword = yield* Effect.flip(
+        client.auth.signInEmail({
+          payload: { email, password: Redacted.make("not the password") }
+        })
+      )
+      const unknownAddress = yield* Effect.flip(
+        client.auth.signInEmail({
+          payload: { email: uniqueEmail("nobody"), password: Redacted.make("not the password") }
+        })
+      )
 
       assert.strictEqual(wrongPassword._tag, "InvalidCredentials")
       assert.deepStrictEqual(wrongPassword, unknownAddress)
-    }))
+    })
+  )
 
   it.effect("reports UserAlreadyExists for a second sign-up, whatever the address's case", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("duplicate")
       const { client } = yield* signedUp(email)
-      const error = yield* Effect.flip(client.auth.signUpEmail({
-        payload: {
-          name: "Impostor",
-          email: email.toUpperCase(),
-          password: Redacted.make("another perfectly fine password")
-        }
-      }))
+      const error = yield* Effect.flip(
+        client.auth.signUpEmail({
+          payload: {
+            name: "Impostor",
+            email: email.toUpperCase(),
+            password: Redacted.make("another perfectly fine password")
+          }
+        })
+      )
       assert.strictEqual(error._tag, "UserAlreadyExists")
-    }))
+    })
+  )
 
   it.effect("enforces the password policy before creating anything", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* makeClient()
-      const error = yield* Effect.flip(client.auth.signUpEmail({
-        payload: { name: testName, email: uniqueEmail("policy"), password: Redacted.make("short") }
-      }))
+      const error = yield* Effect.flip(
+        client.auth.signUpEmail({
+          payload: { name: testName, email: uniqueEmail("policy"), password: Redacted.make("short") }
+        })
+      )
       assert.strictEqual(error._tag, "PasswordPolicyViolation")
       if (error._tag === "PasswordPolicyViolation") {
         assert.strictEqual(error.reason, "TooShort")
         assert.strictEqual(error.minLength, 8)
       }
-    }))
+    })
+  )
 
   // A configuration variant: everything above the database is rebuilt for this
   // sub-block, and the database itself is inherited from the block above.
@@ -139,7 +151,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
     "when the address must be verified first",
     (it) => {
       it.effect("withholds the session until the e-mailed link is followed", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("verify")
           const { client, cookies } = yield* makeClient()
           const registered = yield* client.auth.signUpEmail({
@@ -149,9 +161,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           assert.isNull(registered.session)
           assert.isTrue(Option.isNone(yield* TestHttpClient.sessionCookie(cookies)))
 
-          const refused = yield* Effect.flip(client.auth.signInEmail({
-            payload: { email, password: testPassword }
-          }))
+          const refused = yield* Effect.flip(
+            client.auth.signInEmail({
+              payload: { email, password: testPassword }
+            })
+          )
           assert.strictEqual(refused._tag, "EmailNotVerified")
 
           // The verification mail went out with the sign-up.
@@ -173,12 +187,13 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
             client.auth.verifyEmail({ query: { token: TestHttpClient.tokenOf(sent) } })
           )
           assert.strictEqual(replayed._tag, "InvalidToken")
-        }))
+        })
+      )
     }
   )
 
   it.effect("resets a forgotten password from another browser, and ends every session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("reset")
       const signedIn = yield* signedUp(email)
       const other = yield* makeClient()
@@ -191,10 +206,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       assert.strictEqual(unknown.success, true)
 
       yield* other.client.auth.requestPasswordReset({ payload: { email } })
-      const sent = yield* expectSome(
-        yield* emails.last("reset", email),
-        "a reset e-mail should have gone out"
-      )
+      const sent = yield* expectSome(yield* emails.last("reset", email), "a reset e-mail should have gone out")
       assert.strictEqual(sent.to, email)
 
       yield* other.client.auth.resetPassword({
@@ -209,9 +221,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       assert.strictEqual(refused._tag, "Unauthorized")
 
       // The old password no longer works; the new one does.
-      const stale = yield* Effect.flip(other.client.auth.signInEmail({
-        payload: { email, password: Redacted.make(signedIn.password) }
-      }))
+      const stale = yield* Effect.flip(
+        other.client.auth.signInEmail({
+          payload: { email, password: Redacted.make(signedIn.password) }
+        })
+      )
       assert.strictEqual(stale._tag, "InvalidCredentials")
 
       yield* other.client.auth.signInEmail({
@@ -219,29 +233,35 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       })
 
       // Single use: the same link cannot be redeemed twice.
-      const replayed = yield* Effect.flip(other.client.auth.resetPassword({
-        payload: {
-          token: Redacted.make(TestHttpClient.tokenOf(sent)),
-          newPassword: Redacted.make("yet another password")
-        }
-      }))
+      const replayed = yield* Effect.flip(
+        other.client.auth.resetPassword({
+          payload: {
+            token: Redacted.make(TestHttpClient.tokenOf(sent)),
+            newPassword: Redacted.make("yet another password")
+          }
+        })
+      )
       assert.strictEqual(replayed._tag, "InvalidToken")
-    }))
+    })
+  )
 
   it.effect("refuses a change of password that does not know the current one", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* signedUp(uniqueEmail("wrong-current"))
-      const error = yield* Effect.flip(client.auth.changePassword({
-        payload: {
-          currentPassword: Redacted.make("not the current password"),
-          newPassword: Redacted.make("a different long password")
-        }
-      }))
+      const error = yield* Effect.flip(
+        client.auth.changePassword({
+          payload: {
+            currentPassword: Redacted.make("not the current password"),
+            newPassword: Redacted.make("a different long password")
+          }
+        })
+      )
       assert.strictEqual(error._tag, "InvalidCredentials")
-    }))
+    })
+  )
 
   it.effect("revokes the other browsers and leaves this one signed in", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const first = yield* signedUp(uniqueEmail("revoke-others"))
       const second = yield* makeClient()
       yield* second.client.auth.signInEmail({
@@ -257,10 +277,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       const refused = yield* Effect.flip(first.client.auth.getSession())
       assert.strictEqual(refused._tag, "Unauthorized")
       assert.strictEqual((yield* second.client.auth.listSessions()).length, 1)
-    }))
+    })
+  )
 
   it.effect("revokes one session by id, and reports another user's as NotFound", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const first = yield* signedUp(uniqueEmail("revoke-one"))
       const second = yield* makeClient()
       const other = yield* second.client.auth.signInEmail({
@@ -274,16 +295,15 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       const stranger = yield* signedUp(uniqueEmail("stranger"))
       const mine = yield* stranger.client.auth.getSession()
 
-      const notFound = yield* Effect.flip(
-        first.client.auth.revokeSession({ payload: { sessionId: mine.session.id } })
-      )
+      const notFound = yield* Effect.flip(first.client.auth.revokeSession({ payload: { sessionId: mine.session.id } }))
       assert.strictEqual(notFound._tag, "NotFound")
       // And it really did not revoke it.
       yield* stranger.client.auth.getSession()
-    }))
+    })
+  )
 
   it.effect("clears this browser's cookies when it revokes its own session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const browser = yield* signedUp(uniqueEmail("revoke-self"))
       const mine = yield* browser.client.auth.getSession()
 
@@ -295,10 +315,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       assert.strictEqual(yield* TestHttpClient.sessionCookieValue(browser.cookies), "")
       const after = yield* Effect.flip(browser.client.auth.getSession())
       assert.strictEqual(after._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("signs every browser out when all sessions are revoked", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const first = yield* signedUp(uniqueEmail("revoke-all"))
       const second = yield* makeClient()
       yield* second.client.auth.signInEmail({
@@ -312,10 +333,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       const there = yield* Effect.flip(first.client.auth.getSession())
       assert.strictEqual(here._tag, "Unauthorized")
       assert.strictEqual(there._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("lists the sign-in methods without any secret on them", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* signedUp(uniqueEmail("accounts"))
       const accounts = yield* client.auth.listAccounts()
 
@@ -326,18 +348,18 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       for (const field of ["passwordHash", "accessToken", "refreshToken", "idToken"]) {
         assert.isFalse(Object.hasOwn(account, field), `${field} must not reach a client`)
       }
-    }))
+    })
+  )
 
   it.effect("refuses to unlink the only remaining sign-in method", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* signedUp(uniqueEmail("unlink"))
       const accounts = yield* client.auth.listAccounts()
 
-      const error = yield* Effect.flip(
-        client.auth.unlinkAccount({ payload: { accountId: accounts[0]!.id } })
-      )
+      const error = yield* Effect.flip(client.auth.unlinkAccount({ payload: { accountId: accounts[0]!.id } }))
       assert.strictEqual(error._tag, "CannotUnlinkLastAccount")
-    }))
+    })
+  )
 
   /**
    * What the cookie's `Max-Age` says.
@@ -353,7 +375,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
    */
   describe("cookie persistence", () => {
     it.effect("omits Max-Age entirely when the caller declined to be remembered", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const registered = yield* signedUp(uniqueEmail("no-max-age"))
 
         const browser = yield* makeClient()
@@ -368,10 +390,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
 
         assert.isTrue(Option.isSome(TestHttpClient.responseCookie(response)), "no session cookie was written")
         assert.strictEqual(maxAgeSeconds(response), undefined)
-      }))
+      })
+    )
 
     it.effect("gives an ordinary sign-in a Max-Age that mirrors the session's lifetime", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const registered = yield* signedUp(uniqueEmail("max-age"))
 
         const browser = yield* makeClient()
@@ -381,10 +404,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         })
 
         assert.strictEqual(maxAgeSeconds(response), sevenDays)
-      }))
+      })
+    )
 
     it.effect("shortens Max-Age with the session when rememberMe is off but the row still persists", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const browser = yield* makeClient()
         const [, response] = yield* browser.client.auth.signUpEmail({
           payload: {
@@ -405,7 +429,8 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           (DateTime.toEpochMillis(current.session.expiresAt) - DateTime.toEpochMillis(now)) / 1000
         )
         assert.strictEqual(remaining, oneDay)
-      }))
+      })
+    )
   })
 
   // The four tests that move the clock, on a deployment whose clock they own.
@@ -414,18 +439,20 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
   it.layer(AuthTest.layerHttpMovingClock())("as time passes", (it) => {
     describe.sequential("on the deployment's own clock", () => {
       it.effect("requires a fresh session to change a password", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* signedUp(uniqueEmail("stale"))
           // Older than the default one-day freshAge, and still well inside the
           // seven-day expiry.
           yield* TestClock.adjust(Duration.days(2))
 
-          const error = yield* Effect.flip(client.auth.changePassword({
-            payload: {
-              currentPassword: testPassword,
-              newPassword: Redacted.make("a different long password")
-            }
-          }))
+          const error = yield* Effect.flip(
+            client.auth.changePassword({
+              payload: {
+                currentPassword: testPassword,
+                newPassword: Redacted.make("a different long password")
+              }
+            })
+          )
 
           assert.strictEqual(error._tag, "SessionNotFresh")
           if (error._tag === "SessionNotFresh") {
@@ -433,10 +460,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           }
           // The session itself is still perfectly good.
           yield* client.auth.getSession()
-        }))
+        })
+      )
 
       it.effect("rolls the expiry forward and re-sends the cookie once updateAge has passed", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client, cookies } = yield* signedUp(uniqueEmail("rolling"))
           const before = yield* client.auth.getSession()
           const token = yield* TestHttpClient.sessionCookieValue(cookies)
@@ -459,10 +487,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           // And it is not re-sent on a request that is not yet due.
           const [, second] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
           assert.isTrue(Option.isNone(TestHttpClient.responseCookie(second)))
-        }))
+        })
+      )
 
       it.effect("re-sends a full Max-Age when the rolling refresh moves the expiry", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* signedUp(uniqueEmail("refresh-max-age"))
           yield* TestClock.adjust(Duration.days(2))
 
@@ -472,16 +501,18 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           // says exactly that: a browser holding it stops sending it at the same
           // moment the row stops being accepted.
           assert.strictEqual(maxAgeSeconds(response), sevenDays)
-        }))
+        })
+      )
 
       it.effect("reports an expired session as Unauthorized", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* signedUp(uniqueEmail("expired"))
           yield* TestClock.adjust(Duration.days(8))
 
           const error = yield* Effect.flip(client.auth.getSession())
           assert.strictEqual(error._tag, "Unauthorized")
-        }))
+        })
+      )
     })
   })
 
@@ -490,7 +521,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
   // PGlite the block above booted.
   describe("opt-in flows", () => {
     it.effect("does not serve change-email or delete-user until a deployment asks for them", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* signedUp(uniqueEmail("opt-in-off"))
 
         // The endpoints are *declared* unconditionally — a schema-driven API has
@@ -513,13 +544,14 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         // And the account is still there, which is the assertion that matters.
         const session = yield* client.auth.getSession()
         assert.strictEqual(session.user.emailVerified, false)
-      }))
+      })
+    )
 
     it.layer(AuthTest.layerHttp({ user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } } }))(
       "once they are switched on",
       (it) => {
         it.effect("stops answering 404 and reaches the domain instead", () =>
-          Effect.gen(function*() {
+          Effect.gen(function* () {
             const { client } = yield* signedUp(uniqueEmail("opt-in-on"))
             const newEmail = uniqueEmail("opt-in-next")
 
@@ -534,14 +566,15 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
             // address is unverified, so it begins at the second hop.
             const emails = yield* AuthTest.TestEmails
             assert.isTrue(Option.isSome(yield* emails.last(AuthTest.changeEmailVerificationKind, newEmail)))
-          }))
+          })
+        )
       }
     )
   })
 
   describe("form_post callback", () => {
     it.effect("turns a cross-site POST into a top-level GET carrying the same parameters", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client, cookies } = yield* makeClient()
 
         const [, response] = yield* client.auth.oauthCallbackForm({
@@ -564,10 +597,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         assert.isFalse(location.searchParams.has("error"))
         // And nothing is signed in by a hop.
         assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
-      }))
+      })
+    )
 
     it.effect("sends the browser to this deployment, whatever the provider named", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // The target is built from `baseUrl` and `basePath`, never from the
         // request's own `Host` — which is attacker-controllable, and a `Location`
         // built from one is an open redirect.
@@ -582,10 +616,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         const location = new URL(response.headers["location"] ?? "")
         assert.strictEqual(location.origin, "http://localhost:3000")
         assert.strictEqual(location.searchParams.get("error"), "user_cancelled_authorize")
-      }))
+      })
+    )
 
     it.effect("escapes a provider id rather than letting it shape the path", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* makeClient()
 
         const [, response] = yield* client.auth.oauthCallbackForm({
@@ -596,32 +631,35 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
 
         const location = new URL(response.headers["location"] ?? "")
         assert.strictEqual(location.pathname, "/auth/callback/..%2F..%2Fevil")
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
   // A deployment's own policy, over HTTP
   // ---------------------------------------------------------------------------
 
-  it.layer(AuthTest.layerHttp({
-    hooks: {
-      beforeUserCreate: ({ candidate }) =>
-        candidate.email.includes("policy-veto")
-          ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed" }))
-          : Effect.succeed(candidate),
-      beforeSessionCreate: ({ user }) =>
-        user.email.includes("policy-banned")
-          ? Effect.fail(new PolicyRefused({ code: "banned" }))
-          : Effect.void
-    }
-  }))("when a deployment installed hooks", (it) => {
+  it.layer(
+    AuthTest.layerHttp({
+      hooks: {
+        beforeUserCreate: ({ candidate }) =>
+          candidate.email.includes("policy-veto")
+            ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed" }))
+            : Effect.succeed(candidate),
+        beforeSessionCreate: ({ user }) =>
+          user.email.includes("policy-banned") ? Effect.fail(new PolicyRefused({ code: "banned" })) : Effect.void
+      }
+    })
+  )("when a deployment installed hooks", (it) => {
     it.effect("answers 403 PolicyRefused, carrying the code the hook chose", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const { client } = yield* makeClient()
 
-        const refused = yield* Effect.flip(client.auth.signUpEmail({
-          payload: { name: testName, email: uniqueEmail("policy-veto"), password: testPassword }
-        }))
+        const refused = yield* Effect.flip(
+          client.auth.signUpEmail({
+            payload: { name: testName, email: uniqueEmail("policy-veto"), password: testPassword }
+          })
+        )
 
         assert.strictEqual(refused._tag, "PolicyRefused")
         if (refused._tag === "PolicyRefused") {
@@ -630,10 +668,11 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
           // one out of a secret.
           assert.strictEqual(refused.code, "domain_not_allowed")
         }
-      }))
+      })
+    )
 
     it.effect("registers the account but writes no cookie when only the session was refused", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("policy-banned")
         const { client, cookies } = yield* makeClient()
 
@@ -653,12 +692,15 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
 
         // And signing in is refused outright, because there the session is the
         // whole of what was asked for.
-        const refused = yield* Effect.flip(client.auth.signInEmail({
-          payload: { email, password: testPassword }
-        }))
+        const refused = yield* Effect.flip(
+          client.auth.signInEmail({
+            payload: { email, password: testPassword }
+          })
+        )
         assert.strictEqual(refused._tag, "PolicyRefused")
         if (refused._tag === "PolicyRefused") assert.strictEqual(refused.code, "banned")
-      }))
+      })
+    )
   })
 })
 
@@ -669,18 +711,20 @@ describe("http/Handlers dieOn", () => {
   const filter = AuthHandlers.dieOn(["Broken"] as const)
 
   it.effect("takes the named tags out of the error channel and into the defects", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const died = yield* Effect.exit(filter(Effect.fail(new Broken())))
       assert.strictEqual(died._tag, "Failure")
       assert.isTrue(died._tag === "Failure" && Cause.hasDies(died.cause))
-    }))
+    })
+  )
 
   it.effect("leaves every other failure exactly where it was", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const failed: Refused = yield* Effect.flip(filter(Effect.fail(new Refused())))
       assert.strictEqual(failed._tag, "Refused")
 
       // And the two server faults are what `serverFault` is `dieOn` of.
       assert.deepStrictEqual([...AuthHandlers.serverFaultTags], ["PasswordHashError", "PersistenceError"])
-    }))
+    })
+  )
 })

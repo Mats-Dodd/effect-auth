@@ -156,7 +156,7 @@ export const codeChallengeMethod = "S256"
 export const issue: (
   options: IssueOptions
 ) => Effect.Effect<IssuedState, PersistenceError, AuthConfig | Token | VerificationStore> = Effect.fnUntraced(
-  function*(options: IssueOptions) {
+  function* (options: IssueOptions) {
     const config = yield* AuthConfig
     const tokens = yield* Token
     const store = yield* VerificationStore
@@ -172,15 +172,17 @@ export const issue: (
     const now = yield* DateTime.now
     const expiresAt = DateTime.addDuration(now, config.tokens.oauthStateTtl)
 
-    const payload = yield* Effect.orDie(Schema.encodeEffect(StateJson)({
-      providerId: options.providerId,
-      callbackURL: options.callbackURL ?? null,
-      errorURL: options.errorURL ?? null,
-      codeVerifier: Redacted.value(codeVerifier),
-      nonce,
-      linkUserId: options.linkUserId ?? null,
-      rememberMe: options.rememberMe ?? true
-    }))
+    const payload = yield* Effect.orDie(
+      Schema.encodeEffect(StateJson)({
+        providerId: options.providerId,
+        callbackURL: options.callbackURL ?? null,
+        errorURL: options.errorURL ?? null,
+        codeVerifier: Redacted.value(codeVerifier),
+        nonce,
+        linkUserId: options.linkUserId ?? null,
+        rememberMe: options.rememberMe ?? true
+      })
+    )
 
     const row = yield* insertRow(Verification.insert, {
       identifier: oauthStateIdentifier(stateHash),
@@ -215,30 +217,26 @@ export const issue: (
 export const consume: (
   providerId: string,
   state: Redacted.Redacted<string>
-) => Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore> = Effect
-  .fnUntraced(
-    function*(providerId: string, state: Redacted.Redacted<string>) {
-      const tokens = yield* Token
-      const store = yield* VerificationStore
+) => Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore> = Effect.fnUntraced(
+  function* (providerId: string, state: Redacted.Redacted<string>) {
+    const tokens = yield* Token
+    const store = yield* VerificationStore
 
-      const stateHash = yield* tokens.hashToken(state)
-      const claimed = yield* store.consume(oauthStateIdentifier(stateHash), stateHash)
-      if (Option.isNone(claimed)) {
-        return yield* Effect.fail(new OAuthStateMismatch())
-      }
-
-      const payload = claimed.value.payload
-      if (payload === null) {
-        return yield* Effect.fail(new OAuthStateMismatch())
-      }
-
-      const decoded = yield* Effect.mapError(
-        Schema.decodeEffect(StateJson)(payload),
-        () => new OAuthStateMismatch()
-      )
-      if (decoded.providerId !== providerId) {
-        return yield* Effect.fail(new OAuthStateMismatch())
-      }
-      return decoded
+    const stateHash = yield* tokens.hashToken(state)
+    const claimed = yield* store.consume(oauthStateIdentifier(stateHash), stateHash)
+    if (Option.isNone(claimed)) {
+      return yield* Effect.fail(new OAuthStateMismatch())
     }
-  )
+
+    const payload = claimed.value.payload
+    if (payload === null) {
+      return yield* Effect.fail(new OAuthStateMismatch())
+    }
+
+    const decoded = yield* Effect.mapError(Schema.decodeEffect(StateJson)(payload), () => new OAuthStateMismatch())
+    if (decoded.providerId !== providerId) {
+      return yield* Effect.fail(new OAuthStateMismatch())
+    }
+    return decoded
+  }
+)

@@ -166,29 +166,29 @@ export interface SecretOptions {
  */
 export const clientSecret: (
   options: SecretOptions
-) => Effect.Effect<RedactedType.Redacted<string>, OAuthProviderError> = Effect.fnUntraced(
-  function*(options: SecretOptions) {
-    const now = yield* DateTime.now
-    const ttl = Duration.min(options.secretTtl ?? defaultSecretTtl, maximumSecretTtl)
-    const issuedAt = Math.floor(DateTime.toEpochMillis(now) / 1000)
-    const expiresAt = issuedAt + Math.floor(Duration.toMillis(ttl) / 1000)
-    const signed = yield* Effect.tryPromise({
-      try: async () => {
-        const key = await importPKCS8(Redacted.value(options.privateKey), "ES256")
-        return await new SignJWT({})
-          .setProtectedHeader({ alg: "ES256", kid: options.keyId })
-          .setIssuer(options.teamId)
-          .setSubject(options.clientId)
-          .setAudience(issuer)
-          .setIssuedAt(issuedAt)
-          .setExpirationTime(expiresAt)
-          .sign(key)
-      },
-      catch: () => providerError(id, "ClientSecretUnavailable")
-    })
-    return Redacted.make(signed)
-  }
-)
+) => Effect.Effect<RedactedType.Redacted<string>, OAuthProviderError> = Effect.fnUntraced(function* (
+  options: SecretOptions
+) {
+  const now = yield* DateTime.now
+  const ttl = Duration.min(options.secretTtl ?? defaultSecretTtl, maximumSecretTtl)
+  const issuedAt = Math.floor(DateTime.toEpochMillis(now) / 1000)
+  const expiresAt = issuedAt + Math.floor(Duration.toMillis(ttl) / 1000)
+  const signed = yield* Effect.tryPromise({
+    try: async () => {
+      const key = await importPKCS8(Redacted.value(options.privateKey), "ES256")
+      return await new SignJWT({})
+        .setProtectedHeader({ alg: "ES256", kid: options.keyId })
+        .setIssuer(options.teamId)
+        .setSubject(options.clientId)
+        .setAudience(issuer)
+        .setIssuedAt(issuedAt)
+        .setExpirationTime(expiresAt)
+        .sign(key)
+    },
+    catch: () => providerError(id, "ClientSecretUnavailable")
+  })
+  return Redacted.make(signed)
+})
 
 // -----------------------------------------------------------------------------
 // The `user` field
@@ -205,10 +205,12 @@ export const clientSecret: (
  * the verification flag.
  */
 const UserParam = Schema.Struct({
-  name: lenient(Schema.Struct({
-    firstName: lenient(Schema.NonEmptyString),
-    lastName: lenient(Schema.NonEmptyString)
-  }))
+  name: lenient(
+    Schema.Struct({
+      firstName: lenient(Schema.NonEmptyString),
+      lastName: lenient(Schema.NonEmptyString)
+    })
+  )
 })
 
 const readUserParam = Schema.decodeUnknownOption(Schema.fromJsonString(UserParam))
@@ -333,10 +335,7 @@ export interface Options extends SecretOptions {
  * @since 1.0.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
-  const userInfo = Effect.fnUntraced(function*(
-    tokens: OAuthTokens,
-    info?: UserInfoOptions | undefined
-  ) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens, info?: UserInfoOptions | undefined) {
     const claims = tokens.idTokenClaims
     // The whole identity is in the token: Apple has no user-info endpoint.
     if (claims === null) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
@@ -433,10 +432,8 @@ interface Settings {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig: (
-  options: ConfigOptions
-) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> = Effect.fnUntraced(
-  function*(options: ConfigOptions) {
+export const makeConfig: (options: ConfigOptions) => Effect.Effect<OAuthProviderConfig, Config.ConfigError> =
+  Effect.fnUntraced(function* (options: ConfigOptions) {
     const settings = yield* Config.unwrap<Settings>({
       clientId: options.clientId,
       teamId: options.teamId,
@@ -455,5 +452,4 @@ export const makeConfig: (
       authorizationParams: options.authorizationParams,
       algorithms: options.algorithms
     })
-  }
-)
+  })

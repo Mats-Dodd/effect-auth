@@ -184,7 +184,7 @@ export const make = (options: Options): OAuthProviderConfig => {
   if (options.prompt !== undefined) authorizationParams.prompt = options.prompt
   if (options.hostedDomain !== undefined) authorizationParams.hd = options.hostedDomain
 
-  const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const claims = tokens.idTokenClaims
     // The flow verifies the token before calling this, and refuses the callback
     // when there is none. A null here would mean the OIDC path was skipped.
@@ -270,9 +270,7 @@ interface Settings {
  * @category constructors
  * @since 1.0.0
  */
-export const makeConfig = (
-  options: ConfigOptions
-): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
+export const makeConfig = (options: ConfigOptions): Effect.Effect<OAuthProviderConfig, Config.ConfigError> =>
   Effect.map(
     Config.unwrap<Settings>({
       clientId: options.clientId,

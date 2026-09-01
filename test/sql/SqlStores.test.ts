@@ -24,7 +24,7 @@ import { expectSome, testName, uniqueEmail } from "../fixtures.js"
  */
 const unique = (label: string): string => `${label}-${globalThis.crypto.randomUUID()}`
 
-const createUser = Effect.fnUntraced(function*(email: string, emailVerified = false) {
+const createUser = Effect.fnUntraced(function* (email: string, emailVerified = false) {
   const users = yield* UserStore
   const row = yield* User.insert.makeEffect({
     name: testName,
@@ -35,7 +35,7 @@ const createUser = Effect.fnUntraced(function*(email: string, emailVerified = fa
   return yield* users.create(row)
 })
 
-const createSession = Effect.fnUntraced(function*(
+const createSession = Effect.fnUntraced(function* (
   userId: UserId,
   tokenHash: string,
   ttl: Duration.Duration,
@@ -54,11 +54,7 @@ const createSession = Effect.fnUntraced(function*(
   return yield* sessions.create(row)
 })
 
-const createVerification = Effect.fnUntraced(function*(
-  identifier: string,
-  valueHash: string,
-  ttl: Duration.Duration
-) {
+const createVerification = Effect.fnUntraced(function* (identifier: string, valueHash: string, ttl: Duration.Duration) {
   const verifications = yield* VerificationStore
   const now = yield* DateTime.now
   const row = yield* Verification.insert.makeEffect({
@@ -77,7 +73,7 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
   describe("UserStore", () => {
     it.effect("creates, reads, updates and deletes a user", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const users = yield* UserStore
         const email = uniqueEmail("crud")
         const created = yield* createUser(email)
@@ -103,18 +99,20 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         assert.strictEqual(yield* users.delete(created.id), true)
         assert.strictEqual(yield* users.delete(created.id), false)
         assert.strictEqual(Option.isNone(yield* users.findById(created.id)), true)
-      }))
+      })
+    )
 
     it.effect("returns None for an unknown user", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const users = yield* UserStore
 
         assert.strictEqual(Option.isNone(yield* users.findByEmail(uniqueEmail("nobody"))), true)
         assert.strictEqual(Option.isNone(yield* users.update("missing" as UserId, { name: "x" })), true)
-      }))
+      })
+    )
 
     it.effect("locks a user row inside a transaction, and tolerates an unknown id", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const users = yield* UserStore
         const transaction = yield* WithAuthTransaction
         const created = yield* createUser(uniqueEmail("lock"))
@@ -122,14 +120,17 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         // It answers nothing — it is taken for the lock, not the row — and must
         // not throw when the id matches no row (`FOR UPDATE` of an empty result
         // is a no-op, and the SQLite degrade is a plain read).
-        yield* transaction.run(Effect.gen(function*() {
-          yield* users.lockUserRow(created.id)
-          yield* users.lockUserRow("missing" as UserId)
-        }))
-      }))
+        yield* transaction.run(
+          Effect.gen(function* () {
+            yield* users.lockUserRow(created.id)
+            yield* users.lockUserRow("missing" as UserId)
+          })
+        )
+      })
+    )
 
     it.effect("reports a duplicate e-mail as a PersistenceError", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("duplicate")
         yield* createUser(email)
         const failure = yield* Effect.flip(createUser(email))
@@ -142,13 +143,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         // `kind` so the domain can tell a lost race from any other storage failure
         // without importing the SQL driver's error type
         assert.strictEqual(SqlError.isSqlError(failure.cause), true)
-        assert.strictEqual(
-          SqlError.isSqlError(failure.cause) ? failure.cause.reason._tag : "",
-          "UniqueViolation"
-        )
+        assert.strictEqual(SqlError.isSqlError(failure.cause) ? failure.cause.reason._tag : "", "UniqueViolation")
         assert.strictEqual(failure.kind, "UniqueViolation")
         assert.isTrue(isUniqueViolation(failure))
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -157,7 +156,7 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
   describe("SessionStore", () => {
     it.effect("resolves a token hash to the session and its user in one read", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const sessions = yield* SessionStore
         const email = uniqueEmail("session")
         const hash = unique("hash-join")
@@ -172,16 +171,14 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         assert.strictEqual(found.user.id, user.id)
         assert.strictEqual(found.user.email, email)
         assert.strictEqual(found.user.emailVerified, true)
-        assert.strictEqual(
-          DateTime.toEpochMillis(found.session.expiresAt),
-          DateTime.toEpochMillis(session.expiresAt)
-        )
+        assert.strictEqual(DateTime.toEpochMillis(found.session.expiresAt), DateTime.toEpochMillis(session.expiresAt))
 
         assert.strictEqual(Option.isNone(yield* sessions.findByTokenHash(unique("nope"))), true)
-      }))
+      })
+    )
 
     it.effect("extends a session with touch", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const sessions = yield* SessionStore
         const hash = unique("hash-touch")
         const user = yield* createUser(uniqueEmail("touch"))
@@ -194,10 +191,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         const reread = yield* expectSome(yield* sessions.findByTokenHash(hash), "expected the session")
         assert.strictEqual(DateTime.toEpochMillis(reread.session.expiresAt), DateTime.toEpochMillis(later))
-      }))
+      })
+    )
 
     it.effect("persists remember_me and reads it back on the joined row", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const sessions = yield* SessionStore
         const rememberedHash = unique("hash-remembered")
         const forgottenHash = unique("hash-forgotten")
@@ -221,10 +219,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         )
         assert.strictEqual(foundRemembered.session.rememberMe, true)
         assert.strictEqual(foundForgotten.session.rememberMe, false)
-      }))
+      })
+    )
 
     it.effect("leaves remember_me untouched across a rolling refresh", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const sessions = yield* SessionStore
         const hash = unique("hash-remember-touch")
         const user = yield* createUser(uniqueEmail("remember-touch"))
@@ -241,10 +240,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         const listed = yield* sessions.listByUserId(user.id)
         const reread = listed.find((row) => row.tokenHash === hash)
         assert.strictEqual(reread?.rememberMe, false)
-      }))
+      })
+    )
 
     it.effect("scopes deleteById to the owning user", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const sessions = yield* SessionStore
         const hash = unique("hash-owned")
         const owner = yield* createUser(uniqueEmail("owner"))
@@ -256,8 +256,8 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         assert.strictEqual(yield* sessions.deleteById(session.id, owner.id), true)
         assert.strictEqual(Option.isNone(yield* sessions.findByTokenHash(hash)), true)
-      }))
-
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
   describe("AccountStore", () => {
     it.effect("creates and reads accounts by both identities", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const accounts = yield* AccountStore
         const user = yield* createUser(uniqueEmail("accounts"))
         const accountId = unique("gh")
@@ -306,7 +306,9 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         )
 
         const sql = yield* SqlClient.SqlClient
-        const raw = yield* sql<{ readonly access_token: string }>`SELECT access_token FROM accounts WHERE id = ${oauth.id}`
+        const raw = yield* sql<{
+          readonly access_token: string
+        }>`SELECT access_token FROM accounts WHERE id = ${oauth.id}`
         assert.strictEqual(raw.length, 1)
         assert.notStrictEqual(raw[0]!.access_token, "gho_secret")
         assert.isTrue(raw[0]!.access_token.startsWith("v1."))
@@ -346,10 +348,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
           locked.map((account) => account.id),
           (yield* accounts.listByUserId(user.id)).map((account) => account.id)
         )
-      }))
+      })
+    )
 
     it.effect("updates tokens and the credential password hash", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const accounts = yield* AccountStore
         const user = yield* createUser(uniqueEmail("tokens"))
         const now = yield* DateTime.now
@@ -413,10 +416,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
           "expected the credential account"
         )
         assert.strictEqual(rehashed.passwordHash, "pbkdf2$i=600000$s$k")
-      }))
+      })
+    )
 
     it.effect("scopes deleteById to the owning user", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const accounts = yield* AccountStore
         const owner = yield* createUser(uniqueEmail("acc-owner"))
         const other = yield* createUser(uniqueEmail("acc-other"))
@@ -442,10 +446,11 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         assert.strictEqual(yield* accounts.deleteById(account.id, owner.id), true)
         assert.strictEqual(yield* accounts.countByUserId(owner.id), 0)
-      }))
+      })
+    )
 
     it.effect("deletes every method of one user, and only that user's", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const accounts = yield* AccountStore
         const owner = yield* createUser(uniqueEmail("acc-purge-owner"))
         const other = yield* createUser(uniqueEmail("acc-purge-other"))
@@ -479,7 +484,8 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         // And a user with nothing linked is not an error.
         assert.strictEqual(yield* accounts.deleteByUserId(owner.id), 0)
-      }))
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -488,7 +494,7 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
   describe("VerificationStore", () => {
     it.effect("consumes a value exactly once", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const verifications = yield* VerificationStore
         const identifier = unique("email-verify")
         yield* createVerification(identifier, "value-hash", Duration.hours(1))
@@ -498,28 +504,27 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         const second = yield* verifications.consume(identifier, "value-hash")
         assert.strictEqual(Option.isNone(second), true)
-      }))
+      })
+    )
 
     it.effect("hands the row to exactly one of two concurrent consumers", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const verifications = yield* VerificationStore
         const identifier = unique("password-reset")
         yield* createVerification(identifier, "race-hash", Duration.hours(1))
 
         const results = yield* Effect.all(
-          [
-            verifications.consume(identifier, "race-hash"),
-            verifications.consume(identifier, "race-hash")
-          ],
+          [verifications.consume(identifier, "race-hash"), verifications.consume(identifier, "race-hash")],
           { concurrency: 2 }
         )
 
         assert.strictEqual(results.filter(Option.isSome).length, 1)
         assert.strictEqual(results.filter(Option.isNone).length, 1)
-      }))
+      })
+    )
 
     it.effect("deletes every row under one identifier, expired or not", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const verifications = yield* VerificationStore
         // Two reset links for the same user, plus somebody else's row, which
         // must survive.
@@ -534,8 +539,8 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
         assert.strictEqual(Option.isSome(yield* verifications.consume(bob, "bobs-hash")), true)
         // An identifier with nothing under it is not an error.
         assert.strictEqual(yield* verifications.deleteByIdentifier(ada), 0)
-      }))
-
+      })
+    )
   })
 
   // ---------------------------------------------------------------------------
@@ -544,18 +549,21 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
   describe("WithAuthTransaction", () => {
     it.effect("commits every write of a successful effect", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const transaction = yield* WithAuthTransaction
         const users = yield* UserStore
 
-        const user = yield* transaction.run(Effect.gen(function*() {
-          const user = yield* createUser(uniqueEmail("tx-ok"))
-          yield* createSession(user.id, unique("hash-tx"), Duration.days(1))
-          return user
-        }))
+        const user = yield* transaction.run(
+          Effect.gen(function* () {
+            const user = yield* createUser(uniqueEmail("tx-ok"))
+            yield* createSession(user.id, unique("hash-tx"), Duration.days(1))
+            return user
+          })
+        )
 
         assert.strictEqual(Option.isSome(yield* users.findById(user.id)), true)
-      }))
+      })
+    )
   })
 })
 
@@ -594,7 +602,7 @@ describe("sql/SqlStores (sqlite booleans)", () => {
  */
 describe("sql/SqlStores (whole-table)", () => {
   it.effect("lists, revokes and expires sessions", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const sessions = yield* SessionStore
       const user = yield* createUser(uniqueEmail("many"))
       const first = yield* createSession(user.id, "hash-1", Duration.days(7))
@@ -607,48 +615,53 @@ describe("sql/SqlStores (whole-table)", () => {
       assert.strictEqual(yield* sessions.deleteExpired, 1)
 
       assert.strictEqual(yield* sessions.deleteByUserIdExcept(user.id, first.id), 1)
-      assert.deepStrictEqual((yield* sessions.listByUserId(user.id)).map((session) => session.tokenHash), [
-        "hash-1"
-      ])
+      assert.deepStrictEqual(
+        (yield* sessions.listByUserId(user.id)).map((session) => session.tokenHash),
+        ["hash-1"]
+      )
 
       assert.strictEqual(yield* sessions.deleteByUserId(user.id), 1)
       assert.deepStrictEqual(yield* sessions.listByUserId(user.id), [])
-    }).pipe(Effect.provide(AuthTest.layerStores)))
+    }).pipe(Effect.provide(AuthTest.layerStores))
+  )
 
   it.effect("refuses an expired row and a wrong value hash", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const verifications = yield* VerificationStore
       yield* createVerification("oauth-state:expired", "expired-hash", Duration.minutes(-1))
       yield* createVerification("oauth-state:live", "live-hash", Duration.minutes(10))
 
-      assert.strictEqual(
-        Option.isNone(yield* verifications.consume("oauth-state:expired", "expired-hash")),
-        true
-      )
+      assert.strictEqual(Option.isNone(yield* verifications.consume("oauth-state:expired", "expired-hash")), true)
       assert.strictEqual(Option.isNone(yield* verifications.consume("oauth-state:live", "wrong-hash")), true)
       assert.strictEqual(Option.isSome(yield* verifications.consume("oauth-state:live", "live-hash")), true)
 
       // the expired row is still there until it is swept
       assert.strictEqual(yield* verifications.deleteExpired, 1)
       assert.strictEqual(yield* verifications.deleteExpired, 0)
-    }).pipe(Effect.provide(AuthTest.layerStores)))
+    }).pipe(Effect.provide(AuthTest.layerStores))
+  )
 
   it.effect("rolls every write back when the effect fails", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const transaction = yield* WithAuthTransaction
       const users = yield* UserStore
       const sessions = yield* SessionStore
       const email = uniqueEmail("tx-bad")
       const hash = unique("hash-rollback")
 
-      const failure = yield* Effect.flip(transaction.run(Effect.gen(function*() {
-        const user = yield* createUser(email)
-        yield* createSession(user.id, hash, Duration.days(1))
-        return yield* Effect.fail("boom" as const)
-      })))
+      const failure = yield* Effect.flip(
+        transaction.run(
+          Effect.gen(function* () {
+            const user = yield* createUser(email)
+            yield* createSession(user.id, hash, Duration.days(1))
+            return yield* Effect.fail("boom" as const)
+          })
+        )
+      )
 
       assert.strictEqual(failure, "boom")
       assert.strictEqual(Option.isNone(yield* users.findByEmail(email)), true)
       assert.strictEqual(Option.isNone(yield* sessions.findByTokenHash(hash)), true)
-    }).pipe(Effect.provide(AuthTest.layerStores)))
+    }).pipe(Effect.provide(AuthTest.layerStores))
+  )
 })

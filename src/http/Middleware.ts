@@ -15,11 +15,7 @@ import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { SessionNotFresh, Unauthorized } from "../domain/Errors.js"
 import type { Session, User, UserFields, UserModel, UserOf } from "../domain/Schema.js"
-import {
-  bearerSecurity,
-  insecureSessionCookieSecurity,
-  secureSessionCookieSecurity
-} from "./Cookies.js"
+import { bearerSecurity, insecureSessionCookieSecurity, secureSessionCookieSecurity } from "./Cookies.js"
 
 // -----------------------------------------------------------------------------
 // Principal
@@ -42,9 +38,7 @@ import {
  * @category services
  * @since 1.0.0
  */
-export class CurrentSession extends Context.Service<CurrentSession, Session>()(
-  "effect-auth/CurrentSession"
-) {}
+export class CurrentSession extends Context.Service<CurrentSession, Session>()("effect-auth/CurrentSession") {}
 
 /**
  * The user behind the request being handled.
@@ -61,9 +55,7 @@ export class CurrentSession extends Context.Service<CurrentSession, Session>()(
  * @category services
  * @since 1.0.0
  */
-export class CurrentUser extends Context.Service<CurrentUser, User>()(
-  "effect-auth/CurrentUser"
-) {}
+export class CurrentUser extends Context.Service<CurrentUser, User>()("effect-auth/CurrentUser") {}
 
 /**
  * {@link CurrentUser}, seen through a model's custom fields.
@@ -84,9 +76,8 @@ export class CurrentUser extends Context.Service<CurrentUser, User>()(
  * @category services
  * @since 1.0.0
  */
-export const currentUserOf = <F extends UserFields>(
-  _model: UserModel<F>
-): Context.Service<CurrentUser, UserOf<F>> => Context.Service<CurrentUser, UserOf<F>>("effect-auth/CurrentUser")
+export const currentUserOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<CurrentUser, UserOf<F>> =>
+  Context.Service<CurrentUser, UserOf<F>>("effect-auth/CurrentUser")
 
 // -----------------------------------------------------------------------------
 // Middleware
@@ -132,10 +123,13 @@ export const currentUserOf = <F extends UserFields>(
  * @category services
  * @since 1.0.0
  */
-export class Authenticated extends HttpApiMiddleware.Service<Authenticated, {
-  provides: CurrentUser | CurrentSession
-  requires: never
-}>()("effect-auth/Authenticated", {
+export class Authenticated extends HttpApiMiddleware.Service<
+  Authenticated,
+  {
+    provides: CurrentUser | CurrentSession
+    requires: never
+  }
+>()("effect-auth/Authenticated", {
   requiredForClient: true,
   security: {
     secureSessionCookie: secureSessionCookieSecurity,
@@ -228,11 +222,7 @@ export const AuthoritativeSession: Context.Reference<boolean> = Context.Referenc
  * @category combinators
  * @since 1.0.0
  */
-export const requireFresh: Effect.Effect<
-  void,
-  SessionNotFresh,
-  CurrentSession | AuthConfig
-> = Effect.gen(function*() {
+export const requireFresh: Effect.Effect<void, SessionNotFresh, CurrentSession | AuthConfig> = Effect.gen(function* () {
   const session = yield* CurrentSession
   const config = yield* AuthConfig
   const freshUntil = DateTime.addDuration(session.createdAt, config.session.freshAge)

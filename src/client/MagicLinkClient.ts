@@ -197,10 +197,7 @@ export const make = (options?: Options | undefined): MagicLinkClient => {
     signIn: withPayload<SignIn>()(service.mutation("magicLink", "signIn"), undefined),
     // Spending a link is a sign-in: whatever an application derives from "who is
     // signed in" has to refetch, and the device list has a new entry in it.
-    exchange: withPayload<Exchange>()(
-      service.mutation("magicLink", "exchange"),
-      [sessionKey, sessionsKey]
-    ),
+    exchange: withPayload<Exchange>()(service.mutation("magicLink", "exchange"), [sessionKey, sessionsKey]),
 
     verifyUrl: (token) => {
       const path = `${verifyPath}?token=${encodeURIComponent(token)}`

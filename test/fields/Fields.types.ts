@@ -26,11 +26,7 @@ import type { SqlClient } from "effect/unstable/sql"
 import { AuthClient } from "../../src/client/index.js"
 import * as Auth from "../../src/config/Auth.js"
 import * as AuthConfig from "../../src/config/AuthConfig.js"
-import type {
-  EmailNotVerified,
-  InvalidCredentials,
-  RateLimited
-} from "../../src/domain/Errors.js"
+import type { EmailNotVerified, InvalidCredentials, RateLimited } from "../../src/domain/Errors.js"
 import type { AuthHooksOf, AuthHooksService, PolicyRefused, ProvisionSource } from "../../src/domain/Hooks.js"
 import { hooksOf } from "../../src/domain/Hooks.js"
 import type { PasswordsService, SignUpOptions } from "../../src/domain/Passwords.js"
@@ -69,8 +65,7 @@ const eq = <T extends true>(_: T): void => {}
 eq<
   Exact<
     UserOf<Fields>,
-    & User
-    & {
+    User & {
       readonly plan: "free" | "pro"
       readonly apiSecret: string | null
       readonly role: "user" | "admin"
@@ -143,7 +138,7 @@ eq<Exact<RequirementsOf<PasswordsView>, Passwords.Passwords>>(true)
 /** And answers with a service whose users carry the deployment's own fields. */
 eq<Exact<SuccessOf<UserStoreView>, UserStoreService<Fields>>>(true)
 eq<Exact<SuccessOf<ReturnType<SuccessOf<UserStoreView>["create"]>>, UserOf<Fields>>>(true)
-eq<Exact<SuccessOf<ReturnType<typeof UserStore["Service"]["create"]>>, User>>(true)
+eq<Exact<SuccessOf<ReturnType<(typeof UserStore)["Service"]["create"]>>, User>>(true)
 
 eq<Exact<SuccessOf<CurrentUserView>, UserOf<Fields>>>(true)
 
@@ -196,9 +191,10 @@ declare const modelTyped: AuthHooksOf<Fields>
 const baseSlot: AuthHooksService = modelTyped
 
 declare const wrongAnswer: {
-  readonly beforeUserCreate?: (
-    options: { readonly candidate: UserInsertOf<{}>; readonly source: ProvisionSource }
-  ) => Effect.Effect<string, PolicyRefused>
+  readonly beforeUserCreate?: (options: {
+    readonly candidate: UserInsertOf<{}>
+    readonly source: ProvisionSource
+  }) => Effect.Effect<string, PolicyRefused>
 }
 // @ts-expect-error a hook must answer with a candidate, not with something else
 const notAHookSet: AuthHooksOf<Fields> = wrongAnswer
@@ -215,12 +211,7 @@ eq<
     InvalidCredentials | EmailNotVerified | PolicyRefused | RateLimited
   >
 >(true)
-eq<
-  Exact<
-    Atom.Failure<AuthClient.AuthClient<Fields>["signIn"]>,
-    Atom.Failure<AuthClient.AuthClient["signIn"]>
-  >
->(true)
+eq<Exact<Atom.Failure<AuthClient.AuthClient<Fields>["signIn"]>, Atom.Failure<AuthClient.AuthClient["signIn"]>>>(true)
 eq<Exact<Atom.Success<AuthClient.AuthClient<Fields>["signIn"]>, SessionWithUserOf<Fields>>>(true)
 
 /**
@@ -228,7 +219,12 @@ eq<Exact<Atom.Success<AuthClient.AuthClient<Fields>["signIn"]>, SessionWithUserO
  * fields costs a deployment nothing in its layer graph: the types below are the
  * ones the base `layer` constants already have, character for character.
  */
-eq<Exact<ReturnType<typeof SqlStores.layerFor<Fields>>, Layer.Layer<AuthStores, never, SqlClient.SqlClient | AuthConfig.AuthConfig>>>(true)
+eq<
+  Exact<
+    ReturnType<typeof SqlStores.layerFor<Fields>>,
+    Layer.Layer<AuthStores, never, SqlClient.SqlClient | AuthConfig.AuthConfig>
+  >
+>(true)
 eq<Exact<ReturnType<typeof SqlStores.layerFor<Fields>>, typeof SqlStores.layer>>(true)
 eq<Exact<ReturnType<typeof Sessions.layerFor<Fields>>, typeof Sessions.layer>>(true)
 eq<Exact<ReturnType<typeof Passwords.layerFor<Fields>>, typeof Passwords.layer>>(true)
@@ -293,12 +289,9 @@ eq<Exact<typeof fieldsStack, typeof baseStack>>(true)
 /** The `define` bundle's four entry points have those same types. */
 declare const defined: Auth.Definition<Fields>
 eq<Exact<ReturnType<typeof defined.layer>, Layer.Layer<Auth.Services, never, Auth.Requirements>>>(true)
-eq<
-  Exact<
-    ReturnType<typeof defined.layerWithOAuth>,
-    Layer.Layer<Auth.OAuthServices, never, Auth.OAuthRequirements>
-  >
->(true)
+eq<Exact<ReturnType<typeof defined.layerWithOAuth>, Layer.Layer<Auth.OAuthServices, never, Auth.OAuthRequirements>>>(
+  true
+)
 eq<Exact<RequirementsOf<typeof defined.CurrentUser>, CurrentUser>>(true)
 eq<Exact<SuccessOf<typeof defined.CurrentUser>, UserOf<Fields>>>(true)
 

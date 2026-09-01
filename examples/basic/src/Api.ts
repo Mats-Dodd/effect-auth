@@ -47,23 +47,19 @@ export class TodoLimitReached extends Schema.TaggedError<TodoLimitReached>("exam
  * so `CurrentUser` is available to the handler and an anonymous request is
  * answered `401` before the handler runs.
  */
-export class TodosGroup extends HttpApiGroup.make("todos")
-  .add(
-    HttpApiEndpoint.get("list", "/todos", {
-      success: Schema.Array(Todo)
-    }).middleware(Authenticated),
-    HttpApiEndpoint.post("create", "/todos", {
-      payload: CreateTodoPayload,
-      success: Todo,
-      error: TodoLimitReached
-    }).middleware(Authenticated)
-  ) {}
+export class TodosGroup extends HttpApiGroup.make("todos").add(
+  HttpApiEndpoint.get("list", "/todos", {
+    success: Schema.Array(Todo)
+  }).middleware(Authenticated),
+  HttpApiEndpoint.post("create", "/todos", {
+    payload: CreateTodoPayload,
+    success: Todo,
+    error: TodoLimitReached
+  }).middleware(Authenticated)
+) {}
 
 /**
  * The whole application API: this library's group (carrying the deployment's own
  * user fields), the magic link plugin's, and the application's own.
  */
-export const AppApi = HttpApi.make("app")
-  .addHttpApi(auth.Api)
-  .add(MagicLink.MagicLinkApiGroup)
-  .add(TodosGroup)
+export const AppApi = HttpApi.make("app").addHttpApi(auth.Api).add(MagicLink.MagicLinkApiGroup).add(TodosGroup)

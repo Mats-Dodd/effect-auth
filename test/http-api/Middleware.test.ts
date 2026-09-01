@@ -30,7 +30,7 @@ const freshnessOf = (freshAge: Duration.Duration, session: Session) =>
     Effect.provideService(AuthConfig.AuthConfig, configWith(freshAge))
   )
 
-const makeSession = Effect.gen(function*() {
+const makeSession = Effect.gen(function* () {
   const now = yield* DateTime.now
   return Session.make({
     id: SessionId.make("0193f6f0-0000-7000-8000-0000000000aa"),
@@ -45,9 +45,11 @@ const makeSession = Effect.gen(function*() {
   })
 })
 
-const security = (Authenticated as unknown as {
-  readonly security: Record<string, { readonly _tag: string; readonly key?: string; readonly in?: string }>
-}).security
+const security = (
+  Authenticated as unknown as {
+    readonly security: Record<string, { readonly _tag: string; readonly key?: string; readonly in?: string }>
+  }
+).security
 
 describe("http/Middleware", () => {
   describe("Authenticated", () => {
@@ -92,8 +94,7 @@ describe("http/Middleware", () => {
    * nothing gets.
    */
   describe("AuthoritativeSession", () => {
-    const plain = HttpApiEndpoint.get("plain", "/plain", { success: Schema.String })
-      .middleware(Authenticated)
+    const plain = HttpApiEndpoint.get("plain", "/plain", { success: Schema.String }).middleware(Authenticated)
 
     const authoritative = HttpApiEndpoint.get("authoritative", "/authoritative", { success: Schema.String })
       .middleware(Authenticated)
@@ -112,24 +113,22 @@ describe("http/Middleware", () => {
       // Annotating changes nothing else about the endpoint: the same middleware,
       // the same declared errors, and therefore the same client and the same
       // OpenAPI document.
-      assert.deepStrictEqual(
-        Array.from(authoritative.middlewares),
-        Array.from(plain.middlewares)
-      )
+      assert.deepStrictEqual(Array.from(authoritative.middlewares), Array.from(plain.middlewares))
     })
   })
 
   describe("requireFresh", () => {
     it.effect("passes for a session created within freshAge", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const session = yield* makeSession
         yield* TestClock.adjust(Duration.hours(23))
 
         yield* freshnessOf(Duration.days(1), session)
-      }))
+      })
+    )
 
     it.effect("fails once the session is older than freshAge", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const session = yield* makeSession
         yield* TestClock.adjust(Duration.hours(25))
 
@@ -137,16 +136,18 @@ describe("http/Middleware", () => {
 
         assert.instanceOf(error, SessionNotFresh)
         assert.strictEqual(error.freshAgeSeconds, 86_400)
-      }))
+      })
+    )
 
     it.effect("reports the configured window, not the default", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const session = yield* makeSession
         yield* TestClock.adjust(Duration.minutes(10))
 
         const error = yield* Effect.flip(freshnessOf(Duration.minutes(5), session))
 
         assert.strictEqual(error.freshAgeSeconds, 300)
-      }))
+      })
+    )
   })
 })

@@ -125,9 +125,9 @@ export const asymmetricAlgorithms = (
   algorithms: ReadonlyArray<string> | undefined
 ): ReadonlyArray<string> | undefined => {
   if (algorithms === undefined) return undefined
-  const admitted = algorithms.filter((algorithm) =>
-    algorithm.startsWith("RS") || algorithm.startsWith("PS") || algorithm.startsWith("ES") ||
-    algorithm === "EdDSA"
+  const admitted = algorithms.filter(
+    (algorithm) =>
+      algorithm.startsWith("RS") || algorithm.startsWith("PS") || algorithm.startsWith("ES") || algorithm === "EdDSA"
   )
   return admitted.length === 0 ? undefined : admitted
 }
@@ -273,10 +273,8 @@ const failure = (id: string, reason: DiscoveryError["reason"]) => new DiscoveryE
  * @category constructors
  * @since 1.0.0
  */
-export const make: (
-  options: Options
-) => Effect.Effect<OAuthProviderConfig, DiscoveryError, HttpClient.HttpClient> = Effect.fnUntraced(
-  function*(options: Options) {
+export const make: (options: Options) => Effect.Effect<OAuthProviderConfig, DiscoveryError, HttpClient.HttpClient> =
+  Effect.fnUntraced(function* (options: Options) {
     // The same redirect-refusing client the flow itself runs on: a `.well-known`
     // that answers `302` must not become a server-side hop to an internal
     // address.
@@ -293,9 +291,8 @@ export const make: (
       return yield* Effect.fail(failure(options.id, "Unreachable"))
     }
 
-    const body = yield* Effect.mapError(
-      jsonWithin(response, providerRequestTimeout),
-      () => failure(options.id, "Malformed")
+    const body = yield* Effect.mapError(jsonWithin(response, providerRequestTimeout), () =>
+      failure(options.id, "Malformed")
     )
     const decoded = readDocument(body)
     if (Option.isNone(decoded)) return yield* Effect.fail(failure(options.id, "Malformed"))
@@ -319,20 +316,16 @@ export const make: (
     // is the one way to have no `jwks_uri` and still be verifiable — and it is
     // what the block's `keys` union is asking for, one of the two and never
     // neither.
-    const keys: Oidc["keys"] | undefined = options.jwks !== undefined
-      ? { jwks: options.jwks }
-      : jwksUrl !== undefined
-      ? { jwksUrl }
-      : undefined
+    const keys: Oidc["keys"] | undefined =
+      options.jwks !== undefined ? { jwks: options.jwks } : jwksUrl !== undefined ? { jwksUrl } : undefined
     if (keys === undefined) {
       return yield* Effect.fail(failure(options.id, "KeysMissing"))
     }
 
     const userInfoUrl = options.userInfoUrl ?? document.userinfo_endpoint
-    const algorithms = options.algorithms ??
-      asymmetricAlgorithms(document.id_token_signing_alg_values_supported)
+    const algorithms = options.algorithms ?? asymmetricAlgorithms(document.id_token_signing_alg_values_supported)
 
-    const userInfo = Effect.fnUntraced(function*(tokens: OAuthTokens) {
+    const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
       const claims = tokens.idTokenClaims
       // The provider carries an OIDC block, so the flow verified an `id_token`
       // before calling this. A null here would mean the OIDC path was skipped.
@@ -376,5 +369,4 @@ export const make: (
       userInfo: options.userInfo ?? userInfo,
       accountId: options.accountId ?? ((info) => info.id)
     } satisfies OAuthProviderConfig
-  }
-)
+  })

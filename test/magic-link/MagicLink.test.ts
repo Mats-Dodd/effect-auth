@@ -24,7 +24,7 @@ const linkFor = (options: {
   readonly errorCallbackURL?: string | undefined
   readonly rememberMe?: boolean | undefined
 }) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const magic = yield* MagicLink
     const emails = yield* AuthTest.TestEmails
     yield* magic.request(options)
@@ -34,7 +34,7 @@ const linkFor = (options: {
 describe.sequential("magic-link/MagicLink", () => {
   layer(MagicLinkTest.layer())("a deployment that creates accounts from links", (it) => {
     it.effect("mails a link to an address with no account at all", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("stranger")
         const emails = yield* AuthTest.TestEmails
         const magic = yield* MagicLink
@@ -50,7 +50,8 @@ describe.sequential("magic-link/MagicLink", () => {
         const url = new URL(Redacted.value(sent[0]!.url))
         assert.strictEqual(url.pathname, "/auth/magic-link/verify")
         assert.strictEqual(url.searchParams.get("token"), Redacted.value(sent[0]!.token))
-      }))
+      })
+    )
 
     // A nested variant is the documented way to vary the plugin's settings under
     // one database. Its outbox must be its own: `MagicLinkTest.layerEmails` is a
@@ -61,7 +62,7 @@ describe.sequential("magic-link/MagicLink", () => {
       "a nested variant records its mail in its own outbox",
       (it) => {
         it.effect("mails the link where this deployment's tests can read it", () =>
-          Effect.gen(function*() {
+          Effect.gen(function* () {
             const email = uniqueEmail("nested")
             const emails = yield* AuthTest.TestEmails
             const magic = yield* MagicLink
@@ -75,12 +76,13 @@ describe.sequential("magic-link/MagicLink", () => {
             const token = yield* emails.tokenFor(MagicLinkTest.magicLinkKind, email)
             const verified = yield* magic.verify({ token })
             assert.strictEqual(verified.user.email, email)
-          }))
+          })
+        )
       }
     )
 
     it.effect("creates the account when the link is followed, already verified", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("new-person")
         const token = yield* linkFor({ email, name: "Ada" })
 
@@ -102,20 +104,22 @@ describe.sequential("magic-link/MagicLink", () => {
         // credential.
         const accounts = yield* AccountStore
         assert.deepStrictEqual(yield* accounts.listByUserId(result.user.id), [])
-      }))
+      })
+    )
 
     it.effect("names the account after the address when the request named nobody", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("nameless")
         const token = yield* linkFor({ email })
         const magic = yield* MagicLink
 
         const result = yield* magic.verify({ token })
         assert.strictEqual(result.user.name, email)
-      }))
+      })
+    )
 
     it.effect("signs an existing verified user in, leaving the row alone", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("returning")
         const magic = yield* MagicLink
 
@@ -130,10 +134,11 @@ describe.sequential("magic-link/MagicLink", () => {
         // Two sessions, one per link.
         const sessions = yield* Sessions
         assert.strictEqual((yield* sessions.list(first.user.id)).length, 2)
-      }))
+      })
+    )
 
     it.effect("destroys an unproven account's sign-in methods and sessions", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // Somebody registers an address they do not own, and waits.
         const email = uniqueEmail("squatted")
         const registered = yield* signUpUser(email)
@@ -154,7 +159,10 @@ describe.sequential("magic-link/MagicLink", () => {
         assert.deepStrictEqual(yield* accounts.listByUserId(registered.user.id), [])
         const sessions = yield* Sessions
         const live = yield* sessions.list(registered.user.id)
-        assert.deepStrictEqual(live.map((session) => session.id), [result.session.id])
+        assert.deepStrictEqual(
+          live.map((session) => session.id),
+          [result.session.id]
+        )
 
         assert.deepStrictEqual(AuthTest.tagsOf(forUser(events, result.user.id)), [
           "AccountUnlinked",
@@ -163,10 +171,11 @@ describe.sequential("magic-link/MagicLink", () => {
           "EmailVerified",
           "SignedIn"
         ])
-      }))
+      })
+    )
 
     it.effect("sweeps a credential a pre-registrant added with setPassword", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // The `setPassword` arm of the takeover: the squatter's account is
         // OAuth-only and unverified (a row in `users`, its credential dropped so
         // it looks like a provider-only sign-up), and they add a password to it
@@ -198,10 +207,11 @@ describe.sequential("magic-link/MagicLink", () => {
         assert.deepStrictEqual(yield* accounts.listByUserId(registered.user.id), [])
         const signIn = yield* Effect.flip(passwords.signIn({ email, password: newPassword }))
         assert.strictEqual(signIn._tag, "InvalidCredentials")
-      }))
+      })
+    )
 
     it.effect("retires the links the unproven account was the subject of", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // The same squatter, one step further on: signed in on the account they
         // registered, they asked to move it to an address of their own. The
         // current address is unverified, so that flow skips its first hop and
@@ -235,10 +245,11 @@ describe.sequential("magic-link/MagicLink", () => {
         assert.strictEqual(moved._tag, "InvalidToken")
         const reused = yield* Effect.flip(verifications.claim(passwordResetPurpose, reset.token))
         assert.strictEqual(reused._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("refuses a replayed link", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("replay")
         const token = yield* linkFor({ email })
         const magic = yield* MagicLink
@@ -246,10 +257,11 @@ describe.sequential("magic-link/MagicLink", () => {
         yield* magic.verify({ token })
         const error = yield* Effect.flip(magic.verify({ token }))
         assert.strictEqual(error._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("retires the links a spent one left behind", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("two-links")
         const first = yield* linkFor({ email })
         const second = yield* linkFor({ email })
@@ -260,33 +272,38 @@ describe.sequential("magic-link/MagicLink", () => {
         yield* magic.verify({ token: second })
         const error = yield* Effect.flip(magic.verify({ token: first }))
         assert.strictEqual(error._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("refuses a link once its five minutes are up", () =>
-      AuthTest.freshClock(Effect.gen(function*() {
-        const email = uniqueEmail("expired")
-        const token = yield* linkFor({ email })
-        const magic = yield* MagicLink
+      AuthTest.freshClock(
+        Effect.gen(function* () {
+          const email = uniqueEmail("expired")
+          const token = yield* linkFor({ email })
+          const magic = yield* MagicLink
 
-        yield* TestClock.adjust(Duration.minutes(6))
+          yield* TestClock.adjust(Duration.minutes(6))
 
-        const error = yield* Effect.flip(magic.verify({ token }))
-        assert.strictEqual(error._tag, "InvalidToken")
-      })))
+          const error = yield* Effect.flip(magic.verify({ token }))
+          assert.strictEqual(error._tag, "InvalidToken")
+        })
+      )
+    )
 
     describe("redirect targets", () => {
       it.effect("resolves a path-relative callback against baseUrl", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("relative")
           const token = yield* linkFor({ email, callbackURL: "/welcome" })
           const magic = yield* MagicLink
 
           const result = yield* magic.verify({ token })
           assert.strictEqual(result.redirectTo, `${AuthTest.testBaseUrl}/welcome`)
-        }))
+        })
+      )
 
       it.effect("drops a foreign origin, and a protocol-relative one", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const magic = yield* MagicLink
           const foreign = yield* linkFor({
             email: uniqueEmail("foreign"),
@@ -298,14 +315,12 @@ describe.sequential("magic-link/MagicLink", () => {
           })
 
           assert.strictEqual((yield* magic.verify({ token: foreign })).redirectTo, AuthTest.testBaseUrl)
-          assert.strictEqual(
-            (yield* magic.verify({ token: protocolRelative })).redirectTo,
-            AuthTest.testBaseUrl
-          )
-        }))
+          assert.strictEqual((yield* magic.verify({ token: protocolRelative })).redirectTo, AuthTest.testBaseUrl)
+        })
+      )
 
       it.effect("prefers newUserCallbackURL when the link created the account", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("first-time")
           const magic = yield* MagicLink
 
@@ -319,12 +334,13 @@ describe.sequential("magic-link/MagicLink", () => {
             token: yield* linkFor({ email, callbackURL: "/back", newUserCallbackURL: "/onboarding" })
           })
           assert.strictEqual(returning.redirectTo, `${AuthTest.testBaseUrl}/back`)
-        }))
+        })
+      )
     })
 
     describe("complete", () => {
       it.effect("resolves a success into the link's own callback", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("complete-ok")
           const token = yield* linkFor({ email, callbackURL: "/welcome" })
           const magic = yield* MagicLink
@@ -332,10 +348,11 @@ describe.sequential("magic-link/MagicLink", () => {
           const outcome = yield* magic.complete({ token })
           assert.strictEqual(outcome._tag, "Success")
           assert.strictEqual(outcome.redirectTo, `${AuthTest.testBaseUrl}/welcome`)
-        }))
+        })
+      )
 
       it.effect("resolves an unknown token into baseUrl with a safe code", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const magic = yield* MagicLink
           // Nothing was claimed, so there is no payload and no error URL to
           // honour: the token is not one this deployment minted.
@@ -347,10 +364,11 @@ describe.sequential("magic-link/MagicLink", () => {
             assert.strictEqual(outcome.error._tag, "InvalidToken")
           }
           assert.strictEqual(outcome.redirectTo, `${AuthTest.testBaseUrl}/?error=invalid_token`)
-        }))
+        })
+      )
 
       it.effect("honours the errorCallbackURL the link was minted with", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("complete-error")
           const magic = yield* MagicLink
           const token = yield* linkFor({ email, errorCallbackURL: "/oops" })
@@ -360,7 +378,8 @@ describe.sequential("magic-link/MagicLink", () => {
           yield* magic.complete({ token })
           const replayed = yield* magic.complete({ token })
           assert.strictEqual(replayed.redirectTo, `${AuthTest.testBaseUrl}/?error=invalid_token`)
-        }))
+        })
+      )
     })
   })
 
@@ -368,7 +387,7 @@ describe.sequential("magic-link/MagicLink", () => {
     "with the unproven-account defence switched off",
     (it) => {
       it.effect("marks the address verified but keeps the credential", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("kept")
           const registered = yield* signUpUser(email)
 
@@ -383,7 +402,8 @@ describe.sequential("magic-link/MagicLink", () => {
           // cost of switching this off.
           const accounts = yield* AccountStore
           assert.strictEqual((yield* accounts.listByUserId(registered.user.id)).length, 1)
-        }))
+        })
+      )
     }
   )
 
@@ -391,7 +411,7 @@ describe.sequential("magic-link/MagicLink", () => {
     "a deployment that does not create accounts",
     (it) => {
       it.effect("sends nothing to an address it has never seen", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("unknown")
           const magic = yield* MagicLink
           const emails = yield* AuthTest.TestEmails
@@ -402,10 +422,11 @@ describe.sequential("magic-link/MagicLink", () => {
           // ever do. The endpoint above still answers exactly as it does for an
           // address that has an account.
           assert.deepStrictEqual(yield* emails.to(email), [])
-        }))
+        })
+      )
 
       it.effect("still mails a link to an address that has an account", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("known")
           const users = yield* UserStore
           yield* signUpUser(email)
@@ -416,10 +437,11 @@ describe.sequential("magic-link/MagicLink", () => {
 
           assert.isFalse(result.userCreated)
           assert.isTrue(Option.isSome(yield* users.findByEmail(email)))
-        }))
+        })
+      )
 
       it.effect("refuses a link whose address has no account", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           // Minted straight through `Verifications`, because the request endpoint
           // would not have minted one here — which is the point of that branch.
           const email = uniqueEmail("gone")
@@ -440,10 +462,11 @@ describe.sequential("magic-link/MagicLink", () => {
           const magic = yield* MagicLink
           const error = yield* Effect.flip(magic.verify({ token: issued.token }))
           assert.strictEqual(error._tag, "SignUpDisabled")
-        }))
+        })
+      )
 
       it.effect("redirects a refused link to its own error page", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const email = uniqueEmail("gone-redirect")
           const verifications = yield* Verifications
           const issued = yield* verifications.issue({
@@ -466,7 +489,8 @@ describe.sequential("magic-link/MagicLink", () => {
           // The claim succeeded, so the payload's error URL is available — unlike
           // the unknown-token case, which has none.
           assert.strictEqual(outcome.redirectTo, `${AuthTest.testBaseUrl}/oops?error=sign_up_disabled`)
-        }))
+        })
+      )
     }
   )
 })

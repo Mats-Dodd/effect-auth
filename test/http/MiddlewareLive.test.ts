@@ -12,7 +12,7 @@ const trustedOrigins = ["https://trusted.example.com"]
 
 layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
   it.effect("refuses a request that presents nothing at all", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* makeClient()
 
       const session = yield* Effect.flip(client.auth.getSession())
@@ -22,10 +22,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
       assert.strictEqual(session._tag, "Unauthorized")
       assert.strictEqual(sessions._tag, "Unauthorized")
       assert.strictEqual(out._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("refuses a cookie that names no session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { cookies } = yield* signedUp(uniqueEmail("forged"))
       const stolen = yield* TestHttpClient.sessionCookieValue(cookies)
 
@@ -35,10 +36,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
 
       const error = yield* Effect.flip(impostor.client.auth.getSession())
       assert.strictEqual(error._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("accepts the same opaque token as a bearer, for clients with no cookie jar", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const browser = yield* signedUp(uniqueEmail("bearer"))
       const token = yield* TestHttpClient.sessionCookieValue(browser.cookies)
 
@@ -53,10 +55,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
       // And it is the same session the browser holds.
       const fromCookie = yield* browser.client.auth.getSession()
       assert.strictEqual(current.session.id, fromCookie.session.id)
-    }))
+    })
+  )
 
   it.effect("refuses a cookie-authenticated mutation from an untrusted origin", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const browser = yield* signedUp(uniqueEmail("cross-site"))
       // The same browser, the same jar — but the request was initiated by
       // somebody else's page.
@@ -70,10 +73,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
 
       // Nothing happened: the session is still there.
       yield* browser.client.auth.getSession()
-    }))
+    })
+  )
 
   it.effect("allows a mutation from the deployment's own origin, and from a configured one", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const browser = yield* signedUp(uniqueEmail("same-origin"))
 
       const own = yield* makeClient({
@@ -87,10 +91,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
         headers: { origin: trustedOrigins[0]! }
       })
       yield* trusted.client.auth.revokeOtherSessions()
-    }))
+    })
+  )
 
   it.effect("does not apply the origin check to reads, nor to bearer clients", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const browser = yield* signedUp(uniqueEmail("reads"))
       const token = yield* TestHttpClient.sessionCookieValue(browser.cookies)
 
@@ -109,10 +114,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
         headers: { origin: "https://evil.test" }
       })
       yield* api.client.auth.revokeOtherSessions()
-    }))
+    })
+  )
 
   it.effect("refuses a __Secure- prefixed cookie on a plain-HTTP deployment", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const browser = yield* signedUp(uniqueEmail("prefixed"))
       const token = yield* TestHttpClient.sessionCookieValue(browser.cookies)
 
@@ -122,15 +128,17 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
       })
       const refused = yield* Effect.flip(prefixed.client.auth.getSession())
       assert.strictEqual(refused._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("does not re-send the cookie on a request that changed nothing", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* signedUp(uniqueEmail("unchanged"))
       const [, response] = yield* client.auth.getSession({ responseMode: "decoded-and-response" })
 
       assert.isTrue(Option.isNone(TestHttpClient.responseCookie(response)))
-    }))
+    })
+  )
 
   // A configuration variant: everything above the database is rebuilt for this
   // sub-block, and the database itself is inherited from the block above.
@@ -138,7 +146,7 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
     "when the deployment is served over TLS",
     (it) => {
       it.effect("writes the __Secure- prefixed cookie", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* makeClient()
           const [, response] = yield* client.auth.signUpEmail({
             payload: { name: testName, email: uniqueEmail("secure"), password: testPassword },
@@ -155,10 +163,11 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
 
           // The first declared security scheme now matches, and reading works.
           yield* client.auth.getSession()
-        }))
+        })
+      )
 
       it.effect("refuses the same token under the un-prefixed name", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* makeClient()
           const [, response] = yield* client.auth.signUpEmail({
             payload: { name: testName, email: uniqueEmail("prefix-only"), password: testPassword },
@@ -187,7 +196,8 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
             headers: { cookie: `__Secure-effect_auth.session=${token}` }
           })
           yield* honest.client.auth.getSession()
-        }))
+        })
+      )
     }
   )
 
@@ -195,7 +205,7 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
     "when the credential endpoints are switched off",
     (it) => {
       it.effect("answers 404 for them", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const { client } = yield* makeClient()
           const response = yield* client.auth.signInEmail({
             payload: { email: uniqueEmail("disabled"), password: testPassword },
@@ -203,7 +213,8 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
           })
 
           assert.strictEqual(response.status, 404)
-        }))
+        })
+      )
     }
   )
 
@@ -217,98 +228,109 @@ layer(AuthTest.layerHttp({ trustedOrigins }))("http/MiddlewareLive", (it) => {
    * its own. The one test that is *about* the anonymous fail-closed bucket is
    * the only one that sends no forwarding header.
    */
-  it.layer(AuthTest.layerHttp({
-    trustedOrigins,
-    rateLimit: { enabled: true, ipHeaders: ["x-forwarded-for"] }
-  }))(
-    "with the rate limits switched on",
-    (it) => {
-      it.effect("refuses the fourth sign-in attempt in a window, and says how long to wait", () =>
-        Effect.gen(function*() {
-          const email = uniqueEmail("limited")
-          yield* signedUp(email, { headers: { "x-forwarded-for": "203.0.113.1" } })
-          const attacker = yield* makeClient({ headers: { "x-forwarded-for": "203.0.113.7" } })
+  it.layer(
+    AuthTest.layerHttp({
+      trustedOrigins,
+      rateLimit: { enabled: true, ipHeaders: ["x-forwarded-for"] }
+    })
+  )("with the rate limits switched on", (it) => {
+    it.effect("refuses the fourth sign-in attempt in a window, and says how long to wait", () =>
+      Effect.gen(function* () {
+        const email = uniqueEmail("limited")
+        yield* signedUp(email, { headers: { "x-forwarded-for": "203.0.113.1" } })
+        const attacker = yield* makeClient({ headers: { "x-forwarded-for": "203.0.113.7" } })
 
-          const attempt = () =>
-            Effect.flip(attacker.client.auth.signInEmail({
+        const attempt = () =>
+          Effect.flip(
+            attacker.client.auth.signInEmail({
               payload: { email, password: Redacted.make("guess number one") }
-            }))
-
-          for (let i = 0; i < 3; i++) {
-            assert.strictEqual((yield* attempt())._tag, "InvalidCredentials")
-          }
-
-          const limited = yield* attempt()
-          assert.strictEqual(limited._tag, "RateLimited")
-          if (limited._tag === "RateLimited") {
-            assert.isAbove(limited.retryAfterSeconds, 0)
-            assert.isAtMost(limited.retryAfterSeconds, 10)
-          }
-
-          // Another client is counted separately, and the correct password
-          // still works for them.
-          const innocent = yield* makeClient({ headers: { "x-forwarded-for": "198.51.100.4" } })
-          yield* innocent.client.auth.signInEmail({ payload: { email, password: testPassword } })
-        }))
-
-      it.effect("counts callers it cannot identify as one caller", () =>
-        Effect.gen(function*() {
-          const email = uniqueEmail("anonymous")
-          yield* signedUp(email, { headers: { "x-forwarded-for": "203.0.113.2" } })
-          // No forwarding header and no remote address: the fail-closed bucket.
-          const first = yield* makeClient()
-          const second = yield* makeClient()
-
-          const attempt = (browser: typeof first) =>
-            Effect.flip(browser.client.auth.signInEmail({
-              payload: { email, password: Redacted.make("guess number one") }
-            }))
-
-          assert.strictEqual((yield* attempt(first))._tag, "InvalidCredentials")
-          assert.strictEqual((yield* attempt(second))._tag, "InvalidCredentials")
-          assert.strictEqual((yield* attempt(first))._tag, "InvalidCredentials")
-          // The fourth attempt across the two of them is refused: with no way
-          // to tell them apart, they share one counter rather than getting one
-          // each.
-          assert.strictEqual((yield* attempt(second))._tag, "RateLimited")
-        }))
-
-      it.effect("counts each path separately, so signing up does not spend sign-in's attempts", () =>
-        Effect.gen(function*() {
-          const client = yield* makeClient({ headers: { "x-forwarded-for": "203.0.113.9" } })
-          const email = uniqueEmail("per-path")
-
-          for (let i = 0; i < 3; i++) {
-            yield* Effect.flip(client.client.auth.signUpEmail({
-              payload: { name: testName, email, password: Redacted.make("short") }
-            }))
-          }
-          const limited = yield* Effect.flip(client.client.auth.signUpEmail({
-            payload: { name: testName, email, password: Redacted.make("short") }
-          }))
-          assert.strictEqual(limited._tag, "RateLimited")
-
-          // Sign-in is a different path and therefore a different counter.
-          const signIn = yield* Effect.flip(client.client.auth.signInEmail({
-            payload: { email, password: testPassword }
-          }))
-          assert.strictEqual(signIn._tag, "InvalidCredentials")
-        }))
-
-      it.effect("limits the mail endpoints without ever revealing whether the address exists", () =>
-        Effect.gen(function*() {
-          const client = yield* makeClient({ headers: { "x-forwarded-for": "203.0.113.11" } })
-          const email = uniqueEmail("nobody")
-
-          for (let i = 0; i < 3; i++) {
-            const ok = yield* client.client.auth.requestPasswordReset({ payload: { email } })
-            assert.strictEqual(ok.success, true)
-          }
-          const limited = yield* Effect.flip(
-            client.client.auth.requestPasswordReset({ payload: { email } })
+            })
           )
-          assert.strictEqual(limited._tag, "RateLimited")
-        }))
-    }
-  )
+
+        for (let i = 0; i < 3; i++) {
+          assert.strictEqual((yield* attempt())._tag, "InvalidCredentials")
+        }
+
+        const limited = yield* attempt()
+        assert.strictEqual(limited._tag, "RateLimited")
+        if (limited._tag === "RateLimited") {
+          assert.isAbove(limited.retryAfterSeconds, 0)
+          assert.isAtMost(limited.retryAfterSeconds, 10)
+        }
+
+        // Another client is counted separately, and the correct password
+        // still works for them.
+        const innocent = yield* makeClient({ headers: { "x-forwarded-for": "198.51.100.4" } })
+        yield* innocent.client.auth.signInEmail({ payload: { email, password: testPassword } })
+      })
+    )
+
+    it.effect("counts callers it cannot identify as one caller", () =>
+      Effect.gen(function* () {
+        const email = uniqueEmail("anonymous")
+        yield* signedUp(email, { headers: { "x-forwarded-for": "203.0.113.2" } })
+        // No forwarding header and no remote address: the fail-closed bucket.
+        const first = yield* makeClient()
+        const second = yield* makeClient()
+
+        const attempt = (browser: typeof first) =>
+          Effect.flip(
+            browser.client.auth.signInEmail({
+              payload: { email, password: Redacted.make("guess number one") }
+            })
+          )
+
+        assert.strictEqual((yield* attempt(first))._tag, "InvalidCredentials")
+        assert.strictEqual((yield* attempt(second))._tag, "InvalidCredentials")
+        assert.strictEqual((yield* attempt(first))._tag, "InvalidCredentials")
+        // The fourth attempt across the two of them is refused: with no way
+        // to tell them apart, they share one counter rather than getting one
+        // each.
+        assert.strictEqual((yield* attempt(second))._tag, "RateLimited")
+      })
+    )
+
+    it.effect("counts each path separately, so signing up does not spend sign-in's attempts", () =>
+      Effect.gen(function* () {
+        const client = yield* makeClient({ headers: { "x-forwarded-for": "203.0.113.9" } })
+        const email = uniqueEmail("per-path")
+
+        for (let i = 0; i < 3; i++) {
+          yield* Effect.flip(
+            client.client.auth.signUpEmail({
+              payload: { name: testName, email, password: Redacted.make("short") }
+            })
+          )
+        }
+        const limited = yield* Effect.flip(
+          client.client.auth.signUpEmail({
+            payload: { name: testName, email, password: Redacted.make("short") }
+          })
+        )
+        assert.strictEqual(limited._tag, "RateLimited")
+
+        // Sign-in is a different path and therefore a different counter.
+        const signIn = yield* Effect.flip(
+          client.client.auth.signInEmail({
+            payload: { email, password: testPassword }
+          })
+        )
+        assert.strictEqual(signIn._tag, "InvalidCredentials")
+      })
+    )
+
+    it.effect("limits the mail endpoints without ever revealing whether the address exists", () =>
+      Effect.gen(function* () {
+        const client = yield* makeClient({ headers: { "x-forwarded-for": "203.0.113.11" } })
+        const email = uniqueEmail("nobody")
+
+        for (let i = 0; i < 3; i++) {
+          const ok = yield* client.client.auth.requestPasswordReset({ payload: { email } })
+          assert.strictEqual(ok.success, true)
+        }
+        const limited = yield* Effect.flip(client.client.auth.requestPasswordReset({ payload: { email } }))
+        assert.strictEqual(limited._tag, "RateLimited")
+      })
+    )
+  })
 })

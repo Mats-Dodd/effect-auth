@@ -49,9 +49,7 @@ const ServerLive = Todos.layer.pipe(
         },
         trustedOrigins: [baseUrl]
       },
-      MagicLink.handlers(AppApi).pipe(
-        Layer.provide(MagicLinkTest.layerMagicLink({ ttl: Duration.minutes(10) }))
-      )
+      MagicLink.handlers(AppApi).pipe(Layer.provide(MagicLinkTest.layerMagicLink({ ttl: Duration.minutes(10) })))
     )
   )
 )
@@ -72,7 +70,7 @@ const newPassword = "a-much-longer-replacement-passphrase"
 
 layer(ServerLive)("examples/basic", (it) => {
   it.effect("sign-up, verify, sign-in, use a protected endpoint, change password, sign out", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("ada")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
@@ -117,7 +115,10 @@ layer(ServerLive)("examples/basic", (it) => {
       const todo = yield* client.todos.create({ payload: { title: "write the analytical engine" } })
       assert.strictEqual(todo.ownerId, signedIn.user.id)
       const todos = yield* client.todos.list()
-      assert.deepStrictEqual(todos.map((t) => t.title), ["write the analytical engine"])
+      assert.deepStrictEqual(
+        todos.map((t) => t.title),
+        ["write the analytical engine"]
+      )
 
       // 7. A sensitive operation: the current password is required.
       const changed = yield* client.auth.changePassword({
@@ -147,17 +148,19 @@ layer(ServerLive)("examples/basic", (it) => {
         client.auth.signInEmail({ payload: { email, password: Redacted.make(password) } })
       )
       assert.strictEqual(stale._tag, "InvalidCredentials")
-    }))
+    })
+  )
 
   it.effect("an anonymous request never reaches the application's handlers", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client } = yield* makeClient()
       const refused = yield* Effect.flip(client.todos.list())
       assert.strictEqual(refused._tag, "Unauthorized")
-    }))
+    })
+  )
 
   it.effect("a password reset revokes every session and installs the new password", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("grace")
       const unknown = uniqueEmail("nobody")
       const { client, cookies } = yield* makeClient()
@@ -201,10 +204,11 @@ layer(ServerLive)("examples/basic", (it) => {
         payload: { email, password: Redacted.make(newPassword) }
       })
       assert.strictEqual(signedIn.user.email, email)
-    }))
+    })
+  )
 
   it.effect("the deployment's own user field reaches its own handler, and update-user changes it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("katherine")
       const { client } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
@@ -243,10 +247,11 @@ layer(ServerLive)("examples/basic", (it) => {
       // An absent key leaves the column alone.
       const renamed = yield* client.auth.updateUser({ payload: { name: "Katherine Johnson" } })
       assert.strictEqual(renamed.user.plan, "pro")
-    }))
+    })
+  )
 
   it.effect("an account with no password can be given one, and signs in with it afterwards", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("dorothy")
       const { client } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
@@ -281,19 +286,18 @@ layer(ServerLive)("examples/basic", (it) => {
       assert.strictEqual(set.success, true)
 
       // It is a first password, never a replacement: asking twice is refused.
-      const again = yield* Effect.flip(
-        client.auth.setPassword({ payload: { newPassword: Redacted.make(password) } })
-      )
+      const again = yield* Effect.flip(client.auth.setPassword({ payload: { newPassword: Redacted.make(password) } }))
       assert.strictEqual(again._tag, "PasswordAlreadySet")
 
       const back = yield* client.auth.signInEmail({
         payload: { email, password: Redacted.make(newPassword) }
       })
       assert.strictEqual(back.user.id, signedIn.user.id)
-    }))
+    })
+  )
 
   it.effect("a magic link signs a stranger in, and provisions the account it names", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const email = uniqueEmail("mary")
       const { client, cookies } = yield* makeClient()
       const emails = yield* AuthTest.TestEmails
@@ -333,5 +337,6 @@ layer(ServerLive)("examples/basic", (it) => {
       // The token was single-use.
       const replayed = yield* Effect.flip(client.magicLink.exchange({ payload: { token: sent } }))
       assert.strictEqual(replayed._tag, "InvalidToken")
-    }))
+    })
+  )
 })

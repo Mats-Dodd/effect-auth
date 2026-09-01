@@ -25,7 +25,7 @@ interface ColumnRow {
   readonly column_default: string | null
 }
 
-const describeUsers = Effect.gen(function*() {
+const describeUsers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
   const rows = yield* sql<ColumnRow>`SELECT column_name, data_type, is_nullable, column_default
     FROM information_schema.columns
@@ -35,7 +35,7 @@ const describeUsers = Effect.gen(function*() {
 
 layer(layerDatabase)("fields/Migrations", (it) => {
   it.effect("adds a column for every custom field, typed and defaulted", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const columns = yield* describeUsers
 
       const plan = columns.get("plan")
@@ -56,26 +56,29 @@ layer(layerDatabase)("fields/Migrations", (it) => {
       assert.isDefined(apiSecret)
       assert.strictEqual(apiSecret?.data_type, "text")
       assert.strictEqual(apiSecret?.is_nullable, "YES")
-    }))
+    })
+  )
 
   it.effect("names the column in snake_case", () =>
     Effect.map(describeUsers, (columns) => {
       assert.isTrue(columns.has("api_secret"))
       assert.isFalse(columns.has("apiSecret"))
-    }))
+    })
+  )
 
   it.effect("is idempotent", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // The layer already ran it once; running it again must be a no-op rather
       // than a duplicate-column failure.
       yield* Migrations.forUserFields(model)
       yield* Migrations.forUserFields(model)
       const columns = yield* describeUsers
       assert.isTrue(columns.has("plan"))
-    }))
+    })
+  )
 
   it.effect("adds a column a later model declares", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const extended = makeUserModel({
         ...model.fields,
         seats: UserField.withDefault(Schema.Number, () => 1),
@@ -88,15 +91,13 @@ layer(layerDatabase)("fields/Migrations", (it) => {
       assert.include(columns.get("seats")?.column_default ?? "", "1")
       assert.strictEqual(columns.get("trial")?.data_type, "boolean")
       assert.include(columns.get("trial")?.column_default ?? "", "false")
-    }))
+    })
+  )
 
   it.effect("refuses a field no column can hold", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const unstorable = makeUserModel({
-        preferences: UserField.hidden(
-          Schema.Struct({ theme: Schema.String }),
-          () => ({ theme: "dark" })
-        )
+        preferences: UserField.hidden(Schema.Struct({ theme: Schema.String }), () => ({ theme: "dark" }))
       })
       const result = yield* Effect.result(Migrations.forUserFields(unstorable))
       assert.isTrue(result._tag === "Failure")
@@ -104,38 +105,40 @@ layer(layerDatabase)("fields/Migrations", (it) => {
         assert.isTrue(result.failure instanceof Migrator.MigrationError)
         assert.include(String(result.failure), "preferences")
       }
-    }))
+    })
+  )
 
   it.effect("refuses a table name that is not an identifier", () =>
-    Effect.gen(function*() {
-      const result = yield* Effect.result(
-        Migrations.forUserFields(model, { table: "users; DROP TABLE users" })
-      )
+    Effect.gen(function* () {
+      const result = yield* Effect.result(Migrations.forUserFields(model, { table: "users; DROP TABLE users" }))
       assert.isTrue(result._tag === "Failure")
-    }))
+    })
+  )
 
   it.effect("leaves the base migrations to the migrator", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const rows = yield* sql<{ readonly name: string }>`SELECT name FROM effect_auth_migrations ORDER BY migration_id`
       assert.deepStrictEqual(
         rows.map((row) => row.name),
         ["create_users", "create_sessions", "create_accounts", "create_verifications", "session_remember_me"]
       )
-    }))
+    })
+  )
 
   it.effect("adds nothing for a model with no custom fields", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const empty = makeUserModel({})
       assert.deepStrictEqual(empty.extraKeys, [])
       // Running it is a no-op rather than a failure. Asserting on the *set* of
       // columns would race the sibling that adds two of its own: the block runs
       // concurrently and shares one database.
       yield* Migrations.forUserFields(empty)
-    }))
+    })
+  )
 
   it.effect("stores and reads a row through the columns it created", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient
       const row = yield* model.makeInsert({
         name: testName,
@@ -154,9 +157,12 @@ layer(layerDatabase)("fields/Migrations", (it) => {
         updated_at: encoded["updatedAt"]
       })}`
 
-      const stored = yield* sql<
-        { readonly plan: string; readonly role: string; readonly api_secret: string | null }
-      >`SELECT plan, role, api_secret FROM users WHERE id = ${String(encoded["id"])}`
+      const stored = yield* sql<{
+        readonly plan: string
+        readonly role: string
+        readonly api_secret: string | null
+      }>`SELECT plan, role, api_secret FROM users WHERE id = ${String(encoded["id"])}`
       assert.deepStrictEqual([...stored], [{ plan: "free", role: "user", api_secret: null }])
-    }))
+    })
+  )
 })

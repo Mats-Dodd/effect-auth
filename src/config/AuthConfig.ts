@@ -646,7 +646,11 @@ const absoluteWebUrl = (name: string, value: string): URL => {
   } catch {
     return configurationError(`${name} must be an absolute http(s) URL`)
   }
-  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "") {
+  if (
+    (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+    parsed.username !== "" ||
+    parsed.password !== ""
+  ) {
     return configurationError(`${name} must be an absolute http(s) URL without credentials`)
   }
   return parsed
@@ -674,8 +678,10 @@ const validate = (config: AuthConfigService): AuthConfigService => {
   if (!Number.isSafeInteger(config.emailPassword.minPasswordLength) || config.emailPassword.minPasswordLength < 8) {
     configurationError("emailPassword.minPasswordLength must be an integer of at least 8")
   }
-  if (!Number.isSafeInteger(config.emailPassword.maxPasswordLength) ||
-    config.emailPassword.maxPasswordLength < config.emailPassword.minPasswordLength) {
+  if (
+    !Number.isSafeInteger(config.emailPassword.maxPasswordLength) ||
+    config.emailPassword.maxPasswordLength < config.emailPassword.minPasswordLength
+  ) {
     configurationError("emailPassword.maxPasswordLength must be an integer not smaller than minPasswordLength")
   }
 
@@ -699,9 +705,13 @@ const validate = (config: AuthConfigService): AuthConfigService => {
   // relationship would defend against nothing the column does not already close,
   // while forbidding sub-day refresh granularity and making a short session
   // unrefreshable — which is behaviour `grantedLifetime` exists to support.
-  if (Duration.toMillis(config.session.updateAge) >= Duration.toMillis(config.session.expiresIn) ||
-    Duration.toMillis(config.session.updateAge) > Duration.toMillis(config.session.rememberMeDisabledExpiresIn)) {
-    configurationError("session.updateAge must be shorter than expiresIn and no longer than rememberMeDisabledExpiresIn")
+  if (
+    Duration.toMillis(config.session.updateAge) >= Duration.toMillis(config.session.expiresIn) ||
+    Duration.toMillis(config.session.updateAge) > Duration.toMillis(config.session.rememberMeDisabledExpiresIn)
+  ) {
+    configurationError(
+      "session.updateAge must be shorter than expiresIn and no longer than rememberMeDisabledExpiresIn"
+    )
   }
   for (const [name, value] of Object.entries(config.tokens)) positiveDuration(`tokens.${name}`, value)
   positiveDuration("cookieCache.maxAge", config.cookieCache.maxAge)

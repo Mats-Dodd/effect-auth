@@ -21,8 +21,7 @@ export const layer: Layer.Layer<AuthEmails.AuthEmails> = Layer.succeed(AuthEmail
   sendPasswordReset: print("Reset your password"),
   // The first hop goes to the address the account has now, and says where it is
   // being moved to; the second goes to the new address, and is what moves it.
-  sendChangeEmailConfirmation: (email) =>
-    send(`Confirm the move to ${email.newEmail}`, email.user.email, email.url),
+  sendChangeEmailConfirmation: (email) => send(`Confirm the move to ${email.newEmail}`, email.user.email, email.url),
   sendChangeEmailVerification: (email) => send("Verify your new e-mail address", email.newEmail, email.url),
   sendDeleteAccountConfirmation: print("Confirm deleting your account")
 })
@@ -46,6 +45,5 @@ export const layer: Layer.Layer<AuthEmails.AuthEmails> = Layer.succeed(AuthEmail
  * the oracle the `200` is careful not to be.
  */
 export const magicLinkLayer: Layer.Layer<MagicLink.MagicLinkEmails> = Layer.succeed(MagicLink.MagicLinkEmails)({
-  sendMagicLink: ({ email, url, user }) =>
-    send(user === null ? "Create your account" : "Your sign-in link", email, url)
+  sendMagicLink: ({ email, url, user }) => send(user === null ? "Create your account" : "Your sign-in link", email, url)
 })

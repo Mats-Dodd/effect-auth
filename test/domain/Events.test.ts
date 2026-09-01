@@ -41,7 +41,7 @@ const everyEvent: ReadonlyArray<AuthEvent> = [
 
 describe("domain/Events/schema", () => {
   it.effect("round-trips every member of the union", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // Events are routinely forwarded to a webhook or a log sink, so the union
       // has to survive the trip through JSON in both directions.
       const encode = Schema.encodeEffect(AuthEventSchema)
@@ -51,7 +51,8 @@ describe("domain/Events/schema", () => {
         const encoded = yield* encode(event)
         assert.deepStrictEqual(yield* decode(encoded), event)
       }
-    }))
+    })
+  )
 
   it("samples every member of the closed union", () => {
     // The two tests below are only as good as this list, so the list is pinned
@@ -85,7 +86,7 @@ describe("domain/Events/hub", () => {
   it.effect(
     "delivers published events to a running subscriber",
     () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const events = yield* AuthEvents
         const fiber = yield* Effect.forkChild(Stream.runCollect(Stream.take(events.stream, 2)))
         // Let the subscriber attach before anything is published: the hub drops,
@@ -107,7 +108,7 @@ describe("domain/Events/hub", () => {
   it.effect(
     "publishing with no subscriber succeeds rather than blocking",
     () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         // A hub of two, nobody listening, and far more than two events: a
         // back-pressuring hub would wedge the sign-in that published them.
         const events = yield* AuthEvents
@@ -123,7 +124,7 @@ describe("domain/Events/hub", () => {
   it.effect(
     "a subscriber that stops reading cannot wedge a publisher",
     () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const events = yield* AuthEvents
         // Subscribed, and deliberately never drained.
         yield* events.subscribe

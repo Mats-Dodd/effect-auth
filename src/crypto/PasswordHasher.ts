@@ -51,10 +51,7 @@ export interface PasswordHasherService {
    *
    * The digest comparison is constant time (see {@link timingSafeEqualUint8}).
    */
-  readonly verify: (
-    password: Redacted.Redacted<string>,
-    hash: string
-  ) => Effect.Effect<boolean, PasswordHashError>
+  readonly verify: (password: Redacted.Redacted<string>, hash: string) => Effect.Effect<boolean, PasswordHashError>
 }
 
 /**
@@ -63,9 +60,9 @@ export interface PasswordHasherService {
  * @category services
  * @since 1.0.0
  */
-export class PasswordHasher
-  extends Context.Service<PasswordHasher, PasswordHasherService>()("effect-auth/PasswordHasher")
-{}
+export class PasswordHasher extends Context.Service<PasswordHasher, PasswordHasherService>()(
+  "effect-auth/PasswordHasher"
+) {}
 
 // -----------------------------------------------------------------------------
 // Parameters
@@ -242,12 +239,8 @@ const maximumDigestBytes = 128
  */
 const maximumSaltBytes = 64
 
-const formatHash = (
-  algorithm: HashAlgorithm,
-  params: string,
-  salt: Uint8Array,
-  key: Uint8Array
-): string => `${algorithm}$${params}$${Encoding.encodeBase64Url(salt)}$${Encoding.encodeBase64Url(key)}`
+const formatHash = (algorithm: HashAlgorithm, params: string, salt: Uint8Array, key: Uint8Array): string =>
+  `${algorithm}$${params}$${Encoding.encodeBase64Url(salt)}$${Encoding.encodeBase64Url(key)}`
 
 /**
  * Splits a stored hash string into its parts.
@@ -288,11 +281,7 @@ export const parseHash = (hash: string): Effect.Effect<ParsedHash, PasswordHashE
       return Effect.fail(hashError("MalformedSalt"))
     }
     const key = Encoding.decodeBase64Url(keySegment)
-    if (
-      Result.isFailure(key) ||
-      key.success.length < minimumDigestBytes ||
-      key.success.length > maximumDigestBytes
-    ) {
+    if (Result.isFailure(key) || key.success.length < minimumDigestBytes || key.success.length > maximumDigestBytes) {
       return Effect.fail(hashError("MalformedDigest"))
     }
 
@@ -429,16 +418,15 @@ const scryptDerive = (
         { N: params.N, r: params.r, p: params.p, maxmem: scryptMaxmem(params) },
         (error, derived) =>
           resume(
-            error === null
-              ? Effect.succeed(new Uint8Array(derived))
-              : Effect.fail(hashError("ScryptFailed", error))
+            error === null ? Effect.succeed(new Uint8Array(derived)) : Effect.fail(hashError("ScryptFailed", error))
           )
       )
       // Node rejects some parameter combinations — a non-power-of-two `N`, for
       // instance — by throwing before it ever reaches the callback. A stored
       // hash is attacker-writable, so that has to stay a typed failure rather
       // than become a defect.
-    }).pipe(Effect.catchDefect((cause) => Effect.fail(hashError("ScryptFailed", cause)))))
+    }).pipe(Effect.catchDefect((cause) => Effect.fail(hashError("ScryptFailed", cause))))
+  )
 
 interface Pbkdf2Params {
   readonly iterations: number
@@ -458,13 +446,7 @@ const pbkdf2Derive = (
   Effect.tryPromise({
     try: async () => {
       const subtle = ambientCrypto().subtle
-      const key = await subtle.importKey(
-        "raw",
-        toArrayBuffer(encodeUtf8(password)),
-        "PBKDF2",
-        false,
-        ["deriveBits"]
-      )
+      const key = await subtle.importKey("raw", toArrayBuffer(encodeUtf8(password)), "PBKDF2", false, ["deriveBits"])
       const bits = await subtle.deriveBits(
         { name: "PBKDF2", salt: toArrayBuffer(salt), iterations: params.iterations, hash: "SHA-512" },
         key,
@@ -504,21 +486,21 @@ export const verifyHash = (
   Effect.flatMap(parseHash(hash), (parsed) => {
     const plaintext = Redacted.value(password)
     return parsed.algorithm === "scrypt"
-      ? Effect.gen(function*() {
-        const N = yield* positiveIntParam(parsed.params, "n", "MalformedScryptParameters")
-        const r = yield* positiveIntParam(parsed.params, "r", "MalformedScryptParameters")
-        const p = yield* positiveIntParam(parsed.params, "p", "MalformedScryptParameters")
-        const derived = yield* scryptDerive(plaintext, parsed.salt, { N, r, p, dkLen: parsed.key.length })
-        return timingSafeEqualUint8(derived, parsed.key)
-      })
-      : Effect.gen(function*() {
-        const iterations = yield* positiveIntParam(parsed.params, "i", "MalformedPbkdf2Parameters")
-        const derived = yield* pbkdf2Derive(plaintext, parsed.salt, {
-          iterations,
-          dkLen: parsed.key.length
+      ? Effect.gen(function* () {
+          const N = yield* positiveIntParam(parsed.params, "n", "MalformedScryptParameters")
+          const r = yield* positiveIntParam(parsed.params, "r", "MalformedScryptParameters")
+          const p = yield* positiveIntParam(parsed.params, "p", "MalformedScryptParameters")
+          const derived = yield* scryptDerive(plaintext, parsed.salt, { N, r, p, dkLen: parsed.key.length })
+          return timingSafeEqualUint8(derived, parsed.key)
         })
-        return timingSafeEqualUint8(derived, parsed.key)
-      })
+      : Effect.gen(function* () {
+          const iterations = yield* positiveIntParam(parsed.params, "i", "MalformedPbkdf2Parameters")
+          const derived = yield* pbkdf2Derive(plaintext, parsed.salt, {
+            iterations,
+            dkLen: parsed.key.length
+          })
+          return timingSafeEqualUint8(derived, parsed.key)
+        })
   })
 
 // -----------------------------------------------------------------------------
@@ -542,7 +524,7 @@ export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): Pass
   const parameterSegment = `n=${params.N},r=${params.r},p=${params.p}`
 
   return PasswordHasher.of({
-    hash: Effect.fnUntraced(function*(password: Redacted.Redacted<string>) {
+    hash: Effect.fnUntraced(function* (password: Redacted.Redacted<string>) {
       const salt = yield* Effect.orDie(crypto.randomBytes(saltBytes))
       const key = yield* scryptDerive(Redacted.value(password), salt, params)
       return formatHash("scrypt", parameterSegment, salt, key)
@@ -566,7 +548,7 @@ export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): Pass
   const parameterSegment = `i=${params.iterations}`
 
   return PasswordHasher.of({
-    hash: Effect.fnUntraced(function*(password: Redacted.Redacted<string>) {
+    hash: Effect.fnUntraced(function* (password: Redacted.Redacted<string>) {
       const salt = yield* Effect.orDie(crypto.randomBytes(saltBytes))
       const key = yield* pbkdf2Derive(Redacted.value(password), salt, params)
       return formatHash("pbkdf2", parameterSegment, salt, key)
@@ -590,10 +572,11 @@ export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): Pass
  * @category layers
  * @since 1.0.0
  */
-export const layerScrypt = (
-  options?: ScryptOptions
-): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
-  Layer.effect(PasswordHasher, Crypto.Crypto.useSync((crypto) => makeScrypt(crypto, options)))
+export const layerScrypt = (options?: ScryptOptions): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
+  Layer.effect(
+    PasswordHasher,
+    Crypto.Crypto.useSync((crypto) => makeScrypt(crypto, options))
+  )
 
 /**
  * The portable layer: PBKDF2-HMAC-SHA512 over WebCrypto, for runtimes without
@@ -608,7 +591,8 @@ export const layerScrypt = (
  * @category layers
  * @since 1.0.0
  */
-export const layerPbkdf2 = (
-  options?: Pbkdf2Options
-): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
-  Layer.effect(PasswordHasher, Crypto.Crypto.useSync((crypto) => makePbkdf2(crypto, options)))
+export const layerPbkdf2 = (options?: Pbkdf2Options): Layer.Layer<PasswordHasher, never, Crypto.Crypto> =>
+  Layer.effect(
+    PasswordHasher,
+    Crypto.Crypto.useSync((crypto) => makePbkdf2(crypto, options))
+  )

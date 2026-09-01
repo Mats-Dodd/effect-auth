@@ -77,17 +77,13 @@ import { Account, baseUserModel, CredentialIssuer, Session, Verification } from 
 // Column projections
 // -----------------------------------------------------------------------------
 
-const sessionColumns =
-  `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", remember_me AS "rememberMe", created_at AS "createdAt", updated_at AS "updatedAt"`
+const sessionColumns = `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", remember_me AS "rememberMe", created_at AS "createdAt", updated_at AS "updatedAt"`
 
-const accountColumns =
-  `id, issuer, account_id AS "accountId", provider_id AS "providerId", user_id AS "userId", access_token AS "accessToken", refresh_token AS "refreshToken", id_token AS "idToken", access_token_expires_at AS "accessTokenExpiresAt", refresh_token_expires_at AS "refreshTokenExpiresAt", scope, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"`
+const accountColumns = `id, issuer, account_id AS "accountId", provider_id AS "providerId", user_id AS "userId", access_token AS "accessToken", refresh_token AS "refreshToken", id_token AS "idToken", access_token_expires_at AS "accessTokenExpiresAt", refresh_token_expires_at AS "refreshTokenExpiresAt", scope, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"`
 
-const verificationColumns =
-  `id, identifier, value_hash AS "valueHash", payload, expires_at AS "expiresAt", created_at AS "createdAt", updated_at AS "updatedAt"`
+const verificationColumns = `id, identifier, value_hash AS "valueHash", payload, expires_at AS "expiresAt", created_at AS "createdAt", updated_at AS "updatedAt"`
 
-const sessionJoinColumns =
-  `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.remember_me AS "s_rememberMe", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
+const sessionJoinColumns = `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.remember_me AS "s_rememberMe", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
 
 // -----------------------------------------------------------------------------
 // User columns, derived from the model
@@ -120,8 +116,7 @@ interface UserColumn {
  */
 const storesBoolean = (schema: Schema.Top): boolean => {
   const ast = SchemaAST.toEncoded(schema.ast)
-  return SchemaAST.isBoolean(ast) ||
-    (SchemaAST.isUnion(ast) && ast.types.some((member) => SchemaAST.isBoolean(member)))
+  return SchemaAST.isBoolean(ast) || (SchemaAST.isUnion(ast) && ast.types.some((member) => SchemaAST.isBoolean(member)))
 }
 
 const userColumnsOf = (fields: { readonly [key: string]: Schema.Top }): ReadonlyArray<UserColumn> =>
@@ -133,7 +128,7 @@ const userColumnsOf = (fields: { readonly [key: string]: Schema.Top }): Readonly
 
 /** `id, email_verified AS "emailVerified", …` — the projection of a plain read. */
 const projectionOf = (columns: ReadonlyArray<UserColumn>): string =>
-  columns.map(({ column, field }) => column === field ? column : `${column} AS "${field}"`).join(", ")
+  columns.map(({ column, field }) => (column === field ? column : `${column} AS "${field}"`)).join(", ")
 
 /** `u.email_verified AS "u_emailVerified", …` — the projection of the joined read. */
 const joinedProjectionOf = (columns: ReadonlyArray<UserColumn>, alias: string, prefix: string): string =>
@@ -178,8 +173,7 @@ const NowRequest = Schema.Struct({ now: IsoString })
 const kindOf = (cause: unknown): PersistenceFailureKind =>
   SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
 
-const fail = (operation: string) => (cause: unknown) =>
-  new PersistenceError({ operation, kind: kindOf(cause), cause })
+const fail = (operation: string) => (cause: unknown) => new PersistenceError({ operation, kind: kindOf(cause), cause })
 
 const persist =
   (operation: string) =>
@@ -227,11 +221,20 @@ export const decodeSqliteBoolean = (value: unknown): unknown =>
  */
 const booleanCodec = (sql: SqlClient.SqlClient) => ({
   encode: sql.onDialectOrElse({
-    orElse: () => (value: boolean): boolean | number => value,
-    sqlite: () => (value: boolean): boolean | number => value ? 1 : 0
+    orElse:
+      () =>
+      (value: boolean): boolean | number =>
+        value,
+    sqlite:
+      () =>
+      (value: boolean): boolean | number =>
+        value ? 1 : 0
   }),
   decode: sql.onDialectOrElse({
-    orElse: () => (value: unknown): unknown => value,
+    orElse:
+      () =>
+      (value: unknown): unknown =>
+        value,
     sqlite: () => decodeSqliteBoolean
   })
 })
@@ -241,28 +244,23 @@ const booleanCodec = (sql: SqlClient.SqlClient) => ({
  * un-prefixed, with the boolean ones brought back from whatever the dialect
  * stores them as.
  */
-const userReaderOf = (
-  columns: ReadonlyArray<UserColumn>,
-  decodeBoolean: (value: unknown) => unknown
-) =>
-(row: UserRow, prefix: string): UserRow => {
-  const user: Record<string, unknown> = Object.create(null)
-  for (const { boolean, field } of columns) {
-    const value = row[`${prefix}${field}`]
-    user[field] = boolean ? decodeBoolean(value) : value
+const userReaderOf =
+  (columns: ReadonlyArray<UserColumn>, decodeBoolean: (value: unknown) => unknown) =>
+  (row: UserRow, prefix: string): UserRow => {
+    const user: Record<string, unknown> = Object.create(null)
+    for (const { boolean, field } of columns) {
+      const value = row[`${prefix}${field}`]
+      user[field] = boolean ? decodeBoolean(value) : value
+    }
+    return user
   }
-  return user
-}
 
 /**
  * Turns an encoded model row into the columns a statement writes: `camelCase`
  * becomes `snake_case`, and a boolean becomes whatever this dialect stores one
  * as.
  */
-const columnWriterOf = (
-  columns: ReadonlyArray<UserColumn>,
-  encodeBoolean: (value: boolean) => boolean | number
-) => {
+const columnWriterOf = (columns: ReadonlyArray<UserColumn>, encodeBoolean: (value: boolean) => boolean | number) => {
   const byField = new Map(columns.map((column) => [column.field, column]))
   return (row: UserRow): Record<string, unknown> => {
     const record: Record<string, unknown> = Object.create(null)
@@ -275,7 +273,7 @@ const columnWriterOf = (
   }
 }
 
-const countRows = (rows: ReadonlyArray<RawCountRow>): number => rows.length === 0 ? 0 : Number(rows[0]!.count)
+const countRows = (rows: ReadonlyArray<RawCountRow>): number => (rows.length === 0 ? 0 : Number(rows[0]!.count))
 
 const encodeExpiry = (value: DateTime.Utc | null | undefined): string | null =>
   value === null || value === undefined ? null : DateTime.formatIso(value)
@@ -286,105 +284,99 @@ const encodeExpiry = (value: DateTime.Utc | null | undefined): string | null =>
 
 const makeUserStore: <F extends UserFields>(
   model: UserModel<F>
-) => Effect.Effect<UserStoreService<F>, never, SqlClient.SqlClient> = Effect.fnUntraced(
-  function*<F extends UserFields>(model: UserModel<F>) {
-    const sql = yield* SqlClient.SqlClient
-    const columns = userColumnsOf(model.selectFields)
-    const userCols = sql.literal(projectionOf(columns))
-    const boolean = booleanCodec(sql)
-    const readUser = userReaderOf(columns, boolean.decode)
-    const toColumns = columnWriterOf(columns, boolean.encode)
+) => Effect.Effect<UserStoreService<F>, never, SqlClient.SqlClient> = Effect.fnUntraced(function* <
+  F extends UserFields
+>(model: UserModel<F>) {
+  const sql = yield* SqlClient.SqlClient
+  const columns = userColumnsOf(model.selectFields)
+  const userCols = sql.literal(projectionOf(columns))
+  const boolean = booleanCodec(sql)
+  const readUser = userReaderOf(columns, boolean.decode)
+  const toColumns = columnWriterOf(columns, boolean.encode)
 
-    const encodeInsert = Schema.encodeUnknownEffect(model.rows.insert)
-    const encodePatch = Schema.encodeUnknownEffect(model.rows.patch)
+  const encodeInsert = Schema.encodeUnknownEffect(model.rows.insert)
+  const encodePatch = Schema.encodeUnknownEffect(model.rows.patch)
 
-    /**
-     * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
-     * already, so the plain read is the same guarantee there.
-     */
-    const lockClause = sql.onDialectOrElse({
-      orElse: () => sql.literal(" FOR UPDATE"),
-      sqlite: () => sql.literal("")
-    })
+  /**
+   * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
+   * already, so the plain read is the same guarantee there.
+   */
+  const lockClause = sql.onDialectOrElse({
+    orElse: () => sql.literal(" FOR UPDATE"),
+    sqlite: () => sql.literal("")
+  })
 
-    /** A decoding failure means the columns and the model have drifted apart. */
-    const decoded = (operation: string, row: UserRow): Effect.Effect<UserOf<F>, PersistenceError> =>
-      Effect.mapError(
-        model.decodeRow(readUser(row, "")),
-        (cause) => new PersistenceError({ operation, cause })
-      )
+  /** A decoding failure means the columns and the model have drifted apart. */
+  const decoded = (operation: string, row: UserRow): Effect.Effect<UserOf<F>, PersistenceError> =>
+    Effect.mapError(model.decodeRow(readUser(row, "")), (cause) => new PersistenceError({ operation, cause }))
 
-    const one = (operation: string) => (rows: ReadonlyArray<UserRow>): Effect.Effect<UserOf<F>, PersistenceError> =>
+  const one =
+    (operation: string) =>
+    (rows: ReadonlyArray<UserRow>): Effect.Effect<UserOf<F>, PersistenceError> =>
       Option.match(Array.head(rows), {
-        onNone: () =>
-          Effect.fail(
-            new PersistenceError({ operation, cause: "the statement returned no row" })
-          ),
+        onNone: () => Effect.fail(new PersistenceError({ operation, cause: "the statement returned no row" })),
         onSome: (row) => decoded(operation, row)
       })
 
-    const first =
-      (operation: string) =>
-      (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<UserOf<F>>, PersistenceError> =>
-        Option.match(Array.head(rows), {
-          onNone: () => Effect.succeedNone,
-          onSome: (row) => Effect.asSome(decoded(operation, row))
-        })
+  const first =
+    (operation: string) =>
+    (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<UserOf<F>>, PersistenceError> =>
+      Option.match(Array.head(rows), {
+        onNone: () => Effect.succeedNone,
+        onSome: (row) => Effect.asSome(decoded(operation, row))
+      })
 
-    return userStoreOf(model).of({
-      create: (user) =>
-        Effect.gen(function*() {
-          // A caller holding the base-typed key builds rows out of base fields
-          // alone; the model's own defaults are what makes such a row storable.
-          const complete = yield* model.completeInsert(user)
-          const encoded = yield* Effect.orDie(encodeInsert(complete))
-          const rows = yield* persist("UserStore.create")(
-            sql<UserRow>`INSERT INTO users ${sql.insert(toColumns(encoded))} RETURNING ${userCols}`
-          )
-          return yield* one("UserStore.create")(rows)
-        }),
-
-      findById: (id) =>
-        Effect.flatMap(
-          persist("UserStore.findById")(sql<UserRow>`SELECT ${userCols} FROM users WHERE id = ${id}`),
-          first("UserStore.findById")
-        ),
-
-      findByEmail: (email) =>
-        Effect.flatMap(
-          persist("UserStore.findByEmail")(sql<UserRow>`SELECT ${userCols} FROM users WHERE email = ${email}`),
-          first("UserStore.findByEmail")
-        ),
-
-      update: (id, patch: UserPatch<F>) =>
-        Effect.gen(function*() {
-          const now = yield* DateTime.now
-          // The patch is already typed by the model, so an encoding failure here
-          // is a bug rather than something a caller can act on.
-          const encoded = yield* Effect.orDie(encodePatch(patch))
-          const set = omitUndefined({ ...toColumns(encoded), updated_at: DateTime.formatIso(now) })
-          const rows = yield* persist("UserStore.update")(
-            sql<UserRow>`UPDATE users SET ${sql.update(set)} WHERE id = ${id} RETURNING ${userCols}`
-          )
-          return yield* first("UserStore.update")(rows)
-        }),
-
-      delete: (id) =>
-        persist("UserStore.delete")(
-          Effect.map(sql<RawIdRow>`DELETE FROM users WHERE id = ${id} RETURNING id`, (rows) => rows.length > 0)
-        ),
-
-      // Called for the lock, not the row: a transaction takes it before reading
-      // a user's accounts so a concurrent reclaim of the same user cannot
-      // interleave. The id is a bound parameter; the only interpolated fragment
-      // is the dialect's own `FOR UPDATE` (empty on SQLite).
-      lockUserRow: (id) =>
-        persist("UserStore.lockUserRow")(
-          Effect.asVoid(sql<RawIdRow>`SELECT id FROM users WHERE id = ${id}${lockClause}`)
+  return userStoreOf(model).of({
+    create: (user) =>
+      Effect.gen(function* () {
+        // A caller holding the base-typed key builds rows out of base fields
+        // alone; the model's own defaults are what makes such a row storable.
+        const complete = yield* model.completeInsert(user)
+        const encoded = yield* Effect.orDie(encodeInsert(complete))
+        const rows = yield* persist("UserStore.create")(
+          sql<UserRow>`INSERT INTO users ${sql.insert(toColumns(encoded))} RETURNING ${userCols}`
         )
-    })
-  }
-)
+        return yield* one("UserStore.create")(rows)
+      }),
+
+    findById: (id) =>
+      Effect.flatMap(
+        persist("UserStore.findById")(sql<UserRow>`SELECT ${userCols} FROM users WHERE id = ${id}`),
+        first("UserStore.findById")
+      ),
+
+    findByEmail: (email) =>
+      Effect.flatMap(
+        persist("UserStore.findByEmail")(sql<UserRow>`SELECT ${userCols} FROM users WHERE email = ${email}`),
+        first("UserStore.findByEmail")
+      ),
+
+    update: (id, patch: UserPatch<F>) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now
+        // The patch is already typed by the model, so an encoding failure here
+        // is a bug rather than something a caller can act on.
+        const encoded = yield* Effect.orDie(encodePatch(patch))
+        const set = omitUndefined({ ...toColumns(encoded), updated_at: DateTime.formatIso(now) })
+        const rows = yield* persist("UserStore.update")(
+          sql<UserRow>`UPDATE users SET ${sql.update(set)} WHERE id = ${id} RETURNING ${userCols}`
+        )
+        return yield* first("UserStore.update")(rows)
+      }),
+
+    delete: (id) =>
+      persist("UserStore.delete")(
+        Effect.map(sql<RawIdRow>`DELETE FROM users WHERE id = ${id} RETURNING id`, (rows) => rows.length > 0)
+      ),
+
+    // Called for the lock, not the row: a transaction takes it before reading
+    // a user's accounts so a concurrent reclaim of the same user cannot
+    // interleave. The id is a bound parameter; the only interpolated fragment
+    // is the dialect's own `FOR UPDATE` (empty on SQLite).
+    lockUserRow: (id) =>
+      persist("UserStore.lockUserRow")(Effect.asVoid(sql<RawIdRow>`SELECT id FROM users WHERE id = ${id}${lockClause}`))
+  })
+})
 
 // -----------------------------------------------------------------------------
 // SessionStore
@@ -392,69 +384,70 @@ const makeUserStore: <F extends UserFields>(
 
 const makeSessionStore: <F extends UserFields>(
   model: UserModel<F>
-) => Effect.Effect<SessionStoreService<F>, never, SqlClient.SqlClient> = Effect.fnUntraced(
-  function*<F extends UserFields>(model: UserModel<F>) {
-    const sql = yield* SqlClient.SqlClient
-    const sessionCols = sql.literal(sessionColumns)
-    const columns = userColumnsOf(model.selectFields)
-    const sessionWithUserCols = sql.literal(
-      `${sessionJoinColumns}, ${joinedProjectionOf(columns, "u", "u_")}`
-    )
-    const boolean = booleanCodec(sql)
-    const decodeBoolean = boolean.decode
-    const readUser = userReaderOf(columns, decodeBoolean)
+) => Effect.Effect<SessionStoreService<F>, never, SqlClient.SqlClient> = Effect.fnUntraced(function* <
+  F extends UserFields
+>(model: UserModel<F>) {
+  const sql = yield* SqlClient.SqlClient
+  const sessionCols = sql.literal(sessionColumns)
+  const columns = userColumnsOf(model.selectFields)
+  const sessionWithUserCols = sql.literal(`${sessionJoinColumns}, ${joinedProjectionOf(columns, "u", "u_")}`)
+  const boolean = booleanCodec(sql)
+  const decodeBoolean = boolean.decode
+  const readUser = userReaderOf(columns, decodeBoolean)
 
-    const decodeSession = Schema.decodeUnknownEffect(Session)
-    const encodeInsert = Schema.encodeUnknownEffect(Session.insert)
+  const decodeSession = Schema.decodeUnknownEffect(Session)
+  const encodeInsert = Schema.encodeUnknownEffect(Session.insert)
 
-    /**
-     * `sessions.remember_me` is the one boolean the session table stores, so —
-     * exactly as the user store does for its own flags — the dialect's stored
-     * form is brought back to a `boolean` before the row is decoded, rather than
-     * letting SQLite's integer reach a `Schema.Boolean`.
-     */
-    const readSession = (row: UserRow): Effect.Effect<Session, Schema.SchemaError> =>
-      decodeSession({ ...row, rememberMe: decodeBoolean(row["rememberMe"]) })
+  /**
+   * `sessions.remember_me` is the one boolean the session table stores, so —
+   * exactly as the user store does for its own flags — the dialect's stored
+   * form is brought back to a `boolean` before the row is decoded, rather than
+   * letting SQLite's integer reach a `Schema.Boolean`.
+   */
+  const readSession = (row: UserRow): Effect.Effect<Session, Schema.SchemaError> =>
+    decodeSession({ ...row, rememberMe: decodeBoolean(row["rememberMe"]) })
 
-    const firstSession = (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<Session>, Schema.SchemaError> =>
-      Option.match(Array.head(rows), {
-        onNone: () => Effect.succeedNone,
-        onSome: (row) => Effect.asSome(readSession(row))
-      })
-
-    const sessionFromRow = (row: UserRow) => ({
-      id: row["s_id"],
-      tokenHash: row["s_tokenHash"],
-      userId: row["s_userId"],
-      expiresAt: row["s_expiresAt"],
-      ipAddress: row["s_ipAddress"],
-      userAgent: row["s_userAgent"],
-      rememberMe: decodeBoolean(row["s_rememberMe"]),
-      createdAt: row["s_createdAt"],
-      updatedAt: row["s_updatedAt"]
+  const firstSession = (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<Session>, Schema.SchemaError> =>
+    Option.match(Array.head(rows), {
+      onNone: () => Effect.succeedNone,
+      onSome: (row) => Effect.asSome(readSession(row))
     })
 
-    /**
-     * The two halves of the joined row are decoded separately rather than
-     * through one composite schema: only the user half is the model's, and
-     * keeping it that way is what stops the model's field map leaking into the
-     * session store's own types.
-     */
-    const decodeJoined = (row: UserRow): Effect.Effect<SessionWithUser<F>, PersistenceError> =>
-      Effect.mapError(
-        Effect.all({
-          session: decodeSession(sessionFromRow(row)),
-          user: model.decodeRow(readUser(row, "u_"))
-        }),
-        (cause) => new PersistenceError({ operation: "SessionStore.findByTokenHash", cause })
-      )
+  const sessionFromRow = (row: UserRow) => ({
+    id: row["s_id"],
+    tokenHash: row["s_tokenHash"],
+    userId: row["s_userId"],
+    expiresAt: row["s_expiresAt"],
+    ipAddress: row["s_ipAddress"],
+    userAgent: row["s_userAgent"],
+    rememberMe: decodeBoolean(row["s_rememberMe"]),
+    createdAt: row["s_createdAt"],
+    updatedAt: row["s_updatedAt"]
+  })
 
-    const insertSession = (session: typeof Session.insert.Type): Effect.Effect<Session, PersistenceError> =>
-      persist("SessionStore.create")(Effect.gen(function*() {
+  /**
+   * The two halves of the joined row are decoded separately rather than
+   * through one composite schema: only the user half is the model's, and
+   * keeping it that way is what stops the model's field map leaking into the
+   * session store's own types.
+   */
+  const decodeJoined = (row: UserRow): Effect.Effect<SessionWithUser<F>, PersistenceError> =>
+    Effect.mapError(
+      Effect.all({
+        session: decodeSession(sessionFromRow(row)),
+        user: model.decodeRow(readUser(row, "u_"))
+      }),
+      (cause) => new PersistenceError({ operation: "SessionStore.findByTokenHash", cause })
+    )
+
+  const insertSession = (session: typeof Session.insert.Type): Effect.Effect<Session, PersistenceError> =>
+    persist("SessionStore.create")(
+      Effect.gen(function* () {
         // Encoding a well-formed insert row is the model's own doing, so a
         // failure here is a defect rather than something a caller can act on.
         const row = yield* Effect.orDie(encodeInsert(session))
-        const rows = yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, remember_me, created_at, updated_at)
+        const rows =
+          yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, remember_me, created_at, updated_at)
         VALUES (${row.id as string}, ${row.tokenHash as string}, ${row.userId as string}, ${row.expiresAt as string}, ${
           row.ipAddress as string | null
         }, ${row.userAgent as string | null}, ${boolean.encode(row.rememberMe as boolean)}, ${
@@ -468,94 +461,95 @@ const makeSessionStore: <F extends UserFields>(
             ),
           onSome: readSession
         })
-      }))
+      })
+    )
 
-    const selectSessionWithUser = (
-      tokenHash: string
-    ): Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError> =>
-      Effect.flatMap(
-        persist("SessionStore.findByTokenHash")(
-          sql<UserRow>`SELECT ${sessionWithUserCols}
+  const selectSessionWithUser = (
+    tokenHash: string
+  ): Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError> =>
+    Effect.flatMap(
+      persist("SessionStore.findByTokenHash")(
+        sql<UserRow>`SELECT ${sessionWithUserCols}
           FROM sessions s
           INNER JOIN users u ON u.id = s.user_id
           WHERE s.token_hash = ${tokenHash}`
-        ),
-        (rows) =>
-          Option.match(Array.head(rows), {
-            onNone: (): Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError> => Effect.succeedNone,
-            onSome: (row) => Effect.asSome(decodeJoined(row))
-          })
-      )
+      ),
+      (rows) =>
+        Option.match(Array.head(rows), {
+          onNone: (): Effect.Effect<Option.Option<SessionWithUser<F>>, PersistenceError> => Effect.succeedNone,
+          onSome: (row) => Effect.asSome(decodeJoined(row))
+        })
+    )
 
-    return sessionStoreOf(model).of({
-      create: (session) => insertSession(session),
+  return sessionStoreOf(model).of({
+    create: (session) => insertSession(session),
 
-      findByTokenHash: (tokenHash) => selectSessionWithUser(tokenHash),
+    findByTokenHash: (tokenHash) => selectSessionWithUser(tokenHash),
 
-      // The rolling refresh moves only the expiry and the update stamp; the
-      // stored `remember_me` is deliberately left as it was, so a short session
-      // kept alive by browsing never has its lifetime silently promoted.
-      touch: (id, expiresAt) =>
-        persist("SessionStore.touch")(Effect.gen(function*() {
+    // The rolling refresh moves only the expiry and the update stamp; the
+    // stored `remember_me` is deliberately left as it was, so a short session
+    // kept alive by browsing never has its lifetime silently promoted.
+    touch: (id, expiresAt) =>
+      persist("SessionStore.touch")(
+        Effect.gen(function* () {
           const now = yield* DateTime.now
           const rows = yield* sql<UserRow>`UPDATE sessions
           SET expires_at = ${DateTime.formatIso(expiresAt)}, updated_at = ${DateTime.formatIso(now)}
           WHERE id = ${id}
           RETURNING ${sessionCols}`
           return yield* firstSession(rows)
-        })),
+        })
+      ),
 
-      deleteById: (id, userId) =>
-        persist("SessionStore.deleteById")(
-          Effect.map(
-            sql<RawIdRow>`DELETE FROM sessions WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-            (rows) => rows.length > 0
-          )
-        ),
+    deleteById: (id, userId) =>
+      persist("SessionStore.deleteById")(
+        Effect.map(
+          sql<RawIdRow>`DELETE FROM sessions WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
+          (rows) => rows.length > 0
+        )
+      ),
 
-      deleteByUserId: (userId) =>
-        persist("SessionStore.deleteByUserId")(
-          Effect.map(
-            sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} RETURNING id`,
-            (rows) => rows.length
-          )
-        ),
+    deleteByUserId: (userId) =>
+      persist("SessionStore.deleteByUserId")(
+        Effect.map(sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} RETURNING id`, (rows) => rows.length)
+      ),
 
-      deleteByUserIdExcept: (userId, sessionId) =>
-        persist("SessionStore.deleteByUserIdExcept")(
-          Effect.map(
-            sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} AND id <> ${sessionId} RETURNING id`,
-            (rows) => rows.length
-          )
-        ),
+    deleteByUserIdExcept: (userId, sessionId) =>
+      persist("SessionStore.deleteByUserIdExcept")(
+        Effect.map(
+          sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} AND id <> ${sessionId} RETURNING id`,
+          (rows) => rows.length
+        )
+      ),
 
-      listByUserId: (userId) =>
-        persist("SessionStore.listByUserId")(Effect.gen(function*() {
+    listByUserId: (userId) =>
+      persist("SessionStore.listByUserId")(
+        Effect.gen(function* () {
           const now = yield* DateTime.now
           const rows = yield* sql<UserRow>`SELECT ${sessionCols} FROM sessions
           WHERE user_id = ${userId} AND expires_at > ${DateTime.formatIso(now)}
           ORDER BY created_at DESC, id DESC`
           return yield* Effect.forEach(rows, readSession)
-        })),
+        })
+      ),
 
-      deleteExpired: persist("SessionStore.deleteExpired")(Effect.flatMap(
-        DateTime.now,
-        (now) =>
-          Effect.map(
-            sql<RawIdRow>`DELETE FROM sessions WHERE expires_at <= ${DateTime.formatIso(now)} RETURNING id`,
-            (rows) => rows.length
-          )
-      ))
-    })
-  }
-)
+    deleteExpired: persist("SessionStore.deleteExpired")(
+      Effect.flatMap(DateTime.now, (now) =>
+        Effect.map(
+          sql<RawIdRow>`DELETE FROM sessions WHERE expires_at <= ${DateTime.formatIso(now)} RETURNING id`,
+          (rows) => rows.length
+        )
+      )
+    )
+  })
+})
 
 // -----------------------------------------------------------------------------
 // AccountStore
 // -----------------------------------------------------------------------------
 
-const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClient.SqlClient | AuthConfig> = Effect
-  .fnUntraced(function*() {
+const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClient.SqlClient | AuthConfig> =
+  Effect.fnUntraced(function* () {
     const sql = yield* SqlClient.SqlClient
     const config = yield* AuthConfig
     const cipher = yield* makeProviderTokenCipher(config.secret)
@@ -564,26 +558,29 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
     const providerFields = ["access_token", "refresh_token", "id_token"] as const
     const modelField = (field: ProviderTokenField): "accessToken" | "refreshToken" | "idToken" => {
       switch (field) {
-        case "access_token": return "accessToken"
-        case "refresh_token": return "refreshToken"
-        case "id_token": return "idToken"
+        case "access_token":
+          return "accessToken"
+        case "refresh_token":
+          return "refreshToken"
+        case "id_token":
+          return "idToken"
       }
     }
-    const cryptoFailure = (operation: string) => (cause: unknown) =>
-      new PersistenceError({ operation, cause })
+    const cryptoFailure = (operation: string) => (cause: unknown) => new PersistenceError({ operation, cause })
     const protect = <A>(operation: string, effect: Effect.Effect<A>): Effect.Effect<A, PersistenceError> =>
-      effect.pipe(
-        Effect.catchDefect((cause) => Effect.fail(cryptoFailure(operation)(cause)))
-      )
-    const transformTokens = <A extends {
-      readonly id: string
-      readonly accessToken: string | null
-      readonly refreshToken: string | null
-      readonly idToken: string | null
-    }>(
+      effect.pipe(Effect.catchDefect((cause) => Effect.fail(cryptoFailure(operation)(cause))))
+    const transformTokens = <
+      A extends {
+        readonly id: string
+        readonly accessToken: string | null
+        readonly refreshToken: string | null
+        readonly idToken: string | null
+      }
+    >(
       account: A,
       transform: ProviderTokenCipher["encrypt"] | ProviderTokenCipher["decrypt"]
-    ): Effect.Effect<A> => Effect.gen(function*() {
+    ): Effect.Effect<A> =>
+      Effect.gen(function* () {
         const patch: Partial<Record<"accessToken" | "refreshToken" | "idToken", string | null>> = {}
         for (const field of providerFields) {
           const property = modelField(field)
@@ -603,20 +600,23 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
       protect(operation, Effect.forEach(values, decryptAccount))
 
     const encryptPatch = (id: AccountId, tokens: AccountTokens) =>
-      protect("AccountStore.updateTokens", Effect.gen(function*() {
-        return {
-          ...tokens,
-          ...(tokens.accessToken === undefined || tokens.accessToken === null
-            ? {}
-            : { accessToken: yield* cipher.encrypt(id, "access_token", tokens.accessToken) }),
-          ...(tokens.refreshToken === undefined || tokens.refreshToken === null
-            ? {}
-            : { refreshToken: yield* cipher.encrypt(id, "refresh_token", tokens.refreshToken) }),
-          ...(tokens.idToken === undefined || tokens.idToken === null
-            ? {}
-            : { idToken: yield* cipher.encrypt(id, "id_token", tokens.idToken) })
-        } satisfies AccountTokens
-      }))
+      protect(
+        "AccountStore.updateTokens",
+        Effect.gen(function* () {
+          return {
+            ...tokens,
+            ...(tokens.accessToken === undefined || tokens.accessToken === null
+              ? {}
+              : { accessToken: yield* cipher.encrypt(id, "access_token", tokens.accessToken) }),
+            ...(tokens.refreshToken === undefined || tokens.refreshToken === null
+              ? {}
+              : { refreshToken: yield* cipher.encrypt(id, "refresh_token", tokens.refreshToken) }),
+            ...(tokens.idToken === undefined || tokens.idToken === null
+              ? {}
+              : { idToken: yield* cipher.encrypt(id, "id_token", tokens.idToken) })
+          } satisfies AccountTokens
+        })
+      )
 
     const insertAccount = SqlSchema.findOne({
       Request: Account.insert,
@@ -683,17 +683,20 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
     })
 
     const updateAccountRow = (operation: string, id: AccountId, set: Record<string, unknown>) =>
-      persist(operation)(Effect.gen(function*() {
-        const rows = yield* sql`UPDATE accounts SET ${sql.update(set)} WHERE id = ${id} RETURNING ${accountCols}`
-        return yield* firstAccount(rows)
-      }))
+      persist(operation)(
+        Effect.gen(function* () {
+          const rows = yield* sql`UPDATE accounts SET ${sql.update(set)} WHERE id = ${id} RETURNING ${accountCols}`
+          return yield* firstAccount(rows)
+        })
+      )
 
     return AccountStore.of({
-      create: (account) => Effect.gen(function*() {
-        const encrypted = yield* protect("AccountStore.create", encryptAccount(account))
-        const stored = yield* persist("AccountStore.create")(insertAccount(encrypted))
-        return yield* protect("AccountStore.create", decryptAccount(stored))
-      }),
+      create: (account) =>
+        Effect.gen(function* () {
+          const encrypted = yield* protect("AccountStore.create", encryptAccount(account))
+          const stored = yield* persist("AccountStore.create")(insertAccount(encrypted))
+          return yield* protect("AccountStore.create", decryptAccount(stored))
+        }),
 
       findByIssuerAccountId: (issuer, accountId) =>
         Effect.flatMap(
@@ -702,9 +705,8 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
         ),
 
       findByIdAndUserId: (id, userId) =>
-        Effect.flatMap(
-          persist("AccountStore.findByIdAndUserId")(selectAccountByIdAndUser({ id, userId })),
-          (value) => decryptOption("AccountStore.findByIdAndUserId", value)
+        Effect.flatMap(persist("AccountStore.findByIdAndUserId")(selectAccountByIdAndUser({ id, userId })), (value) =>
+          decryptOption("AccountStore.findByIdAndUserId", value)
         ),
 
       findByUserIdAndProviderId: (userId, providerId) =>
@@ -713,19 +715,18 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
           (value) => decryptOption("AccountStore.findByUserIdAndProviderId", value)
         ),
 
-      listByUserId: (userId) => Effect.flatMap(
-        persist("AccountStore.listByUserId")(listAccounts(userId)),
-        (values) => decryptAll("AccountStore.listByUserId", values)
-      ),
+      listByUserId: (userId) =>
+        Effect.flatMap(persist("AccountStore.listByUserId")(listAccounts(userId)), (values) =>
+          decryptAll("AccountStore.listByUserId", values)
+        ),
 
       listByUserIdForUpdate: (userId) =>
-        Effect.flatMap(
-          persist("AccountStore.listByUserIdForUpdate")(listAccountsForUpdate(userId)),
-          (values) => decryptAll("AccountStore.listByUserIdForUpdate", values)
+        Effect.flatMap(persist("AccountStore.listByUserIdForUpdate")(listAccountsForUpdate(userId)), (values) =>
+          decryptAll("AccountStore.listByUserIdForUpdate", values)
         ),
 
       updateTokens: (id, tokens: AccountTokens) =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const now = yield* DateTime.now
           const encrypted = yield* encryptPatch(id, tokens)
           const updated = yield* updateAccountRow(
@@ -735,12 +736,12 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
               access_token: encrypted.accessToken,
               refresh_token: encrypted.refreshToken,
               id_token: encrypted.idToken,
-              access_token_expires_at: encrypted.accessTokenExpiresAt === undefined
-                ? undefined
-                : encodeExpiry(encrypted.accessTokenExpiresAt),
-              refresh_token_expires_at: encrypted.refreshTokenExpiresAt === undefined
-                ? undefined
-                : encodeExpiry(encrypted.refreshTokenExpiresAt),
+              access_token_expires_at:
+                encrypted.accessTokenExpiresAt === undefined ? undefined : encodeExpiry(encrypted.accessTokenExpiresAt),
+              refresh_token_expires_at:
+                encrypted.refreshTokenExpiresAt === undefined
+                  ? undefined
+                  : encodeExpiry(encrypted.refreshTokenExpiresAt),
               scope: encrypted.scope,
               updated_at: DateTime.formatIso(now)
             })
@@ -749,15 +750,18 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
         }),
 
       updatePasswordHash: (userId, passwordHash) =>
-        persist("AccountStore.updatePasswordHash")(Effect.gen(function*() {
-          const now = yield* DateTime.now
-          const rows = yield* sql`UPDATE accounts
+        persist("AccountStore.updatePasswordHash")(
+          Effect.gen(function* () {
+            const now = yield* DateTime.now
+            const rows = yield* sql`UPDATE accounts
           SET password_hash = ${passwordHash}, updated_at = ${DateTime.formatIso(now)}
           WHERE user_id = ${userId} AND issuer = ${CredentialIssuer}
           RETURNING ${accountCols}`
-          return yield* Effect.flatMap(firstAccount(rows), (value) =>
-            decryptOption("AccountStore.updatePasswordHash", value))
-        })),
+            return yield* Effect.flatMap(firstAccount(rows), (value) =>
+              decryptOption("AccountStore.updatePasswordHash", value)
+            )
+          })
+        ),
 
       deleteById: (id, userId) =>
         persist("AccountStore.deleteById")(
@@ -769,18 +773,12 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
 
       deleteByUserId: (userId) =>
         persist("AccountStore.deleteByUserId")(
-          Effect.map(
-            sql<RawIdRow>`DELETE FROM accounts WHERE user_id = ${userId} RETURNING id`,
-            (rows) => rows.length
-          )
+          Effect.map(sql<RawIdRow>`DELETE FROM accounts WHERE user_id = ${userId} RETURNING id`, (rows) => rows.length)
         ),
 
       countByUserId: (userId) =>
         persist("AccountStore.countByUserId")(
-          Effect.map(
-            sql<RawCountRow>`SELECT COUNT(*) AS "count" FROM accounts WHERE user_id = ${userId}`,
-            countRows
-          )
+          Effect.map(sql<RawCountRow>`SELECT COUNT(*) AS "count" FROM accounts WHERE user_id = ${userId}`, countRows)
         )
     })
   })
@@ -789,8 +787,8 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
 // VerificationStore
 // -----------------------------------------------------------------------------
 
-const makeVerificationStore: () => Effect.Effect<VerificationStoreService, never, SqlClient.SqlClient> = Effect
-  .fnUntraced(function*() {
+const makeVerificationStore: () => Effect.Effect<VerificationStoreService, never, SqlClient.SqlClient> =
+  Effect.fnUntraced(function* () {
     const sql = yield* SqlClient.SqlClient
     const verificationCols = sql.literal(verificationColumns)
 
@@ -834,20 +832,18 @@ const makeVerificationStore: () => Effect.Effect<VerificationStoreService, never
       create: (verification) => persist("VerificationStore.create")(insertVerification(verification)),
 
       consume: (identifier, valueHash) =>
-        persist("VerificationStore.consume")(Effect.flatMap(
-          DateTime.now,
-          (now) => consumeVerification({ identifier, valueHash, now })
-        )),
+        persist("VerificationStore.consume")(
+          Effect.flatMap(DateTime.now, (now) => consumeVerification({ identifier, valueHash, now }))
+        ),
 
       deleteByIdentifier: (identifier) =>
         persist("VerificationStore.deleteByIdentifier")(
           Effect.map(deleteVerificationsByIdentifier(identifier), (rows) => rows.length)
         ),
 
-      deleteExpired: persist("VerificationStore.deleteExpired")(Effect.flatMap(
-        DateTime.now,
-        (now) => Effect.map(deleteExpiredVerifications({ now }), (rows) => rows.length)
-      ))
+      deleteExpired: persist("VerificationStore.deleteExpired")(
+        Effect.flatMap(DateTime.now, (now) => Effect.map(deleteExpiredVerifications({ now }), (rows) => rows.length))
+      )
     })
   })
 
@@ -855,20 +851,19 @@ const makeVerificationStore: () => Effect.Effect<VerificationStoreService, never
 // WithAuthTransaction
 // -----------------------------------------------------------------------------
 
-const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, SqlClient.SqlClient> = Effect
-  .fnUntraced(function*() {
+const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, SqlClient.SqlClient> = Effect.fnUntraced(
+  function* () {
     const sql = yield* SqlClient.SqlClient
     return WithAuthTransaction.of({
       run: <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | PersistenceError, R> =>
-        Effect.mapError(
-          sql.withTransaction(effect),
-          (error): E | PersistenceError =>
-            SqlError.isSqlError(error)
-              ? new PersistenceError({ operation: "WithAuthTransaction.run", cause: error })
-              : error
+        Effect.mapError(sql.withTransaction(effect), (error): E | PersistenceError =>
+          SqlError.isSqlError(error)
+            ? new PersistenceError({ operation: "WithAuthTransaction.run", cause: error })
+            : error
         )
     })
-  })
+  }
+)
 
 // -----------------------------------------------------------------------------
 // The layer

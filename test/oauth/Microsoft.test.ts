@@ -19,8 +19,7 @@ const consumerTenant = Microsoft.consumerTenantId
 
 const issuerOfTenant = (tenant: string) => `${authority}/${tenant}/v2.0`
 
-const microsoft = (options?: Partial<Microsoft.Options>) =>
-  Microsoft.make({ clientId, ...options })
+const microsoft = (options?: Partial<Microsoft.Options>) => Microsoft.make({ clientId, ...options })
 
 /**
  * Verification exactly as `OAuthFlow.withIdToken` does it: the provider's
@@ -34,17 +33,19 @@ const verifying = (
   payload: JWTPayload,
   sign?: MockProvider.SignOptions
 ) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const token = Redacted.make(yield* Effect.promise(() => signer.sign(payload, sign)))
-    return yield* Effect.result(verify({
-      providerId: Microsoft.id,
-      token,
-      issuer: provider.oidc?.issuerOf ?? provider.oidc?.issuer ?? "",
-      audience: provider.oidc?.audience ?? provider.clientId,
-      keys: signer.jwks,
-      nonce: null,
-      algorithms: ["RS256"]
-    }))
+    return yield* Effect.result(
+      verify({
+        providerId: Microsoft.id,
+        token,
+        issuer: provider.oidc?.issuerOf ?? provider.oidc?.issuer ?? "",
+        audience: provider.oidc?.audience ?? provider.clientId,
+        keys: signer.jwks,
+        nonce: null,
+        algorithms: ["RS256"]
+      })
+    )
   })
 
 /** A token from `tenant`, signed with that tenant's issuer, and its claims. */
@@ -62,8 +63,7 @@ const tokenFrom = (
   )
 
 /** The tokens a provider's `userInfo` is called with, carrying verified claims. */
-const tokensOf = (claims: IdTokenClaims) =>
-  MockProvider.tokensOf("entra-access-token", { idTokenClaims: claims })
+const tokensOf = (claims: IdTokenClaims) => MockProvider.tokensOf("entra-access-token", { idTokenClaims: claims })
 
 /**
  * A transport for providers that never make a request: every route on it is a
@@ -83,19 +83,10 @@ describe("oauth/providers/Microsoft", () => {
       // against. It is still the issuer accounts are stored under.
       assert.strictEqual(provider.oidc?.issuer, `${authority}/common/v2.0`)
       assert.strictEqual(providerIssuer(provider), `${authority}/common/v2.0`)
-      assert.deepStrictEqual([...provider.scopes], [
-        "openid",
-        "profile",
-        "email",
-        "User.Read",
-        "offline_access"
-      ])
+      assert.deepStrictEqual([...provider.scopes], ["openid", "profile", "email", "User.Read", "offline_access"])
       // Entra answers a refresh with a token for the default resource unless the
       // scopes are repeated.
-      assert.strictEqual(
-        provider.tokenRefresh?.params?.scope,
-        "openid profile email User.Read offline_access"
-      )
+      assert.strictEqual(provider.tokenRefresh?.params?.scope, "openid profile email User.Read offline_access")
     })
 
     it("trims a trailing slash off the authority", () => {
@@ -122,17 +113,18 @@ describe("oauth/providers/Microsoft", () => {
 
   layer(MockProvider.IdTokenSigner.layer)("tenant rules", (it) => {
     it.effect("accepts a token whose issuer names its own tenant", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
         const result = yield* tokenFrom(provider, signer, workTenant)
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
         assert.strictEqual(result.success.issuer, issuerOfTenant(workTenant))
-      }))
+      })
+    )
 
     it.effect("refuses a token whose issuer names a tenant other than its own tid", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
         // The forgery this check exists for: a token minted in the attacker's
@@ -144,10 +136,11 @@ describe("oauth/providers/Microsoft", () => {
           { issuer: issuerOfTenant("99999999-9999-9999-9999-999999999999"), audience: clientId }
         )
         assert.strictEqual(result._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses a token with no tid at all", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
         const result = yield* verifying(
@@ -158,10 +151,11 @@ describe("oauth/providers/Microsoft", () => {
         )
         // `issuerOf` returning null rejects, exactly as a mismatch does.
         assert.strictEqual(result._tag, "Failure")
-      }))
+      })
+    )
 
     it.effect("refuses a personal account under `organizations`", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft({ tenantId: "organizations" })
 
@@ -170,10 +164,11 @@ describe("oauth/providers/Microsoft", () => {
 
         const work = yield* tokenFrom(provider, signer, workTenant)
         assert.strictEqual(work._tag, "Success")
-      }))
+      })
+    )
 
     it.effect("requires a personal account under `consumers`", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft({ tenantId: "consumers" })
 
@@ -184,10 +179,11 @@ describe("oauth/providers/Microsoft", () => {
 
         const personal = yield* tokenFrom(provider, signer, consumerTenant)
         assert.strictEqual(personal._tag, "Success")
-      }))
+      })
+    )
 
     it.effect("pins one tenant's issuer when one tenant was configured", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft({ tenantId: workTenant })
 
@@ -198,7 +194,8 @@ describe("oauth/providers/Microsoft", () => {
         // there is no `issuerOf` in this configuration.
         const other = yield* tokenFrom(provider, signer, consumerTenant)
         assert.strictEqual(other._tag, "Failure")
-      }))
+      })
+    )
   })
 
   layer(MockProvider.IdTokenSigner.layer)("userInfo", (it) => {
@@ -207,14 +204,14 @@ describe("oauth/providers/Microsoft", () => {
       signer: MockProvider.IdTokenSignerService,
       claims?: JWTPayload
     ) =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const result = yield* tokenFrom(provider, signer, workTenant, claims)
         if (result._tag !== "Success") return yield* Effect.die("the token did not verify")
         return result.success
       })
 
     it.effect("anchors the identity on oid, not on the app-scoped sub", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
         const claims = yield* verifiedClaims(provider, signer, {
@@ -232,10 +229,11 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(info.image, "https://cdn.test/ada.png")
         // The account's issuer is the one the *verified* token named, per tenant.
         assert.strictEqual(info.issuer, issuerOfTenant(workTenant))
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("refuses a token with no oid", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
         const claims = yield* verifiedClaims(provider, signer, { oid: undefined, email: "ada@acme.test" })
@@ -244,10 +242,11 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("defaults emailVerified to false, and reads both of Entra's statements", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
 
@@ -275,10 +274,11 @@ describe("oauth/providers/Microsoft", () => {
           verified_primary_email: ["somebody@acme.test"]
         })
         assert.isFalse((yield* provider.userInfo(tokensOf(elsewhere))).emailVerified)
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("falls back to the UPN as an address, and never as a verified one", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const signer = yield* MockProvider.IdTokenSigner
         const provider = microsoft()
         const claims = yield* verifiedClaims(provider, signer, {
@@ -290,21 +290,23 @@ describe("oauth/providers/Microsoft", () => {
         const info = yield* provider.userInfo(tokensOf(claims))
         assert.strictEqual(info.email, "ada@acme.onmicrosoft.com")
         assert.isFalse(info.emailVerified)
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
 
     it.effect("fails closed when the flow handed it no verified claims", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = microsoft()
         const result = yield* Effect.result(provider.userInfo(MockProvider.tokensOf("entra-access-token")))
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-      }).pipe(Effect.provide(noNetwork)))
+      }).pipe(Effect.provide(noNetwork))
+    )
   })
 
   describe("makeConfig", () => {
     it.effect("builds the same value from the environment, secret and all", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = yield* Microsoft.makeConfig({
           clientId: Config.string("MS_CLIENT_ID"),
           clientSecret: Config.redacted("MS_CLIENT_SECRET"),
@@ -318,22 +320,26 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(provider.oidc?.issuer, issuerOfTenant(workTenant))
         assert.isUndefined(provider.oidc?.issuerOf)
       }).pipe(
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({
-          MS_CLIENT_ID: "ms-from-the-environment",
-          MS_CLIENT_SECRET: "ms-secret-from-the-environment",
-          MS_TENANT_ID: workTenant
-        })))
-      ))
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              MS_CLIENT_ID: "ms-from-the-environment",
+              MS_CLIENT_SECRET: "ms-secret-from-the-environment",
+              MS_TENANT_ID: workTenant
+            })
+          )
+        )
+      )
+    )
 
     it.effect("leaves a public client without a secret rather than failing", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const provider = yield* Microsoft.makeConfig({ clientId: Config.string("MS_CLIENT_ID") })
         assert.deepStrictEqual(
           yield* Effect.map(resolveClientSecret(provider), Option.map(Redacted.value)),
           Option.none()
         )
-      }).pipe(
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ MS_CLIENT_ID: "public-client" })))
-      ))
+      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ MS_CLIENT_ID: "public-client" }))))
+    )
   })
 })

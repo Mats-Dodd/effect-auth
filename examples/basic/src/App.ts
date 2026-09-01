@@ -24,9 +24,7 @@ import * as Todos from "./Todos.js"
  */
 export const baseUrl = process.env["BASE_URL"] ?? "http://localhost:3000"
 
-const secret = Redacted.make(
-  process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production"
-)
+const secret = Redacted.make(process.env["AUTH_SECRET"] ?? "example-secret-please-replace-in-production")
 
 /**
  * An in-memory PGlite database with the `effect-auth` tables created, plus the
@@ -40,9 +38,7 @@ const secret = Redacted.make(
  * `Migrator` record or runs them as a deploy step, so that a process restart is
  * never a schema change.
  */
-export const DatabaseLive = auth.layerMigrations.pipe(
-  Layer.provideMerge(PgliteClient.layer())
-)
+export const DatabaseLive = auth.layerMigrations.pipe(Layer.provideMerge(PgliteClient.layer()))
 
 /**
  * `effect-auth`, configured.
@@ -64,16 +60,15 @@ export const DatabaseLive = auth.layerMigrations.pipe(
  * below. That is the entire change: providers are values, and which entry point
  * you call is what decides whether the flow exists.
  */
-export const AuthLive = auth.layer({
-  baseUrl,
-  secret,
-  emailPassword: { enabled: true, requireEmailVerification: false },
-  user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
-  trustedOrigins: [baseUrl]
-}).pipe(
-  Layer.provide(DatabaseLive),
-  Layer.provide(Mailer.layer)
-)
+export const AuthLive = auth
+  .layer({
+    baseUrl,
+    secret,
+    emailPassword: { enabled: true, requireEmailVerification: false },
+    user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
+    trustedOrigins: [baseUrl]
+  })
+  .pipe(Layer.provide(DatabaseLive), Layer.provide(Mailer.layer))
 
 /**
  * The same deployment with GitHub sign-in switched on.
@@ -89,23 +84,21 @@ export const AuthLive = auth.layer({
  *
  * The transport must not follow redirects. `FetchHttpClient.layer` does not.
  */
-export const AuthWithGithubLive = auth.layerWithOAuth({
-  baseUrl,
-  secret,
-  emailPassword: { enabled: true, requireEmailVerification: false },
-  user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
-  trustedOrigins: [baseUrl],
-  providers: [
-    Github.make({
-      clientId: process.env["GITHUB_CLIENT_ID"] ?? "example-github-client-id",
-      clientSecret: Redacted.make(process.env["GITHUB_CLIENT_SECRET"] ?? "example-github-client-secret")
-    })
-  ]
-}).pipe(
-  Layer.provide(DatabaseLive),
-  Layer.provide(Mailer.layer),
-  Layer.provide(FetchHttpClient.layer)
-)
+export const AuthWithGithubLive = auth
+  .layerWithOAuth({
+    baseUrl,
+    secret,
+    emailPassword: { enabled: true, requireEmailVerification: false },
+    user: { changeEmail: { enabled: true }, deleteUser: { enabled: true } },
+    trustedOrigins: [baseUrl],
+    providers: [
+      Github.make({
+        clientId: process.env["GITHUB_CLIENT_ID"] ?? "example-github-client-id",
+        clientSecret: Redacted.make(process.env["GITHUB_CLIENT_SECRET"] ?? "example-github-client-secret")
+      })
+    ]
+  })
+  .pipe(Layer.provide(DatabaseLive), Layer.provide(Mailer.layer), Layer.provide(FetchHttpClient.layer))
 
 /**
  * The magic link plugin, over the configured library.
@@ -142,11 +135,7 @@ const PlatformLive = Layer.mergeAll(Path.layer, Etag.layerWeak, HttpPlatform.lay
  * are provided the same `MagicLinkLive`, so the plugin and the core read one
  * `Sessions`, one `UserStore` and one rate limiter.
  */
-export const HandlersLive = Layer.mergeAll(
-  auth.handlers(AppApi),
-  MagicLink.handlers(AppApi),
-  Todos.layer
-).pipe(
+export const HandlersLive = Layer.mergeAll(auth.handlers(AppApi), MagicLink.handlers(AppApi), Todos.layer).pipe(
   Layer.provide(MagicLinkLive)
 )
 
@@ -154,7 +143,4 @@ export const HandlersLive = Layer.mergeAll(
  * The router: `effect-auth`'s twenty-eight endpoints, the plugin's three, and
  * the application's two.
  */
-export const AppLive = HttpApiBuilder.layer(AppApi).pipe(
-  Layer.provide(HandlersLive),
-  Layer.provideMerge(PlatformLive)
-)
+export const AppLive = HttpApiBuilder.layer(AppApi).pipe(Layer.provide(HandlersLive), Layer.provideMerge(PlatformLive))

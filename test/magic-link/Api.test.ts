@@ -57,7 +57,10 @@ const errorTags = (endpoint: HttpApiEndpoint.Top): ReadonlyArray<string> =>
 
 describe("magic-link/Api", () => {
   it("declares exactly the three endpoints in the design", () => {
-    assert.deepStrictEqual(Object.keys(endpoints), contract.map((entry) => entry.identifier))
+    assert.deepStrictEqual(
+      Object.keys(endpoints),
+      contract.map((entry) => entry.identifier)
+    )
   })
 
   it("serves every endpoint at its specified method and path", () => {

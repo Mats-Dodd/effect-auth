@@ -45,7 +45,7 @@ const unsupportedDialect = Effect.fail(
   migrationError(`effect-auth migrations only support the "pg" and "sqlite" dialects`)
 )
 
-const createUsers = Effect.gen(function*() {
+const createUsers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql.onDialectOrElse({
@@ -75,7 +75,7 @@ const createUsers = Effect.gen(function*() {
   yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)`
 })
 
-const createSessions = Effect.gen(function*() {
+const createSessions = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`CREATE TABLE IF NOT EXISTS sessions (
@@ -93,7 +93,7 @@ const createSessions = Effect.gen(function*() {
   yield* sql`CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id)`
 })
 
-const createAccounts = Effect.gen(function*() {
+const createAccounts = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`CREATE TABLE IF NOT EXISTS accounts (
@@ -117,7 +117,7 @@ const createAccounts = Effect.gen(function*() {
   yield* sql`CREATE INDEX IF NOT EXISTS accounts_user_id_idx ON accounts (user_id)`
 })
 
-const createVerifications = Effect.gen(function*() {
+const createVerifications = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
   yield* sql`CREATE TABLE IF NOT EXISTS verifications (
@@ -133,7 +133,7 @@ const createVerifications = Effect.gen(function*() {
   yield* sql`CREATE INDEX IF NOT EXISTS verifications_identifier_idx ON verifications (identifier)`
 })
 
-const addSessionRememberMe = Effect.gen(function*() {
+const addSessionRememberMe = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
 
   // A boolean on PostgreSQL, an integer flag on SQLite — the same divergence as
@@ -207,8 +207,10 @@ const columnKind = (ast: SchemaAST.AST): Option.Option<ColumnKind> => {
 /** Whether a field accepts `null`, and therefore whether its column may. */
 const isNullable = (ast: SchemaAST.AST): boolean => {
   const encoded = SchemaAST.toEncoded(ast)
-  return SchemaAST.isNull(encoded) ||
+  return (
+    SchemaAST.isNull(encoded) ||
     (SchemaAST.isUnion(encoded) && encoded.types.some((member) => SchemaAST.isNull(member)))
+  )
 }
 
 /** A default value, as the literal a `DEFAULT` clause takes. */
@@ -219,24 +221,21 @@ const defaultLiteral = (value: unknown, dialect: Dialect): Option.Option<string>
   return Option.none()
 }
 
-const dialectOf = (
-  sql: SqlClient.SqlClient,
-  table: string
-): Option.Option<Dialect> =>
+const dialectOf = (sql: SqlClient.SqlClient, table: string): Option.Option<Dialect> =>
   sql.onDialectOrElse({
     orElse: (): Option.Option<Dialect> => Option.none(),
     pg: () =>
       Option.some({
-        type: (kind) => kind === "text" ? "text" : kind === "boolean" ? "boolean" : "double precision",
-        boolean: (value) => value ? "true" : "false",
+        type: (kind) => (kind === "text" ? "text" : kind === "boolean" ? "boolean" : "double precision"),
+        boolean: (value) => (value ? "true" : "false"),
         // PostgreSQL has the idempotence built in; SQLite has to be asked.
         addColumn: (table, definition) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`,
         existingColumns: Effect.succeed(new Set<string>())
       }),
     sqlite: () =>
       Option.some({
-        type: (kind) => kind === "text" ? "text" : kind === "boolean" ? "integer" : "real",
-        boolean: (value) => value ? "1" : "0",
+        type: (kind) => (kind === "text" ? "text" : kind === "boolean" ? "integer" : "real"),
+        boolean: (value) => (value ? "1" : "0"),
         addColumn: (table, definition) => `ALTER TABLE ${table} ADD COLUMN ${definition}`,
         existingColumns: Effect.map(
           sql.unsafe<{ readonly name: unknown }>(`PRAGMA table_info(${table})`),
@@ -287,7 +286,7 @@ export const forUserFields = <F extends UserFields>(
   model: UserModel<F>,
   options?: { readonly table?: string | undefined }
 ): Effect.Effect<void, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     if (model.extraKeys.length === 0) return
 
     const table = options?.table ?? "users"

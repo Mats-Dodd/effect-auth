@@ -81,11 +81,16 @@ const installed: Layer.Layer<Installed> = Layer.effect(Installed, AuthHooks)
 
 /** Builds `composition` and answers the hook set it left in the reference. */
 const resolve = (composition: Layer.Layer<never>): Effect.Effect<AuthHooksService> =>
-  Effect.provide(Effect.map(Installed, (hooks): AuthHooksService => hooks), installed.pipe(Layer.provide(composition)))
+  Effect.provide(
+    Effect.map(Installed, (hooks): AuthHooksService => hooks),
+    installed.pipe(Layer.provide(composition))
+  )
 
 /** Unwraps an optional hook member, failing the test when the composition dropped it. */
 const declared = <A>(member: A | undefined, name: string): Effect.Effect<A> =>
-  member === undefined ? Effect.sync(() => assert.fail(`the composed set should declare ${name}`)) : Effect.succeed(member)
+  member === undefined
+    ? Effect.sync(() => assert.fail(`the composed set should declare ${name}`))
+    : Effect.succeed(member)
 
 /** The `beforeUserCreate` of a composed set, which the composition must have declared. */
 const beforeCreateOf = (hooks: AuthHooksService) => declared(hooks.beforeUserCreate, "beforeUserCreate")
@@ -107,7 +112,7 @@ describe("domain/Hooks", () => {
   })
 
   it.effect("chains beforeUserCreate left to right, each seeing the previous rewrite", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const trace: Array<string> = []
       const combined = combine(recording(trace, "one"), recording(trace, "two"))
       const candidate = yield* candidateFor("chain@example.com")
@@ -119,10 +124,11 @@ describe("domain/Hooks", () => {
       // The second hook was handed what the first answered with, not the
       // original: the suffixes are in the order the hooks ran.
       assert.strictEqual(rewritten.name, `${testName}/one/two`)
-    }))
+    })
+  )
 
   it.effect("sequences afterUserCreate and the veto members in the same order", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const trace: Array<string> = []
       const combined = combine(recording(trace, "one"), recording(trace, "two"))
       const user = yield* baseUserModel.decodeRow({
@@ -141,10 +147,11 @@ describe("domain/Hooks", () => {
       yield* beforeDelete({ user })
 
       assert.deepStrictEqual(trace, ["after:one", "after:two", "delete:one", "delete:two"])
-    }))
+    })
+  )
 
   it.effect("stops at the first refusal, whichever side it came from", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const trace: Array<string> = []
       const candidate = yield* candidateFor("refused@example.com")
 
@@ -161,35 +168,44 @@ describe("domain/Hooks", () => {
       const later = yield* Effect.flip(secondRefuses({ candidate, source: testSource }))
       assert.strictEqual(later.code, "two")
       assert.deepStrictEqual(trace, ["before:one", "before:two"])
-    }))
+    })
+  )
 
   // ---------------------------------------------------------------------------
   // layer / append — the checkpoint
   // ---------------------------------------------------------------------------
 
   it.effect("resolves to no hooks at all when nothing provided any", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       assert.deepStrictEqual(yield* resolve(Layer.empty), {})
-    }))
+    })
+  )
 
   it.effect("applies Layer.updateService over the reference's own default", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // The checkpoint `hooks.md` calls for. `append` is `updateService`'s own
       // definition written out, so what is asserted here is the property both
       // depend on: the function is handed the *default* when nothing in the
       // context provided the reference, rather than being skipped entirely.
       const trace: Array<string> = []
       const updated = Layer.updateService(installed, AuthHooks, (hooks) => combine(hooks, recording(trace, "only")))
-      const hooks = yield* Effect.provide(Effect.map(Installed, (h): AuthHooksService => h), updated)
+      const hooks = yield* Effect.provide(
+        Effect.map(Installed, (h): AuthHooksService => h),
+        updated
+      )
 
       const beforeCreate = yield* beforeCreateOf(hooks)
-      const rewritten = yield* beforeCreate({ candidate: yield* candidateFor("default@example.com"), source: testSource })
+      const rewritten = yield* beforeCreate({
+        candidate: yield* candidateFor("default@example.com"),
+        source: testSource
+      })
       assert.strictEqual(rewritten.name, `${testName}/only`)
       assert.deepStrictEqual(trace, ["before:only"])
-    }))
+    })
+  )
 
   it.effect("appends over the default, so a plugin needs no consumer set to exist", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const trace: Array<string> = []
       const beforeCreate = yield* beforeCreateOf(yield* resolve(append(recording(trace, "plugin"))))
 
@@ -199,10 +215,11 @@ describe("domain/Hooks", () => {
       })
       assert.strictEqual(rewritten.name, `${testName}/plugin`)
       assert.deepStrictEqual(trace, ["before:plugin"])
-    }))
+    })
+  )
 
   it.effect("appends after a consumer's set rather than shadowing it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const trace: Array<string> = []
       // The composition a deployment writes: the application's set is provided
       // underneath the plugin's, so the plugin reads it and adds to it.
@@ -217,10 +234,11 @@ describe("domain/Hooks", () => {
       })
       assert.strictEqual(rewritten.name, `${testName}/app/plugin`)
       assert.deepStrictEqual(trace, ["before:app", "before:plugin"])
-    }))
+    })
+  )
 
   it.effect("lets the application's refusal short-circuit an appended plugin", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const trace: Array<string> = []
       const hooks = yield* resolve(
         append(recording(trace, "plugin")).pipe(Layer.provide(hooksLayer(refusing(trace, "app"))))
@@ -232,16 +250,18 @@ describe("domain/Hooks", () => {
       )
       assert.strictEqual(refused.code, "app")
       assert.deepStrictEqual(trace, ["before:app"])
-    }))
+    })
+  )
 
   it.effect("gives the typed view the same slot as the base reference", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // A typed view is the same key with a narrower shape, so a set installed
       // through it is the set core reads back through the base one.
       const typed = hooksOf(baseUserModel)
       const hooks = yield* resolve(Layer.succeed(typed)({ beforeUserDelete: () => Effect.void }))
       assert.isDefined(hooks.beforeUserDelete)
-    }))
+    })
+  )
 })
 
 // -----------------------------------------------------------------------------
@@ -258,7 +278,7 @@ const provisionHooks: AuthHooksService = {
 
 layer(AuthTest.layer())("domain/Hooks — provision", (it) => {
   it.effect("writes the candidate through unchanged when no hook is installed", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const users = yield* Users
       const email = uniqueEmail("provision-plain")
       const candidate = yield* candidateFor(email)
@@ -270,11 +290,12 @@ layer(AuthTest.layer())("domain/Hooks — provision", (it) => {
       // The id is the caller's: it was generated before this was called, so the
       // flow that is about to write related rows already knows it.
       assert.strictEqual(user.id, candidate.id)
-    }))
+    })
+  )
 
   it.layer(AuthTest.layer({ hooks: provisionHooks }))("with beforeUserCreate installed", (it) => {
     it.effect("stores what the hook rewrote, re-validated by the model", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const users = yield* Users
         const store = yield* UserStore
         const email = uniqueEmail("provision-rewrite")
@@ -286,10 +307,11 @@ layer(AuthTest.layer())("domain/Hooks — provision", (it) => {
         // The row that was written, not the value the hook answered with.
         const stored = yield* expectSome(yield* store.findById(user.id), "the provisioned row")
         assert.strictEqual(stored.name, "Rewritten")
-      }))
+      })
+    )
 
     it.effect("refuses, and writes no row", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const users = yield* Users
         const store = yield* UserStore
         const email = uniqueEmail("provision-refused")
@@ -306,7 +328,8 @@ layer(AuthTest.layer())("domain/Hooks — provision", (it) => {
         }
 
         assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
-      }))
+      })
+    )
   })
 })
 
@@ -330,27 +353,23 @@ const passwordHooks: AuthHooksService = {
     candidate.email.includes("veto")
       ? Effect.fail(new PolicyRefused({ code: "not_welcome", detail: source._tag }))
       : Effect.succeed({
-        ...candidate,
-        name: `${candidate.name} (${source._tag})`,
-        // A policy that rewrites the *address* — moving a sign-up onto a
-        // canonical domain is the real shape of this — and does not normalize
-        // what it wrote. Normalizing is the library's job: see the test below
-        // for what a row stored in the hook's own casing would cost.
-        ...(candidate.email.includes("recase") ? { email: candidate.email.toUpperCase() } : {})
-      }),
+          ...candidate,
+          name: `${candidate.name} (${source._tag})`,
+          // A policy that rewrites the *address* — moving a sign-up onto a
+          // canonical domain is the real shape of this — and does not normalize
+          // what it wrote. Normalizing is the library's job: see the test below
+          // for what a row stored in the hook's own casing would cost.
+          ...(candidate.email.includes("recase") ? { email: candidate.email.toUpperCase() } : {})
+        }),
   afterUserCreate: ({ user }) =>
-    user.email.includes("after-fails")
-      ? Effect.fail(new PolicyRefused({ code: "related_row_refused" }))
-      : Effect.void,
+    user.email.includes("after-fails") ? Effect.fail(new PolicyRefused({ code: "related_row_refused" })) : Effect.void,
   beforeSessionCreate: ({ user }) =>
-    user.email.includes("banned")
-      ? Effect.fail(new PolicyRefused({ code: "banned" }))
-      : Effect.void
+    user.email.includes("banned") ? Effect.fail(new PolicyRefused({ code: "banned" })) : Effect.void
 }
 
 layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password source", (it) => {
   it.effect("rewrites the row a sign-up creates, and says where it came from", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const store = yield* UserStore
       const email = uniqueEmail("hooks-password-rewrite")
@@ -362,10 +381,11 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       assert.strictEqual(user.name, `${testName} (EmailPassword)`)
       const stored = yield* expectSome(yield* store.findByEmail(email), "the registered row")
       assert.strictEqual(stored.name, `${testName} (EmailPassword)`)
-    }))
+    })
+  )
 
   it.effect("normalizes an address a hook rewrote, so the account is still reachable", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const store = yield* UserStore
       const email = uniqueEmail("hooks-password-recase")
@@ -385,21 +405,18 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       // both the duplicate check and the unique index.
       const signedIn = yield* passwords.signIn({ email, password: testPassword })
       assert.strictEqual(signedIn.user.id, user.id)
-      const duplicate = yield* Effect.flip(
-        passwords.signUp({ name: testName, email, password: testPassword })
-      )
+      const duplicate = yield* Effect.flip(passwords.signUp({ name: testName, email, password: testPassword }))
       assert.strictEqual(duplicate._tag, "UserAlreadyExists")
-    }))
+    })
+  )
 
   it.effect("refuses a sign-up the policy rejects, leaving no user and no credential", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const store = yield* UserStore
       const email = uniqueEmail("hooks-password-veto")
 
-      const refused = yield* Effect.flip(
-        passwords.signUp({ name: testName, email, password: testPassword })
-      )
+      const refused = yield* Effect.flip(passwords.signUp({ name: testName, email, password: testPassword }))
       assert.strictEqual(refused._tag, "PolicyRefused")
       if (refused._tag === "PolicyRefused") {
         assert.strictEqual(refused.code, "not_welcome")
@@ -409,17 +426,16 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       // Nothing was written: the hook runs inside the sign-up's transaction,
       // ahead of the row it would have created.
       assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
-    }))
+    })
+  )
 
   it.effect("leaves no user row behind when afterUserCreate fails", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const store = yield* UserStore
       const email = uniqueEmail("hooks-password-after-fails")
 
-      const refused = yield* Effect.flip(
-        passwords.signUp({ name: testName, email, password: testPassword })
-      )
+      const refused = yield* Effect.flip(passwords.signUp({ name: testName, email, password: testPassword }))
       assert.strictEqual(refused._tag, "PolicyRefused")
 
       // The row existed when the hook ran — that is the whole point of
@@ -427,10 +443,11 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       // half-provisioned account, a user with no credential to sign in with,
       // is what this is here to rule out.
       assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
-    }))
+    })
+  )
 
   it.effect("succeeds with no session when the policy refuses the auto sign-in", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const store = yield* UserStore
       const email = uniqueEmail("hooks-password-banned")
@@ -443,7 +460,8 @@ layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password sourc
       assert.isTrue(Option.isNone(result.session))
       assert.strictEqual(result.user.email, email)
       assert.isTrue(Option.isSome(yield* store.findByEmail(email)))
-    }))
+    })
+  )
 })
 
 // The counter belongs to the hashing layer and the layer is built once for the
@@ -453,7 +471,7 @@ describe.sequential("domain/Hooks — beforeSessionCreate (timing defence)", () 
 
   it.layer(AuthTest.layer({ hasher: hasher.layer, hooks: passwordHooks }))((it) => {
     it.effect("refuses a banned user only after verifying their password once", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const email = uniqueEmail("banned")
         yield* passwords.signUp({ name: testName, email, password: testPassword })
@@ -472,7 +490,8 @@ describe.sequential("domain/Hooks — beforeSessionCreate (timing defence)", () 
         const invalid = yield* Effect.flip(passwords.signIn({ email, password: newPassword }))
         assert.strictEqual(invalid._tag, "InvalidCredentials")
         assert.strictEqual(hasher.state.verifies - wrong, 1)
-      }))
+      })
+    )
   })
 })
 
@@ -507,7 +526,7 @@ const oauthHooks: AuthHooksService = {
 
 layer(AuthTest.layer({ hooks: oauthHooks, trustedProviders: ["github"] }))("domain/Hooks — OAuth source", (it) => {
   it.effect("provisions a first-time identity through the hook, which sees the profile", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const accounts = yield* Accounts
       const identity = oauthIdentity(uniqueEmail("hooks-oauth-new"))
 
@@ -515,10 +534,11 @@ layer(AuthTest.layer({ hooks: oauthHooks, trustedProviders: ["github"] }))("doma
 
       assert.isTrue(result.userCreated)
       assert.strictEqual(result.user.name, `github:${identity.accountId}`)
-    }))
+    })
+  )
 
   it.effect("refuses to attach an identity to an existing user when the policy says not to", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const accounts = yield* Accounts
       const store = yield* AccountStore
@@ -536,11 +556,15 @@ layer(AuthTest.layer({ hooks: oauthHooks, trustedProviders: ["github"] }))("doma
       // The refusal is the reason there is no second sign-in method: only the
       // credential the sign-up wrote.
       const held = yield* store.listByUserId(user.id)
-      assert.deepStrictEqual(held.map((account) => account.providerId), ["credential"])
-    }))
+      assert.deepStrictEqual(
+        held.map((account) => account.providerId),
+        ["credential"]
+      )
+    })
+  )
 
   it.effect("refuses the same link asked for deliberately, and allows one it does not object to", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const passwords = yield* Passwords
       const accounts = yield* Accounts
       const refusedEmail = uniqueEmail("hooks-oauth-no-link")
@@ -567,7 +591,8 @@ layer(AuthTest.layer({ hooks: oauthHooks, trustedProviders: ["github"] }))("doma
       // the hook has nothing to be asked about — it only refreshes the tokens.
       const again = yield* accounts.linkToUser(user.id, identity)
       assert.isFalse(again.accountCreated)
-    }))
+    })
+  )
 })
 
 // -----------------------------------------------------------------------------
@@ -645,13 +670,15 @@ const crossProviderReturns = (identity: { readonly sub: string; readonly email: 
   Effect.sync(() => {
     crossServer.clear()
     crossServer.on(MockProvider.tokenUrl, () =>
-      MockProvider.json({ access_token: "provider-access-token", token_type: "bearer", expires_in: 3600 }))
+      MockProvider.json({ access_token: "provider-access-token", token_type: "bearer", expires_in: 3600 })
+    )
     crossServer.on(MockProvider.userInfoUrl, () =>
-      MockProvider.json({ sub: identity.sub, email: identity.email, email_verified: true, name: testName }))
+      MockProvider.json({ sub: identity.sub, email: identity.email, email_verified: true, name: testName })
+    )
   })
 
 /** A whole OAuth round trip, as a browser makes it. */
-const crossOAuthSignIn = Effect.fnUntraced(function*(email: string) {
+const crossOAuthSignIn = Effect.fnUntraced(function* (email: string) {
   yield* crossProviderReturns({ sub: `sub-${globalThis.crypto.randomUUID()}`, email })
   const flow = yield* OAuthFlow
   const started = yield* flow.start({ providerId: crossProvider.id })
@@ -663,7 +690,7 @@ const crossOAuthSignIn = Effect.fnUntraced(function*(email: string) {
 })
 
 /** A whole magic-link round trip: ask for the link, then follow it. */
-const crossMagicLinkSignIn = Effect.fnUntraced(function*(email: string) {
+const crossMagicLinkSignIn = Effect.fnUntraced(function* (email: string) {
   const magic = yield* MagicLink
   yield* magic.request({ email, name: testName })
   const emails = yield* AuthTest.TestEmails
@@ -675,7 +702,7 @@ const crossMagicLinkSignIn = Effect.fnUntraced(function*(email: string) {
 describe.sequential("domain/Hooks — one policy, every source", () => {
   layer(crossDeployment)((it) => {
     it.effect("is consulted by all three provisioning sources, each naming itself", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const store = yield* UserStore
         crossTrace.length = 0
@@ -715,10 +742,11 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
           const stored = yield* expectSome(yield* store.findByEmail(email), `the ${source} row`)
           assert.strictEqual(stored.name, `${testName} via ${source}`)
         }
-      }))
+      })
+    )
 
     it.effect("aborts every source's provisioning when the same after-hook fails", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const passwords = yield* Passwords
         const store = yield* UserStore
         crossTrace.length = 0
@@ -761,6 +789,7 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
         for (const email of [password, oauth, magic]) {
           assert.isTrue(Option.isNone(yield* store.findByEmail(email)))
         }
-      }))
+      })
+    )
   })
 })

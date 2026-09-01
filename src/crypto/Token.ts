@@ -91,15 +91,11 @@ export class Token extends Context.Service<Token, TokenService>()("effect-auth/T
  */
 export const make = (crypto: Crypto.Crypto): TokenService =>
   Token.of({
-    generateToken: Effect.map(
-      Effect.orDie(crypto.randomBytes(tokenBytes)),
-      (bytes) => Redacted.make(Encoding.encodeBase64Url(bytes))
+    generateToken: Effect.map(Effect.orDie(crypto.randomBytes(tokenBytes)), (bytes) =>
+      Redacted.make(Encoding.encodeBase64Url(bytes))
     ),
     hashToken: (token) =>
-      Effect.map(
-        Effect.orDie(crypto.digest("SHA-256", encodeUtf8(Redacted.value(token)))),
-        Encoding.encodeBase64Url
-      )
+      Effect.map(Effect.orDie(crypto.digest("SHA-256", encodeUtf8(Redacted.value(token)))), Encoding.encodeBase64Url)
   })
 
 /**
@@ -114,7 +110,4 @@ export const make = (crypto: Crypto.Crypto): TokenService =>
  * @category layers
  * @since 1.0.0
  */
-export const layer: Layer.Layer<Token, never, Crypto.Crypto> = Layer.effect(
-  Token,
-  Crypto.Crypto.useSync(make)
-)
+export const layer: Layer.Layer<Token, never, Crypto.Crypto> = Layer.effect(Token, Crypto.Crypto.useSync(make))

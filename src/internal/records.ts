@@ -60,10 +60,7 @@ export const camelToSnake = (name: string): string => name.replace(/[A-Z]/g, (le
  *
  * @internal
  */
-export const pickKeys = (
-  record: object,
-  keys: ReadonlyArray<string>
-): { readonly [key: string]: unknown } => {
+export const pickKeys = (record: object, keys: ReadonlyArray<string>): { readonly [key: string]: unknown } => {
   const wanted = new Set(keys)
   const picked: Record<string, unknown> = Object.create(null)
   for (const [key, value] of Object.entries(record)) {

@@ -18,20 +18,18 @@ const layerMovingClock = (options?: MagicLinkTest.Options) =>
   MagicLinkTest.layerHttp(options).pipe(Layer.provideMerge(Layer.fresh(TestClock.layer())))
 
 /** A browser addressing this block's deployment, with a jar the test can read. */
-const makeClient = (options?: TestHttpClient.ClientOptions) =>
-  TestHttpClient.makeClient(MagicLinkTest.TestApi, options)
+const makeClient = (options?: TestHttpClient.ClientOptions) => TestHttpClient.makeClient(MagicLinkTest.TestApi, options)
 
 /** The token out of the most recent link mailed to an address. */
 const linkToken = (email: string) =>
-  Effect.flatMap(
-    AuthTest.TestEmails,
-    (emails) => Effect.map(emails.tokenFor(MagicLinkTest.magicLinkKind, email), Redacted.value)
+  Effect.flatMap(AuthTest.TestEmails, (emails) =>
+    Effect.map(emails.tokenFor(MagicLinkTest.magicLinkKind, email), Redacted.value)
   )
 
 describe.sequential("magic-link/Handlers", () => {
   layer(MagicLinkTest.layerHttp())("the endpoints", (it) => {
     it.effect("answers a request for a link identically for a stranger and a member", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const stranger = uniqueEmail("http-stranger")
         const member = uniqueEmail("http-member")
         const { client } = yield* makeClient()
@@ -43,10 +41,11 @@ describe.sequential("magic-link/Handlers", () => {
 
         assert.deepStrictEqual(first, { success: true })
         assert.deepStrictEqual(second, { success: true })
-      }))
+      })
+    )
 
     it.effect("signs the browser in when the link is followed", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-follow")
         const { client, cookies } = yield* makeClient()
 
@@ -67,10 +66,11 @@ describe.sequential("magic-link/Handlers", () => {
         assert.strictEqual(session.user.email, email)
         assert.isTrue(session.user.emailVerified)
         assert.isTrue(Option.isSome(yield* TestHttpClient.sessionCookie(cookies)))
-      }))
+      })
+    )
 
     it.effect("writes a session cookie with the attributes the library always uses", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-cookie")
         const { client } = yield* makeClient()
 
@@ -88,10 +88,11 @@ describe.sequential("magic-link/Handlers", () => {
         assert.strictEqual(cookie.value.options?.path, "/")
         // Seven days, the configured session lifetime.
         assert.strictEqual(maxAgeSeconds(response), Duration.toSeconds(Duration.days(7)))
-      }))
+      })
+    )
 
     it.effect("honours rememberMe: false with a browser-session cookie", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-forgetful")
         const { client } = yield* makeClient()
 
@@ -105,10 +106,11 @@ describe.sequential("magic-link/Handlers", () => {
 
         assert.strictEqual(response.status, 302)
         assert.strictEqual(maxAgeSeconds(response), undefined)
-      }))
+      })
+    )
 
     it.effect("exchanges a link for a session body, and a cookie with it", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-exchange")
         const { client, cookies } = yield* makeClient()
 
@@ -125,10 +127,11 @@ describe.sequential("magic-link/Handlers", () => {
 
         const session = yield* client.auth.getSession()
         assert.strictEqual(session.user.id, result.user.id)
-      }))
+      })
+    )
 
     it.effect("redirects a replayed link to baseUrl with a safe code", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-replay")
         const { client } = yield* makeClient()
 
@@ -144,14 +147,12 @@ describe.sequential("magic-link/Handlers", () => {
         assert.strictEqual(response.status, 302)
         // Nothing was claimed the second time, so the link's own error page is
         // not available — and the code says nothing about who is registered.
-        assert.strictEqual(
-          response.headers["location"],
-          `${AuthTest.testBaseUrl}/?error=invalid_token`
-        )
-      }))
+        assert.strictEqual(response.headers["location"], `${AuthTest.testBaseUrl}/?error=invalid_token`)
+      })
+    )
 
     it.effect("reports a replayed link as InvalidToken on the JSON twin", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-replay-json")
         const { client } = yield* makeClient()
 
@@ -161,10 +162,11 @@ describe.sequential("magic-link/Handlers", () => {
 
         const error = yield* Effect.flip(client.magicLink.exchange({ payload: { token } }))
         assert.strictEqual(error._tag, "InvalidToken")
-      }))
+      })
+    )
 
     it.effect("takes over an unproven account, over HTTP", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-squatted")
         const squatter = yield* makeClient()
         yield* squatter.client.auth.signUpEmail({
@@ -187,12 +189,13 @@ describe.sequential("magic-link/Handlers", () => {
           squatter.client.auth.signInEmail({ payload: { email, password: testPassword } })
         )
         assert.strictEqual(refused._tag, "InvalidCredentials")
-      }))
+      })
+    )
   })
 
   layer(layerMovingClock())("the clock", (it) => {
     it.effect("refuses a link whose five minutes are up", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-expired")
         const { client } = yield* makeClient()
 
@@ -211,10 +214,11 @@ describe.sequential("magic-link/Handlers", () => {
         // And nobody was signed in on the way past.
         const refused = yield* Effect.flip(client.auth.getSession())
         assert.strictEqual(refused._tag, "Unauthorized")
-      }))
+      })
+    )
 
     it.effect("serves a link that is still inside its window", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-in-time")
         const { client } = yield* makeClient()
 
@@ -229,12 +233,13 @@ describe.sequential("magic-link/Handlers", () => {
         })
         assert.strictEqual(response.status, 302)
         assert.strictEqual(response.headers["location"], AuthTest.testBaseUrl)
-      }))
+      })
+    )
   })
 
   layer(MagicLinkTest.layerHttp({ rateLimit: { enabled: true } }))("the rate limits", (it) => {
     it.effect("counts the plugin's endpoints on buckets of their own", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-limited")
         const { client } = yield* makeClient()
 
@@ -249,10 +254,11 @@ describe.sequential("magic-link/Handlers", () => {
         // counter: the key carries the request path.
         const elsewhere = yield* client.auth.requestPasswordReset({ payload: { email } })
         assert.deepStrictEqual(elsewhere, { success: true })
-      }))
+      })
+    )
 
     it.effect("counts spending a link against the credential bucket", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const email = uniqueEmail("http-limited-exchange")
         const { client } = yield* makeClient()
         yield* client.auth.signUpEmail({ payload: { name: testName, email, password: testPassword } })
@@ -270,6 +276,7 @@ describe.sequential("magic-link/Handlers", () => {
           payload: { email, password: Redacted.make(testPasswordText) }
         })
         assert.strictEqual(signedIn.user.email, email)
-      }))
+      })
+    )
   })
 })

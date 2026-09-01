@@ -129,8 +129,8 @@ export const make = (options?: {
 
   /** One entry per route the client tests reach; anything else is a 404. */
   const routes: Record<string, () => Response> = {
-    "GET /auth/session": () => signedIn ? json(200, sessionWithUser) : unauthorized(),
-    "GET /auth/sessions": () => signedIn ? json(200, [sessionJson]) : unauthorized(),
+    "GET /auth/session": () => (signedIn ? json(200, sessionWithUser) : unauthorized()),
+    "GET /auth/sessions": () => (signedIn ? json(200, [sessionJson]) : unauthorized()),
     "POST /auth/sign-in/email": () => {
       if (!credentialsValid) return json(401, { _tag: "InvalidCredentials" })
       signedIn = true
@@ -147,8 +147,8 @@ export const make = (options?: {
     },
     "POST /auth/sign-in/social": () =>
       json(200, { url: "https://github.test/login/oauth/authorize?state=abc", redirect: true }),
-    "POST /auth/update-user": () => signedIn ? json(200, { user }) : unauthorized(),
-    "POST /auth/change-email": () => signedIn ? json(200, { success: true }) : unauthorized(),
+    "POST /auth/update-user": () => (signedIn ? json(200, { user }) : unauthorized()),
+    "POST /auth/change-email": () => (signedIn ? json(200, { success: true }) : unauthorized()),
     "GET /auth/change-email/confirm": () => json(200, { success: true }),
     "GET /auth/change-email/verify": () => json(200, { success: true }),
     "POST /auth/delete-user": () => {
@@ -156,27 +156,26 @@ export const make = (options?: {
       signedIn = false
       return json(200, { success: true, status: "Deleted" })
     },
-    "POST /auth/set-password": () => signedIn ? json(200, { success: true }) : unauthorized(),
+    "POST /auth/set-password": () => (signedIn ? json(200, { success: true }) : unauthorized()),
     "POST /auth/magic-link/sign-in": () => json(200, { success: true }),
     "POST /auth/magic-link/exchange": () => {
       if (!magicLinkValid) return json(400, { _tag: "InvalidToken" })
       signedIn = true
       return json(200, sessionWithUser)
     },
-    "POST /auth/get-access-token": () =>
-      signedIn ? json(200, accessTokenJson) : unauthorized(),
+    "POST /auth/get-access-token": () => (signedIn ? json(200, accessTokenJson) : unauthorized()),
     "POST /auth/refresh-token": () =>
       signedIn
         ? json(200, {
-          ...accessTokenJson,
-          refreshToken: "provider-refresh-token",
-          refreshTokenExpiresAt: null
-        })
+            ...accessTokenJson,
+            refreshToken: "provider-refresh-token",
+            refreshTokenExpiresAt: null
+          })
         : unauthorized()
   }
 
   const client = HttpClient.makeWith(
-    Effect.fnUntraced(function*(requestEffect) {
+    Effect.fnUntraced(function* (requestEffect) {
       const request = yield* requestEffect
       const path = new URL(request.url, "http://auth.test").pathname
       const call = `${request.method} ${path}`

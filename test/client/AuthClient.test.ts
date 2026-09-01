@@ -22,7 +22,7 @@ const harness = (options?: {
   readonly signedIn?: boolean | undefined
   readonly bearerToken?: (() => string | Redacted.Redacted<string> | undefined) | undefined
 }) =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const stub = Stub.make({ signedIn: options?.signedIn })
     const client = AuthClient.make({ httpClient: stub.layer, bearerToken: options?.bearerToken })
     const reg = yield* registry
@@ -63,29 +63,27 @@ const waitFor = <A>(
     return Effect.sync(() => cancel?.())
   })
 
-const settled = <A, E>(result: AsyncResult.AsyncResult<A, E>): boolean =>
-  result._tag !== "Initial" && !result.waiting
+const settled = <A, E>(result: AsyncResult.AsyncResult<A, E>): boolean => result._tag !== "Initial" && !result.waiting
 
 const credentials = { email: "ada@example.com", password: testPassword }
 
 describe("AuthClient", () => {
   it.effect("the session query resolves for a signed-in caller", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness({ signedIn: true })
 
-      const session = yield* Atom.getResult(client.session).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, reg)
-      )
+      const session = yield* Atom.getResult(client.session).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       assert.strictEqual(session.user.email, "ada@example.com")
       assert.strictEqual(session.session.userId, session.user.id)
       assert.deepStrictEqual(stub.calls, ["GET /auth/session"])
       // `tokenHash` is Model.Sensitive: it is absent from the wire and from the type.
       assert.isFalse(Object.hasOwn(session.session, "tokenHash"))
-    }))
+    })
+  )
 
   it.effect("the session query fails with Unauthorized when signed out", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg } = yield* harness()
 
       const result = yield* Atom.getResult(client.session).pipe(
@@ -97,10 +95,11 @@ describe("AuthClient", () => {
       if (Result.isFailure(result)) {
         assert.strictEqual(result.failure._tag, "Unauthorized")
       }
-    }))
+    })
+  )
 
   it.effect("signIn invalidates the session atom, which refetches", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
       yield* AtomRegistry.mount(reg, client.session)
 
@@ -122,15 +121,12 @@ describe("AuthClient", () => {
         assert.strictEqual(after.value.user.email, "ada@example.com")
       }
       assert.strictEqual(stub.countOf("GET /auth/session"), 2)
-      assert.deepStrictEqual(stub.calls, [
-        "GET /auth/session",
-        "POST /auth/sign-in/email",
-        "GET /auth/session"
-      ])
-    }))
+      assert.deepStrictEqual(stub.calls, ["GET /auth/session", "POST /auth/sign-in/email", "GET /auth/session"])
+    })
+  )
 
   it.effect("signOut invalidates the session atom, which refetches as Unauthorized", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness({ signedIn: true })
       yield* AtomRegistry.mount(reg, client.session)
 
@@ -145,19 +141,18 @@ describe("AuthClient", () => {
       const after = yield* waitFor(reg, client.session, AsyncResult.isFailure)
       assert.isTrue(AsyncResult.isFailure(after))
       assert.strictEqual(stub.countOf("GET /auth/session"), 2)
-    }))
+    })
+  )
 
   it.effect("a query keyed on the session refetches too", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
       yield* AtomRegistry.mount(reg, client.sessions)
 
       const before = yield* waitFor(reg, client.sessions, settled)
       assert.isTrue(AsyncResult.isFailure(before))
 
-      yield* AuthClient.run(client.signIn, credentials).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, reg)
-      )
+      yield* AuthClient.run(client.signIn, credentials).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       const after = yield* waitFor(reg, client.sessions, AsyncResult.isSuccess)
       assert.isTrue(AsyncResult.isSuccess(after))
@@ -165,10 +160,11 @@ describe("AuthClient", () => {
         assert.strictEqual(after.value.length, 1)
       }
       assert.strictEqual(stub.countOf("GET /auth/sessions"), 2)
-    }))
+    })
+  )
 
   it.effect("a declared endpoint error stays a typed error", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
       stub.rejectCredentials()
 
@@ -181,10 +177,11 @@ describe("AuthClient", () => {
       if (Result.isFailure(result)) {
         assert.strictEqual(result.failure._tag, "InvalidCredentials")
       }
-    }))
+    })
+  )
 
   it.effect("a transport failure is a defect, and matchWithError separates it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
       stub.breakTransport()
       yield* AtomRegistry.mount(reg, client.session)
@@ -198,22 +195,24 @@ describe("AuthClient", () => {
         onDefect: () => "defect"
       })
       assert.strictEqual(rendered, "defect")
-    }))
+    })
+  )
 
   it.effect("signInSocialUrl answers the authorization URL", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
 
-      const url = yield* client.signInSocialUrl({ providerId: "github" }).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, reg)
-      )
+      const url = yield* client
+        .signInSocialUrl({ providerId: "github" })
+        .pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       assert.strictEqual(url, "https://github.test/login/oauth/authorize?state=abc")
       assert.deepStrictEqual(stub.calls, ["POST /auth/sign-in/social"])
-    }))
+    })
+  )
 
   it.effect("getAccessToken decodes the provider credential into a Redacted", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness({ signedIn: true })
 
       const tokens = yield* AuthClient.run(client.getAccessToken, {
@@ -228,10 +227,11 @@ describe("AuthClient", () => {
       assert.isFalse(JSON.stringify(tokens).includes("provider-access-token"))
       assert.deepStrictEqual([...tokens.scopes], ["read:user", "user:email"])
       assert.deepStrictEqual(stub.calls, ["POST /auth/get-access-token"])
-    }))
+    })
+  )
 
   it.effect("updateUser invalidates the session atom, which refetches", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness({ signedIn: true })
 
       yield* Atom.getResult(client.session).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
@@ -245,35 +245,34 @@ describe("AuthClient", () => {
       // it without the caller invalidating anything by hand.
       yield* waitFor(reg, client.session, () => stub.countOf("GET /auth/session") === 2)
       assert.strictEqual(stub.countOf("POST /auth/update-user"), 1)
-    }))
+    })
+  )
 
   it.effect("the client middleware attaches a bearer token when one is configured", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness({
         signedIn: true,
         bearerToken: () => Redacted.make("opaque-session-token")
       })
 
-      yield* Atom.getResult(client.session).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, reg)
-      )
+      yield* Atom.getResult(client.session).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       assert.strictEqual(stub.lastAuthorization(), "Bearer opaque-session-token")
-    }))
+    })
+  )
 
   it.effect("no bearer token means no Authorization header — the cookie carries the session", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness({ signedIn: true })
 
-      yield* Atom.getResult(client.session).pipe(
-        Effect.provideService(AtomRegistry.AtomRegistry, reg)
-      )
+      yield* Atom.getResult(client.session).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       assert.strictEqual(stub.lastAuthorization(), undefined)
-    }))
+    })
+  )
 
   it.effect("mutations are shared per client, so two reads see one in-flight request", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const { client, reg, stub } = yield* harness()
 
       yield* AuthClient.run(client.signUp, { name: testName, ...credentials }).pipe(
@@ -283,5 +282,6 @@ describe("AuthClient", () => {
       const result = reg.get(client.signUp)
       assert.isTrue(AsyncResult.isSuccess(result))
       assert.strictEqual(stub.countOf("POST /auth/sign-up/email"), 1)
-    }))
+    })
+  )
 })

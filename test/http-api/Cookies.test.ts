@@ -54,15 +54,9 @@ describe("http/Cookies", () => {
     it("writes the cache cookie under the scheme its own name comes from", () => {
       // Not a credential and not declared by any middleware: the scheme exists
       // only because `securitySetCookie` takes the cookie's name from one.
-      assert.strictEqual(
-        AuthCookies.secureSessionCacheCookieSecurity.key,
-        AuthCookies.secureSessionCacheCookieName
-      )
+      assert.strictEqual(AuthCookies.secureSessionCacheCookieSecurity.key, AuthCookies.secureSessionCacheCookieName)
       assert.strictEqual(AuthCookies.secureSessionCacheCookieSecurity.in, "cookie")
-      assert.strictEqual(
-        AuthCookies.insecureSessionCacheCookieSecurity.key,
-        AuthCookies.insecureSessionCacheCookieName
-      )
+      assert.strictEqual(AuthCookies.insecureSessionCacheCookieSecurity.key, AuthCookies.insecureSessionCacheCookieName)
       assert.strictEqual(
         AuthCookies.sessionCacheCookieSecurity(secureConfig).key,
         AuthCookies.secureSessionCacheCookieName
@@ -90,14 +84,8 @@ describe("http/Cookies", () => {
       assert.strictEqual(AuthCookies.secureOAuthStateCookieSecurity.key, AuthCookies.secureOAuthStateCookieName)
       assert.strictEqual(AuthCookies.secureOAuthStateCookieSecurity.in, "cookie")
       assert.strictEqual(AuthCookies.insecureOAuthStateCookieSecurity.key, AuthCookies.insecureOAuthStateCookieName)
-      assert.strictEqual(
-        AuthCookies.oauthStateCookieSecurity(secureConfig).key,
-        AuthCookies.secureOAuthStateCookieName
-      )
-      assert.strictEqual(
-        AuthCookies.oauthStateCookieSecurity(devConfig).key,
-        AuthCookies.insecureOAuthStateCookieName
-      )
+      assert.strictEqual(AuthCookies.oauthStateCookieSecurity(secureConfig).key, AuthCookies.secureOAuthStateCookieName)
+      assert.strictEqual(AuthCookies.oauthStateCookieSecurity(devConfig).key, AuthCookies.insecureOAuthStateCookieName)
     })
   })
 
@@ -200,7 +188,7 @@ describe("http/Cookies", () => {
 
   describe("redaction", () => {
     it.effect("hides the session cookie from a rendered Headers value", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const headers = Headers.fromInput({
           cookie: "__Secure-effect_auth.session=super-secret-token",
           authorization: "Bearer super-secret-token",
@@ -212,10 +200,11 @@ describe("http/Cookies", () => {
         assert.isFalse(rendered.includes("super-secret-token"))
         assert.isTrue(rendered.includes("<redacted>"))
         assert.isTrue(rendered.includes("abc"))
-      }).pipe(Effect.provide(AuthCookies.layerRedactedHeaders())))
+      }).pipe(Effect.provide(AuthCookies.layerRedactedHeaders()))
+    )
 
     it.effect("keeps the auth headers redacted when an application adds its own", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const headers = Headers.fromInput({
           cookie: "__Secure-effect_auth.session=super-secret-token",
           "x-tenant-token": "tenant-secret"
@@ -225,6 +214,7 @@ describe("http/Cookies", () => {
 
         assert.isFalse(rendered.includes("super-secret-token"))
         assert.isFalse(rendered.includes("tenant-secret"))
-      }).pipe(Effect.provide(AuthCookies.layerRedactedHeaders(["x-tenant-token"]))))
+      }).pipe(Effect.provide(AuthCookies.layerRedactedHeaders(["x-tenant-token"])))
+    )
   })
 })

@@ -28,7 +28,7 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
     "round-trips any passphrase, and only that passphrase",
     { text: Schema.String },
     ({ text }) =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const secret = Redacted.make(text)
         const hash = yield* hasher.use((_) => _.hash(secret))
 
@@ -40,15 +40,16 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
   )
 
   it.effect("rejects a wrong password", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
 
       assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
       assert.strictEqual(yield* hasher.use((_) => _.verify(Redacted.make(""), hash)), false)
-    }))
+    })
+  )
 
   it.effect("writes a self-describing hash with a fresh salt each time", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const first = yield* hasher.use((_) => _.hash(password))
       const second = yield* hasher.use((_) => _.hash(password))
 
@@ -67,10 +68,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
 
       const other = yield* PasswordHasher.parseHash(second)
       assert.notDeepEqual(Array.from(parsed.salt), Array.from(other.salt))
-    }))
+    })
+  )
 
   it.effect("round-trips salt and digest through base64url", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
       const parsed = yield* PasswordHasher.parseHash(hash)
       const segments = hash.split("$")
@@ -83,19 +85,24 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
         assert.match(segment, /^[A-Za-z0-9_-]+$/)
       }
       assert.strictEqual(Result.isSuccess(Encoding.decodeBase64Url(segments[3]!)), true)
-    }))
+    })
+  )
 
   it.effect("verifies a pbkdf2 hash under the scrypt layer", () =>
-    Effect.gen(function*() {
-      const hash = yield* Effect.provide(hasher.use((_) => _.hash(password)), pbkdf2)
+    Effect.gen(function* () {
+      const hash = yield* Effect.provide(
+        hasher.use((_) => _.hash(password)),
+        pbkdf2
+      )
 
       assert.strictEqual(hash.startsWith("pbkdf2$"), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
-    }))
+    })
+  )
 
   it.effect("verifies with the cost the hash was written at, not today's", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const legacy = yield* Effect.provide(
         hasher.use((_) => _.hash(password)),
         PasswordHasher.layerScrypt({ N: 2048, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
@@ -104,10 +111,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       assert.strictEqual(legacy.split("$")[1], "n=2048,r=8,p=1")
       // Today's layer runs at a different cost and still accepts it.
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, legacy)), true)
-    }))
+    })
+  )
 
   it.effect("rejects a flipped digest byte", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
       const parsed = yield* PasswordHasher.parseHash(hash)
 
@@ -121,10 +129,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       ].join("$")
 
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, tampered)), false)
-    }))
+    })
+  )
 
   it.effect("rejects a swapped salt", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
       const parsed = yield* PasswordHasher.parseHash(hash)
 
@@ -136,10 +145,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       ].join("$")
 
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, tampered)), false)
-    }))
+    })
+  )
 
   it.effect("refuses downgraded, sub-floor cost parameters instead of verifying them", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
       const downgraded = hash.replace("n=1024,r=8,p=1", "n=2,r=1,p=1")
 
@@ -148,10 +158,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       // space (which is what a plain `false` would quietly permit).
       const error = yield* Effect.flip(hasher.use((_) => _.verify(password, downgraded)))
       assert.strictEqual(error._tag, "PasswordHashError")
-    }))
+    })
+  )
 
   it.effect("refuses sub-floor scrypt and pbkdf2 cost parameters", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // Valid 16-byte salt and 16-byte digest, so only the cost floor is at
       // issue. `n=1024` / `i=10000` are the floors, so one below each is refused.
       const subFloor = [
@@ -161,14 +172,13 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
         "pbkdf2$i=9999$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"
       ]
 
-      const reasons = yield* Effect.forEach(
-        subFloor,
-        (hash) =>
-          Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(
-            Effect.map((error) => error._tag)
-          )
+      const reasons = yield* Effect.forEach(subFloor, (hash) =>
+        Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(Effect.map((error) => error._tag))
       )
-      assert.deepStrictEqual(reasons, Array.from({ length: subFloor.length }, () => "PasswordHashError"))
+      assert.deepStrictEqual(
+        reasons,
+        Array.from({ length: subFloor.length }, () => "PasswordHashError")
+      )
 
       // The floors are at, not above, what the writers emit: a hash written at
       // the production scrypt cost still verifies.
@@ -176,10 +186,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
         hasher.use((_) => _.verify(password, "scrypt$n=16384,r=16,p=1$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"))
       )
       assert.strictEqual(production._tag, "Success")
-    }))
+    })
+  )
 
   it.effect("refuses an oversized digest or salt instead of deriving against it", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // A tampered/imported row that inflates the derived-key length turns every
       // sign-in attempt into a CPU sink, since `verify` feeds the stored digest
       // length straight into the KDF as `dkLen`. The envelope is refused before
@@ -196,23 +207,27 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       ]
 
       // Rejected at parse time, before dispatch to any KDF.
-      const parseReasons = yield* Effect.forEach(
-        oversized,
-        (hash) => Effect.flip(PasswordHasher.parseHash(hash)).pipe(Effect.map((error) => error._tag))
+      const parseReasons = yield* Effect.forEach(oversized, (hash) =>
+        Effect.flip(PasswordHasher.parseHash(hash)).pipe(Effect.map((error) => error._tag))
       )
-      assert.deepStrictEqual(parseReasons, Array.from({ length: oversized.length }, () => "PasswordHashError"))
+      assert.deepStrictEqual(
+        parseReasons,
+        Array.from({ length: oversized.length }, () => "PasswordHashError")
+      )
 
       // And therefore surfaced by verify as a fault, never a `false`.
-      const verifyReasons = yield* Effect.forEach(
-        oversized,
-        (hash) =>
-          Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(Effect.map((error) => error._tag))
+      const verifyReasons = yield* Effect.forEach(oversized, (hash) =>
+        Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(Effect.map((error) => error._tag))
       )
-      assert.deepStrictEqual(verifyReasons, Array.from({ length: oversized.length }, () => "PasswordHashError"))
-    }))
+      assert.deepStrictEqual(
+        verifyReasons,
+        Array.from({ length: oversized.length }, () => "PasswordHashError")
+      )
+    })
+  )
 
   it.effect("accepts a 64-byte digest and 16-byte salt round-trip at the size boundary", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // The normally-written hash sits well inside the digest (<=128) and salt
       // (<=64) caps, so the caps never touch a real hash.
       const hash = yield* hasher.use((_) => _.hash(password))
@@ -221,10 +236,11 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       assert.strictEqual(parsed.key.length, PasswordHasher.defaultScryptOptions.dkLen)
       assert.strictEqual(parsed.salt.length, PasswordHasher.saltBytes)
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
-    }))
+    })
+  )
 
   it.effect("fails, rather than reporting a wrong password, on an uninterpretable hash", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const reasons = yield* Effect.forEach(
         [
           "",
@@ -237,17 +253,18 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
           "scrypt$n=1024,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$!!!not-base64!!!",
           "pbkdf2$$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"
         ],
-        (hash) =>
-          Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(
-            Effect.map((error) => error._tag)
-          )
+        (hash) => Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(Effect.map((error) => error._tag))
       )
 
-      assert.deepStrictEqual(reasons, Array.from({ length: 9 }, () => "PasswordHashError"))
-    }))
+      assert.deepStrictEqual(
+        reasons,
+        Array.from({ length: 9 }, () => "PasswordHashError")
+      )
+    })
+  )
 
   it.effect("refuses absurd cost parameters instead of spending them", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       // A row a database attacker can write decides how much memory and CPU
       // every sign-in attempt against it costs, so the ceilings are refused
       // outright rather than attempted: `n=2^30, r=16` would ask for hundreds
@@ -259,14 +276,13 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
         "pbkdf2$i=9007199254740991$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"
       ]
 
-      const reasons = yield* Effect.forEach(
-        absurd,
-        (hash) =>
-          Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(
-            Effect.map((error) => error._tag)
-          )
+      const reasons = yield* Effect.forEach(absurd, (hash) =>
+        Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(Effect.map((error) => error._tag))
       )
-      assert.deepStrictEqual(reasons, Array.from({ length: absurd.length }, () => "PasswordHashError"))
+      assert.deepStrictEqual(
+        reasons,
+        Array.from({ length: absurd.length }, () => "PasswordHashError")
+      )
 
       // The ceilings are generous: a hash written with the production
       // parameters still verifies.
@@ -274,7 +290,8 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
         hasher.use((_) => _.verify(password, "scrypt$n=16384,r=16,p=1$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"))
       )
       assert.strictEqual(production._tag, "Success")
-    }))
+    })
+  )
 })
 
 layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
@@ -282,7 +299,7 @@ layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
     "round-trips any passphrase, and only that passphrase",
     { text: Schema.String },
     ({ text }) =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const secret = Redacted.make(text)
         const hash = yield* hasher.use((_) => _.hash(secret))
 
@@ -293,7 +310,7 @@ layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
   )
 
   it.effect("writes a self-describing hash", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
       const segments = hash.split("$")
 
@@ -303,16 +320,21 @@ layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
       const parsed = yield* PasswordHasher.parseHash(hash)
       assert.strictEqual(parsed.salt.length, PasswordHasher.saltBytes)
       assert.strictEqual(parsed.key.length, PasswordHasher.defaultPbkdf2Options.dkLen)
-    }))
+    })
+  )
 
   it.effect("verifies a scrypt hash under the pbkdf2 layer", () =>
-    Effect.gen(function*() {
-      const hash = yield* Effect.provide(hasher.use((_) => _.hash(password)), scrypt)
+    Effect.gen(function* () {
+      const hash = yield* Effect.provide(
+        hasher.use((_) => _.hash(password)),
+        scrypt
+      )
 
       assert.strictEqual(hash.startsWith("scrypt$"), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
-    }))
+    })
+  )
 })
 
 describe("crypto/PasswordHasher", () => {
@@ -322,16 +344,17 @@ describe("crypto/PasswordHasher", () => {
   // only test that pays for real parameters, and it is worth it — so it stays
   // outside the cheap block, on a layer of its own.
   it.effect("works at the documented production cost", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const hash = yield* hasher.use((_) => _.hash(password))
 
       assert.strictEqual(hash.split("$")[1], "n=16384,r=16,p=1")
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto)))))
+    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto))))
+  )
 
   it.effect("keeps a parameter named __proto__ off Object.prototype", () =>
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const parsed = yield* PasswordHasher.parseHash(
         "scrypt$n=1024,r=8,p=1,__proto__=polluted$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"
       )
@@ -339,7 +362,8 @@ describe("crypto/PasswordHasher", () => {
       assert.strictEqual(Object.getPrototypeOf(parsed.params), null)
       assert.strictEqual(Object.hasOwn(parsed.params, "__proto__"), true)
       assert.strictEqual(Object.getPrototypeOf({}), Object.prototype)
-    }))
+    })
+  )
 
   it("keeps the documented production parameters", () => {
     assert.deepStrictEqual({ ...PasswordHasher.defaultScryptOptions }, { N: 16384, r: 16, p: 1, dkLen: 64 })
@@ -351,14 +375,8 @@ describe("crypto/PasswordHasher", () => {
     const reference = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
 
     assert.strictEqual(PasswordHasher.timingSafeEqualUint8(reference, Uint8Array.from(reference)), true)
-    assert.strictEqual(
-      PasswordHasher.timingSafeEqualUint8(reference, new Uint8Array([9, 2, 3, 4, 5, 6, 7, 8])),
-      false
-    )
-    assert.strictEqual(
-      PasswordHasher.timingSafeEqualUint8(reference, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 9])),
-      false
-    )
+    assert.strictEqual(PasswordHasher.timingSafeEqualUint8(reference, new Uint8Array([9, 2, 3, 4, 5, 6, 7, 8])), false)
+    assert.strictEqual(PasswordHasher.timingSafeEqualUint8(reference, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 9])), false)
     assert.strictEqual(PasswordHasher.timingSafeEqualUint8(reference, reference.slice(0, 7)), false)
     assert.strictEqual(PasswordHasher.timingSafeEqualUint8(new Uint8Array(0), new Uint8Array(0)), true)
   })

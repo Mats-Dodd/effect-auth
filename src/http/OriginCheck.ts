@@ -38,9 +38,7 @@ import * as InternalOrigins from "../internal/origins.js"
 export const webProtocols: ReadonlySet<string> = InternalOrigins.webProtocols
 
 /** `new URL(s, base)` as a total function — no base-relative schema exists. */
-const resolveAgainst = Option.liftThrowable(
-  (candidate: string, base: string) => new URL(candidate, base)
-)
+const resolveAgainst = Option.liftThrowable((candidate: string, base: string) => new URL(candidate, base))
 
 /**
  * The origin of a URL — scheme, host and port — or `None` when the string is
@@ -163,10 +161,7 @@ export const isPathRelative = (candidate: string): boolean => {
  * @category combinators
  * @since 1.0.0
  */
-export const resolveUrl = (
-  config: AuthConfigService,
-  candidate: string | null | undefined
-): string => {
+export const resolveUrl = (config: AuthConfigService, candidate: string | null | undefined): string => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return config.baseUrl
   if (isPathRelative(candidate)) {
     const resolved = resolveAgainst(candidate, config.baseUrl)
@@ -192,10 +187,7 @@ export const resolveUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const validateUrl = (
-  config: AuthConfigService,
-  candidate: string | null | undefined
-): Option.Option<string> => {
+export const validateUrl = (config: AuthConfigService, candidate: string | null | undefined): Option.Option<string> => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return Option.none()
   const resolved = resolveUrl(config, candidate)
   return resolved === config.baseUrl && candidate !== config.baseUrl ? Option.none() : Option.some(resolved)
@@ -306,21 +298,22 @@ const isPolicyRefused = (error: { readonly _tag: string }): error is PolicyRefus
  * @category combinators
  * @since 1.0.0
  */
-export const redirectFailure = <E extends { readonly _tag: string }>(
-  config: AuthConfigService,
-  errorCode: (error: E) => string
-): (error: E, errorURL: string | null | undefined) => RedirectFailure<E> =>
-(error, errorURL) => {
-  const code = errorCode(error)
-  return {
-    _tag: "Failure",
-    error,
-    redirectTo: isPolicyRefused(error)
-      ? policyRefusedTarget(config, errorURL, error.code)
-      : withErrorCode(resolveUrl(config, errorURL), code),
-    code
+export const redirectFailure =
+  <E extends { readonly _tag: string }>(
+    config: AuthConfigService,
+    errorCode: (error: E) => string
+  ): ((error: E, errorURL: string | null | undefined) => RedirectFailure<E>) =>
+  (error, errorURL) => {
+    const code = errorCode(error)
+    return {
+      _tag: "Failure",
+      error,
+      redirectTo: isPolicyRefused(error)
+        ? policyRefusedTarget(config, errorURL, error.code)
+        : withErrorCode(resolveUrl(config, errorURL), code),
+      code
+    }
   }
-}
 
 // -----------------------------------------------------------------------------
 // CSRF
@@ -355,9 +348,7 @@ export const safeMethods: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS
  * @category combinators
  * @since 1.0.0
  */
-export const claimedOrigin = (
-  headers: Readonly<Record<string, string | undefined>>
-): Option.Option<string> => {
+export const claimedOrigin = (headers: Readonly<Record<string, string | undefined>>): Option.Option<string> => {
   const origin = headers["origin"]
   if (origin !== undefined && origin.length > 0) return Option.some(origin)
   const referer = headers["referer"]

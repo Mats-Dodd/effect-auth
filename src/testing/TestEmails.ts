@@ -203,9 +203,7 @@ export interface TestEmailsService {
  * @category services
  * @since 1.0.0
  */
-export class TestEmails extends Context.Service<TestEmails, TestEmailsService>()(
-  "effect-auth/testing/TestEmails"
-) {}
+export class TestEmails extends Context.Service<TestEmails, TestEmailsService>()("effect-auth/testing/TestEmails") {}
 
 const normalise = (address: string): string => address.trim().toLowerCase()
 
@@ -225,19 +223,15 @@ const matches = (email: SentEmail, kind: EmailKind, address: string | undefined)
  * @category layers
  * @since 1.0.0
  */
-export const layerEmails = (
-  delivery: EmailDelivery = "ok"
-): Layer.Layer<TestEmails | AuthEmails> =>
+export const layerEmails = (delivery: EmailDelivery = "ok"): Layer.Layer<TestEmails | AuthEmails> =>
   Layer.effectContext(
-    Effect.gen(function*() {
+    Effect.gen(function* () {
       const outbox = yield* Ref.make<ReadonlyArray<SentEmail>>([])
 
       const record = (email: SentEmail) =>
         Ref.update(outbox, (sent) => [...sent, email]).pipe(
           Effect.andThen(
-            delivery === "ok"
-              ? Effect.void
-              : Effect.fail(new EmailDeliveryError({ reason: "TestMailerRefused" }))
+            delivery === "ok" ? Effect.void : Effect.fail(new EmailDeliveryError({ reason: "TestMailerRefused" }))
           )
         )
 
@@ -270,10 +264,7 @@ export const layerEmails = (
         record,
         all: Ref.get(outbox),
         to: (address) =>
-          Effect.map(
-            Ref.get(outbox),
-            (sent) => sent.filter((email) => normalise(email.to) === normalise(address))
-          ),
+          Effect.map(Ref.get(outbox), (sent) => sent.filter((email) => normalise(email.to) === normalise(address))),
         last,
         tokenFor: (kind, address) =>
           Effect.flatMap(
@@ -282,9 +273,7 @@ export const layerEmails = (
               onNone: () =>
                 Effect.die(
                   new Error(
-                    `effect-auth/testing: no ${kind} e-mail was sent${
-                      address === undefined ? "" : ` to ${address}`
-                    }`
+                    `effect-auth/testing: no ${kind} e-mail was sent${address === undefined ? "" : ` to ${address}`}`
                   )
                 ),
               onSome: (email) => Effect.succeed(email.token)

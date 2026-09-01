@@ -45,12 +45,10 @@ const hooks: AuthHooksService = {
     source._tag !== "OAuth"
       ? Effect.succeed(candidate)
       : denied.has(source.info.email)
-      ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed", detail: source.providerId }))
-      : Effect.succeed({ ...candidate, name: `${source.providerId}:${source.info.id}` }),
+        ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed", detail: source.providerId }))
+        : Effect.succeed({ ...candidate, name: `${source.providerId}:${source.info.id}` }),
   beforeSessionCreate: ({ user }) =>
-    suspended.has(user.email)
-      ? Effect.fail(new PolicyRefused({ code: "account_suspended" }))
-      : Effect.void
+    suspended.has(user.email) ? Effect.fail(new PolicyRefused({ code: "account_suspended" })) : Effect.void
 }
 
 /**
@@ -83,7 +81,8 @@ const wellBehaved = (identity: { readonly sub: string; readonly email: string })
         token_type: "bearer",
         expires_in: 3600,
         scope: "profile email"
-      }))
+      })
+    )
     server.on(MockProvider.userInfoUrl, () =>
       MockProvider.json({
         sub: identity.sub,
@@ -91,7 +90,8 @@ const wellBehaved = (identity: { readonly sub: string; readonly email: string })
         email_verified: true,
         name: testName,
         picture: "https://cdn.test/ada.png"
-      }))
+      })
+    )
   })
 
 const provider = MockProvider.mockProvider()
@@ -104,7 +104,7 @@ const flowLayer = AuthTest.layerFlow({
 })
 
 /** Starts a flow and hands the callback the state it minted, as a browser would. */
-const complete = Effect.fnUntraced(function*(errorCallbackURL?: string) {
+const complete = Effect.fnUntraced(function* (errorCallbackURL?: string) {
   const flow = yield* OAuthFlow
   const started = yield* flow.start({
     providerId: provider.id,
@@ -118,20 +118,22 @@ const complete = Effect.fnUntraced(function*(errorCallbackURL?: string) {
 })
 
 /** The same round trip, but asking for the failure rather than a redirect. */
-const callback = Effect.fnUntraced(function*() {
+const callback = Effect.fnUntraced(function* () {
   const flow = yield* OAuthFlow
   const started = yield* flow.start({ providerId: provider.id })
-  return yield* Effect.result(flow.callback({
-    providerId: provider.id,
-    code: "authorization-code",
-    state: Redacted.value(started.state)
-  }))
+  return yield* Effect.result(
+    flow.callback({
+      providerId: provider.id,
+      code: "authorization-code",
+      state: Redacted.value(started.state)
+    })
+  )
 })
 
 describe.sequential("oauth/Hooks", () => {
   layer(flowLayer)((it) => {
     it.effect("provisions a first sign-in through the hook, which reads the verified profile", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const identity = someone("oauth-hooks-new")
         yield* wellBehaved(identity)
 
@@ -145,10 +147,11 @@ describe.sequential("oauth/Hooks", () => {
         assert.strictEqual(outcome.user.name, `${provider.id}:${identity.sub}`)
         assert.notStrictEqual(outcome.user.name, testName)
         assert.isNotNull(outcome.session)
-      }))
+      })
+    )
 
     it.effect("sends the browser away with the policy's own code, and provisions nobody", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const users = yield* UserStore
         const identity = someone("oauth-hooks-denied")
         denied.add(identity.email)
@@ -170,10 +173,11 @@ describe.sequential("oauth/Hooks", () => {
         // The refusal aborted the transaction that would have written the row.
         const found = yield* users.findByEmail(identity.email)
         assert.isTrue(Option.isNone(found))
-      }))
+      })
+    )
 
     it.effect("hands the same refusal to a caller that asked for the error rather than a redirect", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const identity = someone("oauth-hooks-denied-typed")
         denied.add(identity.email)
         yield* wellBehaved(identity)
@@ -186,10 +190,11 @@ describe.sequential("oauth/Hooks", () => {
         if (result.failure._tag !== "PolicyRefused") return
         assert.strictEqual(result.failure.code, "domain_not_allowed")
         assert.strictEqual(result.failure.detail, provider.id)
-      }))
+      })
+    )
 
     it.effect("refuses a suspended account at the callback without minting a session for it", () =>
-      Effect.gen(function*() {
+      Effect.gen(function* () {
         const sessions = yield* SessionStore
         const identity = someone("oauth-hooks-suspended")
         yield* wellBehaved(identity)
@@ -218,7 +223,11 @@ describe.sequential("oauth/Hooks", () => {
         // The session the refused callback would have written is not there, and
         // the one from before it is untouched: a ban governs new sessions only.
         const after = yield* sessions.listByUserId(user.id)
-        assert.deepStrictEqual(after.map((session) => session.id), held.map((session) => session.id))
-      }))
+        assert.deepStrictEqual(
+          after.map((session) => session.id),
+          held.map((session) => session.id)
+        )
+      })
+    )
   })
 })

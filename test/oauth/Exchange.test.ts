@@ -39,7 +39,8 @@ const wellBehaved = (identity: { readonly sub: string; readonly email: string })
         refresh_token: "provider-refresh-token",
         expires_in: 3600,
         scope: "profile email"
-      }))
+      })
+    )
     server.on(MockProvider.userInfoUrl, () =>
       MockProvider.json({
         sub: identity.sub,
@@ -47,7 +48,8 @@ const wellBehaved = (identity: { readonly sub: string; readonly email: string })
         email_verified: true,
         name: testName,
         picture: "https://cdn.test/ada.png"
-      }))
+      })
+    )
     return server
   })
 
@@ -147,7 +149,7 @@ describe.sequential("oauth/Flow (exchange and deadlines)", () => {
   layer(flowLayer)((it) => {
     describe("the exchange override", () => {
       it.effect("hands an owning override the code, the verifier and the redirect URI, and posts nothing", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const who = someone("exchange-owning")
           yield* wellBehaved(who)
           const flow = yield* OAuthFlow
@@ -190,10 +192,11 @@ describe.sequential("oauth/Flow (exchange and deadlines)", () => {
           if (Option.isSome(stored)) {
             assert.strictEqual(stored.value.accessToken, "override-minted-access-token")
           }
-        }))
+        })
+      )
 
       it.effect("lets a decorating override run the flow's own request and post-process it", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const who = someone("exchange-decorating")
           yield* wellBehaved(who)
           const flow = yield* OAuthFlow
@@ -227,10 +230,11 @@ describe.sequential("oauth/Flow (exchange and deadlines)", () => {
             assert.strictEqual(stored.value.scope, "profile email decorated")
             assert.strictEqual(stored.value.accessToken, "provider-access-token")
           }
-        }))
+        })
+      )
 
       it.effect("leaves the generic path alone for a provider that declares no override", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           const who = someone("exchange-generic")
           yield* wellBehaved(who)
           const flow = yield* OAuthFlow
@@ -266,21 +270,26 @@ describe.sequential("oauth/Flow (exchange and deadlines)", () => {
             assert.strictEqual(stored.value.accessToken, "provider-access-token")
             assert.strictEqual(stored.value.scope, "profile email")
           }
-        }))
+        })
+      )
     })
 
     describe("the exchange deadline", () => {
       it.effect("bounds an override that owns the exchange and never answers", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved(someone("exchange-stalling"))
           const flow = yield* OAuthFlow
 
           const started = yield* flow.start({ providerId: "stalling" })
-          const fiber = yield* Effect.forkChild(Effect.result(flow.callback({
-            providerId: "stalling",
-            code: "authorization-code",
-            state: Redacted.value(started.state)
-          })))
+          const fiber = yield* Effect.forkChild(
+            Effect.result(
+              flow.callback({
+                providerId: "stalling",
+                code: "authorization-code",
+                state: Redacted.value(started.state)
+              })
+            )
+          )
 
           // Inside the override before the clock moves: the deadline only runs
           // once the effect it bounds has started.
@@ -300,21 +309,26 @@ describe.sequential("oauth/Flow (exchange and deadlines)", () => {
           // from `resilient`: nothing was posted at all, and the flow still let
           // go of the callback fiber.
           assert.deepStrictEqual([...server.to(MockProvider.tokenUrl)], [])
-        }))
+        })
+      )
     })
 
     describe("the userInfo deadline", () => {
       it.effect("gives a provider's whole userInfo one deadline, however it spends it", () =>
-        Effect.gen(function*() {
+        Effect.gen(function* () {
           yield* wellBehaved(someone("exchange-hanging"))
           const flow = yield* OAuthFlow
 
           const started = yield* flow.start({ providerId: "hanging" })
-          const fiber = yield* Effect.forkChild(Effect.result(flow.callback({
-            providerId: "hanging",
-            code: "authorization-code",
-            state: Redacted.value(started.state)
-          })))
+          const fiber = yield* Effect.forkChild(
+            Effect.result(
+              flow.callback({
+                providerId: "hanging",
+                code: "authorization-code",
+                state: Redacted.value(started.state)
+              })
+            )
+          )
 
           // Wait for the exchange to finish and the provider to be inside
           // `userInfo` before moving the clock: the deadline is only running
@@ -337,7 +351,8 @@ describe.sequential("oauth/Flow (exchange and deadlines)", () => {
           // come from the helper's per-request timeout. It is the flow's, which
           // is the point of putting it there: an implementation cannot opt out.
           assert.deepStrictEqual([...server.to(MockProvider.userInfoUrl)], [])
-        }))
+        })
+      )
     })
   })
 })

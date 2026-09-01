@@ -24,54 +24,58 @@ const aad = (accountId: string, field: ProviderTokenField): ArrayBuffer =>
  * input key material to contain at least 32 bytes.
  */
 export const make = (secret: Redacted.Redacted<string>): Effect.Effect<ProviderTokenCipher> =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const crypto = ambientCrypto()
-    const material = yield* Effect.promise(() => crypto.subtle.importKey(
-      "raw",
-      toArrayBuffer(encodeUtf8(Redacted.value(secret))),
-      "HKDF",
-      false,
-      ["deriveKey"]
-    ))
-    const key = yield* Effect.promise(() => crypto.subtle.deriveKey(
-      { name: "HKDF", hash: "SHA-256", salt: toArrayBuffer(keySalt), info: toArrayBuffer(keyInfo) },
-      material,
-      { name: "AES-GCM", length: 256 },
-      false,
-      ["encrypt", "decrypt"]
-    ))
+    const material = yield* Effect.promise(() =>
+      crypto.subtle.importKey("raw", toArrayBuffer(encodeUtf8(Redacted.value(secret))), "HKDF", false, ["deriveKey"])
+    )
+    const key = yield* Effect.promise(() =>
+      crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: toArrayBuffer(keySalt), info: toArrayBuffer(keyInfo) },
+        material,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      )
+    )
 
     return {
-      encrypt: (accountId, field, value) => Effect.gen(function*() {
-        const iv = crypto.getRandomValues(new Uint8Array(ivBytes))
-        const ciphertext = yield* Effect.promise(() => crypto.subtle.encrypt(
-          { name: "AES-GCM", iv: toArrayBuffer(iv), additionalData: aad(accountId, field), tagLength: 128 },
-          key,
-          toArrayBuffer(encodeUtf8(value))
-        ))
-        return `${formatVersion}.${Encoding.encodeBase64Url(iv)}.${Encoding.encodeBase64Url(new Uint8Array(ciphertext))}`
-      }),
-      decrypt: (accountId, field, value) => Effect.gen(function*() {
-        const segments = value.split(".")
-        if (segments.length !== 3 || segments[0] !== formatVersion) {
-          return yield* Effect.die(new Error("invalid encrypted provider token format"))
-        }
-        const iv = Encoding.decodeBase64Url(segments[1]!)
-        const ciphertext = Encoding.decodeBase64Url(segments[2]!)
-        if (Result.isFailure(iv) || iv.success.length !== ivBytes || Result.isFailure(ciphertext)) {
-          return yield* Effect.die(new Error("invalid encrypted provider token encoding"))
-        }
-        const plaintext = yield* Effect.promise(() => crypto.subtle.decrypt(
-          {
-            name: "AES-GCM",
-            iv: toArrayBuffer(iv.success),
-            additionalData: aad(accountId, field),
-            tagLength: 128
-          },
-          key,
-          toArrayBuffer(ciphertext.success)
-        ))
-        return new TextDecoder().decode(plaintext)
-      })
+      encrypt: (accountId, field, value) =>
+        Effect.gen(function* () {
+          const iv = crypto.getRandomValues(new Uint8Array(ivBytes))
+          const ciphertext = yield* Effect.promise(() =>
+            crypto.subtle.encrypt(
+              { name: "AES-GCM", iv: toArrayBuffer(iv), additionalData: aad(accountId, field), tagLength: 128 },
+              key,
+              toArrayBuffer(encodeUtf8(value))
+            )
+          )
+          return `${formatVersion}.${Encoding.encodeBase64Url(iv)}.${Encoding.encodeBase64Url(new Uint8Array(ciphertext))}`
+        }),
+      decrypt: (accountId, field, value) =>
+        Effect.gen(function* () {
+          const segments = value.split(".")
+          if (segments.length !== 3 || segments[0] !== formatVersion) {
+            return yield* Effect.die(new Error("invalid encrypted provider token format"))
+          }
+          const iv = Encoding.decodeBase64Url(segments[1]!)
+          const ciphertext = Encoding.decodeBase64Url(segments[2]!)
+          if (Result.isFailure(iv) || iv.success.length !== ivBytes || Result.isFailure(ciphertext)) {
+            return yield* Effect.die(new Error("invalid encrypted provider token encoding"))
+          }
+          const plaintext = yield* Effect.promise(() =>
+            crypto.subtle.decrypt(
+              {
+                name: "AES-GCM",
+                iv: toArrayBuffer(iv.success),
+                additionalData: aad(accountId, field),
+                tagLength: 128
+              },
+              key,
+              toArrayBuffer(ciphertext.success)
+            )
+          )
+          return new TextDecoder().decode(plaintext)
+        })
     }
   })
