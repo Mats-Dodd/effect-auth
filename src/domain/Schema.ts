@@ -174,6 +174,20 @@ export class Session extends Model.Class<Session>("effect-auth/Session")({
   expiresAt: Schema.DateTimeUtcFromString,
   ipAddress: Schema.NullOr(Schema.String),
   userAgent: Schema.NullOr(Schema.String),
+  // Whether the person asked to be remembered. Recorded so the HTTP layer can
+  // re-issue a cookie with the right `Max-Age` on the rolling refresh — a
+  // `rememberMe: false` session's short lifetime must survive being touched —
+  // and read back through the same read/JSON projection the session cookie
+  // cache reconstructs a session from. Present in the read variants, generated
+  // by the application (absent from the JSON create/update payloads so a client
+  // cannot set it), and defaulted to `true` on insert, which is the lifetime a
+  // session without the flag has always been given.
+  rememberMe: Model.Field({
+    select: Schema.Boolean,
+    insert: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.sync(() => true))),
+    update: Schema.Boolean,
+    json: Schema.Boolean
+  }),
   createdAt: Model.DateTimeInsert,
   updatedAt: Model.DateTimeUpdate
 }) {}
@@ -557,6 +571,20 @@ export interface UserModel<F extends UserFields> {
   readonly fields: F
   /** The names of the custom fields, in declaration order. */
   readonly extraKeys: ReadonlyArray<keyof F & string>
+  /**
+   * The custom fields a client may set through the JSON *create* payload — the
+   * `jsonCreate` variant's own keys, which excludes any field declared
+   * `readOnly` or `hidden`. The allow-list a mass-assignment guard filters an
+   * incoming create payload against.
+   */
+  readonly jsonCreateExtraKeys: ReadonlyArray<keyof F & string>
+  /**
+   * The custom fields a client may set through the JSON *update* payload — the
+   * `jsonUpdate` variant's own keys, which excludes any field declared
+   * `readOnly` or `hidden`. The allow-list a mass-assignment guard filters an
+   * incoming update payload against.
+   */
+  readonly jsonUpdateExtraKeys: ReadonlyArray<keyof F & string>
   /** The combined variant struct, for callers that want to extract their own variant. */
   readonly struct: VariantSchema.Struct<UserModelFields<F>>
   /**
@@ -747,6 +775,8 @@ export interface UserRowCodecs {
 export interface AnyUserModel {
   readonly fields: UserFields
   readonly extraKeys: ReadonlyArray<string>
+  readonly jsonCreateExtraKeys: ReadonlyArray<string>
+  readonly jsonUpdateExtraKeys: ReadonlyArray<string>
   readonly selectFields: { readonly [key: string]: Schema.Top }
   readonly rows: UserRowCodecs
   readonly select: Schema.Top
@@ -911,6 +941,8 @@ interface UncheckedPayload extends Schema.Codec<UserRow, UserRow, unknown, unkno
 interface UncheckedUserModel {
   readonly fields: UserFields
   readonly extraKeys: ReadonlyArray<string>
+  readonly jsonCreateExtraKeys: ReadonlyArray<string>
+  readonly jsonUpdateExtraKeys: ReadonlyArray<string>
   readonly struct: VariantSchema.Struct<UserFields>
   readonly selectFields: { readonly [key: string]: Schema.Top }
   readonly rows: UserRowCodecs
@@ -1051,6 +1083,8 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
   return {
     fields,
     extraKeys,
+    jsonCreateExtraKeys,
+    jsonUpdateExtraKeys,
     struct,
     selectFields,
     rows: { insert, patch },

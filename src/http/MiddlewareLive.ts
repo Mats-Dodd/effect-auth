@@ -50,7 +50,14 @@ import { Unauthorized } from "../domain/Errors.js"
 import type { Session, UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import { Sessions, sessionsOf } from "../domain/Sessions.js"
-import { expiredSessionCookieOptions, sessionCookieOptions, sessionCookieSecurity } from "./Cookies.js"
+import {
+  expiredOAuthStateCookieOptions,
+  expiredSessionCookieOptions,
+  oauthStateCookieOptions,
+  oauthStateCookieSecurity,
+  sessionCookieOptions,
+  sessionCookieSecurity
+} from "./Cookies.js"
 import type { CurrentUser } from "./Middleware.js"
 import { Authenticated, AuthoritativeSession, CurrentSession, currentUserOf } from "./Middleware.js"
 import { checkOrigin } from "./OriginCheck.js"
@@ -82,13 +89,20 @@ export const remainingLifetime = (session: Session): Effect.Effect<Duration.Dura
  *
  * **Gotchas**
  *
- * The rolling refresh re-sends the cookie *with* a `Max-Age`, because at that
- * point nothing on the session row records whether the person asked to be
- * remembered. With the default lifetimes this cannot arise — a one-day
- * `rememberMe: false` session becomes refresh-due only at the instant it
- * expires, and expiry is checked first — but a deployment configuring
- * `updateAge` longer than `rememberMeDisabledExpiresIn` would see a
- * browser-session cookie promoted to a persistent one on refresh.
+ * The rolling refresh must pass `persistent` explicitly — `session.rememberMe`,
+ * read off the row — or it would re-send a browser-session cookie *with* a
+ * `Max-Age` and silently promote it to a persistent one.
+ *
+ * That promotion is not an exotic configuration: `AuthConfig` bounds
+ * `updateAge` by `rememberMeDisabledExpiresIn` precisely so that the rolling
+ * refresh applies to the shortest session a deployment mints, which means a
+ * `rememberMe: false` session normally *does* become refresh-due before it
+ * expires. (The condition is `updateAge` **shorter** than
+ * `rememberMeDisabledExpiresIn`, not longer — an earlier note here had it
+ * backwards.) The fix is on the row rather than in the configuration: the
+ * session records the choice, so a refresh re-sends a non-persistent session as
+ * a browser-session cookie and a short session goes on rolling while staying
+ * short, which is what `Sessions.grantedLifetime` exists to do.
  *
  * @category combinators
  * @since 1.0.0
@@ -125,6 +139,55 @@ export const clearSessionCookie = (
     sessionCookieSecurity(config),
     Redacted.make(""),
     expiredSessionCookieOptions(config)
+  )
+
+/**
+ * Attaches the short-lived OAuth state-binding cookie to the response being
+ * built, carrying the raw `state` value.
+ *
+ * **When to use**
+ *
+ * At the *start* of an OAuth flow — `signInSocial`, `linkSocial` — so the
+ * callback can require the `state` the browser comes back with to be the one
+ * this browser was issued. Without it the single-use consume still stops
+ * forgery and replay, but not an attacker luring a victim to a callback for a
+ * `state` the attacker legitimately obtained (login CSRF). The cookie's
+ * lifetime mirrors the pending request's, so the browser forgets it when the
+ * state row expires.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const setOAuthStateCookie = (
+  config: AuthConfigService,
+  state: Redacted.Redacted<string>,
+  options: { readonly maxAge: Duration.Duration }
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  HttpApiBuilder.securitySetCookie(
+    oauthStateCookieSecurity(config),
+    state,
+    oauthStateCookieOptions(config, { maxAge: options.maxAge })
+  )
+
+/**
+ * Expires the OAuth state-binding cookie on the response being built.
+ *
+ * **When to use**
+ *
+ * At the callback, once the binding has been checked — success or failure — so
+ * the single-use value never rides a second request. Repeats `path` and
+ * `domain`, as {@link clearSessionCookie} does.
+ *
+ * @category combinators
+ * @since 1.0.0
+ */
+export const clearOAuthStateCookie = (
+  config: AuthConfigService
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  HttpApiBuilder.securitySetCookie(
+    oauthStateCookieSecurity(config),
+    Redacted.make(""),
+    expiredOAuthStateCookieOptions(config)
   )
 
 // -----------------------------------------------------------------------------
@@ -203,7 +266,10 @@ export const make = Effect.fnUntraced(function*<F extends UserFields>(model: Use
 
       const { refreshed, session, user } = verified.success
       if (transport.cookie && refreshed) {
-        yield* setSessionCookie(config, session, options.credential)
+        // The row records whether the person asked to be remembered, so the
+        // re-sent cookie keeps its persistence rather than being promoted to a
+        // `Max-Age` one — see `setSessionCookie`.
+        yield* setSessionCookie(config, session, options.credential, { persistent: session.rememberMe })
       }
       if (cacheable) {
         // Written after the refresh, so the snapshot carries the expiry the

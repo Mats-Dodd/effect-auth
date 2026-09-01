@@ -189,6 +189,45 @@ describe("http/RateLimits", () => {
       assert.strictEqual(requestPath(request({ path: "/auth/sign-in/email" })), "/auth/sign-in/email")
     })
 
+    // A rate-limit bypass otherwise: the router decodes the path to dispatch,
+    // so every routing-equivalent spelling must collapse to one counter or an
+    // attacker rotates encodings to mint a fresh bucket per spelling from one IP.
+    it("keys percent-encoded spellings under the path the router dispatched on", () => {
+      // %6C is 'l': 'emai%6C' and 'email' reach signInEmail, so they share a bucket.
+      assert.strictEqual(requestPath(request({ path: "/auth/sign-in/emai%6C" })), "/auth/sign-in/email")
+      // The same key falls out end to end, query and client included.
+      assert.strictEqual(
+        keyFor(
+          credentials,
+          requestPath(request({ path: "/auth/sign-in/emai%6C?callbackURL=/x" })),
+          Option.some("203.0.113.7")
+        ),
+        keyFor(
+          credentials,
+          requestPath(request({ path: "/auth/sign-in/email" })),
+          Option.some("203.0.113.7")
+        )
+      )
+      // Any unreserved letter, upper- or lower-half hex, collapses the same way.
+      assert.strictEqual(requestPath(request({ path: "/auth/%73ign-in/email" })), "/auth/sign-in/email")
+    })
+
+    it("collapses the router's other canonicalisations too", () => {
+      // Case-insensitive, duplicate slashes, trailing slash — the router's defaults.
+      assert.strictEqual(requestPath(request({ path: "/auth/SIGN-IN/EMAIL" })), "/auth/sign-in/email")
+      assert.strictEqual(requestPath(request({ path: "/auth//sign-in/email/" })), "/auth/sign-in/email")
+    })
+
+    it("keeps %2F literal, as the router does, and never throws on a malformed escape", () => {
+      // find-my-way keeps %2F encoded rather than splitting on it; matched case-folded.
+      assert.strictEqual(requestPath(request({ path: "/auth/a%2Fb" })), "/auth/a%2fb")
+      // A truncated/invalid escape would make decodeURI throw: fall back, don't throw.
+      assert.strictEqual(requestPath(request({ path: "/auth/%zz" })), "/auth/%zz")
+      assert.strictEqual(requestPath(request({ path: "/auth/%e0" })), "/auth/%e0")
+      // %25 decodes to a single literal '%', not a double decode.
+      assert.strictEqual(requestPath(request({ path: "/auth/%25" })), "/auth/%25")
+    })
+
     it("rounds a retry hint up to a whole second, and never to zero", () => {
       assert.strictEqual(retryAfterSeconds(Duration.millis(1)), 1)
       assert.strictEqual(retryAfterSeconds(Duration.millis(1500)), 2)

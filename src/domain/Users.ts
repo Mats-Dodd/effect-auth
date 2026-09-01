@@ -603,7 +603,13 @@ export const make: <F extends UserFields>(
     // takes its `update` shape. Only the model knows the two are the same
     // columns, so the mapping is here rather than at the caller: `basePatch`
     // states the base half's type and the extras are laid over it by name.
-    const patch = Object.assign(model.basePatch(base), pickKeys(options, model.extraKeys))
+    // Picked by the `jsonUpdate` variant's keys, not the full `extraKeys`: the
+    // latter includes fields a deployment declared `readOnly` or `hidden`, and
+    // the type on `UpdateOptions` is the only thing that keeps a client from
+    // setting one. A deployment that feeds loosely-typed data straight to the
+    // domain layer has no such type, so the runtime whitelist must match the
+    // declared one — otherwise a `readOnly` `role: "admin"` would be writable.
+    const patch = Object.assign(model.basePatch(base), pickKeys(options, model.jsonUpdateExtraKeys))
 
     const written = yield* users.update(options.userId, patch)
     // The row went between the read above and this write — a concurrent
@@ -723,11 +729,20 @@ export const make: <F extends UserFields>(
       // it, which is the whole of what verification means.
       const written = yield* users.update(userId, model.basePatch({ email: newEmail, emailVerified: true }))
       const stored = yield* Effect.fromOption(written, () => new InvalidToken())
-      // Every other link that could move this account dies with the one just
-      // used — including a first hop somebody asked for in the meantime.
-      for (const kind of [changeEmailConfirmPurpose, changeEmailVerifyPurpose]) {
-        yield* verifications.retire(kind, userId)
-      }
+      // Every link that could move or take over this account dies with the one
+      // just used. That is more than the two change-email hops — a first hop
+      // somebody asked for in the meantime among them: a `password-reset` or
+      // `delete-account` token mailed to the address the account is *leaving*
+      // has to go too. Completing a two-hop change is exactly the moment an
+      // owner remediates a compromised old mailbox, and a reset link that mailbox
+      // still holds (up to an hour's TTL) would otherwise take the account
+      // straight back. This is the same re-securing `resetPassword` and
+      // `changePassword` already do for this class of token.
+      yield* retireUserSubjectTokens(verifications, userId)
+      // The one purpose keyed by the address rather than the id: the OLD
+      // address's own `email-verify` token, so a stale verify link cannot later
+      // flip a stranger who re-registers the address this account just freed.
+      yield* verifications.retire(emailVerifyPurpose, normalizeEmail(previousEmail))
       return stored
     })).pipe(
       // Somebody claimed the address between the two hops. The unique index is

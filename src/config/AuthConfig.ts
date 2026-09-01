@@ -683,6 +683,22 @@ const validate = (config: AuthConfigService): AuthConfigService => {
   positiveDuration("session.updateAge", config.session.updateAge)
   positiveDuration("session.freshAge", config.session.freshAge)
   positiveDuration("session.rememberMeDisabledExpiresIn", config.session.rememberMeDisabledExpiresIn)
+  // Both bounds say the same thing: the refresh window has to fit inside the
+  // *shortest* session this deployment mints, or that session would expire
+  // without the rolling refresh ever applying to it. `rememberMeDisabledExpiresIn`
+  // is that shortest lifetime, so `updateAge` is bounded by it as well as by
+  // `expiresIn`.
+  //
+  // This is deliberately not a promotion guard. A `rememberMe: false` session
+  // becoming refresh-due before it expires — which is exactly what these bounds
+  // guarantee — used to promote its browser-session cookie to a persistent one,
+  // because the row recorded no remember-me choice. That is closed on the row
+  // instead: `session.rememberMe` is persisted, and the rolling refresh re-sends
+  // the cookie with the persistence the person actually chose (see
+  // `MiddlewareLive.setSessionCookie`). Inverting these bounds to forbid the
+  // relationship would defend against nothing the column does not already close,
+  // while forbidding sub-day refresh granularity and making a short session
+  // unrefreshable — which is behaviour `grantedLifetime` exists to support.
   if (Duration.toMillis(config.session.updateAge) >= Duration.toMillis(config.session.expiresIn) ||
     Duration.toMillis(config.session.updateAge) > Duration.toMillis(config.session.rememberMeDisabledExpiresIn)) {
     configurationError("session.updateAge must be shorter than expiresIn and no longer than rememberMeDisabledExpiresIn")

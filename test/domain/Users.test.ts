@@ -15,10 +15,11 @@ import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { Passwords } from "../../src/domain/Passwords.js"
 import type { UserId } from "../../src/domain/Schema.js"
+import { normalizeEmail } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { UserStore, VerificationStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose, Users } from "../../src/domain/Users.js"
-import { identifierOf, passwordResetPurpose } from "../../src/domain/Verifications.js"
+import { emailVerifyPurpose, identifierOf, passwordResetPurpose, Verifications } from "../../src/domain/Verifications.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, forUser, signUpUser, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
@@ -444,6 +445,47 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         // Nothing this user could still move their account with survives.
         assert.strictEqual(
           yield* verifications.deleteByIdentifier(identifierOf(changeEmailVerifyPurpose, user.id)),
+          0
+        )
+      }))
+
+    it.effect("retires reset and old-address tokens mailed to the address the account is leaving", () =>
+      Effect.gen(function*() {
+        const users = yield* Users
+        const passwords = yield* Passwords
+        const issue = yield* Verifications
+        const verifications = yield* VerificationStore
+        const email = uniqueEmail("change-remediate")
+        const newEmail = uniqueEmail("change-remediate-new")
+        const { user } = yield* registerVerified(email)
+
+        // The compromised-old-mailbox scenario: a reset link (subject = user id)
+        // is outstanding for the address the account is about to leave, and so
+        // is a stale `email-verify` token keyed by that address.
+        yield* passwords.requestReset({ email })
+        yield* issue.issue({
+          purpose: emailVerifyPurpose,
+          subject: normalizeEmail(email),
+          ttl: Duration.hours(1),
+          payload: null
+        })
+
+        // The owner remediates by moving the account to a fresh address, both hops.
+        yield* users.requestEmailChange({ user, newEmail })
+        const confirmation = yield* linkTo(AuthTest.changeEmailConfirmationKind, email)
+        yield* users.confirmEmailChange(confirmation.token)
+        const verification = yield* linkTo(AuthTest.changeEmailVerificationKind, newEmail)
+        yield* users.verifyEmailChange(verification.token)
+
+        // The reset link the old mailbox still held cannot take the account back.
+        assert.strictEqual(
+          yield* verifications.deleteByIdentifier(identifierOf(passwordResetPurpose, user.id)),
+          0
+        )
+        // Nor can a stale verify token flip a stranger who re-registers the
+        // address this account just freed.
+        assert.strictEqual(
+          yield* verifications.deleteByIdentifier(identifierOf(emailVerifyPurpose, normalizeEmail(email))),
           0
         )
       }))

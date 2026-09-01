@@ -133,6 +133,20 @@ const createVerifications = Effect.gen(function*() {
   yield* sql`CREATE INDEX IF NOT EXISTS verifications_identifier_idx ON verifications (identifier)`
 })
 
+const addSessionRememberMe = Effect.gen(function*() {
+  const sql = yield* SqlClient.SqlClient
+
+  // A boolean on PostgreSQL, an integer flag on SQLite — the same divergence as
+  // `users.email_verified`. `NOT NULL DEFAULT true`/`1` reflects the behaviour
+  // sessions had before the column existed (a full-length "remembered" session)
+  // and backfills any row already in the table.
+  yield* sql.onDialectOrElse({
+    pg: () => sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remember_me boolean NOT NULL DEFAULT true`,
+    sqlite: () => sql`ALTER TABLE sessions ADD COLUMN remember_me integer NOT NULL DEFAULT 1`,
+    orElse: () => unsupportedDialect
+  })
+})
+
 // -----------------------------------------------------------------------------
 // Custom user fields
 // -----------------------------------------------------------------------------
@@ -421,7 +435,8 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
   "0001_create_users": createUsers,
   "0002_create_sessions": createSessions,
   "0003_create_accounts": createAccounts,
-  "0004_create_verifications": createVerifications
+  "0004_create_verifications": createVerifications,
+  "0005_session_remember_me": addSessionRememberMe
 }
 
 /**

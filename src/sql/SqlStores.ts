@@ -78,7 +78,7 @@ import { Account, baseUserModel, CredentialIssuer, Session, Verification } from 
 // -----------------------------------------------------------------------------
 
 const sessionColumns =
-  `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", created_at AS "createdAt", updated_at AS "updatedAt"`
+  `id, token_hash AS "tokenHash", user_id AS "userId", expires_at AS "expiresAt", ip_address AS "ipAddress", user_agent AS "userAgent", remember_me AS "rememberMe", created_at AS "createdAt", updated_at AS "updatedAt"`
 
 const accountColumns =
   `id, issuer, account_id AS "accountId", provider_id AS "providerId", user_id AS "userId", access_token AS "accessToken", refresh_token AS "refreshToken", id_token AS "idToken", access_token_expires_at AS "accessTokenExpiresAt", refresh_token_expires_at AS "refreshTokenExpiresAt", scope, password_hash AS "passwordHash", created_at AS "createdAt", updated_at AS "updatedAt"`
@@ -87,7 +87,7 @@ const verificationColumns =
   `id, identifier, value_hash AS "valueHash", payload, expires_at AS "expiresAt", created_at AS "createdAt", updated_at AS "updatedAt"`
 
 const sessionJoinColumns =
-  `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
+  `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.remember_me AS "s_rememberMe", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
 
 // -----------------------------------------------------------------------------
 // User columns, derived from the model
@@ -152,14 +152,6 @@ interface RawIdRow {
 // -----------------------------------------------------------------------------
 
 const IsoString = Schema.DateTimeUtcFromString
-
-const SessionListRequest = Schema.Struct({ userId: Schema.String, now: IsoString })
-
-const SessionTouchRequest = Schema.Struct({
-  id: Schema.String,
-  expiresAt: IsoString,
-  updatedAt: IsoString
-})
 
 const IssuerAccountRequest = Schema.Struct({ issuer: Schema.String, accountId: Schema.String })
 
@@ -306,6 +298,15 @@ const makeUserStore: <F extends UserFields>(
     const encodeInsert = Schema.encodeUnknownEffect(model.rows.insert)
     const encodePatch = Schema.encodeUnknownEffect(model.rows.patch)
 
+    /**
+     * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
+     * already, so the plain read is the same guarantee there.
+     */
+    const lockClause = sql.onDialectOrElse({
+      orElse: () => sql.literal(" FOR UPDATE"),
+      sqlite: () => sql.literal("")
+    })
+
     /** A decoding failure means the columns and the model have drifted apart. */
     const decoded = (operation: string, row: UserRow): Effect.Effect<UserOf<F>, PersistenceError> =>
       Effect.mapError(
@@ -371,6 +372,15 @@ const makeUserStore: <F extends UserFields>(
       delete: (id) =>
         persist("UserStore.delete")(
           Effect.map(sql<RawIdRow>`DELETE FROM users WHERE id = ${id} RETURNING id`, (rows) => rows.length > 0)
+        ),
+
+      // Called for the lock, not the row: a transaction takes it before reading
+      // a user's accounts so a concurrent reclaim of the same user cannot
+      // interleave. The id is a bound parameter; the only interpolated fragment
+      // is the dialect's own `FOR UPDATE` (empty on SQLite).
+      lockUserRow: (id) =>
+        persist("UserStore.lockUserRow")(
+          Effect.asVoid(sql<RawIdRow>`SELECT id FROM users WHERE id = ${id}${lockClause}`)
         )
     })
   }
@@ -390,10 +400,27 @@ const makeSessionStore: <F extends UserFields>(
     const sessionWithUserCols = sql.literal(
       `${sessionJoinColumns}, ${joinedProjectionOf(columns, "u", "u_")}`
     )
-    const decodeBoolean = booleanCodec(sql).decode
+    const boolean = booleanCodec(sql)
+    const decodeBoolean = boolean.decode
     const readUser = userReaderOf(columns, decodeBoolean)
 
     const decodeSession = Schema.decodeUnknownEffect(Session)
+    const encodeInsert = Schema.encodeUnknownEffect(Session.insert)
+
+    /**
+     * `sessions.remember_me` is the one boolean the session table stores, so —
+     * exactly as the user store does for its own flags — the dialect's stored
+     * form is brought back to a `boolean` before the row is decoded, rather than
+     * letting SQLite's integer reach a `Schema.Boolean`.
+     */
+    const readSession = (row: UserRow): Effect.Effect<Session, Schema.SchemaError> =>
+      decodeSession({ ...row, rememberMe: decodeBoolean(row["rememberMe"]) })
+
+    const firstSession = (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<Session>, Schema.SchemaError> =>
+      Option.match(Array.head(rows), {
+        onNone: () => Effect.succeedNone,
+        onSome: (row) => Effect.asSome(readSession(row))
+      })
 
     const sessionFromRow = (row: UserRow) => ({
       id: row["s_id"],
@@ -402,6 +429,7 @@ const makeSessionStore: <F extends UserFields>(
       expiresAt: row["s_expiresAt"],
       ipAddress: row["s_ipAddress"],
       userAgent: row["s_userAgent"],
+      rememberMe: decodeBoolean(row["s_rememberMe"]),
       createdAt: row["s_createdAt"],
       updatedAt: row["s_updatedAt"]
     })
@@ -421,14 +449,26 @@ const makeSessionStore: <F extends UserFields>(
         (cause) => new PersistenceError({ operation: "SessionStore.findByTokenHash", cause })
       )
 
-    const insertSession = SqlSchema.findOne({
-      Request: Session.insert,
-      Result: Session,
-      execute: (row) =>
-        sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, created_at, updated_at)
-        VALUES (${row.id}, ${row.tokenHash}, ${row.userId}, ${row.expiresAt}, ${row.ipAddress}, ${row.userAgent}, ${row.createdAt}, ${row.updatedAt})
+    const insertSession = (session: typeof Session.insert.Type): Effect.Effect<Session, PersistenceError> =>
+      persist("SessionStore.create")(Effect.gen(function*() {
+        // Encoding a well-formed insert row is the model's own doing, so a
+        // failure here is a defect rather than something a caller can act on.
+        const row = yield* Effect.orDie(encodeInsert(session))
+        const rows = yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, remember_me, created_at, updated_at)
+        VALUES (${row.id as string}, ${row.tokenHash as string}, ${row.userId as string}, ${row.expiresAt as string}, ${
+          row.ipAddress as string | null
+        }, ${row.userAgent as string | null}, ${boolean.encode(row.rememberMe as boolean)}, ${
+          row.createdAt as string
+        }, ${row.updatedAt as string})
         RETURNING ${sessionCols}`
-    })
+        return yield* Option.match(Array.head(rows), {
+          onNone: () =>
+            Effect.fail(
+              new PersistenceError({ operation: "SessionStore.create", cause: "the statement returned no row" })
+            ),
+          onSome: readSession
+        })
+      }))
 
     const selectSessionWithUser = (
       tokenHash: string
@@ -447,34 +487,23 @@ const makeSessionStore: <F extends UserFields>(
           })
       )
 
-    const touchSession = SqlSchema.findOneOption({
-      Request: SessionTouchRequest,
-      Result: Session,
-      execute: (row) =>
-        sql`UPDATE sessions SET expires_at = ${row.expiresAt}, updated_at = ${row.updatedAt}
-        WHERE id = ${row.id}
-        RETURNING ${sessionCols}`
-    })
-
-    const listSessions = SqlSchema.findAll({
-      Request: SessionListRequest,
-      Result: Session,
-      execute: (row) =>
-        sql`SELECT ${sessionCols} FROM sessions
-        WHERE user_id = ${row.userId} AND expires_at > ${row.now}
-        ORDER BY created_at DESC, id DESC`
-    })
-
     return sessionStoreOf(model).of({
-      create: (session) => persist("SessionStore.create")(insertSession(session)),
+      create: (session) => insertSession(session),
 
       findByTokenHash: (tokenHash) => selectSessionWithUser(tokenHash),
 
+      // The rolling refresh moves only the expiry and the update stamp; the
+      // stored `remember_me` is deliberately left as it was, so a short session
+      // kept alive by browsing never has its lifetime silently promoted.
       touch: (id, expiresAt) =>
-        persist("SessionStore.touch")(Effect.flatMap(
-          DateTime.now,
-          (now) => touchSession({ id, expiresAt, updatedAt: now })
-        )),
+        persist("SessionStore.touch")(Effect.gen(function*() {
+          const now = yield* DateTime.now
+          const rows = yield* sql<UserRow>`UPDATE sessions
+          SET expires_at = ${DateTime.formatIso(expiresAt)}, updated_at = ${DateTime.formatIso(now)}
+          WHERE id = ${id}
+          RETURNING ${sessionCols}`
+          return yield* firstSession(rows)
+        })),
 
       deleteById: (id, userId) =>
         persist("SessionStore.deleteById")(
@@ -501,10 +530,13 @@ const makeSessionStore: <F extends UserFields>(
         ),
 
       listByUserId: (userId) =>
-        persist("SessionStore.listByUserId")(Effect.flatMap(
-          DateTime.now,
-          (now) => listSessions({ userId, now })
-        )),
+        persist("SessionStore.listByUserId")(Effect.gen(function*() {
+          const now = yield* DateTime.now
+          const rows = yield* sql<UserRow>`SELECT ${sessionCols} FROM sessions
+          WHERE user_id = ${userId} AND expires_at > ${DateTime.formatIso(now)}
+          ORDER BY created_at DESC, id DESC`
+          return yield* Effect.forEach(rows, readSession)
+        })),
 
       deleteExpired: persist("SessionStore.deleteExpired")(Effect.flatMap(
         DateTime.now,

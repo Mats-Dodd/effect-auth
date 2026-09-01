@@ -52,7 +52,8 @@ import type { AuthApiGroupOf } from "./AuthApi.js"
 import { AuthApiGroup } from "./AuthApi.js"
 import type { Authenticated } from "./Middleware.js"
 import { CurrentSession, currentUserOf } from "./Middleware.js"
-import { clearSessionCookie, setSessionCookie } from "./MiddlewareLive.js"
+import { oauthStateCookieName } from "./Cookies.js"
+import { clearOAuthStateCookie, clearSessionCookie, setOAuthStateCookie, setSessionCookie } from "./MiddlewareLive.js"
 import { policyRefusedTarget, resolveUrl, validateUrl, withErrorCode } from "./OriginCheck.js"
 import type { Bucket } from "./RateLimits.js"
 import { clientAddress, consumeWith, credentials, email as emailBucket } from "./RateLimits.js"
@@ -591,7 +592,14 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
           .handle("revokeSession", ({ payload }) =>
             Effect.gen(function*() {
               const user = yield* CurrentUser
+              const session = yield* CurrentSession
               yield* sessions.revoke(payload.sessionId, user.id).pipe(serverFault)
+              // Revoking one's own session ends this browser's too: clear the
+              // cookies, or the cookie cache would keep serving this browser
+              // behind its snapshot until it aged out — the row is already gone.
+              if (payload.sessionId === session.id) {
+                yield* clearSessionCookies(config, cache)
+              }
               return acknowledged
             }))
           .handle("revokeSessions", () =>
@@ -688,12 +696,33 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 scopes: payload.scopes,
                 rememberMe: payload.rememberMe
               }).pipe(serverFault)
+              // Bind the flow to this browser: the callback requires the state
+              // it comes back with to equal this cookie, which an attacker who
+              // merely obtained a valid state cannot plant in the victim's jar.
+              yield* setOAuthStateCookie(config, started.state, { maxAge: config.tokens.oauthStateTtl })
               return { url: started.url, redirect: true }
             }))
           .handle("oauthCallback", ({ params, query, request }) =>
             Effect.gen(function*() {
+              // The state cookie is single-use — cleared on every exit from this
+              // handler, the `unknown_provider` early return included, so
+              // "cleared whatever the outcome" is literally true.
+              yield* clearOAuthStateCookie(config)
               if (Option.isNone(flow)) {
                 return redirectTo(withErrorCode(resolveUrl(config, null), "unknown_provider"))
+              }
+              // Browser binding, before the state is even consumed: the flow set
+              // a cookie holding the raw `state` when it started, and the value
+              // the provider echoed back must equal it. A browser lured to a
+              // callback for a `state` it never started holds no such cookie and
+              // is turned away with the same safe `state_mismatch` code an
+              // unissued state gets.
+              const bound = request.cookies[oauthStateCookieName(config)]
+              if (query.state === undefined || bound === undefined || bound.length === 0 || bound !== query.state) {
+                // The same closed-set code `errorCode(OAuthStateMismatch)` and
+                // `complete` produce for an unissued state, written as the
+                // literal it resolves to — as the `unknown_provider` branch above is.
+                return redirectTo(withErrorCode(resolveUrl(config, null), "state_mismatch"))
               }
               // `complete` resolves every failure into a validated redirect: the
               // browser arrived here by a top-level navigation and must leave by
@@ -741,6 +770,10 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 scopes: payload.scopes,
                 linkUserId: user.id
               }).pipe(serverFault)
+              // Bind the link flow to this browser too: the callback attaches
+              // the returned identity to `user.id`, so a forged callback must
+              // not be able to drive it — see `signInSocial`.
+              yield* setOAuthStateCookie(config, started.state, { maxAge: config.tokens.oauthStateTtl })
               return { url: started.url, redirect: true }
             }))
           .handle("unlinkAccount", ({ payload }) =>

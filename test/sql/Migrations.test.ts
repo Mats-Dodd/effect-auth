@@ -13,12 +13,13 @@ describe("sql/Migrations", () => {
     Effect.gen(function*() {
       const applied = yield* Migrations.run
 
-      assert.deepStrictEqual(applied.map(([id]) => id), [1, 2, 3, 4])
+      assert.deepStrictEqual(applied.map(([id]) => id), [1, 2, 3, 4, 5])
       assert.deepStrictEqual(applied.map(([, name]) => name), [
         "create_users",
         "create_sessions",
         "create_accounts",
-        "create_verifications"
+        "create_verifications",
+        "session_remember_me"
       ])
 
       const sql = yield* SqlClient.SqlClient
@@ -40,6 +41,29 @@ describe("sql/Migrations", () => {
       const second = yield* Migrations.run
 
       assert.deepStrictEqual(second, [])
+    }).pipe(Effect.provide(PgliteClient.layer())))
+
+  it.effect("adds the sessions.remember_me flag, defaulted so existing rows are remembered", () =>
+    Effect.gen(function*() {
+      yield* Migrations.run
+
+      const sql = yield* SqlClient.SqlClient
+      const columns = yield* sql<TableRow>`SELECT column_name AS "name" FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sessions' ORDER BY column_name`
+
+      assert.include(columns.map((row) => row.name) as Array<string>, "remember_me")
+
+      // A row inserted without stating the flag inherits the DEFAULT, so a
+      // deployment's pre-existing sessions read back as remembered rather than
+      // as a NULL the model cannot decode.
+      yield* sql`INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
+        VALUES ('u-remember', 'Ada', 'remember@example.com', false, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
+      yield* sql`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, created_at, updated_at)
+        VALUES ('s-remember', 'hash-remember', 'u-remember', '2999-01-01T00:00:00.000Z', NULL, NULL, '2024-01-01T00:00:00.000Z', '2024-01-01T00:00:00.000Z')`
+
+      const rows = yield* sql<{ readonly rememberMe: unknown }>`SELECT remember_me AS "rememberMe"
+        FROM sessions WHERE id = 's-remember'`
+      assert.strictEqual(rows[0]?.rememberMe, true)
     }).pipe(Effect.provide(PgliteClient.layer())))
 
   it.effect("creates the indexes the stores rely on", () =>

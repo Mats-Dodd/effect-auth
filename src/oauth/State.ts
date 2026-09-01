@@ -11,10 +11,18 @@
  *
  * The row lives in the `verifications` table and is claimed with
  * `VerificationStore.consume`, a single `DELETE ... RETURNING` guarded by the
- * expiry. That one statement is the whole CSRF and replay story: two callbacks
+ * expiry. That one statement is the whole *replay* story: two callbacks
  * carrying the same `state` cannot both be served, an expired request cannot be
  * served at all, and a callback carrying a `state` nobody issued matches
- * nothing.
+ * nothing. It is not, on its own, the whole CSRF story — it does not stop an
+ * attacker who legitimately obtained a `state` from luring a victim's browser
+ * to the callback (a login-CSRF that would sign the victim into the attacker's
+ * account, or attach the victim's identity to it on a link flow). Binding the
+ * `state` to the browser that started the flow is what closes that: the HTTP
+ * layer sets a short-lived, `HttpOnly`, `SameSite=Lax`, `__Secure-`-prefixed
+ * cookie holding the raw `state` at the start, and the callback requires the
+ * `state` it comes back with to equal that cookie *before* it consumes here.
+ * See `Handlers.oauthCallback` and `Cookies.oauthStateCookieName`.
  *
  * **Gotchas**
  *

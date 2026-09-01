@@ -40,6 +40,7 @@ export const sessionJson = {
   expiresAt: "2024-01-08T00:00:00.000Z",
   ipAddress: null,
   userAgent: null,
+  rememberMe: true,
   createdAt: now,
   updatedAt: now
 }

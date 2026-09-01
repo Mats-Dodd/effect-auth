@@ -216,6 +216,32 @@ const hashError = (reason: string, cause?: unknown): PasswordHashError => new Pa
  */
 const minimumDigestBytes = 16
 
+/**
+ * The longest digest a stored hash may carry.
+ *
+ * **Details**
+ *
+ * `verify` feeds the stored digest length straight into the KDF as `dkLen`, so
+ * an oversized envelope — `pbkdf2$i=…$<salt>$<64 KiB key>` — would make every
+ * sign-in attempt derive tens of thousands of bytes, a permanent CPU sink
+ * reachable by anyone who can trigger sign-in for that account. Both writers
+ * emit 64 bytes; 128 is generous next to that and refuses the rest, in the same
+ * spirit as {@link minimumDigestBytes} and {@link parameterCeiling}.
+ */
+const maximumDigestBytes = 128
+
+/**
+ * The most salt bytes a stored hash may carry.
+ *
+ * **Details**
+ *
+ * The salt is attacker-writable in the same way, and a bloated salt likewise
+ * inflates the KDF's working set once per attempt. The writers emit
+ * {@link saltBytes} (16); 64 leaves comfortable headroom and refuses anything
+ * larger.
+ */
+const maximumSaltBytes = 64
+
 const formatHash = (
   algorithm: HashAlgorithm,
   params: string,
@@ -258,11 +284,15 @@ export const parseHash = (hash: string): Effect.Effect<ParsedHash, PasswordHashE
     }
 
     const salt = Encoding.decodeBase64Url(saltSegment)
-    if (Result.isFailure(salt) || salt.success.length === 0) {
+    if (Result.isFailure(salt) || salt.success.length === 0 || salt.success.length > maximumSaltBytes) {
       return Effect.fail(hashError("MalformedSalt"))
     }
     const key = Encoding.decodeBase64Url(keySegment)
-    if (Result.isFailure(key) || key.success.length < minimumDigestBytes) {
+    if (
+      Result.isFailure(key) ||
+      key.success.length < minimumDigestBytes ||
+      key.success.length > maximumDigestBytes
+    ) {
       return Effect.fail(hashError("MalformedDigest"))
     }
 
@@ -304,6 +334,29 @@ const parameterCeiling = (name: string): number | undefined => {
   }
 }
 
+/**
+ * The smallest cost parameters a *stored* hash may carry.
+ *
+ * **Details**
+ *
+ * The mirror image of {@link parameterCeiling}: a corrupted or maliciously weak
+ * imported envelope — `scrypt$n=2,r=1,p=1` or `pbkdf2$i=1` — would otherwise
+ * verify against a trivial search space. These floors fail such a hash loudly
+ * instead. They sit at or below what the writers emit (scrypt `N=16384`,
+ * pbkdf2 `i=600_000`; the test suite runs scrypt at `N=1024`), so every real
+ * hash still verifies.
+ */
+const parameterFloor = (name: string): number | undefined => {
+  switch (name) {
+    case "n":
+      return 1024
+    case "i":
+      return 10_000
+    default:
+      return undefined
+  }
+}
+
 const positiveIntParam = (
   params: Record<string, string>,
   name: string,
@@ -317,9 +370,14 @@ const positiveIntParam = (
     return Effect.fail(hashError(reason))
   }
   const ceiling = parameterCeiling(name)
-  return ceiling !== undefined && value > ceiling
-    ? Effect.fail(hashError(reason))
-    : Effect.succeed(value)
+  if (ceiling !== undefined && value > ceiling) {
+    return Effect.fail(hashError(reason))
+  }
+  const floor = parameterFloor(name)
+  if (floor !== undefined && value < floor) {
+    return Effect.fail(hashError(reason))
+  }
+  return Effect.succeed(value)
 }
 
 // -----------------------------------------------------------------------------

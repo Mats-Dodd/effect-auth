@@ -684,6 +684,10 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         error: NotFound
       })
         .middleware(Authenticated)
+        // A revocation is a mutation, and a session revoked in another browser
+        // must not still be able to drive it through the cache's snapshot: this
+        // reads the row anyway, so the annotation costs it nothing.
+        .annotate(AuthoritativeSession, true)
         .annotateMerge(OpenApi.annotations({
           summary: "Revoke one of the caller's sessions",
           description: "A session belonging to another user is reported as NotFound."
@@ -699,6 +703,9 @@ export const makeAuthApiGroup = <F extends UserFields>(model: UserModel<F>) =>
         success: Ok
       })
         .middleware(Authenticated)
+        // Revoking the caller's other sessions is a mutation keyed on the
+        // current session's id, which must be the row's and not a snapshot's.
+        .annotate(AuthoritativeSession, true)
         .annotateMerge(OpenApi.annotations({
           summary: "Revoke every session of the caller except this one"
         })),

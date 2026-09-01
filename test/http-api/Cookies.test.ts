@@ -72,6 +72,33 @@ describe("http/Cookies", () => {
         AuthCookies.insecureSessionCacheCookieName
       )
     })
+
+    it("names the OAuth state-binding cookie __Host- prefixed over TLS", () => {
+      assert.strictEqual(AuthCookies.insecureOAuthStateCookieName, "effect_auth.oauth_state")
+      // __Host-, not __Secure-: host-bound, so a sibling subdomain cannot toss a
+      // Domain-scoped state cookie of the same name.
+      assert.strictEqual(AuthCookies.secureOAuthStateCookieName, "__Host-effect_auth.oauth_state")
+
+      assert.strictEqual(AuthCookies.oauthStateCookieName(secureConfig), AuthCookies.secureOAuthStateCookieName)
+      assert.strictEqual(AuthCookies.oauthStateCookieName(devConfig), AuthCookies.insecureOAuthStateCookieName)
+
+      // A cookie of its own, distinct from the session and the cache.
+      assert.notStrictEqual(AuthCookies.oauthStateCookieName(devConfig), AuthCookies.sessionCookieName(devConfig))
+    })
+
+    it("writes the OAuth state cookie under the scheme its own name comes from", () => {
+      assert.strictEqual(AuthCookies.secureOAuthStateCookieSecurity.key, AuthCookies.secureOAuthStateCookieName)
+      assert.strictEqual(AuthCookies.secureOAuthStateCookieSecurity.in, "cookie")
+      assert.strictEqual(AuthCookies.insecureOAuthStateCookieSecurity.key, AuthCookies.insecureOAuthStateCookieName)
+      assert.strictEqual(
+        AuthCookies.oauthStateCookieSecurity(secureConfig).key,
+        AuthCookies.secureOAuthStateCookieName
+      )
+      assert.strictEqual(
+        AuthCookies.oauthStateCookieSecurity(devConfig).key,
+        AuthCookies.insecureOAuthStateCookieName
+      )
+    })
   })
 
   describe("attributes", () => {
@@ -122,6 +149,48 @@ describe("http/Cookies", () => {
       assert.strictEqual(expired.path, set.path)
       assert.strictEqual(expired.domain, set.domain)
       assert.strictEqual(expired.sameSite, set.sameSite)
+      assert.strictEqual(expired.secure, set.secure)
+      assert.strictEqual(expired.httpOnly, true)
+      assert.deepStrictEqual(expired.expires, new Date(0))
+      assert.strictEqual(expired.maxAge, undefined)
+    })
+
+    it("pins the OAuth state cookie to Path=/ with no Domain, never Strict", () => {
+      // The __Host- prefix requires Path=/ and no Domain, and a cross-site
+      // top-level GET callback would not ride a `Strict` cookie — so neither
+      // `cookie.path`/`cookie.domain` nor a deployment's `strict` reaches it.
+      const config = secure({ sameSite: "strict", path: "/app", domain: ".example.com" })
+      const options = AuthCookies.oauthStateCookieOptions(config, { maxAge: Duration.minutes(10) })
+
+      assert.strictEqual(options.sameSite, "lax")
+      assert.strictEqual(options.httpOnly, true)
+      assert.strictEqual(options.secure, true)
+      assert.strictEqual(options.path, "/")
+      assert.strictEqual(options.domain, undefined)
+      assert.deepStrictEqual(options.maxAge, Duration.minutes(10))
+    })
+
+    it("follows a sameSite=none deployment so the cross-site cookie is stored", () => {
+      // A `none` frontend on a different site than the auth server makes
+      // `signInSocial` cross-site; a browser rejects a `SameSite=Lax`
+      // `Set-Cookie` there, so the state cookie must be `SameSite=None`.
+      const config = secure({ sameSite: "none" })
+      const options = AuthCookies.oauthStateCookieOptions(config, { maxAge: Duration.minutes(10) })
+
+      assert.strictEqual(options.sameSite, "none")
+      assert.strictEqual(options.secure, true)
+    })
+
+    it("repeats Path=/ and no Domain when expiring the OAuth state cookie", () => {
+      const config = secure({ path: "/app", domain: ".example.com" })
+      const set = AuthCookies.oauthStateCookieOptions(config, { maxAge: Duration.minutes(10) })
+      const expired = AuthCookies.expiredOAuthStateCookieOptions(config)
+
+      assert.strictEqual(expired.path, set.path)
+      assert.strictEqual(expired.path, "/")
+      assert.strictEqual(expired.domain, set.domain)
+      assert.strictEqual(expired.domain, undefined)
+      assert.strictEqual(expired.sameSite, "lax")
       assert.strictEqual(expired.secure, set.secure)
       assert.strictEqual(expired.httpOnly, true)
       assert.deepStrictEqual(expired.expires, new Date(0))

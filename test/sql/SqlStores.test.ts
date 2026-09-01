@@ -35,7 +35,12 @@ const createUser = Effect.fnUntraced(function*(email: string, emailVerified = fa
   return yield* users.create(row)
 })
 
-const createSession = Effect.fnUntraced(function*(userId: UserId, tokenHash: string, ttl: Duration.Duration) {
+const createSession = Effect.fnUntraced(function*(
+  userId: UserId,
+  tokenHash: string,
+  ttl: Duration.Duration,
+  rememberMe = true
+) {
   const sessions = yield* SessionStore
   const now = yield* DateTime.now
   const row = yield* Session.insert.makeEffect({
@@ -43,7 +48,8 @@ const createSession = Effect.fnUntraced(function*(userId: UserId, tokenHash: str
     userId,
     expiresAt: DateTime.addDuration(now, ttl),
     ipAddress: "203.0.113.7",
-    userAgent: "vitest"
+    userAgent: "vitest",
+    rememberMe
   })
   return yield* sessions.create(row)
 })
@@ -105,6 +111,21 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         assert.strictEqual(Option.isNone(yield* users.findByEmail(uniqueEmail("nobody"))), true)
         assert.strictEqual(Option.isNone(yield* users.update("missing" as UserId, { name: "x" })), true)
+      }))
+
+    it.effect("locks a user row inside a transaction, and tolerates an unknown id", () =>
+      Effect.gen(function*() {
+        const users = yield* UserStore
+        const transaction = yield* WithAuthTransaction
+        const created = yield* createUser(uniqueEmail("lock"))
+
+        // It answers nothing — it is taken for the lock, not the row — and must
+        // not throw when the id matches no row (`FOR UPDATE` of an empty result
+        // is a no-op, and the SQLite degrade is a plain read).
+        yield* transaction.run(Effect.gen(function*() {
+          yield* users.lockUserRow(created.id)
+          yield* users.lockUserRow("missing" as UserId)
+        }))
       }))
 
     it.effect("reports a duplicate e-mail as a PersistenceError", () =>
@@ -173,6 +194,53 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 
         const reread = yield* expectSome(yield* sessions.findByTokenHash(hash), "expected the session")
         assert.strictEqual(DateTime.toEpochMillis(reread.session.expiresAt), DateTime.toEpochMillis(later))
+      }))
+
+    it.effect("persists remember_me and reads it back on the joined row", () =>
+      Effect.gen(function*() {
+        const sessions = yield* SessionStore
+        const rememberedHash = unique("hash-remembered")
+        const forgottenHash = unique("hash-forgotten")
+        const user = yield* createUser(uniqueEmail("remember"))
+
+        const remembered = yield* createSession(user.id, rememberedHash, Duration.days(7), true)
+        const forgotten = yield* createSession(user.id, forgottenHash, Duration.days(1), false)
+
+        // The flag survives the insert round-trip on the returned row …
+        assert.strictEqual(remembered.rememberMe, true)
+        assert.strictEqual(forgotten.rememberMe, false)
+
+        // … and the joined read the hot path uses.
+        const foundRemembered = yield* expectSome(
+          yield* sessions.findByTokenHash(rememberedHash),
+          "expected the remembered session"
+        )
+        const foundForgotten = yield* expectSome(
+          yield* sessions.findByTokenHash(forgottenHash),
+          "expected the forgotten session"
+        )
+        assert.strictEqual(foundRemembered.session.rememberMe, true)
+        assert.strictEqual(foundForgotten.session.rememberMe, false)
+      }))
+
+    it.effect("leaves remember_me untouched across a rolling refresh", () =>
+      Effect.gen(function*() {
+        const sessions = yield* SessionStore
+        const hash = unique("hash-remember-touch")
+        const user = yield* createUser(uniqueEmail("remember-touch"))
+        const session = yield* createSession(user.id, hash, Duration.days(1), false)
+        const now = yield* DateTime.now
+
+        const touched = yield* expectSome(
+          yield* sessions.touch(session.id, DateTime.addDuration(now, Duration.hours(1))),
+          "expected the touched session"
+        )
+        // Touch moves only the expiry; a short session must not be promoted.
+        assert.strictEqual(touched.rememberMe, false)
+
+        const listed = yield* sessions.listByUserId(user.id)
+        const reread = listed.find((row) => row.tokenHash === hash)
+        assert.strictEqual(reread?.rememberMe, false)
       }))
 
     it.effect("scopes deleteById to the owning user", () =>

@@ -298,6 +298,29 @@ export const make: () => Effect.Effect<
     return yield* accounts.create(row)
   })
 
+  /**
+   * Attaches a provider identity to a user that **already exists** — the two
+   * paths (implicit linking and `linkSocial`) that add a sign-in method to
+   * somebody else's row rather than to a fresh one.
+   *
+   * **Gotchas**
+   *
+   * The insert takes a `FOR UPDATE` lock on the *user* row first, in one
+   * transaction. The magic-link takeover defence deletes an unverified
+   * account's sign-in methods under that same lock; without it, a row this flow
+   * inserts is a phantom the defence's `FOR UPDATE` on the account rows cannot
+   * see under READ COMMITTED, and a pre-registrant could re-attach a method the
+   * defence had just swept. Serializing both sides on the user row closes that
+   * window. The third path — a brand-new user in {@link attemptLinkOAuth} step
+   * 3 — needs none of this: it creates the user row in its own transaction, so
+   * no concurrent reclaim can be operating on it.
+   */
+  const linkExisting = (userId: UserId, identity: OAuthIdentity) =>
+    transaction.run(Effect.gen(function*() {
+      yield* users.lockUserRow(userId)
+      return yield* insertAccount(userId, identity)
+    }))
+
   const refreshTokens = Effect.fnUntraced(function*(account: Account, identity: OAuthIdentity) {
     if (identity.tokens === undefined) return account
     const updated = yield* accounts.updateTokens(account.id, identity.tokens)
@@ -420,7 +443,7 @@ export const make: () => Effect.Effect<
       if (beforeLink !== undefined) {
         yield* beforeLink({ user, providerId: identity.providerId, info: userInfoOf(identity) })
       }
-      const account = yield* insertAccount(user.id, identity)
+      const account = yield* linkExisting(user.id, identity)
       yield* linked(user.id, account)
       return { user, account, userCreated: false, accountCreated: true } satisfies LinkResult
     }
@@ -478,7 +501,7 @@ export const make: () => Effect.Effect<
       yield* beforeLink({ user: owner, providerId: identity.providerId, info: userInfoOf(identity) })
     }
 
-    const account = yield* insertAccount(userId, identity)
+    const account = yield* linkExisting(userId, identity)
     yield* linked(userId, account)
     return { user: owner, account, userCreated: false, accountCreated: true } satisfies LinkResult
   })

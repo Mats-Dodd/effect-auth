@@ -1,13 +1,15 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
+import { Passwords } from "../../src/domain/Passwords.js"
+import { CredentialIssuer } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
 import { passwordResetPurpose, Verifications } from "../../src/domain/Verifications.js"
 import { MagicLink, magicLinkPurpose } from "../../src/magic-link/MagicLink.js"
 import { AuthTest, MagicLinkTest } from "../../src/testing/index.js"
-import { forUser, signUpUser, uniqueEmail } from "../fixtures.js"
+import { expectSome, forUser, newPassword, signUpUser, uniqueEmail } from "../fixtures.js"
 
 /**
  * Asks for a link and reads the token out of the outbox — which is exactly what
@@ -161,6 +163,41 @@ describe.sequential("magic-link/MagicLink", () => {
           "EmailVerified",
           "SignedIn"
         ])
+      }))
+
+    it.effect("sweeps a credential a pre-registrant added with setPassword", () =>
+      Effect.gen(function*() {
+        // The `setPassword` arm of the takeover: the squatter's account is
+        // OAuth-only and unverified (a row in `users`, its credential dropped so
+        // it looks like a provider-only sign-up), and they add a password to it
+        // with `setPassword` — the path whose credential insert now runs under
+        // the user-row lock, so a concurrent reclaim's `FOR UPDATE` sweep cannot
+        // miss it as a phantom. The reclaim must still remove it.
+        const email = uniqueEmail("squatted-set-password")
+        const registered = yield* signUpUser(email)
+        const accounts = yield* AccountStore
+        const passwords = yield* Passwords
+
+        // Make the account OAuth-only, then let the squatter set a password on it.
+        const credential = yield* expectSome(
+          yield* accounts.findByIssuerAccountId(CredentialIssuer, registered.user.id),
+          "expected the sign-up credential"
+        )
+        assert.isTrue(yield* accounts.deleteById(credential.id, registered.user.id))
+        yield* passwords.setPassword({ userId: registered.user.id, newPassword })
+        assert.strictEqual((yield* accounts.listByUserId(registered.user.id)).length, 1)
+
+        // The address's real owner signs in with a link.
+        const token = yield* linkFor({ email })
+        const magic = yield* MagicLink
+        const result = yield* magic.verify({ token })
+
+        assert.strictEqual(result.user.id, registered.user.id)
+        assert.isTrue(result.user.emailVerified)
+        // The password the squatter planted with `setPassword` is gone.
+        assert.deepStrictEqual(yield* accounts.listByUserId(registered.user.id), [])
+        const signIn = yield* Effect.flip(passwords.signIn({ email, password: newPassword }))
+        assert.strictEqual(signIn._tag, "InvalidCredentials")
       }))
 
     it.effect("retires the links the unproven account was the subject of", () =>

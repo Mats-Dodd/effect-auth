@@ -110,6 +110,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
         expiresAt: DateTime.addDuration(now, Duration.minutes(1)),
         ipAddress: null,
         userAgent: null,
+        rememberMe: true,
         createdAt: now,
         updatedAt: now
       })

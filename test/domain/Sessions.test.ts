@@ -25,6 +25,8 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         assert.notStrictEqual(session.tokenHash, Redacted.value(token))
         assert.strictEqual(Redacted.value(token).length, 43)
         assert.strictEqual(session.ipAddress, "203.0.113.7")
+        // Absent `rememberMe` defaults to a remembered session.
+        assert.strictEqual(session.rememberMe, true)
 
         const now = yield* DateTime.now
         const expected = DateTime.addDuration(now, config.session.expiresIn)
@@ -34,6 +36,8 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         assert.strictEqual(verified.session.id, session.id)
         assert.strictEqual(verified.user.id, user.id)
         assert.strictEqual(verified.refreshed, false)
+        // The flag is on the verified session, where middleware reads it.
+        assert.strictEqual(verified.session.rememberMe, true)
       }))
 
     it.effect("honours rememberMe: false with the short lifetime", () =>
@@ -42,8 +46,10 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
         const config = yield* AuthConfig
         const { user } = yield* signUpUser(uniqueEmail("remember-me"))
 
-        const { session } = yield* sessions.create({ userId: user.id, rememberMe: false })
+        const { session, token } = yield* sessions.create({ userId: user.id, rememberMe: false })
 
+        // The choice is stored, not just consumed for the lifetime …
+        assert.strictEqual(session.rememberMe, false)
         assert.strictEqual(
           Duration.toMillis(grantedLifetime(session, config)),
           Duration.toMillis(config.session.rememberMeDisabledExpiresIn)
@@ -52,6 +58,10 @@ layer(AuthTest.layer())("domain/Sessions", (it) => {
           Duration.toMillis(config.session.rememberMeDisabledExpiresIn),
           Duration.toMillis(config.session.expiresIn)
         )
+
+        // … so it is still there when the session is verified.
+        const verified = yield* sessions.verify(token)
+        assert.strictEqual(verified.session.rememberMe, false)
       }))
   })
 

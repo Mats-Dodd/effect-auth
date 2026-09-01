@@ -102,6 +102,9 @@
                                 }
                               ]
                             },
+                            "rememberMe": {
+                              "type": "boolean"
+                            },
                             "createdAt": {
                               "type": "string"
                             },
@@ -115,6 +118,7 @@
                             "expiresAt",
                             "ipAddress",
                             "userAgent",
+                            "rememberMe",
                             "createdAt",
                             "updatedAt"
                           ],
@@ -344,6 +348,9 @@
                             }
                           ]
                         },
+                        "rememberMe": {
+                          "type": "boolean"
+                        },
                         "createdAt": {
                           "type": "string"
                         },
@@ -357,6 +364,7 @@
                         "expiresAt",
                         "ipAddress",
                         "userAgent",
+                        "rememberMe",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -622,6 +630,9 @@
                             }
                           ]
                         },
+                        "rememberMe": {
+                          "type": "boolean"
+                        },
                         "createdAt": {
                           "type": "string"
                         },
@@ -635,6 +646,7 @@
                         "expiresAt",
                         "ipAddress",
                         "userAgent",
+                        "rememberMe",
                         "createdAt",
                         "updatedAt"
                       ],
@@ -723,6 +735,9 @@
                           }
                         ]
                       },
+                      "rememberMe": {
+                        "type": "boolean"
+                      },
                       "createdAt": {
                         "type": "string"
                       },
@@ -736,6 +751,7 @@
                       "expiresAt",
                       "ipAddress",
                       "userAgent",
+                      "rememberMe",
                       "createdAt",
                       "updatedAt"
                     ],

@@ -10,7 +10,9 @@ import { testPassword } from "../fixtures.js"
 // The hashing layers read their salt from the ambient `Crypto`; `Auth.layer`
 // provides the WebCrypto-backed default, and standalone use provides it here.
 const scrypt = PasswordHasher.layerScrypt({ N: 1024, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
-const pbkdf2 = PasswordHasher.layerPbkdf2({ iterations: 1000 }).pipe(Layer.provide(layerWebCrypto))
+// The lowest iteration count the stored-hash floor accepts; kept cheap enough
+// for the suite while still passing the sub-floor guard in `verify`.
+const pbkdf2 = PasswordHasher.layerPbkdf2({ iterations: 10_000 }).pipe(Layer.provide(layerWebCrypto))
 
 const password = testPassword
 const wrong = Redacted.make("correct horse battery stapl3")
@@ -96,10 +98,10 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
     Effect.gen(function*() {
       const legacy = yield* Effect.provide(
         hasher.use((_) => _.hash(password)),
-        PasswordHasher.layerScrypt({ N: 512, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
+        PasswordHasher.layerScrypt({ N: 2048, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
       )
 
-      assert.strictEqual(legacy.split("$")[1], "n=512,r=8,p=1")
+      assert.strictEqual(legacy.split("$")[1], "n=2048,r=8,p=1")
       // Today's layer runs at a different cost and still accepts it.
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, legacy)), true)
     }))
@@ -136,12 +138,89 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, tampered)), false)
     }))
 
-  it.effect("rejects downgraded cost parameters", () =>
+  it.effect("refuses downgraded, sub-floor cost parameters instead of verifying them", () =>
     Effect.gen(function*() {
       const hash = yield* hasher.use((_) => _.hash(password))
       const downgraded = hash.replace("n=1024,r=8,p=1", "n=2,r=1,p=1")
 
-      assert.strictEqual(yield* hasher.use((_) => _.verify(password, downgraded)), false)
+      // `n=2` is below the scrypt floor: a corrupted or maliciously weakened
+      // envelope fails loudly rather than verifying against a trivial search
+      // space (which is what a plain `false` would quietly permit).
+      const error = yield* Effect.flip(hasher.use((_) => _.verify(password, downgraded)))
+      assert.strictEqual(error._tag, "PasswordHashError")
+    }))
+
+  it.effect("refuses sub-floor scrypt and pbkdf2 cost parameters", () =>
+    Effect.gen(function*() {
+      // Valid 16-byte salt and 16-byte digest, so only the cost floor is at
+      // issue. `n=1024` / `i=10000` are the floors, so one below each is refused.
+      const subFloor = [
+        "scrypt$n=512,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA",
+        "scrypt$n=1,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA",
+        "pbkdf2$i=1$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA",
+        "pbkdf2$i=9999$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"
+      ]
+
+      const reasons = yield* Effect.forEach(
+        subFloor,
+        (hash) =>
+          Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(
+            Effect.map((error) => error._tag)
+          )
+      )
+      assert.deepStrictEqual(reasons, Array.from({ length: subFloor.length }, () => "PasswordHashError"))
+
+      // The floors are at, not above, what the writers emit: a hash written at
+      // the production scrypt cost still verifies.
+      const production = yield* Effect.result(
+        hasher.use((_) => _.verify(password, "scrypt$n=16384,r=16,p=1$c2FsdHNhbHRzYWx0c2FsdA$YWJjZGVmZ2hpamtsbW5vcA"))
+      )
+      assert.strictEqual(production._tag, "Success")
+    }))
+
+  it.effect("refuses an oversized digest or salt instead of deriving against it", () =>
+    Effect.gen(function*() {
+      // A tampered/imported row that inflates the derived-key length turns every
+      // sign-in attempt into a CPU sink, since `verify` feeds the stored digest
+      // length straight into the KDF as `dkLen`. The envelope is refused before
+      // any derivation happens.
+      const bigKey = Encoding.encodeBase64Url(new Uint8Array(200).fill(3))
+      const bigSalt = Encoding.encodeBase64Url(new Uint8Array(96).fill(5))
+      const okKey = "YWJjZGVmZ2hpamtsbW5vcA"
+      const okSalt = "c2FsdHNhbHRzYWx0c2FsdA"
+
+      const oversized = [
+        `scrypt$n=1024,r=8,p=1$${okSalt}$${bigKey}`,
+        `pbkdf2$i=10000$${okSalt}$${bigKey}`,
+        `scrypt$n=1024,r=8,p=1$${bigSalt}$${okKey}`
+      ]
+
+      // Rejected at parse time, before dispatch to any KDF.
+      const parseReasons = yield* Effect.forEach(
+        oversized,
+        (hash) => Effect.flip(PasswordHasher.parseHash(hash)).pipe(Effect.map((error) => error._tag))
+      )
+      assert.deepStrictEqual(parseReasons, Array.from({ length: oversized.length }, () => "PasswordHashError"))
+
+      // And therefore surfaced by verify as a fault, never a `false`.
+      const verifyReasons = yield* Effect.forEach(
+        oversized,
+        (hash) =>
+          Effect.flip(hasher.use((_) => _.verify(password, hash))).pipe(Effect.map((error) => error._tag))
+      )
+      assert.deepStrictEqual(verifyReasons, Array.from({ length: oversized.length }, () => "PasswordHashError"))
+    }))
+
+  it.effect("accepts a 64-byte digest and 16-byte salt round-trip at the size boundary", () =>
+    Effect.gen(function*() {
+      // The normally-written hash sits well inside the digest (<=128) and salt
+      // (<=64) caps, so the caps never touch a real hash.
+      const hash = yield* hasher.use((_) => _.hash(password))
+      const parsed = yield* PasswordHasher.parseHash(hash)
+
+      assert.strictEqual(parsed.key.length, PasswordHasher.defaultScryptOptions.dkLen)
+      assert.strictEqual(parsed.salt.length, PasswordHasher.saltBytes)
+      assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
     }))
 
   it.effect("fails, rather than reporting a wrong password, on an uninterpretable hash", () =>
@@ -219,7 +298,7 @@ layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
       const segments = hash.split("$")
 
       assert.strictEqual(segments[0], "pbkdf2")
-      assert.strictEqual(segments[1], "i=1000")
+      assert.strictEqual(segments[1], "i=10000")
 
       const parsed = yield* PasswordHasher.parseHash(hash)
       assert.strictEqual(parsed.salt.length, PasswordHasher.saltBytes)

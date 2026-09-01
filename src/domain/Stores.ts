@@ -178,6 +178,20 @@ export interface UserStoreService<F extends UserFields = {}> {
    * removed.
    */
   readonly delete: (id: UserId) => Effect.Effect<boolean, PersistenceError>
+
+  /**
+   * Takes a row lock on one user, so that a transaction which then reads or
+   * reclaims that user's accounts cannot race a concurrent one doing the same.
+   *
+   * **Details**
+   *
+   * `SELECT id FROM users WHERE id = <id> FOR UPDATE` on the dialects that have
+   * row-level locking; on SQLite, whose writers are already serialized, it is a
+   * plain read and the same guarantee. It answers nothing — it is called for the
+   * lock, not the row — and must be run inside a {@link WithAuthTransaction} for
+   * the lock to be held for any useful span.
+   */
+  readonly lockUserRow: (id: UserId) => Effect.Effect<void, PersistenceError>
 }
 
 /**

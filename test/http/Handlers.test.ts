@@ -282,6 +282,21 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       yield* stranger.client.auth.getSession()
     }))
 
+  it.effect("clears this browser's cookies when it revokes its own session", () =>
+    Effect.gen(function*() {
+      const browser = yield* signedUp(uniqueEmail("revoke-self"))
+      const mine = yield* browser.client.auth.getSession()
+
+      yield* browser.client.auth.revokeSession({ payload: { sessionId: mine.session.id } })
+
+      // The row is gone and the session cookie is expired on the same response,
+      // so the cookie cache cannot keep this browser authenticated behind a
+      // snapshot until it ages out.
+      assert.strictEqual(yield* TestHttpClient.sessionCookieValue(browser.cookies), "")
+      const after = yield* Effect.flip(browser.client.auth.getSession())
+      assert.strictEqual(after._tag, "Unauthorized")
+    }))
+
   it.effect("signs every browser out when all sessions are revoked", () =>
     Effect.gen(function*() {
       const first = yield* signedUp(uniqueEmail("revoke-all"))

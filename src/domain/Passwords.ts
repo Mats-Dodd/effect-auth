@@ -659,7 +659,13 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
         email,
         emailVerified: false,
         image: options.image ?? null,
-        ...pickKeys(options, model.extraKeys)
+        // Picked by the `jsonCreate` variant's keys, not the full `extraKeys`:
+        // the latter includes fields a deployment declared `readOnly` or
+        // `hidden`, which the type on `SignUpOptions` forbids but which a
+        // deployment feeding loosely-typed data straight to the domain layer
+        // could otherwise smuggle in (a `readOnly` `role: "admin"`, say). The
+        // runtime whitelist must match the declared one.
+        ...pickKeys(options, model.jsonCreateExtraKeys)
       })
       const created = yield* provision(row)
       yield* createCredentialAccount(created.id, passwordHash)
@@ -820,6 +826,18 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       const updated = yield* accounts.updatePasswordHash(userId, passwordHash)
       if (Option.isNone(updated)) {
         // An OAuth-only user completing a reset gains a password credential.
+        // `beforeAccountLink` is deliberately not consulted for it: SPEC 13.1
+        // scopes that hook to *provider identities* attached to an existing
+        // user, never the synthetic `local:credential` account. Widening it to
+        // credential creation would be a v2 change to the hook's contract, not a
+        // fix here.
+        //
+        // The insert takes the user-row lock first, in this same transaction,
+        // so the credential row is not a phantom a concurrent magic-link
+        // reclaim's `FOR UPDATE` sweep could miss. Not attacker-reachable here
+        // (the reset token was mailed to the reclaimed address), but kept
+        // consistent with `setPassword` and `Accounts.linkExisting`.
+        yield* users.lockUserRow(userId)
         yield* createCredentialAccount(userId, passwordHash)
       }
       // Every *other* outstanding link this user is the subject of dies with
@@ -869,10 +887,25 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     const passwordHash = yield* hasher.hash(options.newPassword)
 
+    // `beforeAccountLink` is deliberately not consulted when this creates the
+    // `local:credential` account: SPEC 13.1 scopes that hook to *provider
+    // identities* attached to an existing user, never the synthetic credential
+    // one. Consulting it here would be a v2 change to the hook's contract.
+    //
     // Two fibres can both pass the check above. Only one insert survives the
     // unique index on `(issuer, account_id)`, and the loser is told the same
     // thing the check would have told it.
-    const created = createCredentialAccount(options.userId, passwordHash).pipe(
+    //
+    // The insert runs under a `FOR UPDATE` lock on the user row, in one
+    // transaction, mirroring `Accounts.linkExisting`. The magic-link takeover
+    // defence sweeps an unverified account's sign-in methods under that same
+    // lock; without it, this not-yet-committed credential row is a phantom the
+    // reclaim's `FOR UPDATE` cannot see under READ COMMITTED, so a
+    // pre-registrant could set a password on a row the defence had just swept.
+    const created = transaction.run(Effect.gen(function*() {
+      yield* users.lockUserRow(options.userId)
+      return yield* createCredentialAccount(options.userId, passwordHash)
+    })).pipe(
       Effect.catchTag(
         "PersistenceError",
         (error): Effect.Effect<Account, PasswordAlreadySet | PersistenceError> =>

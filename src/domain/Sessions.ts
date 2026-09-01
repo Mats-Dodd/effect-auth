@@ -311,15 +311,21 @@ export const make: <F extends UserFields>(
     const token = yield* tokens.generateToken
     const tokenHash = yield* tokens.hashToken(token)
     const now = yield* DateTime.now
-    const ttl = options.rememberMe === false
-      ? config.session.rememberMeDisabledExpiresIn
-      : config.session.expiresIn
+    // `rememberMe` defaults to `true`: only an explicit `false` shortens the
+    // lifetime. The flag is stored as well as consumed here, so the rolling
+    // refresh can rebuild the same short TTL and the HTTP layer can re-issue a
+    // cookie with the matching `Max-Age`.
+    const rememberMe = options.rememberMe !== false
+    const ttl = rememberMe
+      ? config.session.expiresIn
+      : config.session.rememberMeDisabledExpiresIn
     const row = yield* insertRow(SessionModel.insert, {
       tokenHash,
       userId: options.userId,
       expiresAt: DateTime.addDuration(now, ttl),
       ipAddress: options.ipAddress ?? null,
-      userAgent: options.userAgent ?? null
+      userAgent: options.userAgent ?? null,
+      rememberMe
     })
     const session = yield* store.create(row)
     return { session, token } satisfies CreatedSession

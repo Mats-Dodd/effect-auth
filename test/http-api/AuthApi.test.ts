@@ -212,11 +212,15 @@ const contract = [
 /**
  * The endpoints that must see the session as the database has it, rather than as
  * a cookie-cache snapshot remembers it. Every one of them either reads a
- * credential, changes one, or changes the identity behind it — the last two
- * hand a provider's credential to the caller and rotate the stored one, which
- * is both at once.
+ * credential, changes one, changes the identity behind it, or revokes a session
+ * — the token-bearing two hand a provider's credential to the caller and rotate
+ * the stored one, and the revocations must not be drivable by a session that was
+ * revoked elsewhere within the cache's lag. Listed in endpoint-declaration
+ * order, which is the order the assertion compares against.
  */
 const authoritative = [
+  "revokeSession",
+  "revokeOtherSessions",
   "changePassword",
   "unlinkAccount",
   "changeEmail",

@@ -668,9 +668,14 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      */
     const reclaim = Effect.fnUntraced(function*(user: User) {
       const outcome = yield* transaction.run(Effect.gen(function*() {
-        // Locked for the length of the transaction: the set of a user's sign-in
-        // methods is being destroyed, and a concurrent link must not add one
-        // between the read and the delete.
+        // Serialize on the USER row for the length of the transaction. The set
+        // of a user's sign-in methods is being destroyed, and a concurrent link
+        // must not add one between the read and the delete. A `FOR UPDATE` on
+        // the account rows alone (below) cannot see a row a racing link is about
+        // to *insert* — under READ COMMITTED that is a phantom, unblocked — so
+        // both sides contend on the user row instead. `Accounts`' link paths
+        // take the same lock before they insert.
+        yield* users.lockUserRow(user.id)
         const linked = yield* accounts.listByUserIdForUpdate(user.id)
         yield* accounts.deleteByUserId(user.id)
         const revoked = yield* sessionStore.deleteByUserId(user.id)

@@ -4,6 +4,7 @@ import { OAuthStateMismatch } from "../../src/domain/Errors.js"
 import type { Account, User } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
+import { insecureOAuthStateCookieName } from "../../src/http/Cookies.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 import type { CallbackOutcome, RefreshedTokens, StartOptions, TokenSelector } from "../../src/oauth/Flow.js"
 import { OAuthFlow } from "../../src/oauth/Flow.js"
@@ -138,6 +139,19 @@ const staged = (accountId: Account["id"]): RefreshedTokens => ({
   refreshTokenExpiresAt: null
 })
 
+/**
+ * Client options that plant the OAuth state-binding cookie a browser would hold
+ * after starting a flow, its value the raw `state`. Injected as a request
+ * header rather than through a real `signInSocial` call, so a block full of
+ * callback tests does not spend the shared credential rate-limit bucket — and
+ * because the callback is each client's first request, its empty cookie jar
+ * leaves the injected `cookie` header in place. The deployment here is plain
+ * HTTP, so the un-prefixed name is the one written.
+ */
+const stateBinding = (state: string): TestHttpClient.ClientOptions => ({
+  headers: { cookie: `${insecureOAuthStateCookieName}=${state}` }
+})
+
 /** Signs a new account up, and mints a session for it outside the browser. */
 const withSession = Effect.fnUntraced(function*(label: string) {
   const browser = yield* TestHttpClient.signedUp({ email: uniqueEmail(label) })
@@ -172,6 +186,82 @@ describe.sequential("http/Handlers OAuth", () => {
         assert.strictEqual(options?.rememberMe, false)
         // A sign-in is not a link: nobody is being attached to anybody.
         assert.isTrue(options?.linkUserId === undefined || options.linkUserId === null)
+      }))
+
+    it.effect("emits the state-binding cookie holding the raw state on signInSocial", () =>
+      Effect.gen(function*() {
+        const stub = yield* StubFlow
+        yield* stub.reset
+        const { client } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        const [, response] = yield* client.auth.signInSocial({
+          payload: {
+            providerId: "github",
+            callbackURL: "/welcome",
+            errorCallbackURL: "/oops",
+            scopes: ["repo"],
+            rememberMe: false
+          },
+          responseMode: "decoded-and-response"
+        })
+
+        // Deleting `setOAuthStateCookie` from the handler must break this: the
+        // callback binding has nothing to compare against without it.
+        const cookie = Option.getOrThrow(
+          TestHttpClient.responseCookie(response, insecureOAuthStateCookieName)
+        )
+        assert.strictEqual(cookie.value, "nonce")
+        assert.strictEqual(cookie.options?.httpOnly, true)
+      }))
+
+    it.effect("round-trips signInSocial's cookie through the jar to the callback", () =>
+      Effect.gen(function*() {
+        const minted = yield* withSession("callback-roundtrip")
+        const stub = yield* StubFlow
+        yield* stub.reset
+        yield* stub.setOutcome({
+          _tag: "Success",
+          providerId: "github",
+          user: minted.user,
+          account: minted.account,
+          session: minted.session,
+          token: minted.token,
+          redirectTo: "http://localhost:3000/welcome",
+          userCreated: false,
+          accountCreated: true,
+          linked: false,
+          rememberMe: true
+        })
+
+        // One client, one jar, no injected header: `signInSocial`'s `Set-Cookie`
+        // lands in the jar, and the callback on the same client sends it back —
+        // the whole binding, start to finish, through the browser's own jar.
+        const { client, cookies } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        yield* client.auth.signInSocial({
+          payload: {
+            providerId: "github",
+            callbackURL: "/welcome",
+            errorCallbackURL: "/oops",
+            scopes: ["repo"],
+            rememberMe: true
+          }
+        })
+
+        const [, response] = yield* client.auth.oauthCallback({
+          params: { providerId: "github" },
+          query: { code: "the-code", state: "nonce" },
+          responseMode: "decoded-and-response"
+        })
+
+        assert.strictEqual(response.status, 302)
+        assert.strictEqual(response.headers["location"], "http://localhost:3000/welcome")
+        assert.strictEqual(
+          yield* TestHttpClient.sessionCookieValue(cookies),
+          Redacted.value(minted.token)
+        )
+        // The single-use state cookie is expired on the successful callback.
+        const cleared = TestHttpClient.responseCookie(response, insecureOAuthStateCookieName)
+        assert.isTrue(Option.isSome(cleared))
+        assert.strictEqual(Option.getOrThrow(cleared).value, "")
       }))
 
     it.effect("passes the signed-in user along when a provider is being linked", () =>
@@ -211,7 +301,10 @@ describe.sequential("http/Handlers OAuth", () => {
           rememberMe: true
         })
 
-        const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        // The browser holds the state-binding cookie the flow set when it
+        // started (its value is the raw `state`), so the callback accepts the
+        // matching `state` the provider echoed back.
+        const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi, stateBinding("nonce"))
         const [, response] = yield* fresh.client.auth.oauthCallback({
           params: { providerId: "github" },
           query: { code: "the-code", state: "nonce" },
@@ -250,7 +343,7 @@ describe.sequential("http/Handlers OAuth", () => {
           rememberMe: true
         })
 
-        const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi, stateBinding("nonce"))
         const [, response] = yield* fresh.client.auth.oauthCallback({
           params: { providerId: "github" },
           query: { code: "the-code", state: "nonce" },
@@ -282,7 +375,7 @@ describe.sequential("http/Handlers OAuth", () => {
           rememberMe: false
         })
 
-        const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi, stateBinding("nonce"))
         const [, response] = yield* fresh.client.auth.oauthCallback({
           params: { providerId: "github" },
           query: { code: "the-code", state: "nonce" },
@@ -306,10 +399,13 @@ describe.sequential("http/Handlers OAuth", () => {
           code: "state_mismatch"
         })
 
-        const { client, cookies } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        // The binding passes (this browser holds the state cookie), so the
+        // callback reaches `complete`, which resolves the flow's own failure
+        // into the redirect the state row named.
+        const { client, cookies } = yield* TestHttpClient.makeClient(AuthTest.TestApi, stateBinding("nonce"))
         const [, response] = yield* client.auth.oauthCallback({
           params: { providerId: "github" },
-          query: { error: "access_denied" },
+          query: { state: "nonce", error: "access_denied" },
           responseMode: "decoded-and-response"
         })
 
@@ -320,6 +416,47 @@ describe.sequential("http/Handlers OAuth", () => {
           "http://localhost:3000/oops?error=state_mismatch"
         )
         assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
+      }))
+
+    it.effect("turns away a callback whose browser never started the flow", () =>
+      Effect.gen(function*() {
+        const stub = yield* StubFlow
+        yield* stub.reset
+        // Staged, but it must never be reached: the binding is checked before
+        // the state is consumed, and this browser holds no state cookie.
+        yield* stub.setOutcome({
+          _tag: "Failure",
+          error: new OAuthStateMismatch(),
+          redirectTo: "http://localhost:3000/oops?error=state_mismatch",
+          code: "state_mismatch"
+        })
+
+        // No `signInSocial` on this client: it is the victim's browser, lured to
+        // a callback for a `state` the attacker legitimately obtained.
+        const { client, cookies } = yield* TestHttpClient.makeClient(AuthTest.TestApi)
+        const [, response] = yield* client.auth.oauthCallback({
+          params: { providerId: "github" },
+          query: { code: "the-code", state: "attacker-state" },
+          responseMode: "decoded-and-response"
+        })
+
+        // Rejected before `complete`: the redirect is to the default error URL
+        // (baseUrl), not the errorURL a consumed state row would have carried,
+        // and it carries the same safe `state_mismatch` code.
+        assert.strictEqual(response.status, 302)
+        assert.strictEqual(
+          response.headers["location"],
+          "http://localhost:3000/?error=state_mismatch"
+        )
+        // No session was minted for the victim.
+        assert.strictEqual(yield* TestHttpClient.sessionCookieValue(cookies), "<absent>")
+        // The state cookie is expired on a mismatch too, not only on success —
+        // `clearOAuthStateCookie` runs before the binding is even checked.
+        const cleared = TestHttpClient.responseCookie(response, insecureOAuthStateCookieName)
+        assert.isTrue(Option.isSome(cleared))
+        assert.strictEqual(Option.getOrThrow(cleared).value, "")
+        // The flow was never asked to complete.
+        assert.deepStrictEqual(yield* stub.starts, [])
       }))
 
     // ---------------------------------------------------------------------------

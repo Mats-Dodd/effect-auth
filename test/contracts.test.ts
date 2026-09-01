@@ -56,6 +56,7 @@ describe("domain/Schema", () => {
         expiresAt: "2024-01-08T00:00:00.000Z",
         ipAddress: null,
         userAgent: null,
+        rememberMe: true,
         createdAt: "2024-01-01T00:00:00.000Z",
         updatedAt: "2024-01-01T00:00:00.000Z"
       })

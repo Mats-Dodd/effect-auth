@@ -39,6 +39,7 @@ const makeSession = Effect.gen(function*() {
     expiresAt: DateTime.addDuration(now, Duration.days(7)),
     ipAddress: null,
     userAgent: null,
+    rememberMe: true,
     createdAt: now,
     updatedAt: now
   })

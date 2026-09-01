@@ -1473,3 +1473,84 @@ together and one shape it could not describe at all. This amendment settles both
    lives in the flow rather than in the helper precisely because a provider implementation is free
    to bypass `fetchJson` and use the `HttpClient` directly: a bound a provider can opt out of is not
    a bound. All the sleeps are on the Effect clock, so a test moves them with `TestClock`.
+
+### 16. Security hardening pass (post-audit)
+
+A five-reviewer audit of v2 raised three findings the fixes below settle. Each changes an
+observable contract or a configuration rule, so it is recorded here rather than left silent. No
+endpoint, wire shape or service key moved; the OAuth callback gains one precondition, the session
+row gains one persisted field, and one config invariant is corrected.
+
+1. **The OAuth `state` is now bound to the browser that started the flow.** The single-use
+   `DELETE … RETURNING` consume stops forgery of an unissued state and replay of a spent one, but
+   not an attacker who *legitimately* obtained a `state` (by starting a flow with their own
+   provider account) and then lured a victim's browser to the callback — a login-CSRF that would
+   silently sign the victim into the attacker's account, or, on a link flow, attach the victim's
+   identity to the attacker's. The fix is the standard binding: `signInSocial` and `linkSocial`
+   set a short-lived, `HttpOnly` cookie (`effect_auth.oauth_state`) holding the raw `state`;
+   `oauthCallback` clears the cookie on **every** exit (the `unknown_provider` early return
+   included) and requires the incoming `state` query parameter to be present and equal that cookie
+   **before** it consumes the state row. A callback whose browser
+   holds no matching cookie redirects with the same closed-set `?error=state_mismatch` an unissued
+   state gets, to `baseUrl` (the caller's `errorURL` lives in a state row that has not been
+   consumed at that point). The browser token is the raw `state` itself, carried in a cookie — no
+   new `verifications` column, and the state payload is unchanged.
+
+   Two attributes were tightened past the first cut of this fix, both driven by review:
+
+   - **Prefix `__Host-`, not `__Secure-`, on TLS.** `__Secure-` binds a cookie to HTTPS but not to
+     a host, so a page on a sibling subdomain can set a `Domain`-scoped
+     `__Secure-effect_auth.oauth_state` valued at a `state` it obtained, and that cookie rides the
+     callback and passes the equality check. `__Host-` forbids `Domain` and pins the cookie to the
+     exact host that set it, closing the tossing vector. The state cookie is set and read on the
+     same host and never legitimately carries a `Domain`, so it loses nothing. `__Host-` mandates
+     `Secure`, `Path=/` and no `Domain`; the cookie's options honour all three — `Path` is fixed to
+     `/` and `Domain` omitted regardless of `cookie.path`/`cookie.domain`. On a plain-HTTP
+     deployment, where `Secure` cannot hold, the name is the un-prefixed `effect_auth.oauth_state`.
+     This applies to the oauth_state cookie **only**; the session cookie's prefix is unchanged.
+
+   - **`SameSite` follows `cookie.sameSite`, capped away from `Strict`.** It is `None` when the
+     deployment configures `cookie.sameSite: "none"` (a frontend on a different site than the auth
+     server, validated with `secure`) and `Lax` otherwise — never `Strict`. A `None` deployment
+     makes `signInSocial` a cross-site request, and a browser rejects a `SameSite=Lax` `Set-Cookie`
+     on a cross-site subresource response, so a hard-coded `Lax` left the cookie unstored and every
+     callback failing `state_mismatch`. The binding's security is the `HttpOnly` value-equality
+     check at the callback, not `Lax`, so following the deployment's `sameSite` does not reopen
+     login-CSRF; `Strict` stays excluded because the callback is a cross-site top-level GET a
+     `Strict` cookie would not ride.
+
+2. **A `rememberMe: false` session is never silently promoted to persistent.** The rolling refresh
+   re-set the session cookie *with* a `Max-Age` because the row recorded nothing about the
+   remember-me choice. The `sessions` table now carries a `remember_me` boolean (`Sessions.create`
+   persists it from its existing `{ rememberMe }` option, defaulting to `true`; `verify`/`touch`
+   return it), and the middleware passes `persistent = session.rememberMe` to `setSessionCookie` on
+   refresh, so a non-persistent session is re-sent as a browser-session cookie in **every**
+   configuration.
+
+   The fix is on the row, deliberately, and **not** in `AuthConfig.validate`. The existing bound —
+   `updateAge` no longer than `rememberMeDisabledExpiresIn`, alongside `updateAge` shorter than
+   `expiresIn` — is unchanged and is *not* a promotion guard: it says the refresh window must fit
+   inside the shortest session a deployment mints, so the rolling refresh applies to that session
+   too. It therefore guarantees a `rememberMe: false` session becomes refresh-due before it
+   expires, which is exactly the window the promotion used to occur in — the triggering condition
+   is `updateAge` **shorter** than `rememberMeDisabledExpiresIn`, and both the old comment at
+   `MiddlewareLive.ts` and the review that raised this stated it backwards. Inverting the bound to
+   forbid that relationship was considered and rejected: with the column in place it defends
+   against nothing, it turns currently-valid deployments (any `updateAge` below one day) into
+   start-up failures, and it would make a `rememberMe: false` session unrefreshable — destroying
+   the "rolls per window while staying short" behaviour that `Sessions.grantedLifetime` is written
+   to provide and that `test/domain/Sessions.test.ts` pins.
+
+   One wire-visible knock-on: `rememberMe` is a plain field on `Session`, so it appears in
+   `Session.json` — on `GET /session` and `GET /sessions`, and inside the session cookie cache's
+   signed envelope. Snapshots written before this change no longer decode, which is a cache miss
+   and safe by design (§12.4).
+
+3. **Revoking your own session clears its cookies, and the revoke endpoints read the row.**
+   `POST /revoke-session` against the caller's *own* session now calls `clearSessionCookies` (as
+   `revoke-sessions` already did), or the cookie cache would keep the browser authenticated behind
+   its snapshot for up to `cookieCache.maxAge` after the row was deleted. `revokeSession` and
+   `revokeOtherSessions` are additionally annotated `AuthoritativeSession`, so a session revoked in
+   another browser cannot drive a revocation through the cache within the lag; both handlers read
+   the session row in-handler regardless, so the annotation costs them nothing. The eight existing
+   `AuthoritativeSession` annotations are unchanged.

@@ -122,15 +122,126 @@ export const clientAddress = (
 }
 
 /**
- * The path a request was made to, without its query string.
+ * Whether a `%XX` escape is one the router leaves *literal* rather than
+ * decoding.
+ *
+ * **Details**
+ *
+ * Mirrors find-my-way's `decodeComponentChar`: these are the escapes that
+ * `decodeURI` would leave alone — the URI-reserved set `# $ & + , / : ; = ? @`
+ * and `%25` ('%'). `high`/`low` are the two hex-digit char codes after the `%`;
+ * any other pair (including a malformed one) is not literal, which is the signal
+ * that the path needs a real `decodeURI` pass. Hex digits are matched
+ * case-insensitively, exactly as the router matches them.
+ */
+const isRouterLiteralEscape = (high: number, low: number): boolean => {
+  switch (high) {
+    case 50: // "2"
+      return (
+        low === 53 || // %25 %
+        low === 51 || // %23 #
+        low === 52 || // %24 $
+        low === 54 || // %26 &
+        low === 66 || low === 98 || // %2B +
+        low === 67 || low === 99 || // %2C ,
+        low === 70 || low === 102 // %2F /
+      )
+    case 51: // "3"
+      return (
+        low === 65 || low === 97 || // %3A :
+        low === 66 || low === 98 || // %3B ;
+        low === 68 || low === 100 || // %3D =
+        low === 70 || low === 102 // %3F ?
+      )
+    case 52: // "4"
+      return low === 48 // %40 @
+    default:
+      return false
+  }
+}
+
+/**
+ * Strips the query and decodes the percent escapes, the way the router's
+ * `safeDecodeURI` does.
+ *
+ * **Details**
+ *
+ * The query is whatever follows the first `?`, `;` or `#` — the three
+ * separators find-my-way honours, not `?` alone. A path with any escape that is
+ * not {@link isRouterLiteralEscape} is run through `decodeURI`, so `%6C` becomes
+ * `l` but `%2F` stays `%2F` (as the router keeps it literal). `%25` is
+ * re-doubled to `%2525` first so `decodeURI` yields a single literal `%` rather
+ * than decoding twice.
+ *
+ * **Gotchas**
+ *
+ * A malformed escape (`%zz`, a truncated `%e0`) makes `decodeURI` throw — as it
+ * does inside the router, which then refuses the route. Decoding therefore falls
+ * back to the undecoded (but query-stripped) path rather than throwing the
+ * request out of the limiter.
+ */
+const stripQueryAndDecode = (raw: string): string => {
+  let path = raw
+  let shouldDecode = false
+  for (let i = 1; i < path.length; i++) {
+    const charCode = path.charCodeAt(i)
+    if (charCode === 37) { // "%"
+      const high = path.charCodeAt(i + 1)
+      const low = path.charCodeAt(i + 2)
+      if (!isRouterLiteralEscape(high, low)) {
+        shouldDecode = true
+      } else {
+        if (high === 50 && low === 53) { // %25 → %2525, so decodeURI yields one "%"
+          shouldDecode = true
+          path = path.slice(0, i + 1) + "25" + path.slice(i + 1)
+          i += 2
+        }
+        i += 2
+      }
+    } else if (charCode === 63 || charCode === 59 || charCode === 35) { // "?" ";" "#"
+      path = path.slice(0, i)
+      break
+    }
+  }
+  if (!shouldDecode) return path
+  try {
+    return decodeURI(path)
+  } catch {
+    return path
+  }
+}
+
+/**
+ * The canonical routing path a request is counted under: `request.url` reduced
+ * to the very path the router dispatched on.
+ *
+ * **Details**
+ *
+ * Keying on the raw URL is a rate-limit *bypass*: `/auth/sign-in/emai%6C` and
+ * `/auth/sign-in/email` reach the same handler, but counted apart they hand an
+ * attacker a fresh bucket per spelling — rotate the encodings of the unreserved
+ * letters and one IP gets an unbounded supply of credential/email allowances.
+ * So this reproduces the router's own canonicalisation of the path (effect's
+ * find-my-way, at its default `caseSensitive: false`, `ignoreTrailingSlash` and
+ * `ignoreDuplicateSlashes: true`), in the router's order: normalise a leading
+ * absolute-URI form to its path, collapse duplicate slashes, strip the query and
+ * `decodeURI` the escapes ({@link stripQueryAndDecode}), trim a trailing slash,
+ * lower-case. Every spelling that routes alike collapses to one key; `%2F` stays
+ * literal, since the router never turns it into a separator.
  *
  * @category combinators
  * @since 1.0.0
  */
 export const requestPath = (request: HttpServerRequest.HttpServerRequest): string => {
-  const url = request.url
-  const query = url.indexOf("?")
-  return query === -1 ? url : url.slice(0, query)
+  let path = request.url
+  // find-my-way rewrites a full `scheme://host/…` form to its path first.
+  if (path.charCodeAt(0) !== 47) path = path.replace(/^https?:\/\/.*?\//, "/")
+  path = path.replace(/\/\/+/g, "/") // ignoreDuplicateSlashes
+  path = stripQueryAndDecode(path) // safeDecodeURI: query strip + decodeURI
+  if (path.length > 1 && path.charCodeAt(path.length - 1) === 47) {
+    path = path.slice(0, -1) // ignoreTrailingSlash
+  }
+  return path.toLowerCase() // caseSensitive: false
 }
 
 /**
