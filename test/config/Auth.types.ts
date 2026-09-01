@@ -12,10 +12,11 @@ import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
 import type { RateLimiter } from "effect/unstable/persistence"
 import type { SqlClient } from "effect/unstable/sql"
-import { Auth, AuthApi, AuthEmails, AuthHandlers } from "../../src/index.js"
+import { Auth, AuthApi, type AuthEmails, AuthHandlers } from "../../src/index.js"
 import type { AuthConfig } from "../../src/config/AuthConfig.js"
 import type { DiscoveryError } from "../../src/domain/Errors.js"
 import type { Hmac } from "../../src/crypto/Hmac.js"
+import type { PasswordHasher } from "../../src/crypto/PasswordHasher.js"
 import type { Token } from "../../src/crypto/Token.js"
 import type { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthEvents } from "../../src/domain/Events.js"
@@ -83,7 +84,7 @@ const _token: Layer.Layer<Token | Hmac, never, SqlClient.SqlClient | AuthEmails.
 
 // @ts-expect-error the password hasher stays internal to the stack: replacing it
 // is an option, not a layer a consumer can shadow.
-const _noHasher: Layer.Layer<import("../../src/crypto/PasswordHasher.js").PasswordHasher> = AuthLive
+const _noHasher: Layer.Layer<PasswordHasher, never, SqlClient.SqlClient | AuthEmails.AuthEmails> = AuthLive
 
 // ---------------------------------------------------------------------------
 // With OAuth: the specification's snippet, verbatim in shape.

@@ -14,8 +14,7 @@ import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { Passwords } from "../../src/domain/Passwords.js"
-import type { UserId } from "../../src/domain/Schema.js"
-import { normalizeEmail } from "../../src/domain/Schema.js"
+import { normalizeEmail, UserId } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { UserStore, VerificationStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose, Users } from "../../src/domain/Users.js"
@@ -81,7 +80,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const published = forUser(events, user.id)
         assert.deepStrictEqual(AuthTest.tagsOf(published), ["UserUpdated"])
         const updated = published[0]
-        if (updated?._tag !== "UserUpdated") return assert.fail("expected a UserUpdated event")
+        if (updated?._tag !== "UserUpdated") assert.fail("expected a UserUpdated event")
         assert.deepStrictEqual(updated.fields, ["name", "image"])
       })
     )
@@ -114,7 +113,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const published = forUser(events, user.id)
         assert.deepStrictEqual(AuthTest.tagsOf(published), ["UserUpdated"])
         const updated = published[0]
-        if (updated?._tag !== "UserUpdated") return assert.fail("expected a UserUpdated event")
+        if (updated?._tag !== "UserUpdated") assert.fail("expected a UserUpdated event")
         assert.deepStrictEqual(updated.fields, [])
       })
     )
@@ -123,7 +122,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
       Effect.gen(function* () {
         const users = yield* Users
         const failure = yield* Effect.flip(
-          users.update({ userId: "00000000-0000-0000-0000-000000000000" as UserId, name: "Nobody" })
+          users.update({ userId: UserId.make("00000000-0000-0000-0000-000000000000"), name: "Nobody" })
         )
         assert.strictEqual(failure._tag, "UserNotFound")
       })
@@ -264,7 +263,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         assert.isDefined(stale)
         // Two live links would be two addresses the account could still be moved
         // to, one of which its owner has already thought better of.
-        const failure = yield* Effect.flip(users.verifyEmailChange(stale!.token))
+        const failure = yield* Effect.flip(users.verifyEmailChange(stale.token))
         assert.strictEqual(failure._tag, "InvalidToken")
 
         const fresh = (yield* mailTo(second))[0]
@@ -401,7 +400,7 @@ layer(AuthTest.layer())("domain/Users", (it) => {
         const published = forUser(events, user.id)
         assert.deepStrictEqual(AuthTest.tagsOf(published), ["EmailChanged"])
         const changed = published[0]
-        if (changed?._tag !== "EmailChanged") return assert.fail("expected an EmailChanged event")
+        if (changed?._tag !== "EmailChanged") assert.fail("expected an EmailChanged event")
         assert.strictEqual(changed.previousEmail, email)
         assert.strictEqual(changed.email, newEmail)
 

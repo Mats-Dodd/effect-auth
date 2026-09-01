@@ -1,8 +1,14 @@
-import { assert, describe, it } from "@effect/vitest"
-import { Duration, Effect, Redacted } from "effect"
+import { assert, describe, it, layer } from "@effect/vitest"
+import { DateTime, Duration, Effect, Redacted } from "effect"
 import { Headers } from "effect/unstable/http"
 import * as AuthConfig from "../../src/config/AuthConfig.js"
 import * as AuthCookies from "../../src/http/Cookies.js"
+
+/**
+ * The instant `expiredSessionCookieOptions` and its OAuth sibling write, built
+ * the same way they build it — through `DateTime`, never off the wall clock.
+ */
+const epochExpiry = DateTime.toDateUtc(DateTime.makeUnsafe(0))
 
 /** A deployment over TLS, optionally with the cookie section configured. */
 const secure = (cookie?: AuthConfig.AuthConfigOptions["cookie"]): AuthConfig.AuthConfigService =>
@@ -139,7 +145,7 @@ describe("http/Cookies", () => {
       assert.strictEqual(expired.sameSite, set.sameSite)
       assert.strictEqual(expired.secure, set.secure)
       assert.strictEqual(expired.httpOnly, true)
-      assert.deepStrictEqual(expired.expires, new Date(0))
+      assert.deepStrictEqual(expired.expires, epochExpiry)
       assert.strictEqual(expired.maxAge, undefined)
     })
 
@@ -181,40 +187,53 @@ describe("http/Cookies", () => {
       assert.strictEqual(expired.sameSite, "lax")
       assert.strictEqual(expired.secure, set.secure)
       assert.strictEqual(expired.httpOnly, true)
-      assert.deepStrictEqual(expired.expires, new Date(0))
+      assert.deepStrictEqual(expired.expires, epochExpiry)
       assert.strictEqual(expired.maxAge, undefined)
     })
   })
 
-  describe("redaction", () => {
+  // The redaction is a property of the fiber the value is rendered on, so each
+  // of these gets the layer as its block's environment rather than an
+  // `Effect.provide` inside the test body.
+  layer(AuthCookies.layerRedactedHeaders())("redaction", (it) => {
     it.effect("hides the session cookie from a rendered Headers value", () =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         const headers = Headers.fromInput({
           cookie: "__Secure-effect_auth.session=super-secret-token",
           authorization: "Bearer super-secret-token",
           "x-request-id": "abc"
         })
 
+        // `JSON.stringify` is the renderer under test, not a codec choice: it
+        // is the naive serializer a logger or a careless handler reaches for,
+        // and it is the path a real leak would take.
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
         const rendered = JSON.stringify(headers)
 
         assert.isFalse(rendered.includes("super-secret-token"))
         assert.isTrue(rendered.includes("<redacted>"))
         assert.isTrue(rendered.includes("abc"))
-      }).pipe(Effect.provide(AuthCookies.layerRedactedHeaders()))
+      })
     )
+  })
 
+  layer(AuthCookies.layerRedactedHeaders(["x-tenant-token"]))("redaction, with application names", (it) => {
     it.effect("keeps the auth headers redacted when an application adds its own", () =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         const headers = Headers.fromInput({
           cookie: "__Secure-effect_auth.session=super-secret-token",
           "x-tenant-token": "tenant-secret"
         })
 
+        // `JSON.stringify` is the renderer under test, not a codec choice: it
+        // is the naive serializer a logger or a careless handler reaches for,
+        // and it is the path a real leak would take.
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
         const rendered = JSON.stringify(headers)
 
         assert.isFalse(rendered.includes("super-secret-token"))
         assert.isFalse(rendered.includes("tenant-secret"))
-      }).pipe(Effect.provide(AuthCookies.layerRedactedHeaders(["x-tenant-token"])))
+      })
     )
   })
 })

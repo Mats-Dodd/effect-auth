@@ -1,14 +1,26 @@
 import { PgliteClient } from "@effect/sql-pglite"
-import { assert, describe, it } from "@effect/vitest"
+import { assert, layer } from "@effect/vitest"
 import { Effect } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import * as Migrations from "../../src/sql/Migrations.js"
 
 interface TableRow {
-  readonly name: unknown
+  readonly name: string
 }
 
-describe("sql/Migrations", () => {
+/**
+ * A database per test, as each of these needs.
+ *
+ * "applies every migration to an empty database" and "is idempotent on a second
+ * run" are both statements about a database whose whole history is the test's
+ * own, so they cannot share one: a sibling that had already migrated would make
+ * either of them pass for the wrong reason. `@effect/vitest` builds a block's
+ * layer once and gives a sibling block a memo map of its own, so one block per
+ * test is what keeps them isolated.
+ */
+const database = () => PgliteClient.layer()
+
+layer(database())("sql/Migrations", (it) => {
   it.effect("applies every migration to an empty database", () =>
     Effect.gen(function* () {
       const applied = yield* Migrations.run
@@ -30,18 +42,22 @@ describe("sql/Migrations", () => {
         tables.map((row) => row.name),
         ["accounts", "effect_auth_migrations", "sessions", "users", "verifications"]
       )
-    }).pipe(Effect.provide(PgliteClient.layer()))
+    })
   )
+})
 
+layer(database())("sql/Migrations", (it) => {
   it.effect("is idempotent on a second run", () =>
     Effect.gen(function* () {
       yield* Migrations.run
       const second = yield* Migrations.run
 
       assert.deepStrictEqual(second, [])
-    }).pipe(Effect.provide(PgliteClient.layer()))
+    })
   )
+})
 
+layer(database())("sql/Migrations", (it) => {
   it.effect("adds the sessions.remember_me flag, defaulted so existing rows are remembered", () =>
     Effect.gen(function* () {
       yield* Migrations.run
@@ -50,7 +66,10 @@ describe("sql/Migrations", () => {
       const columns = yield* sql<TableRow>`SELECT column_name AS "name" FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'sessions' ORDER BY column_name`
 
-      assert.include(columns.map((row) => row.name) as Array<string>, "remember_me")
+      assert.include(
+        columns.map((row) => row.name),
+        "remember_me"
+      )
 
       // A row inserted without stating the flag inherits the DEFAULT, so a
       // deployment's pre-existing sessions read back as remembered rather than
@@ -63,9 +82,11 @@ describe("sql/Migrations", () => {
       const rows = yield* sql<{ readonly rememberMe: unknown }>`SELECT remember_me AS "rememberMe"
         FROM sessions WHERE id = 's-remember'`
       assert.strictEqual(rows[0]?.rememberMe, true)
-    }).pipe(Effect.provide(PgliteClient.layer()))
+    })
   )
+})
 
+layer(database())("sql/Migrations", (it) => {
   it.effect("creates the indexes the stores rely on", () =>
     Effect.gen(function* () {
       yield* Migrations.run
@@ -83,23 +104,23 @@ describe("sql/Migrations", () => {
         "accounts_user_id_idx",
         "verifications_identifier_idx"
       ]) {
-        assert.include(names as Array<string>, expected)
+        assert.include(names, expected)
       }
-    }).pipe(Effect.provide(PgliteClient.layer()))
+    })
   )
 })
 
-describe("sql/Migrations.make", () => {
-  const createLinks = Effect.flatMap(
-    SqlClient.SqlClient,
-    (sql) => sql`CREATE TABLE IF NOT EXISTS plugin_links (id text PRIMARY KEY)`
-  )
+const createLinks = Effect.flatMap(
+  SqlClient.SqlClient,
+  (sql) => sql`CREATE TABLE IF NOT EXISTS plugin_links (id text PRIMARY KEY)`
+)
 
-  const plugin = Migrations.make({
-    table: "effect_auth_plugin_migrations",
-    migrations: { "0001_create_links": createLinks }
-  })
+const plugin = Migrations.make({
+  table: "effect_auth_plugin_migrations",
+  migrations: { "0001_create_links": createLinks }
+})
 
+layer(database())("sql/Migrations.make", (it) => {
   it.effect("records a plugin's migrations in a bookkeeping table of its own", () =>
     Effect.gen(function* () {
       // Sequenced, as a plugin whose tables reference this library's must be.
@@ -119,6 +140,6 @@ describe("sql/Migrations.make", () => {
         tables.map((row) => row.name),
         ["effect_auth_migrations", "effect_auth_plugin_migrations"]
       )
-    }).pipe(Effect.provide(PgliteClient.layer()))
+    })
   )
 })

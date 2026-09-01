@@ -45,10 +45,10 @@ const hooks: AuthHooksService = {
     source._tag !== "OAuth"
       ? Effect.succeed(candidate)
       : denied.has(source.info.email)
-        ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed", detail: source.providerId }))
+        ? Effect.fail(PolicyRefused.make({ code: "domain_not_allowed", detail: source.providerId }))
         : Effect.succeed({ ...candidate, name: `${source.providerId}:${source.info.id}` }),
   beforeSessionCreate: ({ user }) =>
-    suspended.has(user.email) ? Effect.fail(new PolicyRefused({ code: "account_suspended" })) : Effect.void
+    suspended.has(user.email) ? Effect.fail(PolicyRefused.make({ code: "account_suspended" })) : Effect.void
 }
 
 /**

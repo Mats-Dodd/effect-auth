@@ -13,12 +13,12 @@
 import type { Layer } from "effect"
 import { Effect, Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
-import { AuthApi, AuthApiGroup } from "../../src/http/AuthApi.js"
+import { AuthApi, type AuthApiGroup } from "../../src/http/AuthApi.js"
 import type { HandlerServices } from "../../src/http/Handlers.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
-const eq = <T extends true>(_: T): void => {}
+const eq = <T extends true>(assertion: T): T => assertion
 
 // ---------------------------------------------------------------------------
 // Accepted: the auth API on its own, and a composed one.
@@ -82,7 +82,7 @@ const TodoAppApi = HttpApi.make("app").addHttpApi(AuthApi).add(Todos)
 eq<
   Exact<
     ReturnType<typeof todos<"app", typeof AuthApiGroup | typeof Todos>>,
-    Layer.Layer<HttpApiGroup.Service<"app", "todos">, never, never>
+    Layer.Layer<HttpApiGroup.Service<"app", "todos">>
   >
 >(true)
 

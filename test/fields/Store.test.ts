@@ -12,7 +12,7 @@
  * knows nothing about the custom fields is still storable.
  */
 import { assert, describe, it, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Option, Schema } from "effect"
+import { DateTime, Duration, Effect, Option, Random, Schema } from "effect"
 import { Session, User } from "../../src/domain/Schema.js"
 import { sessionStoreOf, UserStore, userStoreOf } from "../../src/domain/Stores.js"
 import { expectSome, testName, uniqueEmail } from "../fixtures.js"
@@ -109,7 +109,9 @@ layer(layerStores)("fields/Store", (it) => {
       assert.notProperty(encoded, "apiSecret")
       assert.propertyVal(encoded, "plan", "free")
       assert.propertyVal(encoded, "role", "user")
-      assert.notInclude(JSON.stringify(encoded), "never-on-the-wire")
+      // The same projection as a string — what a response body would carry.
+      const text = yield* Schema.encodeEffect(Schema.fromJsonString(model.json))(created)
+      assert.notInclude(text, "never-on-the-wire")
     })
   )
 
@@ -128,7 +130,7 @@ layer(layerStores)("fields/Store", (it) => {
       )
 
       const now = yield* DateTime.now
-      const tokenHash = `hash-${globalThis.crypto.randomUUID()}`
+      const tokenHash = `hash-${(yield* Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER)).toString(36)}`
       yield* sessions.create(
         yield* Session.insert.makeEffect({
           tokenHash,

@@ -81,7 +81,7 @@ layer(layerDatabase)("fields/Migrations", (it) => {
     Effect.gen(function* () {
       const extended = makeUserModel({
         ...model.fields,
-        seats: UserField.withDefault(Schema.Number, () => 1),
+        seats: UserField.withDefault(Schema.Finite, () => 1),
         trial: UserField.withDefault(Schema.Boolean, () => false)
       })
       yield* Migrations.forUserFields(extended)

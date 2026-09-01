@@ -86,7 +86,7 @@ export interface SessionsService {
 }
 
 /** @category services @since 1.0.0 */
-export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/Sessions") {}
+export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/domain/Sessions") {}
 ```
 
 Rules:

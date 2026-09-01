@@ -16,7 +16,7 @@
  * @since 1.0.0
  */
 import { Context, Effect, Option, Schema, Struct } from "effect"
-import { Model, VariantSchema } from "effect/unstable/schema"
+import { Model, type VariantSchema } from "effect/unstable/schema"
 import { insertRow } from "../internal/effects.js"
 import { camelToSnake, pickKeys } from "../internal/records.js"
 
@@ -186,7 +186,7 @@ export class Session extends Model.Class<Session>("effect-auth/Session")({
   // session without the flag has always been given.
   rememberMe: Model.Field({
     select: Schema.Boolean,
-    insert: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.sync(() => true))),
+    insert: Schema.Boolean.pipe(Schema.withConstructorDefault(Effect.succeed(true))),
     update: Schema.Boolean,
     json: Schema.Boolean
   }),
@@ -785,7 +785,12 @@ export interface AnyUserModel {
   readonly json: Schema.Top
   readonly jsonCreate: Schema.Top
   readonly jsonUpdate: Schema.Top
-  makeInsert(input: UserInsertInput): Effect.Effect<UserInsertOf<{}>>
+  // Declared as a property rather than a method so a reference to it carries no
+  // `this` (the model is a plain record of closures). The three below stay
+  // method-shorthand on purpose: their parameters are `{}`-typed where a
+  // `UserModel<F>` types them by `F`, and only a method's bivariance keeps a
+  // concrete model assignable to this erased one.
+  readonly makeInsert: (input: UserInsertInput) => Effect.Effect<UserInsertOf<{}>>
   completeInsert(row: UserInsertOf<{}>): Effect.Effect<UserInsertOf<{}>>
   basePatch(patch: BaseUserPatch): BaseUserPatch
   decodeRow(row: unknown): Effect.Effect<UserOf<{}>, Schema.SchemaError>
@@ -1077,7 +1082,7 @@ const buildUserModel = (fields: UserFields): UncheckedUserModel => {
         )
 
   const completeInsert = (row: UserRow) =>
-    extraKeys.length === 0 || extraKeys.every((key) => Object.hasOwn(row, key))
+    extraKeys.every((key) => Object.hasOwn(row, key))
       ? Effect.succeed(row)
       : Effect.map(makeInsert(provisioningSample), (defaults) => ({ ...defaults, ...row }))
 
@@ -1152,6 +1157,11 @@ export const makeUserModel = <const F extends UserFields>(fields: F): UserModel<
   // field map that is still a type parameter. `UserModel<F>` is the statement of
   // what that value is, and every consumer in the library is checked against the
   // statement rather than against the construction.
+  //
+  // Suppressed rather than removed: this is boundary cast 5.3 of the five
+  // REFACTOR.md §5 sanctions, and it has no cast-free spelling — the erasure it
+  // restates is precisely what the type system cannot prove.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   buildUserModel(fields) as unknown as UserModel<F>
 
 /**

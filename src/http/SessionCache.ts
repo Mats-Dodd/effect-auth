@@ -62,7 +62,8 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, Redacted, Result, Schema } from "effect"
+import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, type Redacted, Result, Schema } from "effect"
+import { dual } from "effect/Function"
 import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
@@ -214,11 +215,15 @@ export interface SessionCachePayload<F extends UserFields = {}> {
  * @category combinators
  * @since 1.0.0
  */
-export const cacheExpiry = (config: AuthConfigService, session: Session, now: DateTime.Utc): DateTime.Utc =>
+export const cacheExpiry: {
+  (session: Session, now: DateTime.Utc): (config: AuthConfigService) => DateTime.Utc
+  (config: AuthConfigService, session: Session, now: DateTime.Utc): DateTime.Utc
+} = dual(3, (config: AuthConfigService, session: Session, now: DateTime.Utc): DateTime.Utc =>
   DateTime.min(
     DateTime.addDuration(now, config.cookieCache.maxAge),
     DateTime.min(refreshDueAt(session, config), session.expiresAt)
   )
+)
 
 /**
  * The version string a snapshot of this session and user is written — and read —
@@ -227,10 +232,13 @@ export const cacheExpiry = (config: AuthConfigService, session: Session, now: Da
  * @category combinators
  * @since 1.0.0
  */
-export const cacheVersion = (config: AuthConfigService, session: Session, user: User): string => {
+export const cacheVersion: {
+  (session: Session, user: User): (config: AuthConfigService) => string
+  (config: AuthConfigService, session: Session, user: User): string
+} = dual(3, (config: AuthConfigService, session: Session, user: User): string => {
   const { version } = config.cookieCache
   return typeof version === "string" ? version : version(session, user)
-}
+})
 
 // -----------------------------------------------------------------------------
 // Service
@@ -273,7 +281,7 @@ export interface SessionCacheService<F extends UserFields = {}> {
    * credential it authenticated with.
    */
   readonly read: (
-    credential: Redacted.Redacted<string>
+    credential: Redacted.Redacted
   ) => Effect.Effect<Option.Option<SessionWithUser<F>>, never, HttpServerRequest.HttpServerRequest>
 
   /**
@@ -299,7 +307,9 @@ export interface SessionCacheService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class SessionCache extends Context.Service<SessionCache, SessionCacheService>()("effect-auth/SessionCache") {}
+export class SessionCache extends Context.Service<SessionCache, SessionCacheService>()(
+  "effect-auth/http/SessionCache"
+) {}
 
 /**
  * {@link SessionCache}, seen through a model's custom fields.
@@ -313,7 +323,7 @@ export class SessionCache extends Context.Service<SessionCache, SessionCacheServ
 export const sessionCacheOf = <F extends UserFields>(
   _model: UserModel<F>
 ): Context.Service<SessionCache, SessionCacheService<F>> =>
-  Context.Service<SessionCache, SessionCacheService<F>>("effect-auth/SessionCache")
+  Context.Service<SessionCache, SessionCacheService<F>>("effect-auth/http/SessionCache")
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -434,7 +444,7 @@ export const make: <F extends UserFields>(
     })
   })
 
-  const read = Effect.fnUntraced(function* (credential: Redacted.Redacted<string>) {
+  const read = Effect.fnUntraced(function* (credential: Redacted.Redacted) {
     if (!enabled) return Option.none<SessionWithUser<F>>()
 
     const request = yield* HttpServerRequest.HttpServerRequest

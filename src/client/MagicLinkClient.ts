@@ -28,13 +28,19 @@
  */
 import type { Layer } from "effect"
 import type { HttpClient } from "effect/unstable/http"
-import { Atom, AtomHttpApi } from "effect/unstable/reactivity"
+import { type Atom, AtomHttpApi } from "effect/unstable/reactivity"
 import type { InvalidToken, RateLimited } from "../domain/Errors.js"
 import type { PolicyRefused } from "../domain/Hooks.js"
 import type { SessionWithUser } from "../domain/Schema.js"
 import type { Ok } from "../http/AuthApi.js"
-import type { MagicLinkExchangePayload, MagicLinkSignInPayload, SignUpDisabled } from "../magic-link/Api.js"
-import { magicLinkPrefix, MagicLinkApi, MagicLinkApiGroup } from "../magic-link/Api.js"
+import {
+  magicLinkPrefix,
+  MagicLinkApi,
+  type MagicLinkApiGroup,
+  type MagicLinkExchangePayload,
+  type MagicLinkSignInPayload,
+  type SignUpDisabled
+} from "../magic-link/Api.js"
 import { sessionKey, sessionsKey } from "./AuthClient.js"
 import { layerFetch, withPayload } from "./internal/atoms.js"
 
@@ -178,7 +184,7 @@ const serviceId = "effect-auth/MagicLinkClient"
  * @category constructors
  * @since 1.0.0
  */
-export const make = (options?: Options | undefined): MagicLinkClient => {
+export const make = (options?: Options): MagicLinkClient => {
   const service = AtomHttpApi.Service()(serviceId, {
     // No cast, and no `api` option to make one necessary: the group carries its
     // own prefix, so this declaration's paths are the ones a consumer's composed

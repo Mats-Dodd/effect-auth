@@ -38,7 +38,9 @@ import { bearerSecurity, insecureSessionCookieSecurity, secureSessionCookieSecur
  * @category services
  * @since 1.0.0
  */
-export class CurrentSession extends Context.Service<CurrentSession, Session>()("effect-auth/CurrentSession") {}
+export class CurrentSession extends Context.Service<CurrentSession, Session>()(
+  "effect-auth/http/Middleware/CurrentSession"
+) {}
 
 /**
  * The user behind the request being handled.
@@ -55,7 +57,7 @@ export class CurrentSession extends Context.Service<CurrentSession, Session>()("
  * @category services
  * @since 1.0.0
  */
-export class CurrentUser extends Context.Service<CurrentUser, User>()("effect-auth/CurrentUser") {}
+export class CurrentUser extends Context.Service<CurrentUser, User>()("effect-auth/http/Middleware/CurrentUser") {}
 
 /**
  * {@link CurrentUser}, seen through a model's custom fields.
@@ -77,7 +79,7 @@ export class CurrentUser extends Context.Service<CurrentUser, User>()("effect-au
  * @since 1.0.0
  */
 export const currentUserOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<CurrentUser, UserOf<F>> =>
-  Context.Service<CurrentUser, UserOf<F>>("effect-auth/CurrentUser")
+  Context.Service<CurrentUser, UserOf<F>>("effect-auth/http/Middleware/CurrentUser")
 
 // -----------------------------------------------------------------------------
 // Middleware
@@ -119,6 +121,17 @@ export const currentUserOf = <F extends UserFields>(_model: UserModel<F>): Conte
  * middleware implementation (`HttpApiMiddleware.layerClient`) that attaches the
  * credential. A browser client whose cookies are attached by the browser still
  * needs to provide one — it just passes the request through.
+ *
+ * The three leaking requirements are not this module's to discharge. An
+ * `HttpApiMiddleware` wraps the endpoint's own effect, so whatever that effect
+ * requires appears on the middleware's signature, and `HttpServerRequest`,
+ * `ParsedSearchParams` and `RouteContext` are precisely the per-request services
+ * the router provides while it is dispatching — there is no layer-creation time
+ * at which they could be resolved, and resolving them would mean serving every
+ * request from one request's context. They are declared here rather than
+ * silenced so the pass-through is stated instead of assumed.
+ *
+ * @effect-expect-leaking HttpServerRequest | ParsedSearchParams | RouteContext
  *
  * @category services
  * @since 1.0.0
@@ -226,8 +239,10 @@ export const requireFresh: Effect.Effect<void, SessionNotFresh, CurrentSession |
   const session = yield* CurrentSession
   const config = yield* AuthConfig
   const freshUntil = DateTime.addDuration(session.createdAt, config.session.freshAge)
-  if (yield* DateTime.isFuture(freshUntil)) return
-  return yield* new SessionNotFresh({
+  // `undefined` rather than a bare `return`: the failing exit has to be
+  // `return yield*`, and a generator may not then leave another path unvalued.
+  if (yield* DateTime.isFuture(freshUntil)) return undefined
+  return yield* SessionNotFresh.make({
     freshAgeSeconds: Duration.toSeconds(config.session.freshAge)
   })
 })

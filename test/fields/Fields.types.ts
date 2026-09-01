@@ -25,13 +25,13 @@ import type { Atom } from "effect/unstable/reactivity"
 import type { SqlClient } from "effect/unstable/sql"
 import { AuthClient } from "../../src/client/index.js"
 import * as Auth from "../../src/config/Auth.js"
-import * as AuthConfig from "../../src/config/AuthConfig.js"
+import type * as AuthConfig from "../../src/config/AuthConfig.js"
 import type { EmailNotVerified, InvalidCredentials, RateLimited } from "../../src/domain/Errors.js"
-import type { AuthHooksOf, AuthHooksService, PolicyRefused, ProvisionSource } from "../../src/domain/Hooks.js"
-import { hooksOf } from "../../src/domain/Hooks.js"
+import type { AuthHooksOf, AuthHooksService, hooksOf, PolicyRefused, ProvisionSource } from "../../src/domain/Hooks.js"
 import type { PasswordsService, SignUpOptions } from "../../src/domain/Passwords.js"
-import * as Passwords from "../../src/domain/Passwords.js"
+import type * as Passwords from "../../src/domain/Passwords.js"
 import type {
+  baseUserModel,
   SessionWithUserOf,
   SignUpResponseOf,
   User,
@@ -39,24 +39,28 @@ import type {
   UserOf,
   UserPublicOf
 } from "../../src/domain/Schema.js"
-import { baseUserModel } from "../../src/domain/Schema.js"
 import type { SessionsService } from "../../src/domain/Sessions.js"
-import * as Sessions from "../../src/domain/Sessions.js"
-import type { AuthStores, SessionWithUser, UserPatch, UserStoreService } from "../../src/domain/Stores.js"
-import { UserStore, userStoreOf } from "../../src/domain/Stores.js"
+import type * as Sessions from "../../src/domain/Sessions.js"
+import type {
+  AuthStores,
+  SessionWithUser,
+  UserPatch,
+  UserStore,
+  userStoreOf,
+  UserStoreService
+} from "../../src/domain/Stores.js"
 import type { SignUpEmailOf } from "../../src/http/AuthApi.js"
 import { AuthApi } from "../../src/http/AuthApi.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
-import type { CurrentUser } from "../../src/http/Middleware.js"
-import { currentUserOf } from "../../src/http/Middleware.js"
-import * as MiddlewareLive from "../../src/http/MiddlewareLive.js"
-import * as SqlStores from "../../src/sql/SqlStores.js"
+import type { CurrentUser, currentUserOf } from "../../src/http/Middleware.js"
+import type * as MiddlewareLive from "../../src/http/MiddlewareLive.js"
+import type * as SqlStores from "../../src/sql/SqlStores.js"
 import { AuthTest } from "../../src/testing/index.js"
 import type { Fields } from "./model.js"
 import { FieldsApi, model } from "./model.js"
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
-const eq = <T extends true>(_: T): void => {}
+const eq = <T extends true>(_: T): T => _
 
 // ---------------------------------------------------------------------------
 // The custom fields are real types.
@@ -82,7 +86,7 @@ eq<Exact<"role" extends keyof UserPublicOf<Fields> ? true : false, true>>(true)
 /** The empty model's user is the base one, in both directions. */
 eq<Exact<UserOf<{}>, User>>(true)
 
-declare const password: Redacted.Redacted<string>
+declare const password: Redacted.Redacted
 
 /** A `withDefault` field may be stated at sign-up, and may equally be left out. */
 const stated: SignUpOptions<Fields> = { name: "Ada", email: "ada@example.com", password, plan: "pro" }
@@ -310,7 +314,7 @@ AuthTest.layerHttpApi(FieldsApi)
 /** The client is typed by the model it was given. */
 const fieldsClient = AuthClient.make({ api: FieldsApi, model })
 eq<Exact<typeof fieldsClient, AuthClient.AuthClient<Fields>>>(true)
-eq<Exact<typeof AuthClient.make extends () => AuthClient.AuthClient<{}> ? true : false, true>>(true)
+eq<Exact<typeof AuthClient.make extends () => AuthClient.AuthClient ? true : false, true>>(true)
 
 declare const plan: "free" | "pro"
 declare const fieldsSession: SessionWithUserOf<Fields>

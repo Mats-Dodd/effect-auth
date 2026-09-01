@@ -27,6 +27,7 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Option, Redacted } from "effect"
+import { dual } from "effect/Function"
 import { AuthConfig } from "../config/AuthConfig.js"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthEmails, resetPasswordUrl, verifyEmailUrl, withCallbackUrl } from "../config/AuthEmails.js"
@@ -45,12 +46,19 @@ import {
 import { AuthEvents, passwordMethod, publishSafely } from "./Events.js"
 import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
 import { AuthHooks } from "./Hooks.js"
-import type { Session, SessionId, UserExtras, UserFields, UserId, UserInsertOf, UserModel, UserOf } from "./Schema.js"
-import { Account, baseUserModel, CredentialIssuer, normalizeEmail } from "./Schema.js"
+import type { Session, SessionId, UserExtras, UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
+import { Account, baseUserModel, CredentialIssuer, normalizeEmail, UserId } from "./Schema.js"
 import type { CreatedSession } from "./Sessions.js"
 import { Sessions } from "./Sessions.js"
-import type { PersistenceError } from "./Stores.js"
-import { AccountStore, isUniqueViolation, SessionStore, UserStore, userStoreOf, WithAuthTransaction } from "./Stores.js"
+import {
+  AccountStore,
+  isUniqueViolation,
+  type PersistenceError,
+  SessionStore,
+  type UserStore,
+  userStoreOf,
+  WithAuthTransaction
+} from "./Stores.js"
 // The user-subject purposes, and the helper that retires them, are declared
 // beside the flows that mint most of them; nothing is read from that list
 // before a request runs.
@@ -105,7 +113,7 @@ export const dummyPassword = "effect-auth::timing-defence::not-a-real-password"
  * @category constructors
  * @since 1.0.0
  */
-export const absentUserId = "00000000-0000-0000-0000-000000000000" as UserId
+export const absentUserId = UserId.make("00000000-0000-0000-0000-000000000000")
 
 /**
  * What every user this module provisions, and every session it mints, came
@@ -131,24 +139,28 @@ const passwordSource: ProvisionSource = { _tag: "EmailPassword" }
  * @category combinators
  * @since 1.0.0
  */
-export const checkPolicy = (
-  password: Redacted.Redacted<string>,
-  config: AuthConfigService
-): Effect.Effect<void, PasswordPolicyViolation> => {
+export const checkPolicy: {
+  (config: AuthConfigService): (password: Redacted.Redacted) => Effect.Effect<void, PasswordPolicyViolation>
+  (password: Redacted.Redacted, config: AuthConfigService): Effect.Effect<void, PasswordPolicyViolation>
+} = dual(2, (password: Redacted.Redacted, config: AuthConfigService): Effect.Effect<void, PasswordPolicyViolation> => {
   const { maxPasswordLength, minPasswordLength } = config.emailPassword
   const length = Redacted.value(password).length
   if (length < minPasswordLength) {
     return Effect.fail(
-      new PasswordPolicyViolation({ reason: "TooShort", minLength: minPasswordLength, maxLength: maxPasswordLength })
+      PasswordPolicyViolation.make({
+        reason: "TooShort",
+        minLength: minPasswordLength,
+        maxLength: maxPasswordLength
+      })
     )
   }
   if (length > maxPasswordLength) {
     return Effect.fail(
-      new PasswordPolicyViolation({ reason: "TooLong", minLength: minPasswordLength, maxLength: maxPasswordLength })
+      PasswordPolicyViolation.make({ reason: "TooLong", minLength: minPasswordLength, maxLength: maxPasswordLength })
     )
   }
   return Effect.void
-}
+})
 
 // -----------------------------------------------------------------------------
 // Models
@@ -164,7 +176,7 @@ export const checkPolicy = (
 export interface BaseSignUpOptions {
   readonly name: string
   readonly email: string
-  readonly password: Redacted.Redacted<string>
+  readonly password: Redacted.Redacted
   readonly image?: string | null | undefined
   readonly ipAddress?: string | null | undefined
   readonly userAgent?: string | null | undefined
@@ -216,7 +228,7 @@ export interface SignUpResult<F extends UserFields = {}> {
  */
 export interface SignInOptions {
   readonly email: string
-  readonly password: Redacted.Redacted<string>
+  readonly password: Redacted.Redacted
   readonly ipAddress?: string | null | undefined
   readonly userAgent?: string | null | undefined
   readonly rememberMe?: boolean | undefined
@@ -231,7 +243,7 @@ export interface SignInOptions {
 export interface SignInResult<F extends UserFields = {}> {
   readonly user: UserOf<F>
   readonly session: Session
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
 }
 
 /**
@@ -242,8 +254,8 @@ export interface SignInResult<F extends UserFields = {}> {
  */
 export interface ChangePasswordOptions {
   readonly userId: UserId
-  readonly currentPassword: Redacted.Redacted<string>
-  readonly newPassword: Redacted.Redacted<string>
+  readonly currentPassword: Redacted.Redacted
+  readonly newPassword: Redacted.Redacted
   /**
    * Sign every other device out. Defaults to `true`: a password change is
    * usually a response to a suspected compromise.
@@ -266,7 +278,7 @@ export interface ChangePasswordOptions {
  */
 export interface SetPasswordOptions {
   readonly userId: UserId
-  readonly newPassword: Redacted.Redacted<string>
+  readonly newPassword: Redacted.Redacted
 }
 
 // -----------------------------------------------------------------------------
@@ -371,8 +383,8 @@ export interface PasswordsService<F extends UserFields = {}> {
    * just re-secured it.
    */
   readonly resetPassword: (options: {
-    readonly token: Redacted.Redacted<string>
-    readonly newPassword: Redacted.Redacted<string>
+    readonly token: Redacted.Redacted
+    readonly newPassword: Redacted.Redacted
   }) => Effect.Effect<void, InvalidToken | PasswordPolicyViolation | PasswordHashError | PersistenceError>
 
   /**
@@ -405,7 +417,7 @@ export interface PasswordsService<F extends UserFields = {}> {
    */
   readonly verifyPassword: (
     userId: UserId,
-    password: Redacted.Redacted<string>
+    password: Redacted.Redacted
   ) => Effect.Effect<boolean, PasswordHashError | PersistenceError>
 
   /**
@@ -453,7 +465,7 @@ export interface PasswordsService<F extends UserFields = {}> {
    * single conditional delete, so there is no row left to inspect. Both report
    * `InvalidToken`.
    */
-  readonly verifyEmail: (token: Redacted.Redacted<string>) => Effect.Effect<UserOf<F>, InvalidToken | PersistenceError>
+  readonly verifyEmail: (token: Redacted.Redacted) => Effect.Effect<UserOf<F>, InvalidToken | PersistenceError>
 }
 
 /**
@@ -462,7 +474,7 @@ export interface PasswordsService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class Passwords extends Context.Service<Passwords, PasswordsService>()("effect-auth/Passwords") {}
+export class Passwords extends Context.Service<Passwords, PasswordsService>()("effect-auth/domain/Passwords") {}
 
 /**
  * {@link Passwords}, seen through a model's custom fields.
@@ -477,7 +489,7 @@ export class Passwords extends Context.Service<Passwords, PasswordsService>()("e
 export const passwordsOf = <F extends UserFields>(
   _model: UserModel<F>
 ): Context.Service<Passwords, PasswordsService<F>> =>
-  Context.Service<Passwords, PasswordsService<F>>("effect-auth/Passwords")
+  Context.Service<Passwords, PasswordsService<F>>("effect-auth/domain/Passwords")
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -627,7 +639,7 @@ export const make: <F extends UserFields>(
 
     const existing = yield* users.findByEmail(email)
     if (Option.isSome(existing)) {
-      return yield* Effect.fail(new UserAlreadyExists())
+      return yield* UserAlreadyExists.make()
     }
 
     const passwordHash = yield* hasher.hash(options.password)
@@ -660,7 +672,7 @@ export const make: <F extends UserFields>(
         // The pre-check above closes the ordinary case; this closes the race in
         // which two sign-ups for one address interleave.
         Effect.catchTag("PersistenceError", (error): Effect.Effect<never, UserAlreadyExists | PersistenceError> =>
-          isUniqueViolation(error) ? Effect.fail(new UserAlreadyExists()) : Effect.fail(error)
+          isUniqueViolation(error) ? Effect.fail(UserAlreadyExists.make()) : Effect.fail(error)
         )
       )
 
@@ -735,12 +747,12 @@ export const make: <F extends UserFields>(
     const matches = yield* hasher.verify(options.password, storedHash ?? dummyHash)
 
     if (Option.isNone(found) || storedHash === null || !matches) {
-      return yield* Effect.fail(new InvalidCredentials())
+      return yield* InvalidCredentials.make()
     }
     const user = found.value
 
     if (config.emailPassword.requireEmailVerification && !user.emailVerified) {
-      return yield* Effect.fail(new EmailNotVerified())
+      return yield* EmailNotVerified.make()
     }
 
     // After the verification above, deliberately. Only somebody who presented
@@ -793,14 +805,17 @@ export const make: <F extends UserFields>(
   })
 
   const resetPassword = Effect.fnUntraced(function* (options: {
-    readonly token: Redacted.Redacted<string>
-    readonly newPassword: Redacted.Redacted<string>
+    readonly token: Redacted.Redacted
+    readonly newPassword: Redacted.Redacted
   }) {
     yield* checkPolicy(options.newPassword, config)
     const claimed = yield* verifications.claim(passwordResetPurpose, options.token)
-    const userId = claimed.subject as UserId
+    // A `passwordResetPurpose` row's subject is a user id this module wrote; the
+    // brand is restated rather than asserted, and `UserId` carries no refinement
+    // beyond `Schema.String`, so this never rejects a value the cast accepted.
+    const userId = UserId.make(claimed.subject)
 
-    yield* Effect.fromOption(yield* users.findById(userId), () => new InvalidToken())
+    yield* Effect.fromOption(yield* users.findById(userId), () => InvalidToken.make())
 
     const passwordHash = yield* hasher.hash(options.newPassword)
 
@@ -850,7 +865,7 @@ export const make: <F extends UserFields>(
     yield* publishSafely(events, { _tag: "PasswordChanged", userId, viaReset: true })
   })
 
-  const verifyPassword = Effect.fnUntraced(function* (userId: UserId, password: Redacted.Redacted<string>) {
+  const verifyPassword = Effect.fnUntraced(function* (userId: UserId, password: Redacted.Redacted) {
     const account = yield* credentialAccountFor(userId)
     const storedHash = Option.isSome(account) ? account.value.passwordHash : null
     // One verification, always. A user with no credential is checked against the
@@ -865,7 +880,7 @@ export const make: <F extends UserFields>(
 
     const existing = yield* credentialAccountFor(options.userId)
     if (Option.isSome(existing) && existing.value.passwordHash !== null) {
-      return yield* Effect.fail(new PasswordAlreadySet())
+      return yield* PasswordAlreadySet.make()
     }
 
     const passwordHash = yield* hasher.hash(options.newPassword)
@@ -894,7 +909,7 @@ export const make: <F extends UserFields>(
       )
       .pipe(
         Effect.catchTag("PersistenceError", (error): Effect.Effect<Account, PasswordAlreadySet | PersistenceError> =>
-          isUniqueViolation(error) ? Effect.fail(new PasswordAlreadySet()) : Effect.fail(error)
+          isUniqueViolation(error) ? Effect.fail(PasswordAlreadySet.make()) : Effect.fail(error)
         )
       )
 
@@ -908,7 +923,7 @@ export const make: <F extends UserFields>(
           Option.match({ onNone: () => created, onSome: Effect.succeed })
         )
 
-    yield* publishSafely(events, {
+    return yield* publishSafely(events, {
       _tag: "AccountLinked",
       userId: options.userId,
       accountId: account.id,
@@ -921,7 +936,7 @@ export const make: <F extends UserFields>(
     yield* checkPolicy(options.newPassword, config)
 
     if (!(yield* verifyPassword(options.userId, options.currentPassword))) {
-      return yield* Effect.fail(new InvalidCredentials())
+      return yield* InvalidCredentials.make()
     }
 
     const passwordHash = yield* hasher.hash(options.newPassword)
@@ -931,7 +946,7 @@ export const make: <F extends UserFields>(
     // caller must present the current password again, against whatever
     // credential now exists.
     const updated = yield* accounts.updatePasswordHash(options.userId, passwordHash)
-    yield* Effect.fromOption(updated, () => new InvalidCredentials())
+    yield* Effect.fromOption(updated, () => InvalidCredentials.make())
 
     // Same reasoning as in `resetPassword`: a password that has just been
     // changed from inside a session is a re-securing of the account, so every
@@ -946,7 +961,7 @@ export const make: <F extends UserFields>(
         : sessions.revokeOthers(options.userId, options.currentSessionId)
     }
 
-    yield* publishSafely(events, { _tag: "PasswordChanged", userId: options.userId, viaReset: false })
+    return yield* publishSafely(events, { _tag: "PasswordChanged", userId: options.userId, viaReset: false })
   })
 
   const sendVerificationEmail = Effect.fnUntraced(function* (options: {
@@ -960,16 +975,16 @@ export const make: <F extends UserFields>(
     yield* sendVerificationTo(found.value, options.callbackURL)
   })
 
-  const verifyEmail = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+  const verifyEmail = Effect.fnUntraced(function* (token: Redacted.Redacted) {
     const claimed = yield* verifications.claim(emailVerifyPurpose, token)
 
     const found = yield* users.findByEmail(normalizeEmail(claimed.subject))
-    const user = yield* Effect.fromOption(found, () => new InvalidToken())
+    const user = yield* Effect.fromOption(found, () => InvalidToken.make())
 
     const updated = yield* users.update(user.id, model.basePatch({ emailVerified: true }))
     // The user was deleted between the two reads: the token is spent and there
     // is nothing to verify.
-    const verified = yield* Effect.fromOption(updated, () => new InvalidToken())
+    const verified = yield* Effect.fromOption(updated, () => InvalidToken.make())
 
     yield* publishSafely(events, {
       _tag: "EmailVerified",

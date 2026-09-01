@@ -30,6 +30,7 @@
  */
 import type { Effect } from "effect"
 import { Context, Option, Redacted } from "effect"
+import { dual } from "effect/Function"
 import type { EmailDeliveryError } from "../domain/Errors.js"
 import type { User } from "../domain/Schema.js"
 import { validateUrl } from "../http/OriginCheck.js"
@@ -56,12 +57,12 @@ export interface AuthEmail {
    * The raw single-use token. Only its hash is stored, so this value exists
    * exactly once, here.
    */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /**
    * The link to put in the message, already built from `baseUrl` and the
    * configured path, with the token in its query string.
    */
-  readonly url: Redacted.Redacted<string>
+  readonly url: Redacted.Redacted
 }
 
 /**
@@ -156,7 +157,7 @@ export interface AuthEmailsService {
  * @category services
  * @since 1.0.0
  */
-export class AuthEmails extends Context.Service<AuthEmails, AuthEmailsService>()("effect-auth/AuthEmails") {}
+export class AuthEmails extends Context.Service<AuthEmails, AuthEmailsService>()("effect-auth/config/AuthEmails") {}
 
 /**
  * Builds a link to `path` under the configured `baseUrl` carrying `token` in
@@ -165,15 +166,14 @@ export class AuthEmails extends Context.Service<AuthEmails, AuthEmailsService>()
  * @category combinators
  * @since 1.0.0
  */
-export const tokenUrl = (
-  config: AuthConfigService,
-  path: string,
-  token: Redacted.Redacted<string>
-): Redacted.Redacted<string> => {
+export const tokenUrl: {
+  (path: string, token: Redacted.Redacted): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, path: string, token: Redacted.Redacted): Redacted.Redacted
+} = dual(3, (config: AuthConfigService, path: string, token: Redacted.Redacted): Redacted.Redacted => {
   const url = new URL(path, config.baseUrl)
   url.searchParams.set("token", Redacted.value(token))
   return Redacted.make(url.toString())
-}
+})
 
 /**
  * The e-mail verification link for a token.
@@ -181,10 +181,12 @@ export const tokenUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const verifyEmailUrl = (
-  config: AuthConfigService,
-  token: Redacted.Redacted<string>
-): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.verifyEmail, token)
+export const verifyEmailUrl: {
+  (token: Redacted.Redacted): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted
+} = dual(2, (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
+  tokenUrl(config, config.emailPaths.verifyEmail, token)
+)
 
 /**
  * The password reset link for a token.
@@ -192,10 +194,12 @@ export const verifyEmailUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const resetPasswordUrl = (
-  config: AuthConfigService,
-  token: Redacted.Redacted<string>
-): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.resetPassword, token)
+export const resetPasswordUrl: {
+  (token: Redacted.Redacted): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted
+} = dual(2, (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
+  tokenUrl(config, config.emailPaths.resetPassword, token)
+)
 
 /**
  * The first-hop link of an e-mail change — the one sent to the current address.
@@ -203,10 +207,12 @@ export const resetPasswordUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const changeEmailConfirmUrl = (
-  config: AuthConfigService,
-  token: Redacted.Redacted<string>
-): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.changeEmailConfirm, token)
+export const changeEmailConfirmUrl: {
+  (token: Redacted.Redacted): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted
+} = dual(2, (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
+  tokenUrl(config, config.emailPaths.changeEmailConfirm, token)
+)
 
 /**
  * The second-hop link of an e-mail change — the one sent to the new address.
@@ -220,10 +226,12 @@ export const changeEmailConfirmUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const changeEmailVerifyUrl = (
-  config: AuthConfigService,
-  token: Redacted.Redacted<string>
-): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.changeEmailVerify, token)
+export const changeEmailVerifyUrl: {
+  (token: Redacted.Redacted): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted
+} = dual(2, (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
+  tokenUrl(config, config.emailPaths.changeEmailVerify, token)
+)
 
 /**
  * The account-deletion confirmation link.
@@ -231,10 +239,12 @@ export const changeEmailVerifyUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const deleteAccountUrl = (
-  config: AuthConfigService,
-  token: Redacted.Redacted<string>
-): Redacted.Redacted<string> => tokenUrl(config, config.emailPaths.deleteAccount, token)
+export const deleteAccountUrl: {
+  (token: Redacted.Redacted): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted
+} = dual(2, (config: AuthConfigService, token: Redacted.Redacted): Redacted.Redacted =>
+  tokenUrl(config, config.emailPaths.deleteAccount, token)
+)
 
 /**
  * Appends the caller's landing page to an e-mailed link — after validating it,
@@ -259,14 +269,16 @@ export const deleteAccountUrl = (
  * @category combinators
  * @since 1.0.0
  */
-export const withCallbackUrl = (
-  config: AuthConfigService,
-  url: Redacted.Redacted<string>,
-  callbackURL: string | null | undefined
-): Redacted.Redacted<string> => {
-  const validated = validateUrl(config, callbackURL)
-  if (Option.isNone(validated)) return url
-  const parsed = new URL(Redacted.value(url))
-  parsed.searchParams.set("callbackURL", validated.value)
-  return Redacted.make(parsed.toString())
-}
+export const withCallbackUrl: {
+  (url: Redacted.Redacted, callbackURL: string | null | undefined): (config: AuthConfigService) => Redacted.Redacted
+  (config: AuthConfigService, url: Redacted.Redacted, callbackURL: string | null | undefined): Redacted.Redacted
+} = dual(
+  3,
+  (config: AuthConfigService, url: Redacted.Redacted, callbackURL: string | null | undefined): Redacted.Redacted => {
+    const validated = validateUrl(config, callbackURL)
+    if (Option.isNone(validated)) return url
+    const parsed = new URL(Redacted.value(url))
+    parsed.searchParams.set("callbackURL", validated.value)
+    return Redacted.make(parsed.toString())
+  }
+)

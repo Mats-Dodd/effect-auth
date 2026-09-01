@@ -16,7 +16,8 @@
  * `test/http/helpers.ts`.
  */
 import { assert } from "@effect/vitest"
-import { Effect, Option, Redacted } from "effect"
+import { Effect, Encoding, Option, Redacted } from "effect"
+import { dual } from "effect/Function"
 import type { AuthEvent } from "../src/domain/Events.js"
 import { Passwords } from "../src/domain/Passwords.js"
 
@@ -25,13 +26,18 @@ import { Passwords } from "../src/domain/Passwords.js"
  *
  * `label` is only there to make a failure readable — it says which account in
  * the test the row belongs to.
+ *
+ * The suffix is 16 CSPRNG bytes rather than a `Random`-drawn value: this has to
+ * stay a plain synchronous `string`, because every call site in the suite embeds
+ * it directly in a payload rather than yielding it.
  */
-export const uniqueEmail = (label = "user"): string => `${label}-${globalThis.crypto.randomUUID()}@example.com`
+export const uniqueEmail = (label = "user"): string =>
+  `${label}-${Encoding.encodeHex(globalThis.crypto.getRandomValues(new Uint8Array(16)))}@example.com`
 
 /**
  * The passphrase every test signs up with, redacted as the domain takes it.
  */
-export const testPassword: Redacted.Redacted<string> = Redacted.make("correct horse battery staple")
+export const testPassword: Redacted.Redacted = Redacted.make("correct horse battery staple")
 
 /**
  * {@link testPassword} unwrapped, for the endpoints that take a plain string.
@@ -41,7 +47,7 @@ export const testPasswordText = "correct horse battery staple"
 /**
  * A replacement passphrase, long enough to satisfy the default policy.
  */
-export const newPassword: Redacted.Redacted<string> = Redacted.make("a-much-longer-replacement-passphrase")
+export const newPassword: Redacted.Redacted = Redacted.make("a-much-longer-replacement-passphrase")
 
 /**
  * The display name every test signs up with.
@@ -51,8 +57,12 @@ export const testName = "Ada Lovelace"
 /**
  * Unwraps an `Option`, failing the test with `message` when it is `None`.
  */
-export const expectSome = <A>(option: Option.Option<A>, message: string): Effect.Effect<A> =>
+export const expectSome: {
+  (message: string): <A>(option: Option.Option<A>) => Effect.Effect<A>
+  <A>(option: Option.Option<A>, message: string): Effect.Effect<A>
+} = dual(2, <A>(option: Option.Option<A>, message: string): Effect.Effect<A> =>
   Option.isSome(option) ? Effect.succeed(option.value) : Effect.sync(() => assert.fail(message))
+)
 
 /**
  * Registers a user and hands back the row, the session sign-up established and
@@ -82,5 +92,9 @@ export const signUpUser = Effect.fnUntraced(function* (email: string) {
  * every test in the block, so an assertion on the whole recording would also be
  * an assertion about whatever the siblings happened to be doing.
  */
-export const forUser = (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
+export const forUser: {
+  (userId: string): (events: ReadonlyArray<AuthEvent>) => ReadonlyArray<AuthEvent>
+  (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent>
+} = dual(2, (events: ReadonlyArray<AuthEvent>, userId: string): ReadonlyArray<AuthEvent> =>
   events.filter((event) => event.userId === userId)
+)

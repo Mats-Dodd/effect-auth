@@ -41,6 +41,7 @@
  */
 import type { Redacted } from "effect"
 import { Effect, Layer } from "effect"
+import { dual } from "effect/Function"
 import type { HttpClient } from "effect/unstable/http"
 import { HttpClientRequest } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
@@ -74,34 +75,32 @@ import type {
   UserModel,
   UserPublicOf
 } from "../domain/Schema.js"
-import type {
-  AccessTokenResponse,
-  AuthApiGroupOf,
-  DeleteUserResponse,
-  OAuthRedirect,
-  Ok,
-  RefreshTokenResponse,
-  SignUpEmailOf,
-  UpdateUserOf
-} from "../http/AuthApi.js"
 import {
-  AccountSelection,
+  type AccessTokenResponse,
+  type AccountSelection,
   AuthApi,
-  ChangeEmailPayload,
-  ChangePasswordPayload,
-  DeleteUserPayload,
-  LinkSocialPayload,
-  RequestPasswordResetPayload,
-  ResetPasswordPayload,
-  RevokeSessionPayload,
-  SendVerificationEmailPayload,
-  SetPasswordPayload,
-  SignInEmailPayload,
-  SignInSocialPayload,
-  SignUpEmailPayload,
-  TokenQuery,
-  UnlinkAccountPayload,
-  VerifyEmailQuery
+  type AuthApiGroupOf,
+  type ChangeEmailPayload,
+  type ChangePasswordPayload,
+  type DeleteUserPayload,
+  type DeleteUserResponse,
+  type LinkSocialPayload,
+  type OAuthRedirect,
+  type Ok,
+  type RefreshTokenResponse,
+  type RequestPasswordResetPayload,
+  type ResetPasswordPayload,
+  type RevokeSessionPayload,
+  type SendVerificationEmailPayload,
+  type SetPasswordPayload,
+  type SignInEmailPayload,
+  type SignInSocialPayload,
+  type SignUpEmailOf,
+  type SignUpEmailPayload,
+  type TokenQuery,
+  type UnlinkAccountPayload,
+  type UpdateUserOf,
+  type VerifyEmailQuery
 } from "../http/AuthApi.js"
 import { Authenticated } from "../http/Middleware.js"
 import type { PayloadRequest, ReactivityKeys as AtomReactivityKeys } from "./internal/atoms.js"
@@ -305,7 +304,7 @@ export type SelectAccount = typeof AccountSelection.Type
  */
 export interface Options<
   ApiId extends string = string,
-  Groups extends HttpApiGroup.Constraint = AuthApiGroupOf<{}>,
+  Groups extends HttpApiGroup.Constraint = AuthApiGroupOf,
   F extends UserFields = {}
 > {
   /**
@@ -369,7 +368,7 @@ export interface Options<
    * cookie jar. In a browser leave it unset: the cookie is `httpOnly`, so
    * script cannot read it, which is the point.
    */
-  readonly bearerToken?: (() => string | Redacted.Redacted<string> | undefined) | undefined
+  readonly bearerToken?: (() => string | Redacted.Redacted | undefined) | undefined
   /**
    * Wraps the underlying `HttpClient` — retries, logging, a timeout.
    */
@@ -591,10 +590,10 @@ const serviceId = "effect-auth/AuthClient"
  */
 export const make = <
   ApiId extends string = string,
-  Groups extends HttpApiGroup.Constraint = AuthApiGroupOf<{}>,
+  Groups extends HttpApiGroup.Constraint = AuthApiGroupOf,
   F extends UserFields = {}
 >(
-  options?: Options<ApiId, Groups, F> | undefined
+  options?: Options<ApiId, Groups, F>
 ): AuthClient<F> => {
   const getToken = options?.bearerToken
   const httpClient = options?.httpClient ?? layerFetch(options?.credentials ?? "include")
@@ -619,6 +618,11 @@ export const make = <
     // (It goes via `unknown` because a one-step conversion is refused:
     // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
     // compiler's comparability check.)
+    //
+    // REFACTOR.md §5.2 sanctions exactly this cast; there is no assertion-free
+    // spelling of it, because the invariance it works around is in `HttpApi`'s
+    // own declaration.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     api: (options?.api ?? AuthApi) as unknown as HttpApi.HttpApi<string, AuthApiGroupOf<F>>,
     httpClient: Layer.merge(httpClient, forClient),
     baseUrl: options?.baseUrl,
@@ -640,6 +644,10 @@ export const make = <
   // conditional. Only the *argument* is being named: the atom, the request it
   // issues and the schema it encodes through are the ones `AtomHttpApi` built
   // from the API that was passed in.
+  //
+  // REFACTOR.md §5.4 sanctions it: a deferred conditional has no assignable
+  // spelling, so there is nothing to write here that is not an assertion.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   const signUpMutation = service.mutation("auth", "signUpEmail") as unknown as Atom.AtomResultFn<
     PayloadRequest<SignUpEmailOf<F>>,
     SignUpResponseOf<F>,
@@ -651,6 +659,9 @@ export const make = <
   // branches on the payload type, and a conditional over an unresolved `F` has no
   // writable form inside this function — while at a call site, where `F` is a
   // concrete field map, it resolves to exactly what is stated here.
+  //
+  // REFACTOR.md §5.4 sanctions this one too, for the same reason.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   const updateUserMutation = service.mutation("auth", "updateUser") as unknown as Atom.AtomResultFn<
     PayloadRequest<UpdateUserOf<F>>,
     { readonly user: UserPublicOf<F> },
@@ -747,11 +758,17 @@ export const make = <
  * @category combinators
  * @since 1.0.0
  */
-export const run = <Arg, A, E>(
-  self: Atom.AtomResultFn<Arg, A, E>,
-  arg: Arg
-): Effect.Effect<A, E, AtomRegistry.AtomRegistry> =>
-  Effect.flatMap(Atom.set(self, arg), () => Atom.getResult(self, { suspendOnWaiting: true }))
+export const run: {
+  <Arg>(arg: Arg): <A, E>(self: Atom.AtomResultFn<Arg, A, E>) => Effect.Effect<A, E, AtomRegistry.AtomRegistry>
+  <Arg, A, E>(self: Atom.AtomResultFn<Arg, A, E>, arg: Arg): Effect.Effect<A, E, AtomRegistry.AtomRegistry>
+} = dual(
+  // Arity cannot decide this one: the argument of a `void` mutation atom may be
+  // omitted, so `run(client.signOut)` is a one-argument *data-first* call. The
+  // atom is what tells the two styles apart, exactly as `Atom.map` does upstream.
+  (args) => Atom.isAtom(args[0]),
+  <Arg, A, E>(self: Atom.AtomResultFn<Arg, A, E>, arg: Arg): Effect.Effect<A, E, AtomRegistry.AtomRegistry> =>
+    Effect.flatMap(Atom.set(self, arg), () => Atom.getResult(self, { suspendOnWaiting: true }))
+)
 
 /**
  * Sends the browser to a URL.

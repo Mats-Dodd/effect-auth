@@ -1,5 +1,5 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { Config, ConfigProvider, Effect, Option, Redacted } from "effect"
+import { Config, ConfigProvider, Effect, Layer, Option, Redacted } from "effect"
 import type { JWTPayload } from "jose"
 import type { IdTokenClaims } from "../../src/oauth/IdToken.js"
 import { verify } from "../../src/oauth/IdToken.js"
@@ -198,7 +198,10 @@ describe("oauth/providers/Microsoft", () => {
     )
   })
 
-  layer(MockProvider.IdTokenSigner.layer)("userInfo", (it) => {
+  // The transport belongs to the block rather than to each test: `noNetwork` is
+  // a stubbed 404 client with no state of its own, so composing it once here is
+  // the same client every test would have built for itself.
+  layer(Layer.mergeAll(MockProvider.IdTokenSigner.layer, noNetwork))("userInfo", (it) => {
     const verifiedClaims = (
       provider: OAuthProviderConfig,
       signer: MockProvider.IdTokenSignerService,
@@ -229,7 +232,7 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(info.image, "https://cdn.test/ada.png")
         // The account's issuer is the one the *verified* token named, per tenant.
         assert.strictEqual(info.issuer, issuerOfTenant(workTenant))
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("refuses a token with no oid", () =>
@@ -242,7 +245,7 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("defaults emailVerified to false, and reads both of Entra's statements", () =>
@@ -274,7 +277,7 @@ describe("oauth/providers/Microsoft", () => {
           verified_primary_email: ["somebody@acme.test"]
         })
         assert.isFalse((yield* provider.userInfo(tokensOf(elsewhere))).emailVerified)
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("falls back to the UPN as an address, and never as a verified one", () =>
@@ -290,7 +293,7 @@ describe("oauth/providers/Microsoft", () => {
         const info = yield* provider.userInfo(tokensOf(claims))
         assert.strictEqual(info.email, "ada@acme.onmicrosoft.com")
         assert.isFalse(info.emailVerified)
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("fails closed when the flow handed it no verified claims", () =>
@@ -300,7 +303,7 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
   })
 
@@ -320,14 +323,13 @@ describe("oauth/providers/Microsoft", () => {
         assert.strictEqual(provider.oidc?.issuer, issuerOfTenant(workTenant))
         assert.isUndefined(provider.oidc?.issuerOf)
       }).pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromUnknown({
-              MS_CLIENT_ID: "ms-from-the-environment",
-              MS_CLIENT_SECRET: "ms-secret-from-the-environment",
-              MS_TENANT_ID: workTenant
-            })
-          )
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            MS_CLIENT_ID: "ms-from-the-environment",
+            MS_CLIENT_SECRET: "ms-secret-from-the-environment",
+            MS_TENANT_ID: workTenant
+          })
         )
       )
     )
@@ -339,7 +341,12 @@ describe("oauth/providers/Microsoft", () => {
           yield* Effect.map(resolveClientSecret(provider), Option.map(Redacted.value)),
           Option.none()
         )
-      }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ MS_CLIENT_ID: "public-client" }))))
+      }).pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({ MS_CLIENT_ID: "public-client" })
+        )
+      )
     )
   })
 })

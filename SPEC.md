@@ -65,8 +65,10 @@ establishes and keep it consistent). Build = `tsc -b`. Test = vitest with `@effe
 
 ## Coding conventions (non-negotiable, from effect/.patterns)
 
-- Services are `class X extends Context.Service<X, Shape>()("effect-auth/X") {}`. Import from `effect`.
-  Check the v4 checkout for the exact `Context.Service` signature before writing.
+- Services are `class X extends Context.Service<X, Shape>()("effect-auth/<module path>/X") {}`.
+  Import from `effect`. Keys are module-qualified and enforced by the `deterministic-keys`
+  rule — see Amendment 17 for the exact formula. Check the v4 checkout for the exact
+  `Context.Service` signature before writing.
 - No try/catch inside `Effect.gen` — use `Effect.result` / typed errors.
 - `return yield*` for terminal effects; prefer `Effect.fnUntraced(function* (...) {...})` over
   a function whose body is only `Effect.gen`.
@@ -246,8 +248,8 @@ verifications.identifier.
 ### Middleware (Middleware.ts)
 
 ```ts
-class CurrentSession extends Context.Key<CurrentSession, Session>()("effect-auth/CurrentSession") {}
-class CurrentUser extends Context.Key<CurrentUser, User>()("effect-auth/CurrentUser") {}
+class CurrentSession extends Context.Key<CurrentSession, Session>()("effect-auth/http/Middleware/CurrentSession") {}
+class CurrentUser extends Context.Key<CurrentUser, User>()("effect-auth/http/Middleware/CurrentUser") {}
 ```
 (check v4 idiom for plain context keys — `Context.Key`/`Context.Tag` — match the codebase.)
 
@@ -1554,3 +1556,45 @@ row gains one persisted field, and one config invariant is corrected.
    another browser cannot drive a revocation through the cache within the lag; both handlers read
    the session row in-handler regardless, so the annotation costs them nothing. The eight existing
    `AuthoritativeSession` annotations are unchanged.
+
+### 17. Deterministic service keys
+
+Every `Context.Service` key in the package is now module-qualified. The convention the
+`@effect/tsgo` `deterministic-keys` rule enforces, and the one this package writes by hand:
+
+```
+"<package>/<module path>/<Identifier>"
+```
+
+where the module path is the source file's path under `src/` (or, for a test-local service,
+under the repo root) with its extension dropped, and `<Identifier>` is the declared name. The
+`<Identifier>` segment is elided when it would only repeat the file name, which is why a
+one-service module reads `"effect-auth/crypto/Token"` rather than
+`"effect-auth/crypto/Token/Token"`:
+
+```ts
+// src/domain/Stores.ts
+export class UserStore extends Context.Service<UserStore, UserStoreService>()("effect-auth/domain/Stores/UserStore") {}
+
+// src/crypto/Token.ts
+export class Token extends Context.Service<Token, TokenService>()("effect-auth/crypto/Token") {}
+```
+
+Two consequences worth stating:
+
+1. **A typed view must repeat its base key verbatim.** The `…Of(model)` helpers of §8 —
+   `userStoreOf`, `sessionStoreOf`, `usersOf`, `sessionsOf`, `passwordsOf`, `sessionCacheOf`,
+   `currentUserOf` — exist precisely to read the *same* context slot through a narrower shape,
+   so each restates the qualified key of the class it views. A helper whose key drifts from its
+   class silently becomes a second, unprovided service. The lint rule does not see these call
+   sites; they are kept in step by hand.
+
+2. **These keys are process-local identity, not wire format.** A service key is never
+   serialized: it names a slot in a `Context`, nothing more. It is emphatically *not* a tagged
+   error's `_tag`, which is a wire value — `{"_tag": "InvalidCredentials"}` in a JSON error body
+   — and is frozen. A `Schema.TaggedError` therefore declares two strings, and only the first
+   (the schema identifier, which OpenAPI component names derive from) is subject to this
+   convention.
+
+`Context.Reference` keys are outside the rule's scope and were left as declared;
+`"effect-auth/AuthoritativeSession"` is the one such key in the package.

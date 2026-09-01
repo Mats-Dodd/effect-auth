@@ -13,6 +13,7 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Redacted } from "effect"
+import { dual } from "effect/Function"
 import { HttpClient } from "effect/unstable/http"
 import type { JWTPayload } from "jose"
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose"
@@ -67,7 +68,7 @@ const headersOf = (input: unknown): Readonly<Record<string, string>> => {
     return { ...out }
   }
   if (typeof input === "object" && input !== null) {
-    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(input)) {
       if (typeof value === "string") out[key.toLowerCase()] = value
     }
   }
@@ -136,23 +137,32 @@ export interface MockServer {
  * @since 1.0.0
  */
 export const mockServer = (): MockServer => {
-  const routes = Object.create(null) as Record<string, RouteHandler>
+  const routes: Record<string, RouteHandler> = Object.create(null)
   const requests: Array<RecordedRequest> = []
 
-  const fetch: typeof globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url
-    const record: RecordedRequest = {
-      url,
-      method: init?.method ?? "GET",
-      headers: headersOf(init?.headers),
-      body: decodeBody(init?.body),
-      redirect: init?.redirect
+  // Not `async`: this is `globalThis.fetch`'s own signature, a third-party
+  // boundary rather than Effect code, and there is nothing to await. The
+  // `try`/`catch` keeps the one thing `async` was doing — turning a synchronous
+  // throw (a relative URL, a route handler that throws) into a rejected promise,
+  // which is what the transport under test has to see.
+  const fetch: typeof globalThis.fetch = (input, init) => {
+    try {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+      const record: RecordedRequest = {
+        url,
+        method: init?.method ?? "GET",
+        headers: headersOf(init?.headers),
+        body: decodeBody(init?.body),
+        redirect: init?.redirect
+      }
+      requests.push(record)
+      const parsed = new URL(url)
+      const key = `${parsed.origin}${parsed.pathname}`
+      if (!Object.hasOwn(routes, key)) return Promise.resolve(new Response("no such route", { status: 404 }))
+      return Promise.resolve(routes[key]!(record))
+    } catch (error) {
+      return Promise.reject(error)
     }
-    requests.push(record)
-    const parsed = new URL(url)
-    const key = `${parsed.origin}${parsed.pathname}`
-    if (!Object.hasOwn(routes, key)) return new Response("no such route", { status: 404 })
-    return routes[key]!(record)
   }
 
   return {
@@ -174,8 +184,18 @@ export const mockServer = (): MockServer => {
  * @category constructors
  * @since 1.0.0
  */
-export const json = (body: unknown, status = 200): Response =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+export const json: {
+  (status?: number): (body: unknown) => Response
+  (body: unknown, status?: number): Response
+} = dual(
+  // `status` is optional, so arity cannot tell the two call styles apart. The
+  // first argument does: a status is a `number`, and every body this fixture is
+  // asked for is a JSON object or array. A bare number *body* has to be written
+  // data-last, `json(200)(404)`, and the compiler says so at the call site.
+  (args) => args.length > 0 && typeof args[0] !== "number",
+  (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+)
 
 /**
  * A redirect, which every OAuth fetch in this library must refuse to follow.
@@ -183,8 +203,14 @@ export const json = (body: unknown, status = 200): Response =>
  * @category constructors
  * @since 1.0.0
  */
-export const redirect = (location: string, status = 302): Response =>
-  new Response(null, { status, headers: { location } })
+export const redirect: {
+  (status?: number): (location: string) => Response
+  (location: string, status?: number): Response
+} = dual(
+  // A location is a `string`; a data-last status is not.
+  (args) => typeof args[0] === "string",
+  (location: string, status = 302): Response => new Response(null, { status, headers: { location } })
+)
 
 // -----------------------------------------------------------------------------
 // The provider under test
@@ -292,6 +318,13 @@ export const discoveryDocument = (overrides?: Readonly<Record<string, unknown>>)
 export const queryOf = (location: string): Record<string, string> =>
   Object.fromEntries(new URL(location).searchParams.entries())
 
+/**
+ * A JSON object, as opposed to a scalar, an array or `null` — the shape a
+ * provider's user-info body has to have before a claim can be read out of it.
+ */
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
 const readString = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
   if (!Object.hasOwn(record, key)) return null
   const value = record[key]
@@ -317,14 +350,13 @@ export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthPro
       url: userInfoUrl,
       accessToken: tokens.accessToken
     })
-    const body = response.body
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return yield* Effect.fail(providerError("mock", "UserInfoFailed"))
+    const record = response.body
+    if (!isRecord(record)) {
+      return yield* providerError("mock", "UserInfoFailed")
     }
-    const record = body as Readonly<Record<string, unknown>>
     const id = readString(record, "sub")
     const email = readString(record, "email")
-    if (id === null || email === null) return yield* Effect.fail(providerError("mock", "UserInfoFailed"))
+    if (id === null || email === null) return yield* providerError("mock", "UserInfoFailed")
     return {
       id,
       email,
@@ -358,32 +390,54 @@ export const mockProvider = (overrides?: Partial<OAuthProviderConfig>): OAuthPro
  * @category constructors
  * @since 1.0.0
  */
-export const oidcProvider = (
-  keys: KeyResolver | NonNullable<OAuthProviderConfig["oidc"]>["keys"],
-  overrides?: Partial<OAuthProviderConfig>
-): OAuthProviderConfig => ({
-  ...mockProvider(),
-  id: "oidc",
-  oidc: {
-    issuer: providerOrigin,
-    keys: typeof keys === "function" ? { jwks: keys } : keys,
-    algorithms: ["RS256"]
+export const oidcProvider: {
+  (
+    overrides?: Partial<OAuthProviderConfig>
+  ): (keys: KeyResolver | NonNullable<OAuthProviderConfig["oidc"]>["keys"]) => OAuthProviderConfig
+  (
+    keys: KeyResolver | NonNullable<OAuthProviderConfig["oidc"]>["keys"],
+    overrides?: Partial<OAuthProviderConfig>
+  ): OAuthProviderConfig
+} = dual(
+  // `overrides` is optional, so arity cannot tell the two call styles apart.
+  // What a key source *is* does: a resolver function, or a record naming `jwks`
+  // or `jwksUrl` — neither of which is a field of `OAuthProviderConfig`, so a
+  // lone `overrides` is unambiguously the data-last call.
+  (args) => {
+    if (args.length !== 1) return args.length > 1
+    const first: unknown = args[0]
+    return (
+      typeof first === "function" ||
+      (first !== null && typeof first === "object" && (Object.hasOwn(first, "jwks") || Object.hasOwn(first, "jwksUrl")))
+    )
   },
-  userInfo: Effect.fnUntraced(function* (tokens: OAuthTokens) {
-    const claims = tokens.idTokenClaims
-    if (claims === null || claims.email === null) {
-      return yield* Effect.fail(providerError("oidc", "UserInfoFailed"))
-    }
-    return {
-      id: claims.subject,
-      email: claims.email,
-      emailVerified: claims.emailVerified,
-      name: claims.name ?? claims.email,
-      image: claims.picture
-    } satisfies OAuthUserInfo
-  }),
-  ...overrides
-})
+  (
+    keys: KeyResolver | NonNullable<OAuthProviderConfig["oidc"]>["keys"],
+    overrides?: Partial<OAuthProviderConfig>
+  ): OAuthProviderConfig => ({
+    ...mockProvider(),
+    id: "oidc",
+    oidc: {
+      issuer: providerOrigin,
+      keys: typeof keys === "function" ? { jwks: keys } : keys,
+      algorithms: ["RS256"]
+    },
+    userInfo: Effect.fnUntraced(function* (tokens: OAuthTokens) {
+      const claims = tokens.idTokenClaims
+      if (claims === null || claims.email === null) {
+        return yield* providerError("oidc", "UserInfoFailed")
+      }
+      return {
+        id: claims.subject,
+        email: claims.email,
+        emailVerified: claims.emailVerified,
+        name: claims.name ?? claims.email,
+        image: claims.picture
+      } satisfies OAuthUserInfo
+    }),
+    ...overrides
+  })
+)
 
 /**
  * A token set, for exercising a provider's `userInfo` on its own.
@@ -391,17 +445,24 @@ export const oidcProvider = (
  * @category constructors
  * @since 1.0.0
  */
-export const tokensOf = (accessToken: string, overrides?: Partial<OAuthTokens>): OAuthTokens => ({
-  accessToken: Redacted.make(accessToken),
-  tokenType: "bearer",
-  refreshToken: null,
-  idToken: null,
-  idTokenClaims: null,
-  accessTokenExpiresAt: null,
-  refreshTokenExpiresAt: null,
-  scope: null,
-  ...overrides
-})
+export const tokensOf: {
+  (overrides?: Partial<OAuthTokens>): (accessToken: string) => OAuthTokens
+  (accessToken: string, overrides?: Partial<OAuthTokens>): OAuthTokens
+} = dual(
+  // An access token is a `string`; a data-last `overrides` is not.
+  (args) => typeof args[0] === "string",
+  (accessToken: string, overrides?: Partial<OAuthTokens>): OAuthTokens => ({
+    accessToken: Redacted.make(accessToken),
+    tokenType: "bearer",
+    refreshToken: null,
+    idToken: null,
+    idTokenClaims: null,
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+    scope: null,
+    ...overrides
+  })
+)
 
 /**
  * The query parameters of an authorization URL.
@@ -457,6 +518,31 @@ export interface IdTokenSignerService {
 }
 
 /**
+ * Generates a key pair and the local JWKS that admits it.
+ *
+ * @category constructors
+ * @since 1.0.0
+ */
+export const makeIdTokenSigner: Effect.Effect<IdTokenSignerService> = Effect.gen(function* () {
+  const pair = yield* Effect.promise(() => generateKeyPair("RS256", { extractable: true }))
+  const jwk = yield* Effect.promise(() => exportJWK(pair.publicKey))
+  const keySet = { keys: [{ ...jwk, kid: "k1", alg: "RS256", use: "sig" }] }
+  const jwks = createLocalJWKSet(keySet)
+  // `jose`'s own promise-returning API, handed straight to the test that mints a
+  // token: the signer is a fixture, not Effect code its callers compose.
+  const sign = (payload: JWTPayload, options?: SignOptions): Promise<string> => {
+    const unsigned = new SignJWT(payload)
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(options?.issuer ?? providerOrigin)
+      .setAudience(options?.audience ?? "mock-client-id")
+    return (options?.expiresAt === null ? unsigned : unsigned.setExpirationTime(options?.expiresAt ?? 3600)).sign(
+      pair.privateKey
+    )
+  }
+  return { jwks, keySet, sign }
+})
+
+/**
  * The `id_token` signer. See {@link IdTokenSignerService}.
  *
  * **Gotchas**
@@ -468,7 +554,7 @@ export interface IdTokenSignerService {
  * @since 1.0.0
  */
 export class IdTokenSigner extends Context.Service<IdTokenSigner, IdTokenSignerService>()(
-  "effect-auth/testing/IdTokenSigner"
+  "effect-auth/testing/MockProvider/IdTokenSigner"
 ) {
   /**
    * A freshly generated key pair, behind the {@link IdTokenSigner} key.
@@ -476,32 +562,7 @@ export class IdTokenSigner extends Context.Service<IdTokenSigner, IdTokenSignerS
    * @category layers
    * @since 1.0.0
    */
-  static readonly layer: Layer.Layer<IdTokenSigner> = Layer.effect(IdTokenSigner, makeIdTokenSigner())
-}
-
-/**
- * Generates a key pair and the local JWKS that admits it.
- *
- * @category constructors
- * @since 1.0.0
- */
-export function makeIdTokenSigner(): Effect.Effect<IdTokenSignerService> {
-  return Effect.promise(async () => {
-    const pair = await generateKeyPair("RS256", { extractable: true })
-    const jwk = await exportJWK(pair.publicKey)
-    const keySet = { keys: [{ ...jwk, kid: "k1", alg: "RS256", use: "sig" }] }
-    const jwks = createLocalJWKSet(keySet)
-    const sign = (payload: JWTPayload, options?: SignOptions) => {
-      const unsigned = new SignJWT(payload)
-        .setProtectedHeader({ alg: "RS256", kid: "k1" })
-        .setIssuer(options?.issuer ?? providerOrigin)
-        .setAudience(options?.audience ?? "mock-client-id")
-      return (options?.expiresAt === null ? unsigned : unsigned.setExpirationTime(options?.expiresAt ?? 3600)).sign(
-        pair.privateKey
-      )
-    }
-    return { jwks, keySet, sign }
-  })
+  static readonly layer: Layer.Layer<IdTokenSigner> = Layer.effect(IdTokenSigner, makeIdTokenSigner)
 }
 
 // -----------------------------------------------------------------------------

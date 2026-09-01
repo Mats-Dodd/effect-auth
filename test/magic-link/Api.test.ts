@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import type { HttpApiEndpoint } from "effect/unstable/httpapi"
+import type { Schema } from "effect"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { AuthApi } from "../../src/http/AuthApi.js"
 import { Authenticated } from "../../src/http/Middleware.js"
@@ -39,20 +39,33 @@ const contract = [
   }
 ] as const
 
-const endpoints = MagicLinkApiGroup.endpoints as unknown as Readonly<Record<string, HttpApiEndpoint.Top>>
+/**
+ * What these tests read off an endpoint.
+ *
+ * `HttpApiEndpoint.Top` is not usable as the value type here: the interface is
+ * invariant in its middleware parameter and computes `~Request` off `this`, so
+ * a concrete endpoint is not assignable to it. Naming the four members that are
+ * actually asserted about keeps the group's own value flowing in unrestated.
+ */
+interface EndpointFacts {
+  readonly method: string
+  readonly path: string
+  readonly error: ReadonlySet<Schema.Top>
+  readonly middlewares: ReadonlySet<unknown>
+}
 
-const endpointOf = (identifier: string): HttpApiEndpoint.Top => {
+const endpoints: Readonly<Record<string, EndpointFacts>> = MagicLinkApiGroup.endpoints
+
+const endpointOf = (identifier: string): EndpointFacts => {
   const endpoint = Object.hasOwn(endpoints, identifier) ? endpoints[identifier] : undefined
   if (endpoint === undefined) throw new Error(`no endpoint "${identifier}" in the magicLink group`)
   return endpoint
 }
 
-const errorTags = (endpoint: HttpApiEndpoint.Top): ReadonlyArray<string> =>
+const errorTags = (endpoint: EndpointFacts): ReadonlyArray<string> =>
   Array.from(endpoint.error, (schema) => {
-    const identifier = (schema.ast.annotations?.["identifier"] ?? schema.ast.annotations?.["title"]) as
-      | string
-      | undefined
-    return identifier ?? "<anonymous>"
+    const identifier = schema.ast.annotations?.["identifier"] ?? schema.ast.annotations?.["title"]
+    return typeof identifier === "string" ? identifier : "<anonymous>"
   })
 
 describe("magic-link/Api", () => {
@@ -82,7 +95,7 @@ describe("magic-link/Api", () => {
     // defeat the flow, and asking for one has to be reachable by somebody who
     // cannot sign in at all.
     const authenticated = Object.keys(endpoints).filter((identifier) =>
-      endpointOf(identifier).middlewares.has(Authenticated as never)
+      endpointOf(identifier).middlewares.has(Authenticated)
     )
     assert.deepStrictEqual(authenticated, [])
   })

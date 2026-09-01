@@ -39,6 +39,7 @@
  */
 import type { Scope } from "effect"
 import { Context, Effect, Layer, PubSub, Schema, Stream } from "effect"
+import { dual } from "effect/Function"
 import { annotateAuthLogs } from "../internal/effects.js"
 import { AccountId, SessionId, UserId } from "./Schema.js"
 
@@ -520,7 +521,9 @@ export interface AuthEventsService {
  * @category services
  * @since 1.0.0
  */
-export class AuthEvents extends Context.Service<AuthEvents, AuthEventsService>()("effect-auth/AuthEvents") {}
+export class AuthEvents extends Context.Service<AuthEvents, AuthEventsService>()(
+  "effect-auth/domain/Events/AuthEvents"
+) {}
 
 /**
  * How many events the default hub buffers before it starts dropping.
@@ -601,7 +604,11 @@ export const emit = (event: AuthEvent): Effect.Effect<void, never, AuthEvents> =
  * @category combinators
  * @since 1.0.0
  */
-export const publishSafely = (events: AuthEventsService, event: AuthEvent): Effect.Effect<void> =>
+export const publishSafely: {
+  (event: AuthEvent): (events: AuthEventsService) => Effect.Effect<void>
+  (events: AuthEventsService, event: AuthEvent): Effect.Effect<void>
+} = dual(2, (events: AuthEventsService, event: AuthEvent): Effect.Effect<void> =>
   Effect.catchCause(events.publish(event), (cause) =>
     annotateAuthLogs(Effect.logDebug("an auth event was not published", cause))
   )
+)

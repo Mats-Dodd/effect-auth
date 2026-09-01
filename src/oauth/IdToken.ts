@@ -88,7 +88,7 @@ export interface VerifyOptions {
   /** Named only so a failure can say which provider it came from. */
   readonly providerId: string
   /** The compact JWS handed back by the token endpoint. */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /**
    * The issuer the token must claim.
    *
@@ -316,7 +316,7 @@ export interface JwksService {
  * @category services
  * @since 1.0.0
  */
-export class Jwks extends Context.Service<Jwks, JwksService>()("effect-auth/Jwks") {}
+export class Jwks extends Context.Service<Jwks, JwksService>()("effect-auth/oauth/IdToken/Jwks") {}
 
 /**
  * How long a JWKS fetch is given before it is treated as unreachable.
@@ -338,14 +338,14 @@ export const makeJwks: (options?: JwksOptions) => Effect.Effect<JwksService, nev
     const timeToLive = options?.timeToLive ?? Duration.minutes(10)
 
     const fetchKeys = Effect.fnUntraced(function* (jwksUrl: string) {
-      const unavailable = new JwksUnavailable({ jwksUrl })
+      const unavailable = JwksUnavailable.make({ jwksUrl })
       const response = yield* Effect.mapError(
         Effect.timeout(client.execute(HttpClientRequest.get(jwksUrl, { acceptJson: true })), jwksRequestTimeout),
         () => unavailable
       )
       // Belt and braces: the client refuses redirects, and a redirect that
       // reached this far is still not a key set.
-      if (isRedirectResponse(response) || response.status >= 400) return yield* Effect.fail(unavailable)
+      if (isRedirectResponse(response) || response.status >= 400) return yield* unavailable
       const body = yield* Effect.mapError(jsonWithin(response, jwksRequestTimeout), () => unavailable)
       const keySet = yield* Effect.mapError(decodeKeySet(body), () => unavailable)
       return yield* Effect.try({ try: () => createLocalJWKSet(keySet), catch: () => unavailable })
@@ -456,7 +456,7 @@ const audienceOf = (aud: string | ReadonlyArray<string> | undefined): ReadonlyAr
  * @since 1.0.0
  */
 export const verify = Effect.fnUntraced(function* (options: VerifyOptions) {
-  const invalid = new ProviderError({ providerId: options.providerId, reason: "IdTokenInvalid" })
+  const invalid = ProviderError.make({ providerId: options.providerId, reason: "IdTokenInvalid" })
   const now = yield* DateTime.now
 
   // A fixed issuer is handed to jose, which checks it alongside the signature.
@@ -486,7 +486,7 @@ export const verify = Effect.fnUntraced(function* (options: VerifyOptions) {
   const verified = yield* Effect.catch(attempt(options.keys), (error) =>
     error !== unknownKeyId || options.freshKeys === undefined
       ? Effect.fail(invalid)
-      : Effect.catch(Effect.flatMap(options.freshKeys, attempt), () => Effect.fail(invalid))
+      : Effect.mapError(Effect.flatMap(options.freshKeys, attempt), () => invalid)
   )
 
   const payload = verified.payload
@@ -497,12 +497,12 @@ export const verify = Effect.fnUntraced(function* (options: VerifyOptions) {
   // unrecognised tenant — rejects, exactly as a mismatch does.
   const issuer = expectedIssuer.derive === undefined ? expectedIssuer.fixed : expectedIssuer.derive(payload)
   if (issuer === null || issuer.length === 0 || payload.iss !== issuer) {
-    return yield* Effect.fail(invalid)
+    return yield* invalid
   }
 
   const nonce = claims.nonce ?? null
   if (options.nonce !== null && nonce !== options.nonce) {
-    return yield* Effect.fail(invalid)
+    return yield* invalid
   }
 
   return {

@@ -181,7 +181,9 @@ layer(AuthTest.layer({ cookieCache: { enabled: true } }))("http/SessionCache", (
       // all. The MAC covers a context string this module alone writes, so a tag
       // over the bare payload is not a tag for a snapshot.
       const decoded = Encoding.decodeBase64UrlString(json)
-      if (Result.isFailure(decoded)) return assert.fail("the payload half should be base64url")
+      if (Result.isFailure(decoded)) {
+        assert.fail("the payload half should be base64url")
+      }
       const bare = yield* hmac.sign(encodeUtf8(decoded.success))
       assert.isTrue(Option.isNone(yield* cache.decode(`${json}.${Encoding.encodeBase64Url(bare)}`)))
 

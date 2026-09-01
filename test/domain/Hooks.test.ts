@@ -61,17 +61,19 @@ const refusing = (trace: Array<string>, label: string): AuthHooksService => ({
   beforeUserCreate: () =>
     Effect.suspend(() => {
       trace.push(`before:${label}`)
-      return Effect.fail(new PolicyRefused({ code: label }))
+      return Effect.fail(PolicyRefused.make({ code: label }))
     }),
   beforeUserDelete: () =>
     Effect.suspend(() => {
       trace.push(`delete:${label}`)
-      return Effect.fail(new PolicyRefused({ code: label }))
+      return Effect.fail(PolicyRefused.make({ code: label }))
     })
 })
 
 /** The hooks a layer built under a given composition actually ends up with. */
-class Installed extends Context.Service<Installed, AuthHooksService>()("test/InstalledHooks") {}
+class Installed extends Context.Service<Installed, AuthHooksService>()(
+  "effect-auth/test/domain/Hooks.test/Installed"
+) {}
 
 /**
  * A layer that copies whatever `AuthHooks` resolves to at *build* time — which
@@ -79,11 +81,18 @@ class Installed extends Context.Service<Installed, AuthHooksService>()("test/Ins
  */
 const installed: Layer.Layer<Installed> = Layer.effect(Installed, AuthHooks)
 
-/** Builds `composition` and answers the hook set it left in the reference. */
+/**
+ * Builds `composition` and answers the hook set it left in the reference.
+ *
+ * The layer is built into a scope of the caller's own rather than provided to
+ * an effect: what is under test is what the *build* resolved, and `Layer.build`
+ * says exactly that.
+ */
 const resolve = (composition: Layer.Layer<never>): Effect.Effect<AuthHooksService> =>
-  Effect.provide(
-    Effect.map(Installed, (hooks): AuthHooksService => hooks),
-    installed.pipe(Layer.provide(composition))
+  Effect.scoped(
+    Effect.map(Layer.build(installed.pipe(Layer.provide(composition))), (context): AuthHooksService =>
+      Context.get(context, Installed)
+    )
   )
 
 /** Unwraps an optional hook member, failing the test when the composition dropped it. */
@@ -189,9 +198,8 @@ describe("domain/Hooks", () => {
       // context provided the reference, rather than being skipped entirely.
       const trace: Array<string> = []
       const updated = Layer.updateService(installed, AuthHooks, (hooks) => combine(hooks, recording(trace, "only")))
-      const hooks = yield* Effect.provide(
-        Effect.map(Installed, (h): AuthHooksService => h),
-        updated
+      const hooks = yield* Effect.scoped(
+        Effect.map(Layer.build(updated), (context): AuthHooksService => Context.get(context, Installed))
       )
 
       const beforeCreate = yield* beforeCreateOf(hooks)
@@ -272,7 +280,7 @@ describe("domain/Hooks", () => {
 const provisionHooks: AuthHooksService = {
   beforeUserCreate: ({ candidate, source }) =>
     candidate.email.includes("refused")
-      ? Effect.fail(new PolicyRefused({ code: "not_welcome", detail: source._tag }))
+      ? Effect.fail(PolicyRefused.make({ code: "not_welcome", detail: source._tag }))
       : Effect.succeed({ ...candidate, name: "Rewritten", emailVerified: true })
 }
 
@@ -351,7 +359,7 @@ layer(AuthTest.layer())("domain/Hooks — provision", (it) => {
 const passwordHooks: AuthHooksService = {
   beforeUserCreate: ({ candidate, source }) =>
     candidate.email.includes("veto")
-      ? Effect.fail(new PolicyRefused({ code: "not_welcome", detail: source._tag }))
+      ? Effect.fail(PolicyRefused.make({ code: "not_welcome", detail: source._tag }))
       : Effect.succeed({
           ...candidate,
           name: `${candidate.name} (${source._tag})`,
@@ -362,9 +370,9 @@ const passwordHooks: AuthHooksService = {
           ...(candidate.email.includes("recase") ? { email: candidate.email.toUpperCase() } : {})
         }),
   afterUserCreate: ({ user }) =>
-    user.email.includes("after-fails") ? Effect.fail(new PolicyRefused({ code: "related_row_refused" })) : Effect.void,
+    user.email.includes("after-fails") ? Effect.fail(PolicyRefused.make({ code: "related_row_refused" })) : Effect.void,
   beforeSessionCreate: ({ user }) =>
-    user.email.includes("banned") ? Effect.fail(new PolicyRefused({ code: "banned" })) : Effect.void
+    user.email.includes("banned") ? Effect.fail(PolicyRefused.make({ code: "banned" })) : Effect.void
 }
 
 layer(AuthTest.layer({ hooks: passwordHooks }))("domain/Hooks — password source", (it) => {
@@ -499,11 +507,18 @@ describe.sequential("domain/Hooks — beforeSessionCreate (timing defence)", () 
 // The OAuth source
 // -----------------------------------------------------------------------------
 
-/** What a provider hands back, with a subject no other test will claim. */
+/**
+ * What a provider hands back, with a subject no other test will claim.
+ *
+ * The subject is derived from the address rather than drawn fresh: every caller
+ * passes a {@link uniqueEmail}, so this is unique for the same reason the
+ * address is — and it stays a plain synchronous value, drawing on no randomness
+ * of its own.
+ */
 const oauthIdentity = (email: string): OAuthIdentity => ({
   providerId: "github",
   issuer: oauthIssuer("github"),
-  accountId: `gh-${globalThis.crypto.randomUUID()}`,
+  accountId: `gh-${email}`,
   email,
   emailVerified: true,
   name: testName
@@ -520,7 +535,7 @@ const oauthHooks: AuthHooksService = {
     }),
   beforeAccountLink: ({ info, providerId, user }) =>
     user.email.includes("no-link")
-      ? Effect.fail(new PolicyRefused({ code: "linking_disabled", detail: `${providerId}:${info.id}` }))
+      ? Effect.fail(PolicyRefused.make({ code: "linking_disabled", detail: `${providerId}:${info.id}` }))
       : Effect.void
 }
 
@@ -638,7 +653,7 @@ const crossHooks: AuthHooksService = {
     Effect.suspend(() => {
       crossTrace.push(`after:${source._tag}`)
       return user.email.includes("abort")
-        ? Effect.fail(new PolicyRefused({ code: "related_row_refused", detail: source._tag }))
+        ? Effect.fail(PolicyRefused.make({ code: "related_row_refused", detail: source._tag }))
         : Effect.void
     })
 }
@@ -679,7 +694,10 @@ const crossProviderReturns = (identity: { readonly sub: string; readonly email: 
 
 /** A whole OAuth round trip, as a browser makes it. */
 const crossOAuthSignIn = Effect.fnUntraced(function* (email: string) {
-  yield* crossProviderReturns({ sub: `sub-${globalThis.crypto.randomUUID()}`, email })
+  // The subject rides on the address, which every caller draws fresh: the block
+  // shares one database, so the pair has to be unique per test, and nothing
+  // here needs randomness of its own to make it so.
+  yield* crossProviderReturns({ sub: `sub-${email}`, email })
   const flow = yield* OAuthFlow
   const started = yield* flow.start({ providerId: crossProvider.id })
   return yield* flow.complete({

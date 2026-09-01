@@ -52,6 +52,7 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Schema } from "effect"
+import { dual } from "effect/Function"
 import { omitUndefined } from "../internal/records.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import type { UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
@@ -317,7 +318,10 @@ const sequence = <O>(
  * @category combinators
  * @since 1.0.0
  */
-export const combine = (first: AuthHooksService, second: AuthHooksService): AuthHooksService => {
+export const combine: {
+  (second: AuthHooksService): (first: AuthHooksService) => AuthHooksService
+  (first: AuthHooksService, second: AuthHooksService): AuthHooksService
+} = dual(2, (first: AuthHooksService, second: AuthHooksService): AuthHooksService => {
   const firstCreate = first.beforeUserCreate
   const secondCreate = second.beforeUserCreate
   const beforeUserCreate =
@@ -347,7 +351,7 @@ export const combine = (first: AuthHooksService, second: AuthHooksService): Auth
       beforeAccountLink
     })
   }
-}
+})
 
 // -----------------------------------------------------------------------------
 // Layers

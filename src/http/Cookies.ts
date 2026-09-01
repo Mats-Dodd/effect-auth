@@ -10,7 +10,8 @@
  * @since 1.0.0
  */
 import type { Duration } from "effect"
-import { Layer } from "effect"
+import { DateTime, Layer } from "effect"
+import { dual } from "effect/Function"
 import type { Cookies } from "effect/unstable/http"
 import { Headers } from "effect/unstable/http"
 import { HttpApiSecurity } from "effect/unstable/httpapi"
@@ -154,6 +155,21 @@ export const oauthStateCookieName = (config: AuthConfigService): string =>
 // -----------------------------------------------------------------------------
 
 /**
+ * The `Expires` attribute a cookie is *deleted* with: the Unix epoch, which
+ * every browser reads as "already expired".
+ *
+ * **Details**
+ *
+ * A fixed instant, not a reading of the clock — the deletion date is a constant
+ * of the wire format and must not move with when the response happens to be
+ * written, so nothing here consults `Clock`. It is built through `DateTime`
+ * rather than `new Date(0)` so the wall clock is never reachable from this
+ * module at all, and a fresh `Date` is produced per call because the value is
+ * handed to a mutable slot.
+ */
+const epochExpiry = (): Date => DateTime.toDateUtc(DateTime.makeUnsafe(0))
+
+/**
  * The attributes the session cookie is written with.
  *
  * **Details**
@@ -170,17 +186,25 @@ export const oauthStateCookieName = (config: AuthConfigService): string =>
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCookieOptions = (
-  config: AuthConfigService,
-  options: { readonly maxAge: Duration.Duration }
-): NonNullable<Cookies.Cookie["options"]> => ({
-  path: config.cookie.path,
-  domain: config.cookie.domain,
-  sameSite: config.cookie.sameSite,
-  secure: config.cookie.secure,
-  httpOnly: true,
-  maxAge: options.maxAge
-})
+export const sessionCookieOptions: {
+  (options: {
+    readonly maxAge: Duration.Duration
+  }): (config: AuthConfigService) => NonNullable<Cookies.Cookie["options"]>
+  (config: AuthConfigService, options: { readonly maxAge: Duration.Duration }): NonNullable<Cookies.Cookie["options"]>
+} = dual(
+  2,
+  (
+    config: AuthConfigService,
+    options: { readonly maxAge: Duration.Duration }
+  ): NonNullable<Cookies.Cookie["options"]> => ({
+    path: config.cookie.path,
+    domain: config.cookie.domain,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    httpOnly: true,
+    maxAge: options.maxAge
+  })
+)
 
 /**
  * The attributes used to expire the session cookie on sign-out.
@@ -199,7 +223,7 @@ export const expiredSessionCookieOptions = (config: AuthConfigService): NonNulla
   sameSite: config.cookie.sameSite,
   secure: config.cookie.secure,
   httpOnly: true,
-  expires: new Date(0)
+  expires: epochExpiry()
 })
 
 /**
@@ -229,17 +253,25 @@ export const expiredSessionCookieOptions = (config: AuthConfigService): NonNulla
  * @category combinators
  * @since 1.0.0
  */
-export const oauthStateCookieOptions = (
-  config: AuthConfigService,
-  options: { readonly maxAge: Duration.Duration }
-): NonNullable<Cookies.Cookie["options"]> => ({
-  path: "/",
-  domain: undefined,
-  sameSite: config.cookie.sameSite === "none" ? "none" : "lax",
-  secure: config.cookie.secure,
-  httpOnly: true,
-  maxAge: options.maxAge
-})
+export const oauthStateCookieOptions: {
+  (options: {
+    readonly maxAge: Duration.Duration
+  }): (config: AuthConfigService) => NonNullable<Cookies.Cookie["options"]>
+  (config: AuthConfigService, options: { readonly maxAge: Duration.Duration }): NonNullable<Cookies.Cookie["options"]>
+} = dual(
+  2,
+  (
+    config: AuthConfigService,
+    options: { readonly maxAge: Duration.Duration }
+  ): NonNullable<Cookies.Cookie["options"]> => ({
+    path: "/",
+    domain: undefined,
+    sameSite: config.cookie.sameSite === "none" ? "none" : "lax",
+    secure: config.cookie.secure,
+    httpOnly: true,
+    maxAge: options.maxAge
+  })
+)
 
 /**
  * The attributes used to expire the OAuth state-binding cookie once the
@@ -257,7 +289,7 @@ export const expiredOAuthStateCookieOptions = (config: AuthConfigService): NonNu
   sameSite: config.cookie.sameSite === "none" ? "none" : "lax",
   secure: config.cookie.secure,
   httpOnly: true,
-  expires: new Date(0)
+  expires: epochExpiry()
 })
 
 // -----------------------------------------------------------------------------

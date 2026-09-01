@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Redacted, Result } from "effect"
-import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity"
+import { AsyncResult, type Atom, AtomRegistry } from "effect/unstable/reactivity"
 import { AuthClient, MagicLinkClient } from "../../src/client/index.js"
 import * as Stub from "./stub.js"
 
@@ -51,7 +51,8 @@ const waitFor = <A>(
     const current = reg.get(atom)
     if (predicate(current)) {
       finish(current)
-      return
+      // Nothing was subscribed, so there is nothing for the finalizer to undo.
+      return Effect.void
     }
     cancel = reg.subscribe(atom, (value) => {
       if (predicate(value)) finish(value)

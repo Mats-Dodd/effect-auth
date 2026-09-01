@@ -241,7 +241,7 @@ export const defaultScopes: ReadonlyArray<string> = ["openid", "email", "profile
 // Discovery
 // -----------------------------------------------------------------------------
 
-const failure = (id: string, reason: DiscoveryError["reason"]) => new DiscoveryError({ id, reason })
+const failure = (id: string, reason: DiscoveryError["reason"]) => DiscoveryError.make({ id, reason })
 
 /**
  * Fetches a provider's discovery document and builds its configuration.
@@ -288,27 +288,27 @@ export const make: (options: Options) => Effect.Effect<OAuthProviderConfig, Disc
     // Belt and braces: the client refuses redirects, and a redirect that reached
     // this far is still not a discovery document.
     if (isRedirectResponse(response) || response.status >= 400) {
-      return yield* Effect.fail(failure(options.id, "Unreachable"))
+      return yield* failure(options.id, "Unreachable")
     }
 
     const body = yield* Effect.mapError(jsonWithin(response, providerRequestTimeout), () =>
       failure(options.id, "Malformed")
     )
     const decoded = readDocument(body)
-    if (Option.isNone(decoded)) return yield* Effect.fail(failure(options.id, "Malformed"))
+    if (Option.isNone(decoded)) return yield* failure(options.id, "Malformed")
     const document = decoded.value
 
-    if (document.issuer === undefined) return yield* Effect.fail(failure(options.id, "IssuerMissing"))
+    if (document.issuer === undefined) return yield* failure(options.id, "IssuerMissing")
     // Byte for byte, per OpenID Connect Discovery §4.3. A document is evidence
     // about the issuer it names and no other.
     if (document.issuer !== options.issuer) {
-      return yield* Effect.fail(failure(options.id, "IssuerMismatch"))
+      return yield* failure(options.id, "IssuerMismatch")
     }
 
     const authorizationUrl = options.authorizationUrl ?? document.authorization_endpoint
     const tokenUrl = options.tokenUrl ?? document.token_endpoint
     if (authorizationUrl === undefined || tokenUrl === undefined) {
-      return yield* Effect.fail(failure(options.id, "EndpointsMissing"))
+      return yield* failure(options.id, "EndpointsMissing")
     }
 
     const jwksUrl = options.jwksUrl ?? document.jwks_uri
@@ -319,7 +319,7 @@ export const make: (options: Options) => Effect.Effect<OAuthProviderConfig, Disc
     const keys: Oidc["keys"] | undefined =
       options.jwks !== undefined ? { jwks: options.jwks } : jwksUrl !== undefined ? { jwksUrl } : undefined
     if (keys === undefined) {
-      return yield* Effect.fail(failure(options.id, "KeysMissing"))
+      return yield* failure(options.id, "KeysMissing")
     }
 
     const userInfoUrl = options.userInfoUrl ?? document.userinfo_endpoint
@@ -329,14 +329,14 @@ export const make: (options: Options) => Effect.Effect<OAuthProviderConfig, Disc
       const claims = tokens.idTokenClaims
       // The provider carries an OIDC block, so the flow verified an `id_token`
       // before calling this. A null here would mean the OIDC path was skipped.
-      if (claims === null) return yield* Effect.fail(providerError(options.id, "IdTokenInvalid"))
+      if (claims === null) return yield* providerError(options.id, "IdTokenInvalid")
 
       const identity = identityOf(claims)
       if (identity !== null) return identity
 
       // No address in the token, and nowhere to ask for one.
       if (userInfoUrl === undefined) {
-        return yield* Effect.fail(providerError(options.id, "UserInfoFailed"))
+        return yield* providerError(options.id, "UserInfoFailed")
       }
       return yield* fetchIdentity({
         providerId: options.id,

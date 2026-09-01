@@ -87,8 +87,17 @@ const rawPost = Effect.fnUntraced(function* (
   return { status: client.status, body: yield* client.json }
 })
 
-/** The `user` half of a raw response body, as a plain record. */
-const userOf = (body: unknown): Record<string, unknown> => (body as { readonly user: Record<string, unknown> }).user
+/**
+ * The `user` half of a raw response body, decoded rather than asserted onto: the
+ * body is genuinely unknown here — it was produced by a hand-written request —
+ * so the one claim being made about it is stated as a schema.
+ */
+const UserEnvelope = Schema.Struct({ user: Schema.Record(Schema.String, Schema.Unknown) })
+const readUser = (body: unknown): Effect.Effect<Record<string, unknown>, Schema.SchemaError> =>
+  Effect.map(Schema.decodeUnknownEffect(UserEnvelope)(body), (envelope) => envelope.user)
+
+/** A value as the JSON text it would go on the wire as. */
+const jsonTextOf = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
 layer(layerFields)("fields/Http", (it) => {
   it.effect("takes a custom field at sign-up and answers with it", () =>
@@ -156,8 +165,8 @@ layer(layerFields)("fields/Http", (it) => {
       })
       const current = yield* client.auth.getSession()
 
-      assert.notInclude(JSON.stringify(registered), "apiSecret")
-      assert.notInclude(JSON.stringify(current), "apiSecret")
+      assert.notInclude(yield* jsonTextOf(registered), "apiSecret")
+      assert.notInclude(yield* jsonTextOf(current), "apiSecret")
     })
   )
 
@@ -207,11 +216,12 @@ layer(layerFields)("fields/Http", (it) => {
       })
 
       assert.strictEqual(status, 200)
+      const signedUp = yield* readUser(body)
       // The field a client *may* state was taken …
-      assert.strictEqual(userOf(body)["plan"], "pro")
+      assert.strictEqual(signedUp["plan"], "pro")
       // … and the two it may not were not: the response says the defaults.
-      assert.strictEqual(userOf(body)["role"], "user")
-      assert.isFalse(Object.hasOwn(userOf(body), "apiSecret"))
+      assert.strictEqual(signedUp["role"], "user")
+      assert.isFalse(Object.hasOwn(signedUp, "apiSecret"))
 
       // And the row agrees, which is the assertion the response alone cannot
       // make: `apiSecret` is hidden from every JSON variant, so a written value
@@ -241,9 +251,10 @@ layer(layerFields)("fields/Http", (it) => {
       )
 
       assert.strictEqual(status, 200)
-      assert.strictEqual(userOf(body)["name"], "Ada Byron")
-      assert.strictEqual(userOf(body)["plan"], "pro")
-      assert.strictEqual(userOf(body)["role"], "user")
+      const updated = yield* readUser(body)
+      assert.strictEqual(updated["name"], "Ada Byron")
+      assert.strictEqual(updated["plan"], "pro")
+      assert.strictEqual(updated["role"], "user")
 
       const store = yield* users
       const stored = yield* expectSome(yield* store.findByEmail(email), "the account went missing")

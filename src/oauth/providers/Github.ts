@@ -18,6 +18,7 @@
  */
 import type { Redacted } from "effect"
 import { Array, Config, Effect, Option, Schema } from "effect"
+import { dual } from "effect/Function"
 import { optionalConfig } from "../../internal/config.js"
 import { trimTrailingSlashes } from "../../internal/url.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
@@ -103,7 +104,10 @@ export interface SelectedEmail {
  * @category combinators
  * @since 1.0.0
  */
-export const selectEmail = (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null => {
+export const selectEmail: {
+  (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null
+  (emails: ReadonlyArray<GithubEmail>): (profileEmail: string | null) => SelectedEmail | null
+} = dual(2, (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null => {
   const primary = emails.find((entry) => entry.primary)
   if (primary !== undefined && primary.verified) {
     return { email: primary.email, emailVerified: true }
@@ -119,7 +123,7 @@ export const selectEmail = (profileEmail: string | null, emails: ReadonlyArray<G
   if (verified !== undefined) return { email: verified.email, emailVerified: true }
   const first = emails[0]
   return first === undefined ? null : { email: first.email, emailVerified: first.verified }
-}
+})
 
 // -----------------------------------------------------------------------------
 // Reading GitHub's JSON
@@ -196,7 +200,7 @@ export const decodeEmails = (body: unknown): ReadonlyArray<GithubEmail> =>
  */
 export interface Options {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   /** Scopes on top of {@link defaultScopes}. */
   readonly scopes?: ReadonlyArray<string> | undefined
   /** Overrides `<baseUrl><basePath>/callback/github`. */
@@ -250,7 +254,7 @@ export const make = (options: Options): OAuthProviderConfig => {
 
     const profileResponse = yield* fetchJson({ providerId: id, url: `${apiUrl}/user`, accessToken, headers })
     const decoded = readProfile(profileResponse.body)
-    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (Option.isNone(decoded)) return yield* providerError(id, "UserInfoFailed")
     const profile = decoded.value
 
     // A refused `/user/emails` — the `user:email` scope was not granted — is not
@@ -262,7 +266,7 @@ export const make = (options: Options): OAuthProviderConfig => {
       headers
     })
     const selected = selectEmail(profile.email ?? null, decodeEmails(emailsResponse.body))
-    if (selected === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (selected === null) return yield* providerError(id, "UserInfoFailed")
 
     return {
       id: profile.id,
@@ -295,7 +299,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
-  readonly clientSecret: Config.Config<Redacted.Redacted<string>>
+  readonly clientSecret: Config.Config<Redacted.Redacted>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
   readonly redirectUri?: Config.Config<string> | undefined
   readonly authorizationParams?: Readonly<Record<string, string>> | undefined
@@ -306,7 +310,7 @@ export interface ConfigOptions {
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface Settings {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   readonly scopes: ReadonlyArray<string> | undefined
   readonly redirectUri: string | undefined
   readonly webUrl: string | undefined

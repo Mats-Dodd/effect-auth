@@ -247,7 +247,7 @@ export interface AccountsService {
  * @category services
  * @since 1.0.0
  */
-export class Accounts extends Context.Service<Accounts, AccountsService>()("effect-auth/Accounts") {}
+export class Accounts extends Context.Service<Accounts, AccountsService>()("effect-auth/domain/Accounts") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -259,11 +259,11 @@ export class Accounts extends Context.Service<Accounts, AccountsService>()("effe
  * @category constructors
  * @since 1.0.0
  */
-export const make: () => Effect.Effect<
+export const make: Effect.Effect<
   AccountsService,
   never,
   AuthConfig | AuthEvents | UserStore | AccountStore | WithAuthTransaction
-> = Effect.fnUntraced(function* () {
+> = Effect.gen(function* () {
   const config = yield* AuthConfig
   const users = yield* UserStore
   const accounts = yield* AccountStore
@@ -414,7 +414,7 @@ export const make: () => Effect.Effect<
       // The foreign key cascades, so a missing owner only happens on a store
       // that does not enforce it. Refuse rather than provision a replacement.
       const found = yield* users.findById(existing.value.userId)
-      const owner = yield* Effect.fromOption(found, () => new UserNotFound())
+      const owner = yield* Effect.fromOption(found, () => UserNotFound.make())
       const account = yield* refreshTokens(existing.value, identity)
       return { user: owner, account, userCreated: false, accountCreated: false } satisfies LinkResult
     }
@@ -431,7 +431,7 @@ export const make: () => Effect.Effect<
         trustedProviders: config.trustedProviders
       })
       if (!allowed) {
-        return yield* Effect.fail(new AccountAlreadyLinked({ providerId: identity.providerId }))
+        return yield* AccountAlreadyLinked.make({ providerId: identity.providerId })
       }
       // A row is about to be attached to somebody who already exists, which is
       // the one thing `beforeAccountLink` is for. It is asked after the gate
@@ -483,12 +483,12 @@ export const make: () => Effect.Effect<
 
   const linkToUser = Effect.fnUntraced(function* (userId: UserId, identity: OAuthIdentity) {
     const found = yield* users.findById(userId)
-    const owner = yield* Effect.fromOption(found, () => new UserNotFound())
+    const owner = yield* Effect.fromOption(found, () => UserNotFound.make())
 
     const existing = yield* accounts.findByIssuerAccountId(identity.issuer, identity.accountId)
     if (Option.isSome(existing)) {
       if (existing.value.userId !== userId) {
-        return yield* Effect.fail(new AccountAlreadyLinked({ providerId: identity.providerId }))
+        return yield* AccountAlreadyLinked.make({ providerId: identity.providerId })
       }
       const account = yield* refreshTokens(existing.value, identity)
       return { user: owner, account, userCreated: false, accountCreated: false } satisfies LinkResult
@@ -515,14 +515,14 @@ export const make: () => Effect.Effect<
         const held = yield* accounts.listByUserIdForUpdate(userId)
         const target = held.find((account) => account.id === accountId)
         if (target === undefined) {
-          return yield* Effect.fail(new NotFound())
+          return yield* NotFound.make()
         }
         if (held.length <= 1) {
-          return yield* Effect.fail(new CannotUnlinkLastAccount())
+          return yield* CannotUnlinkLastAccount.make()
         }
         const deleted = yield* accounts.deleteById(accountId, userId)
         if (!deleted) {
-          return yield* Effect.fail(new NotFound())
+          return yield* NotFound.make()
         }
         return target
       })
@@ -555,4 +555,4 @@ export const layer: Layer.Layer<
   Accounts,
   never,
   AuthConfig | AuthEvents | UserStore | AccountStore | WithAuthTransaction
-> = Layer.effect(Accounts, make())
+> = Layer.effect(Accounts, make)

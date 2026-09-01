@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest"
+import { assert, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Option } from "effect"
 import { TestClock } from "effect/testing"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
@@ -16,101 +16,106 @@ import { newPassword, signUpUser, testName, testPassword, uniqueEmail } from "..
  * it published, every session it still holds — so it cannot be read against a
  * database that a sibling is also writing to.
  */
-describe("domain/lifecycle", () => {
-  it.effect("sign-up, verify, sign-in, browse for a fortnight, change password, sign out", () =>
-    Effect.gen(function* () {
-      const passwords = yield* Passwords
-      const sessions = yield* Sessions
-      const emails = yield* AuthTest.TestEmails
-      const config = yield* AuthConfig
-      const email = uniqueEmail("journey")
+layer(AuthTest.layer({ emailPassword: { requireEmailVerification: true } }))(
+  "domain/lifecycle — verified sign-up",
+  (it) => {
+    it.effect("sign-up, verify, sign-in, browse for a fortnight, change password, sign out", () =>
+      Effect.gen(function* () {
+        const passwords = yield* Passwords
+        const sessions = yield* Sessions
+        const emails = yield* AuthTest.TestEmails
+        const config = yield* AuthConfig
+        const email = uniqueEmail("journey")
 
-      const journey = Effect.gen(function* () {
-        // --- register -----------------------------------------------------
-        const { session: noSession, user } = yield* passwords.signUp({
-          name: testName,
-          email: email.toUpperCase(),
-          password: testPassword
-        })
-        assert.strictEqual(user.email, email)
-        // Verification is required, so no session yet.
-        assert.strictEqual(Option.isNone(noSession), true)
+        const journey = Effect.gen(function* () {
+          // --- register -----------------------------------------------------
+          const { session: noSession, user } = yield* passwords.signUp({
+            name: testName,
+            email: email.toUpperCase(),
+            password: testPassword
+          })
+          assert.strictEqual(user.email, email)
+          // Verification is required, so no session yet.
+          assert.strictEqual(Option.isNone(noSession), true)
 
-        // --- confirm the address ------------------------------------------
-        assert.strictEqual(
-          (yield* Effect.flip(passwords.signIn({ email, password: testPassword })))._tag,
-          "EmailNotVerified"
-        )
-        const verified = yield* passwords.verifyEmail(yield* emails.tokenFor("verification", email))
-        assert.strictEqual(verified.emailVerified, true)
+          // --- confirm the address ------------------------------------------
+          assert.strictEqual(
+            (yield* Effect.flip(passwords.signIn({ email, password: testPassword })))._tag,
+            "EmailNotVerified"
+          )
+          const verified = yield* passwords.verifyEmail(yield* emails.tokenFor("verification", email))
+          assert.strictEqual(verified.emailVerified, true)
 
-        // --- sign in -------------------------------------------------------
-        const signedIn = yield* passwords.signIn({
-          email,
-          password: testPassword,
-          ipAddress: "203.0.113.7",
-          userAgent: "vitest"
-        })
-        assert.strictEqual(signedIn.user.id, user.id)
+          // --- sign in -------------------------------------------------------
+          const signedIn = yield* passwords.signIn({
+            email,
+            password: testPassword,
+            ipAddress: "203.0.113.7",
+            userAgent: "vitest"
+          })
+          assert.strictEqual(signedIn.user.id, user.id)
 
-        // --- a fortnight of ordinary use -----------------------------------
-        // Each day's first request rolls the expiry forward once; the rest of
-        // that day's requests do not write at all.
-        let refreshes = 0
-        for (let day = 0; day < 14; day++) {
-          yield* TestClock.adjust(Duration.days(1))
-          for (let request = 0; request < 3; request++) {
-            const seen = yield* sessions.verify(signedIn.token)
-            if (seen.refreshed) refreshes++
+          // --- a fortnight of ordinary use -----------------------------------
+          // Each day's first request rolls the expiry forward once; the rest of
+          // that day's requests do not write at all.
+          let refreshes = 0
+          for (let day = 0; day < 14; day++) {
+            yield* TestClock.adjust(Duration.days(1))
+            for (let request = 0; request < 3; request++) {
+              const seen = yield* sessions.verify(signedIn.token)
+              if (seen.refreshed) refreshes++
+            }
           }
-        }
-        assert.strictEqual(refreshes, 14)
+          assert.strictEqual(refreshes, 14)
 
-        // The session outlived the seven-day window it started with, because
-        // it was kept alive; it is no longer fresh, though.
-        const current = yield* sessions.verify(signedIn.token)
-        assert.strictEqual(yield* sessions.isFresh(current.session), false)
-        assert.strictEqual((yield* Effect.flip(sessions.requireFresh(current.session)))._tag, "SessionNotFresh")
+          // The session outlived the seven-day window it started with, because
+          // it was kept alive; it is no longer fresh, though.
+          const current = yield* sessions.verify(signedIn.token)
+          assert.strictEqual(yield* sessions.isFresh(current.session), false)
+          assert.strictEqual((yield* Effect.flip(sessions.requireFresh(current.session)))._tag, "SessionNotFresh")
 
-        // --- change the password on a second device ------------------------
-        const phone = yield* sessions.create({ userId: user.id })
-        yield* passwords.changePassword({
-          userId: user.id,
-          currentPassword: testPassword,
-          newPassword,
-          currentSessionId: phone.session.id
+          // --- change the password on a second device ------------------------
+          const phone = yield* sessions.create({ userId: user.id })
+          yield* passwords.changePassword({
+            userId: user.id,
+            currentPassword: testPassword,
+            newPassword,
+            currentSessionId: phone.session.id
+          })
+          // The laptop was signed out by the change; the phone was not.
+          assert.strictEqual((yield* Effect.flip(sessions.verify(signedIn.token)))._tag, "Unauthorized")
+          assert.strictEqual((yield* sessions.verify(phone.token)).session.id, phone.session.id)
+
+          // --- sign out ------------------------------------------------------
+          yield* sessions.signOut(phone.session)
+          assert.strictEqual((yield* Effect.flip(sessions.verify(phone.token)))._tag, "Unauthorized")
+          assert.strictEqual((yield* sessions.list(user.id)).length, 0)
+
+          // --- and back in with the new password -----------------------------
+          const again = yield* passwords.signIn({ email, password: newPassword })
+          assert.strictEqual(yield* sessions.isFresh(again.session), true)
+
+          const expected = DateTime.addDuration(yield* DateTime.now, config.session.expiresIn)
+          assert.strictEqual(DateTime.toEpochMillis(again.session.expiresAt), DateTime.toEpochMillis(expected))
+          return user
         })
-        // The laptop was signed out by the change; the phone was not.
-        assert.strictEqual((yield* Effect.flip(sessions.verify(signedIn.token)))._tag, "Unauthorized")
-        assert.strictEqual((yield* sessions.verify(phone.token)).session.id, phone.session.id)
 
-        // --- sign out ------------------------------------------------------
-        yield* sessions.signOut(phone.session)
-        assert.strictEqual((yield* Effect.flip(sessions.verify(phone.token)))._tag, "Unauthorized")
-        assert.strictEqual((yield* sessions.list(user.id)).length, 0)
-
-        // --- and back in with the new password -----------------------------
-        const again = yield* passwords.signIn({ email, password: newPassword })
-        assert.strictEqual(yield* sessions.isFresh(again.session), true)
-
-        const expected = DateTime.addDuration(yield* DateTime.now, config.session.expiresIn)
-        assert.strictEqual(DateTime.toEpochMillis(again.session.expiresAt), DateTime.toEpochMillis(expected))
-        return user
+        const { events } = yield* AuthTest.recordingEvents(journey)
+        assert.deepStrictEqual(AuthTest.tagsOf(events), [
+          "UserCreated",
+          "EmailVerified",
+          "SignedIn",
+          "SessionRevoked",
+          "PasswordChanged",
+          "SignedOut",
+          "SignedIn"
+        ])
       })
+    )
+  }
+)
 
-      const { events } = yield* AuthTest.recordingEvents(journey)
-      assert.deepStrictEqual(AuthTest.tagsOf(events), [
-        "UserCreated",
-        "EmailVerified",
-        "SignedIn",
-        "SessionRevoked",
-        "PasswordChanged",
-        "SignedOut",
-        "SignedIn"
-      ])
-    }).pipe(Effect.provide(AuthTest.layer({ emailPassword: { requireEmailVerification: true } })))
-  )
-
+layer(AuthTest.layer())("domain/lifecycle — OAuth link and unlink", (it) => {
   it.effect("a password user links GitHub, signs in through it, and unlinks again", () =>
     Effect.gen(function* () {
       const passwords = yield* Passwords
@@ -155,9 +160,11 @@ describe("domain/lifecycle", () => {
       // The password still works.
       const signedIn = yield* passwords.signIn({ email, password: testPassword })
       assert.strictEqual(signedIn.user.id, user.id)
-    }).pipe(Effect.provide(AuthTest.layer()))
+    })
   )
+})
 
+layer(AuthTest.layer())("domain/lifecycle — password reset", (it) => {
   it.effect("a reset link recovers an account and signs every device out", () =>
     Effect.gen(function* () {
       const passwords = yield* Passwords
@@ -183,6 +190,6 @@ describe("domain/lifecycle", () => {
       const recovered = yield* passwords.signIn({ email, password: newPassword })
       assert.strictEqual(recovered.user.id, user.id)
       assert.strictEqual((yield* sessions.list(user.id)).length, 1)
-    }).pipe(Effect.provide(AuthTest.layer()))
+    })
   )
 })

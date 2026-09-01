@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { Effect, Redacted, Result } from "effect"
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity"
 import { AuthClient } from "../../src/client/index.js"
-import type { AccountId } from "../../src/domain/Schema.js"
+import { AccountId } from "../../src/domain/Schema.js"
 import { testName, testPassword } from "../fixtures.js"
 import * as Stub from "./stub.js"
 
@@ -20,7 +20,7 @@ const registry = Effect.acquireRelease(
  */
 const harness = (options?: {
   readonly signedIn?: boolean | undefined
-  readonly bearerToken?: (() => string | Redacted.Redacted<string> | undefined) | undefined
+  readonly bearerToken?: (() => string | Redacted.Redacted | undefined) | undefined
 }) =>
   Effect.gen(function* () {
     const stub = Stub.make({ signedIn: options?.signedIn })
@@ -54,7 +54,8 @@ const waitFor = <A>(
     const current = reg.get(atom)
     if (predicate(current)) {
       finish(current)
-      return
+      // Nothing was subscribed, so there is nothing for the finalizer to undo.
+      return Effect.void
     }
     cancel = reg.subscribe(atom, (value) => {
       if (predicate(value)) finish(value)
@@ -216,14 +217,22 @@ describe("AuthClient", () => {
       const { client, reg, stub } = yield* harness({ signedIn: true })
 
       const tokens = yield* AuthClient.run(client.getAccessToken, {
-        accountId: Stub.accessTokenJson.accountId as AccountId
+        accountId: AccountId.make(Stub.accessTokenJson.accountId)
       }).pipe(Effect.provideService(AtomRegistry.AtomRegistry, reg))
 
       // The one response in the library that carries a credential for another
       // system. It is a string on the wire and `Redacted` the moment it is
       // decoded, so a client that logs the whole result logs nothing.
       assert.strictEqual(Redacted.value(tokens.accessToken), "provider-access-token")
+      // `Redacted` does not declare a `toString` in its type, so the rule reads
+      // this as an accidental `[object Object]`. Pinning what the *runtime*
+      // renders is the whole assertion: it is what a careless log line prints.
+      // oxlint-disable-next-line typescript/no-base-to-string
       assert.strictEqual(String(tokens.accessToken), "<redacted>")
+      // Not a codec: this is the naive `JSON.stringify` a logger or an error
+      // reporter reaches for. Encoding through a Schema instead would assert the
+      // opposite of what is wanted here — that the secret *does* round-trip.
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
       assert.isFalse(JSON.stringify(tokens).includes("provider-access-token"))
       assert.deepStrictEqual([...tokens.scopes], ["read:user", "user:email"])
       assert.deepStrictEqual(stub.calls, ["POST /auth/get-access-token"])

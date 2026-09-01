@@ -28,7 +28,7 @@ import { layer } from "../../src/magic-link/MagicLink.js"
 import { MagicLinkClient } from "../../src/client/index.js"
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
-const eq = <T extends true>(_: T): void => {}
+const eq = <T extends true>(assertion: T): T => assertion
 
 // ---------------------------------------------------------------------------
 // The layer: plain, and non-generic.

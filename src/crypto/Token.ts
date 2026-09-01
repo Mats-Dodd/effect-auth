@@ -45,7 +45,7 @@ export interface TokenService {
    * Mints a fresh token: 32 random bytes, base64url encoded, `Redacted` so it
    * cannot be logged on its way to its single recipient.
    */
-  readonly generateToken: Effect.Effect<Redacted.Redacted<string>>
+  readonly generateToken: Effect.Effect<Redacted.Redacted>
 
   /**
    * The base64url SHA-256 digest of a token — the only form that is ever
@@ -57,7 +57,7 @@ export interface TokenService {
    * the input is 256 bits of uniform randomness, so there is nothing to guess
    * and nothing to precompute.
    */
-  readonly hashToken: (token: Redacted.Redacted<string>) => Effect.Effect<string>
+  readonly hashToken: (token: Redacted.Redacted) => Effect.Effect<string>
 }
 
 /**
@@ -66,7 +66,7 @@ export interface TokenService {
  * @category services
  * @since 1.0.0
  */
-export class Token extends Context.Service<Token, TokenService>()("effect-auth/Token") {}
+export class Token extends Context.Service<Token, TokenService>()("effect-auth/crypto/Token") {}
 
 // -----------------------------------------------------------------------------
 // Implementation

@@ -27,7 +27,7 @@
  * which is why the pin, and not the layer build, is the check that matters.
  */
 import { assert, describe, it } from "@effect/vitest"
-import { Cause, Context, Effect, Layer, Schema } from "effect"
+import { Cause, type Context, Effect, Layer, Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 

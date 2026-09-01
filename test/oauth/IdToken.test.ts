@@ -20,11 +20,16 @@ const sign = (
   signer: MockProvider.IdTokenSignerService,
   payload: JWTPayload,
   options?: MockProvider.SignOptions
-): Effect.Effect<Redacted.Redacted<string>> =>
-  Effect.promise(async () => Redacted.make(await signer.sign(payload, options)))
+): Effect.Effect<Redacted.Redacted> =>
+  Effect.map(
+    // The signer is `jose`, so the promise is the boundary; the redaction is
+    // this side of it.
+    Effect.promise(() => signer.sign(payload, options)),
+    (token) => Redacted.make(token)
+  )
 
 const verifying = (
-  token: Redacted.Redacted<string>,
+  token: Redacted.Redacted,
   keys: MockProvider.IdTokenSignerService["jwks"],
   overrides?: {
     readonly issuer?: string
@@ -107,7 +112,7 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
         const signer = yield* MockProvider.IdTokenSigner
         // The one place a second key pair is worth its cost: a forgery is a
         // token that verifies perfectly against the wrong key set.
-        const forger = yield* MockProvider.makeIdTokenSigner()
+        const forger = yield* MockProvider.makeIdTokenSigner
         const forged = yield* sign(forger, { sub: "s" }, { expiresAt })
 
         const result = yield* verifying(forged, signer.jwks)
@@ -212,15 +217,17 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
      * the *fetch*, so the keys have to arrive over the stubbed transport rather
      * than be handed in as a resolver.
      */
-    const published = Effect.promise(async () => {
-      const pair = await generateKeyPair("RS256", { extractable: true })
-      const jwk = await exportJWK(pair.publicKey)
-      const token = await new SignJWT({ sub: "remote-subject" })
-        .setProtectedHeader({ alg: "RS256", kid: "remote-k1" })
-        .setIssuer(issuer)
-        .setAudience(audience)
-        .setExpirationTime(expiresAt)
-        .sign(pair.privateKey)
+    const published = Effect.gen(function* () {
+      const pair = yield* Effect.promise(() => generateKeyPair("RS256", { extractable: true }))
+      const jwk = yield* Effect.promise(() => exportJWK(pair.publicKey))
+      const token = yield* Effect.promise(() =>
+        new SignJWT({ sub: "remote-subject" })
+          .setProtectedHeader({ alg: "RS256", kid: "remote-k1" })
+          .setIssuer(issuer)
+          .setAudience(audience)
+          .setExpirationTime(expiresAt)
+          .sign(pair.privateKey)
+      )
       return {
         body: { keys: [{ ...jwk, kid: "remote-k1", alg: "RS256", use: "sig" }] },
         token: Redacted.make(token)
@@ -230,125 +237,139 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
     /** The service over a stubbed transport, wrapped exactly as the flow wraps it. */
     const over = (fetch: typeof globalThis.fetch) => layerJwks.pipe(Layer.provide(MockProvider.safeHttpLayer(fetch)))
 
-    it.effect("fetches the key set over the HttpClient, and fetches it once", () => {
-      const server = MockProvider.mockServer()
-      return Effect.gen(function* () {
-        const { body, token } = yield* published
-        server.on(jwksUrl, () => MockProvider.json(body))
+    // `Jwks` is a cache and every test below counts the fetches that reached
+    // the endpoint, so each gets a block — and a stubbed endpoint — of its own.
+    const onceServer = MockProvider.mockServer()
+    it.layer(over(onceServer.fetch))((it) => {
+      it.effect("fetches the key set over the HttpClient, and fetches it once", () =>
+        Effect.gen(function* () {
+          const { body, token } = yield* published
+          onceServer.on(jwksUrl, () => MockProvider.json(body))
 
-        const jwks = yield* Jwks
-        const keys = yield* jwks.keys(jwksUrl)
-        const result = yield* Effect.result(
-          verify({
+          const jwks = yield* Jwks
+          const keys = yield* jwks.keys(jwksUrl)
+          const result = yield* Effect.result(
+            verify({
+              providerId: "remote",
+              token,
+              issuer,
+              audience,
+              keys,
+              nonce: null,
+              algorithms: ["RS256"]
+            })
+          )
+          assert.strictEqual(result._tag, "Success")
+          if (result._tag === "Success") assert.strictEqual(result.success.subject, "remote-subject")
+
+          // The second provider callback of the day reuses the cached key set.
+          yield* jwks.keys(jwksUrl)
+          assert.strictEqual(onceServer.to(jwksUrl).length, 1)
+          // And it went out with redirects refused, like every other OAuth call.
+          assert.strictEqual(onceServer.to(jwksUrl)[0]?.redirect, "manual")
+        })
+      )
+    })
+
+    const rotationServer = MockProvider.mockServer()
+    it.layer(over(rotationServer.fetch))((it) => {
+      it.effect("refetches a rotated key set when a token names an unknown kid", () =>
+        Effect.gen(function* () {
+          const { body: oldBody } = yield* published
+          // The provider's next key: not in the published set the cache warmed
+          // up on, exactly what an emergency rotation looks like.
+          const rotatedPair = yield* Effect.promise(() => generateKeyPair("RS256", { extractable: true }))
+          const rotatedJwk = yield* Effect.promise(() => exportJWK(rotatedPair.publicKey))
+          const rotatedToken = yield* Effect.promise(() =>
+            new SignJWT({ sub: "rotated-subject" })
+              .setProtectedHeader({ alg: "RS256", kid: "rotated-k2" })
+              .setIssuer(issuer)
+              .setAudience(audience)
+              .setExpirationTime(expiresAt)
+              .sign(rotatedPair.privateKey)
+          )
+          const rotated = {
+            body: { keys: [{ ...rotatedJwk, kid: "rotated-k2", alg: "RS256", use: "sig" }] },
+            token: Redacted.make(rotatedToken)
+          }
+
+          // Warm the cache on the pre-rotation set...
+          rotationServer.on(jwksUrl, () => MockProvider.json(oldBody))
+          const jwks = yield* Jwks
+          const keys = yield* jwks.keys(jwksUrl)
+
+          // ...then rotate: the endpoint now serves the new set, and the token
+          // is signed with a kid the cached resolver has never seen.
+          rotationServer.on(jwksUrl, () => MockProvider.json(rotated.body))
+          const claims = yield* verify({
             providerId: "remote",
-            token,
+            token: rotated.token,
             issuer,
             audience,
             keys,
             nonce: null,
-            algorithms: ["RS256"]
+            algorithms: ["RS256"],
+            freshKeys: Effect.orDie(jwks.refresh(jwksUrl))
           })
-        )
-        assert.strictEqual(result._tag, "Success")
-        if (result._tag === "Success") assert.strictEqual(result.success.subject, "remote-subject")
+          assert.strictEqual(claims.subject, "rotated-subject")
+          assert.strictEqual(rotationServer.to(jwksUrl).length, 2)
 
-        // The second provider callback of the day reuses the cached key set.
-        yield* jwks.keys(jwksUrl)
-        assert.strictEqual(server.to(jwksUrl).length, 1)
-        // And it went out with redirects refused, like every other OAuth call.
-        assert.strictEqual(server.to(jwksUrl)[0]?.redirect, "manual")
-      }).pipe(Effect.provide(over(server.fetch)))
-    })
-
-    it.effect("refetches a rotated key set when a token names an unknown kid", () => {
-      const server = MockProvider.mockServer()
-      return Effect.gen(function* () {
-        const { body: oldBody } = yield* published
-        // The provider's next key: not in the published set the cache warmed
-        // up on, exactly what an emergency rotation looks like.
-        const rotated = yield* Effect.promise(async () => {
-          const pair = await generateKeyPair("RS256", { extractable: true })
-          const jwk = await exportJWK(pair.publicKey)
-          const token = await new SignJWT({ sub: "rotated-subject" })
-            .setProtectedHeader({ alg: "RS256", kid: "rotated-k2" })
-            .setIssuer(issuer)
-            .setAudience(audience)
-            .setExpirationTime(expiresAt)
-            .sign(pair.privateKey)
-          return {
-            body: { keys: [{ ...jwk, kid: "rotated-k2", alg: "RS256", use: "sig" }] },
-            token: Redacted.make(token)
-          }
+          // Inside the cooldown a second refresh is served the same fresh set —
+          // an invented kid cannot turn callbacks into a fetch storm.
+          yield* jwks.refresh(jwksUrl)
+          assert.strictEqual(rotationServer.to(jwksUrl).length, 2)
         })
+      )
+    })
 
-        // Warm the cache on the pre-rotation set...
-        server.on(jwksUrl, () => MockProvider.json(oldBody))
-        const jwks = yield* Jwks
-        const keys = yield* jwks.keys(jwksUrl)
-
-        // ...then rotate: the endpoint now serves the new set, and the token
-        // is signed with a kid the cached resolver has never seen.
-        server.on(jwksUrl, () => MockProvider.json(rotated.body))
-        const claims = yield* verify({
-          providerId: "remote",
-          token: rotated.token,
-          issuer,
-          audience,
-          keys,
-          nonce: null,
-          algorithms: ["RS256"],
-          freshKeys: Effect.orDie(jwks.refresh(jwksUrl))
+    const redirectServer = MockProvider.mockServer()
+    it.layer(over(redirectServer.fetch))((it) => {
+      it.effect("refuses a JWKS endpoint that answers with a redirect", () => {
+        redirectServer.on(jwksUrl, () => MockProvider.redirect("http://169.254.169.254/latest/meta-data/"))
+        return Effect.gen(function* () {
+          const jwks = yield* Jwks
+          const result = yield* Effect.result(jwks.keys(jwksUrl))
+          assert.strictEqual(result._tag, "Failure")
+          if (result._tag === "Failure") assert.strictEqual(result.failure._tag, "JwksUnavailable")
+          // The hop was never taken.
+          assert.isUndefined(
+            redirectServer.requests.find((request) => request.url.startsWith("http://169.254.169.254"))
+          )
         })
-        assert.strictEqual(claims.subject, "rotated-subject")
-        assert.strictEqual(server.to(jwksUrl).length, 2)
-
-        // Inside the cooldown a second refresh is served the same fresh set —
-        // an invented kid cannot turn callbacks into a fetch storm.
-        yield* jwks.refresh(jwksUrl)
-        assert.strictEqual(server.to(jwksUrl).length, 2)
-      }).pipe(Effect.provide(over(server.fetch)))
+      })
     })
 
-    it.effect("refuses a JWKS endpoint that answers with a redirect", () => {
-      const server = MockProvider.mockServer()
-      server.on(jwksUrl, () => MockProvider.redirect("http://169.254.169.254/latest/meta-data/"))
-      return Effect.gen(function* () {
-        const jwks = yield* Jwks
-        const result = yield* Effect.result(jwks.keys(jwksUrl))
-        assert.strictEqual(result._tag, "Failure")
-        if (result._tag === "Failure") assert.strictEqual(result.failure._tag, "JwksUnavailable")
-        // The hop was never taken.
-        assert.isUndefined(server.requests.find((request) => request.url.startsWith("http://169.254.169.254")))
-      }).pipe(Effect.provide(over(server.fetch)))
+    const recoveryServer = MockProvider.mockServer()
+    it.layer(over(recoveryServer.fetch))((it) => {
+      it.effect("caches a key set but never a failure", () => {
+        recoveryServer.on(jwksUrl, () => MockProvider.json({ message: "no" }, 503))
+        return Effect.gen(function* () {
+          const { body } = yield* published
+          const jwks = yield* Jwks
+
+          const down = yield* Effect.result(jwks.keys(jwksUrl))
+          assert.strictEqual(down._tag, "Failure")
+
+          // A provider that was unreachable once is asked again on the next
+          // callback rather than refused for the whole cache lifetime.
+          recoveryServer.on(jwksUrl, () => MockProvider.json(body))
+          const recovered = yield* Effect.result(jwks.keys(jwksUrl))
+          assert.strictEqual(recovered._tag, "Success")
+          assert.strictEqual(recoveryServer.to(jwksUrl).length, 2)
+        })
+      })
     })
 
-    it.effect("caches a key set but never a failure", () => {
-      const server = MockProvider.mockServer()
-      server.on(jwksUrl, () => MockProvider.json({ message: "no" }, 503))
-      return Effect.gen(function* () {
-        const { body } = yield* published
-        const jwks = yield* Jwks
-
-        const down = yield* Effect.result(jwks.keys(jwksUrl))
-        assert.strictEqual(down._tag, "Failure")
-
-        // A provider that was unreachable once is asked again on the next
-        // callback rather than refused for the whole cache lifetime.
-        server.on(jwksUrl, () => MockProvider.json(body))
-        const recovered = yield* Effect.result(jwks.keys(jwksUrl))
-        assert.strictEqual(recovered._tag, "Success")
-        assert.strictEqual(server.to(jwksUrl).length, 2)
-      }).pipe(Effect.provide(over(server.fetch)))
-    })
-
-    it.effect("refuses a body that is not a key set", () => {
-      const server = MockProvider.mockServer()
-      server.on(jwksUrl, () => MockProvider.json({ keys: "not a list" }))
-      return Effect.gen(function* () {
-        const jwks = yield* Jwks
-        const result = yield* Effect.result(jwks.keys(jwksUrl))
-        assert.strictEqual(result._tag, "Failure")
-      }).pipe(Effect.provide(over(server.fetch)))
+    const malformedServer = MockProvider.mockServer()
+    it.layer(over(malformedServer.fetch))((it) => {
+      it.effect("refuses a body that is not a key set", () => {
+        malformedServer.on(jwksUrl, () => MockProvider.json({ keys: "not a list" }))
+        return Effect.gen(function* () {
+          const jwks = yield* Jwks
+          const result = yield* Effect.result(jwks.keys(jwksUrl))
+          assert.strictEqual(result._tag, "Failure")
+        })
+      })
     })
   })
 })

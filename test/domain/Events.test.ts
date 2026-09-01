@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest"
+import { assert, describe, it, layer } from "@effect/vitest"
 import { Effect, Fiber, Schema, Stream } from "effect"
 import type { AuthEvent } from "../../src/domain/Events.js"
 import {
@@ -9,11 +9,11 @@ import {
   oauthMethod,
   passwordMethod
 } from "../../src/domain/Events.js"
-import type { AccountId, SessionId, UserId } from "../../src/domain/Schema.js"
+import { AccountId, SessionId, UserId } from "../../src/domain/Schema.js"
 
-const userId = "01890000-0000-7000-8000-00000000000a" as UserId
-const sessionId = "01890000-0000-7000-8000-00000000000b" as SessionId
-const accountId = "01890000-0000-7000-8000-00000000000c" as AccountId
+const userId = UserId.make("01890000-0000-7000-8000-00000000000a")
+const sessionId = SessionId.make("01890000-0000-7000-8000-00000000000b")
+const accountId = AccountId.make("01890000-0000-7000-8000-00000000000c")
 
 const everyEvent: ReadonlyArray<AuthEvent> = [
   { _tag: "UserCreated", userId, email: "ada@example.com", emailVerified: false, method: passwordMethod },
@@ -82,7 +82,7 @@ describe("domain/Events/schema", () => {
   })
 })
 
-describe("domain/Events/hub", () => {
+layer(authEventsLayer())("domain/Events/hub", (it) => {
   it.effect(
     "delivers published events to a running subscriber",
     () =>
@@ -101,10 +101,18 @@ describe("domain/Events/hub", () => {
           Array.from(collected, (event) => event._tag),
           ["PasswordResetRequested", "PasswordChanged"]
         )
-      }).pipe(Effect.provide(authEventsLayer())),
+      }),
     10_000
   )
+})
 
+/**
+ * The back-pressure tests need a hub small enough to overflow, so they get a
+ * block of their own. They share one hub: neither subscribes for longer than
+ * its own test, and the hub drops rather than replays, so nothing one publishes
+ * is visible to the other.
+ */
+layer(authEventsLayer({ capacity: 2 }))("domain/Events/hub (capacity 2)", (it) => {
   it.effect(
     "publishing with no subscriber succeeds rather than blocking",
     () =>
@@ -117,7 +125,7 @@ describe("domain/Events/hub", () => {
         }
         yield* emit({ _tag: "SignedOut", userId, sessionId })
         assert.ok(true)
-      }).pipe(Effect.provide(authEventsLayer({ capacity: 2 }))),
+      }),
     10_000
   )
 
@@ -133,7 +141,7 @@ describe("domain/Events/hub", () => {
           yield* events.publish({ _tag: "PasswordChanged", userId, viaReset: false })
         }
         assert.ok(true)
-      }).pipe(Effect.provide(authEventsLayer({ capacity: 2 }))),
+      }),
     10_000
   )
 })

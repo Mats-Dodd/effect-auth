@@ -60,24 +60,19 @@ layer(hmacLayer("test-secret"))("crypto/Hmac", (it) => {
 })
 
 // Outside the block on purpose: two secrets is the whole assertion, so neither
-// of them can be the block's.
+// of them can be the block's. Both are built directly rather than provided as
+// layers, so the two services are unambiguously distinct.
 it.effect("crypto/Hmac does not accept a tag made under a different secret", () =>
   Effect.gen(function* () {
-    const mine = yield* Effect.provide(
-      Hmac.Hmac.use((hmac) => hmac.sign(message)),
-      hmacLayer("secret-one")
-    )
-    const theirs = yield* Effect.provide(
-      Hmac.Hmac.use((hmac) => hmac.sign(message)),
-      hmacLayer("secret-two")
-    )
+    const one = yield* Hmac.make(globalThis.crypto, Redacted.make("secret-one"))
+    const two = yield* Hmac.make(globalThis.crypto, Redacted.make("secret-two"))
+
+    const mine = yield* one.sign(message)
+    const theirs = yield* two.sign(message)
 
     assert.notDeepEqual(Array.from(mine), Array.from(theirs))
 
-    const accepted = yield* Effect.provide(
-      Hmac.Hmac.use((hmac) => hmac.verify(message, theirs)),
-      hmacLayer("secret-one")
-    )
+    const accepted = yield* one.verify(message, theirs)
     assert.strictEqual(accepted, false)
   })
 )

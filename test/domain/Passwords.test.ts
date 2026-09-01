@@ -1,4 +1,4 @@
-import { assert, describe, it, layer } from "@effect/vitest"
+import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { SqlClient } from "effect/unstable/sql"
@@ -134,7 +134,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
         const short = yield* Effect.flip(
           passwords.signUp({ name: testName, email: shortEmail, password: Redacted.make("tiny") })
         )
-        if (short._tag !== "PasswordPolicyViolation") return assert.fail(`unexpected ${short._tag}`)
+        if (short._tag !== "PasswordPolicyViolation") assert.fail(`unexpected ${short._tag}`)
         assert.strictEqual(short.reason, "TooShort")
         assert.strictEqual(short.minLength, config.emailPassword.minPasswordLength)
 
@@ -145,7 +145,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
             password: Redacted.make("x".repeat(config.emailPassword.maxPasswordLength + 1))
           })
         )
-        if (long._tag !== "PasswordPolicyViolation") return assert.fail(`unexpected ${long._tag}`)
+        if (long._tag !== "PasswordPolicyViolation") assert.fail(`unexpected ${long._tag}`)
         assert.strictEqual(long.reason, "TooLong")
 
         // Nothing was written for either attempt.
@@ -868,7 +868,7 @@ layer(AuthTest.layer())("domain/Passwords", (it) => {
  * and PGlite serves a whole block from a single connection, so a rollback here
  * would take a concurrent sibling's uncommitted writes with it.
  */
-describe("domain/Passwords/signUp (registration race)", () => {
+layer(AuthTest.layer())("domain/Passwords/signUp (registration race)", (it) => {
   it.effect("answers UserAlreadyExists to the loser of a concurrent registration, not a 500", () =>
     Effect.gen(function* () {
       // Both fibers pass the pre-flight lookup before either insert lands, so
@@ -888,7 +888,7 @@ describe("domain/Passwords/signUp (registration race)", () => {
           assert.strictEqual(failure.failure._tag, "UserAlreadyExists")
         }
       }
-    }).pipe(Effect.provide(AuthTest.layer()))
+    })
   )
 })
 
@@ -897,7 +897,7 @@ describe("domain/Passwords/signUp (registration race)", () => {
  * losing fibre's insert is rolled back, and a rollback on the shared PGlite
  * connection would take a concurrent sibling's uncommitted writes with it.
  */
-describe("domain/Passwords/setPassword (race)", () => {
+layer(AuthTest.layer())("domain/Passwords/setPassword (race)", (it) => {
   it.effect("gives the loser of two concurrent first-passwords PasswordAlreadySet, not a 500", () =>
     Effect.gen(function* () {
       const passwords = yield* Passwords
@@ -933,6 +933,6 @@ describe("domain/Passwords/setPassword (race)", () => {
         Effect.result(passwords.signIn({ email, password: Redacted.make("a-second-password") }))
       ])
       assert.strictEqual(attempts.filter((attempt) => attempt._tag === "Success").length, 1)
-    }).pipe(Effect.provide(AuthTest.layer()))
+    })
   )
 })

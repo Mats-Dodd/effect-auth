@@ -173,7 +173,7 @@ const NowRequest = Schema.Struct({ now: IsoString })
 const kindOf = (cause: unknown): PersistenceFailureKind =>
   SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
 
-const fail = (operation: string) => (cause: unknown) => new PersistenceError({ operation, kind: kindOf(cause), cause })
+const fail = (operation: string) => (cause: unknown) => PersistenceError.make({ operation, kind: kindOf(cause), cause })
 
 const persist =
   (operation: string) =>
@@ -308,13 +308,13 @@ const makeUserStore: <F extends UserFields>(
 
   /** A decoding failure means the columns and the model have drifted apart. */
   const decoded = (operation: string, row: UserRow): Effect.Effect<UserOf<F>, PersistenceError> =>
-    Effect.mapError(model.decodeRow(readUser(row, "")), (cause) => new PersistenceError({ operation, cause }))
+    Effect.mapError(model.decodeRow(readUser(row, "")), (cause) => PersistenceError.make({ operation, cause }))
 
   const one =
     (operation: string) =>
     (rows: ReadonlyArray<UserRow>): Effect.Effect<UserOf<F>, PersistenceError> =>
       Option.match(Array.head(rows), {
-        onNone: () => Effect.fail(new PersistenceError({ operation, cause: "the statement returned no row" })),
+        onNone: () => Effect.fail(PersistenceError.make({ operation, cause: "the statement returned no row" })),
         onSome: (row) => decoded(operation, row)
       })
 
@@ -437,7 +437,7 @@ const makeSessionStore: <F extends UserFields>(
         session: decodeSession(sessionFromRow(row)),
         user: model.decodeRow(readUser(row, "u_"))
       }),
-      (cause) => new PersistenceError({ operation: "SessionStore.findByTokenHash", cause })
+      (cause) => PersistenceError.make({ operation: "SessionStore.findByTokenHash", cause })
     )
 
   const insertSession = (session: typeof Session.insert.Type): Effect.Effect<Session, PersistenceError> =>
@@ -448,16 +448,14 @@ const makeSessionStore: <F extends UserFields>(
         const row = yield* Effect.orDie(encodeInsert(session))
         const rows =
           yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, remember_me, created_at, updated_at)
-        VALUES (${row.id as string}, ${row.tokenHash as string}, ${row.userId as string}, ${row.expiresAt as string}, ${
-          row.ipAddress as string | null
-        }, ${row.userAgent as string | null}, ${boolean.encode(row.rememberMe as boolean)}, ${
-          row.createdAt as string
-        }, ${row.updatedAt as string})
+        VALUES (${row.id}, ${row.tokenHash}, ${row.userId}, ${row.expiresAt}, ${row.ipAddress}, ${row.userAgent}, ${boolean.encode(
+          row.rememberMe
+        )}, ${row.createdAt}, ${row.updatedAt})
         RETURNING ${sessionCols}`
         return yield* Option.match(Array.head(rows), {
           onNone: () =>
             Effect.fail(
-              new PersistenceError({ operation: "SessionStore.create", cause: "the statement returned no row" })
+              PersistenceError.make({ operation: "SessionStore.create", cause: "the statement returned no row" })
             ),
           onSome: readSession
         })
@@ -556,17 +554,15 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
     const accountCols = sql.literal(accountColumns)
 
     const providerFields = ["access_token", "refresh_token", "id_token"] as const
-    const modelField = (field: ProviderTokenField): "accessToken" | "refreshToken" | "idToken" => {
-      switch (field) {
-        case "access_token":
-          return "accessToken"
-        case "refresh_token":
-          return "refreshToken"
-        case "id_token":
-          return "idToken"
-      }
-    }
-    const cryptoFailure = (operation: string) => (cause: unknown) => new PersistenceError({ operation, cause })
+    // A total map rather than a `switch`: exhaustiveness is checked by the
+    // `satisfies`, and there is no unreachable fall-through to account for.
+    const modelFields = {
+      access_token: "accessToken",
+      refresh_token: "refreshToken",
+      id_token: "idToken"
+    } as const satisfies Record<ProviderTokenField, "accessToken" | "refreshToken" | "idToken">
+    const modelField = (field: ProviderTokenField): "accessToken" | "refreshToken" | "idToken" => modelFields[field]
+    const cryptoFailure = (operation: string) => (cause: unknown) => PersistenceError.make({ operation, cause })
     const protect = <A>(operation: string, effect: Effect.Effect<A>): Effect.Effect<A, PersistenceError> =>
       effect.pipe(Effect.catchDefect((cause) => Effect.fail(cryptoFailure(operation)(cause))))
     const transformTokens = <
@@ -587,7 +583,7 @@ const makeAccountStore: () => Effect.Effect<AccountStoreService, never, SqlClien
           const value = account[property]
           patch[property] = value === null ? null : yield* transform(account.id, field, value)
         }
-        return { ...account, ...patch } as A
+        return { ...account, ...patch }
       })
     const encryptAccount = <A extends Parameters<typeof transformTokens>[0]>(account: A) =>
       transformTokens(account, cipher.encrypt)
@@ -858,7 +854,7 @@ const makeTransaction: () => Effect.Effect<WithAuthTransactionService, never, Sq
       run: <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | PersistenceError, R> =>
         Effect.mapError(sql.withTransaction(effect), (error): E | PersistenceError =>
           SqlError.isSqlError(error)
-            ? new PersistenceError({ operation: "WithAuthTransaction.run", cause: error })
+            ? PersistenceError.make({ operation: "WithAuthTransaction.run", cause: error })
             : error
         )
     })

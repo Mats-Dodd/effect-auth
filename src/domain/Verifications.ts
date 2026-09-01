@@ -29,7 +29,8 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, Redacted, Result, Schema } from "effect"
+import { Context, DateTime, type Duration, Effect, Encoding, Layer, Option, Redacted, Result, Schema } from "effect"
+import { dual } from "effect/Function"
 import { Token } from "../crypto/Token.js"
 import { insertRow } from "../internal/effects.js"
 import { InvalidToken } from "./Errors.js"
@@ -62,7 +63,7 @@ export interface SubjectToken {
   /** The user id, normalized e-mail address, or whatever else names the row. */
   readonly subject: string
   /** The 43-character random half, the only part that is hashed and stored. */
-  readonly secret: Redacted.Redacted<string>
+  readonly secret: Redacted.Redacted
 }
 
 /**
@@ -81,8 +82,12 @@ export interface SubjectToken {
  * @category constructors
  * @since 1.0.0
  */
-export const encodeSubjectToken = (subject: string, secret: Redacted.Redacted<string>): Redacted.Redacted<string> =>
+export const encodeSubjectToken: {
+  (secret: Redacted.Redacted): (subject: string) => Redacted.Redacted
+  (subject: string, secret: Redacted.Redacted): Redacted.Redacted
+} = dual(2, (subject: string, secret: Redacted.Redacted): Redacted.Redacted =>
   Redacted.make(`${Encoding.encodeBase64Url(subject)}${subjectTokenSeparator}${Redacted.value(secret)}`)
+)
 
 /**
  * Splits a subject token back into its subject and its secret, or `None` when
@@ -91,7 +96,7 @@ export const encodeSubjectToken = (subject: string, secret: Redacted.Redacted<st
  * @category combinators
  * @since 1.0.0
  */
-export const decodeSubjectToken = (token: Redacted.Redacted<string>): Option.Option<SubjectToken> => {
+export const decodeSubjectToken = (token: Redacted.Redacted): Option.Option<SubjectToken> => {
   const raw = Redacted.value(token)
   const at = raw.indexOf(subjectTokenSeparator)
   if (at <= 0 || at === raw.length - 1) return Option.none()
@@ -111,7 +116,7 @@ export const decodeSubjectToken = (token: Redacted.Redacted<string>): Option.Opt
  * @category models
  * @since 1.0.0
  */
-export interface PurposePayload extends Schema.ConstraintCodec<unknown, unknown, never, never> {}
+export interface PurposePayload extends Schema.ConstraintCodec<unknown> {}
 
 /**
  * What a class of single-use tokens is called, and what travels inside one.
@@ -177,7 +182,19 @@ export interface TokenPurpose<P> {
  */
 export function purpose(name: string): TokenPurpose<null>
 export function purpose<S extends PurposePayload>(name: string, payload: S): TokenPurpose<S["Type"]>
-export function purpose(name: string, payload?: PurposePayload): TokenPurpose<unknown> {
+export function purpose<S extends PurposePayload>(payload: S): (name: string) => TokenPurpose<S["Type"]>
+export function purpose(
+  nameOrPayload: string | PurposePayload,
+  payload?: PurposePayload
+): TokenPurpose<unknown> | ((name: string) => TokenPurpose<unknown>) {
+  // The data-last form. A purpose is named by a string and carries a schema, so
+  // the two forms are told apart by what the first argument *is* rather than by
+  // how many there are — which is what keeps the one-argument `purpose(name)`
+  // (a purpose with no payload) meaning what it has always meant.
+  if (typeof nameOrPayload !== "string") {
+    return (name: string) => purpose(name, nameOrPayload)
+  }
+  const name = nameOrPayload
   if (payload === undefined) {
     return { name, payload: null, decodePayload: () => Effect.succeed(null) }
   }
@@ -187,7 +204,7 @@ export function purpose(name: string, payload?: PurposePayload): TokenPurpose<un
     name,
     payload: json,
     decodePayload: (stored) =>
-      stored === null ? Effect.fail(new InvalidToken()) : Effect.mapError(decode(stored), () => new InvalidToken())
+      stored === null ? Effect.fail(InvalidToken.make()) : Effect.mapError(decode(stored), () => InvalidToken.make())
   }
 }
 
@@ -204,7 +221,10 @@ export function purpose(name: string, payload?: PurposePayload): TokenPurpose<un
  * @category combinators
  * @since 1.0.0
  */
-export const identifierOf = (purpose: TokenPurpose<unknown>, subject: string): string => `${purpose.name}:${subject}`
+export const identifierOf: {
+  (subject: string): (purpose: TokenPurpose<unknown>) => string
+  (purpose: TokenPurpose<unknown>, subject: string): string
+} = dual(2, (purpose: TokenPurpose<unknown>, subject: string): string => `${purpose.name}:${subject}`)
 
 /**
  * The purpose of an e-mail verification link.
@@ -344,11 +364,12 @@ export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
  * @category combinators
  * @since 1.0.0
  */
-export const retireUserSubjectTokens = (
-  verifications: VerificationsService,
-  userId: UserId
-): Effect.Effect<void, PersistenceError> =>
+export const retireUserSubjectTokens: {
+  (userId: UserId): (verifications: VerificationsService) => Effect.Effect<void, PersistenceError>
+  (verifications: VerificationsService, userId: UserId): Effect.Effect<void, PersistenceError>
+} = dual(2, (verifications: VerificationsService, userId: UserId): Effect.Effect<void, PersistenceError> =>
   Effect.forEach(userSubjectPurposes, (purpose) => verifications.retire(purpose, userId), { discard: true })
+)
 
 // -----------------------------------------------------------------------------
 // Service
@@ -383,7 +404,7 @@ export interface IssueOptions<P> {
  * @since 1.0.0
  */
 export interface Issued {
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   readonly expiresAt: DateTime.Utc
   readonly identifier: string
 }
@@ -428,7 +449,7 @@ export interface VerificationsService {
    */
   readonly claim: <P>(
     purpose: TokenPurpose<P>,
-    token: Redacted.Redacted<string>
+    token: Redacted.Redacted
   ) => Effect.Effect<Claimed<P>, InvalidToken | PersistenceError>
 
   /**
@@ -452,7 +473,7 @@ export interface VerificationsService {
  * @since 1.0.0
  */
 export class Verifications extends Context.Service<Verifications, VerificationsService>()(
-  "effect-auth/Verifications"
+  "effect-auth/domain/Verifications"
 ) {}
 
 // -----------------------------------------------------------------------------
@@ -496,14 +517,14 @@ export const make: Effect.Effect<VerificationsService, never, Token | Verificati
     } satisfies Issued
   })
 
-  const claim = Effect.fnUntraced(function* <P>(purpose: TokenPurpose<P>, token: Redacted.Redacted<string>) {
-    const parts = yield* Effect.fromOption(decodeSubjectToken(token), () => new InvalidToken())
+  const claim = Effect.fnUntraced(function* <P>(purpose: TokenPurpose<P>, token: Redacted.Redacted) {
+    const parts = yield* Effect.fromOption(decodeSubjectToken(token), () => InvalidToken.make())
     const valueHash = yield* tokens.hashToken(parts.secret)
     const identifier = identifierOf(purpose, parts.subject)
     const consumed = yield* store.consume(identifier, valueHash)
     // An expired row was never claimable and a claimed row is already gone:
     // both are `None` here, and both are one and the same answer.
-    const verification = yield* Effect.fromOption(consumed, () => new InvalidToken())
+    const verification = yield* Effect.fromOption(consumed, () => InvalidToken.make())
     const payload = yield* purpose.decodePayload(verification.payload)
     return { subject: parts.subject, payload, identifier, verification } satisfies Claimed<P>
   })

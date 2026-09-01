@@ -72,7 +72,7 @@ export interface Endpoints {
  * @category combinators
  * @since 1.0.0
  */
-export const endpointsOf = (baseUrl?: string | undefined): Endpoints => {
+export const endpointsOf = (baseUrl?: string): Endpoints => {
   const host = trimTrailingSlashes(baseUrl ?? defaultBaseUrl)
   return {
     authorizationUrl: `${host}/oauth/authorize`,
@@ -128,7 +128,7 @@ export const activeState = "active"
  */
 export interface Options {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   /** Scopes on top of {@link defaultScopes}. */
   readonly scopes?: ReadonlyArray<string> | undefined
   /** Overrides `<baseUrl><basePath>/callback/gitlab`. */
@@ -176,7 +176,7 @@ export const make = (options: Options): OAuthProviderConfig => {
       accessToken: tokens.accessToken
     })
     const decoded = readProfile(response.body)
-    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (Option.isNone(decoded)) return yield* providerError(id, "UserInfoFailed")
     const profile = decoded.value
 
     // The two states that are not a sign-in. A blocked, deactivated or banned
@@ -184,7 +184,7 @@ export const make = (options: Options): OAuthProviderConfig => {
     // same thing. Either one refuses the identity outright rather than letting
     // it through as an unverified address.
     if (profile.state !== activeState || profile.locked !== undefined) {
-      return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+      return yield* providerError(id, "UserInfoFailed")
     }
 
     return {
@@ -220,7 +220,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
-  readonly clientSecret: Config.Config<Redacted.Redacted<string>>
+  readonly clientSecret: Config.Config<Redacted.Redacted>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
   readonly redirectUri?: Config.Config<string> | undefined
   readonly baseUrl?: Config.Config<string> | undefined
@@ -230,7 +230,7 @@ export interface ConfigOptions {
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface Settings {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   readonly scopes: ReadonlyArray<string> | undefined
   readonly redirectUri: string | undefined
   readonly baseUrl: string | undefined

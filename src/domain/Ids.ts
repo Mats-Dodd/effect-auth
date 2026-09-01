@@ -24,7 +24,7 @@
  * @since 1.0.0
  */
 import { Crypto, Effect } from "effect"
-import type { AccountId, SessionId, UserId } from "./Schema.js"
+import { AccountId, SessionId, UserId } from "./Schema.js"
 
 /**
  * A fresh UUIDv7, timestamped from the Effect `Clock` and filled from the
@@ -74,7 +74,7 @@ export const isUuidV7 = (value: string): boolean => uuidV7Pattern.test(value)
  * @category constructors
  * @since 1.0.0
  */
-export const userId: Effect.Effect<UserId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => id as UserId)
+export const userId: Effect.Effect<UserId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => UserId.make(id))
 
 /**
  * A fresh {@link SessionId}.
@@ -82,7 +82,7 @@ export const userId: Effect.Effect<UserId, never, Crypto.Crypto> = Effect.map(uu
  * @category constructors
  * @since 1.0.0
  */
-export const sessionId: Effect.Effect<SessionId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => id as SessionId)
+export const sessionId: Effect.Effect<SessionId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => SessionId.make(id))
 
 /**
  * A fresh {@link AccountId}.
@@ -90,4 +90,4 @@ export const sessionId: Effect.Effect<SessionId, never, Crypto.Crypto> = Effect.
  * @category constructors
  * @since 1.0.0
  */
-export const accountId: Effect.Effect<AccountId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => id as AccountId)
+export const accountId: Effect.Effect<AccountId, never, Crypto.Crypto> = Effect.map(uuidV7, (id) => AccountId.make(id))

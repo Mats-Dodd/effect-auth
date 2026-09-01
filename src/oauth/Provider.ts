@@ -24,6 +24,7 @@
  */
 import type { Cause, DateTime } from "effect"
 import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
+import { dual } from "effect/Function"
 import type { HttpClientError } from "effect/unstable/http"
 import { HttpClient, HttpClientRequest as Request } from "effect/unstable/http"
 import type { OAuthProviderError } from "../domain/Errors.js"
@@ -50,13 +51,13 @@ import { jsonWithin } from "./internal/http.js"
  */
 export interface OAuthTokens {
   /** The access token, for a `userInfo` call and for storage on the account. */
-  readonly accessToken: Redacted.Redacted<string>
+  readonly accessToken: Redacted.Redacted
   /** The `token_type` the provider reported, normally `"bearer"`. */
   readonly tokenType: string | null
   /** The refresh token, when the provider issued one. */
-  readonly refreshToken: Redacted.Redacted<string> | null
+  readonly refreshToken: Redacted.Redacted | null
   /** The raw OIDC `id_token`, when the provider issued one. */
-  readonly idToken: Redacted.Redacted<string> | null
+  readonly idToken: Redacted.Redacted | null
   /**
    * The claims of a **verified** `id_token`.
    *
@@ -187,10 +188,7 @@ export interface OAuthProviderConfig {
    * the three shapes are one `Option` there, and the effectful case has an error
    * channel a caller must not drop.
    */
-  readonly clientSecret?:
-    | Redacted.Redacted<string>
-    | Effect.Effect<Redacted.Redacted<string>, OAuthProviderError>
-    | undefined
+  readonly clientSecret?: Redacted.Redacted | Effect.Effect<Redacted.Redacted, OAuthProviderError> | undefined
   /** The provider's authorization endpoint, where the browser is sent. */
   readonly authorizationUrl: string
   /** The provider's token endpoint, where the code is exchanged server-side. */
@@ -364,7 +362,7 @@ export interface OAuthProviderConfig {
    */
   readonly userInfo: (
     tokens: OAuthTokens,
-    options?: UserInfoOptions | undefined
+    options?: UserInfoOptions
   ) => Effect.Effect<OAuthUserInfo, OAuthProviderError, HttpClient.HttpClient>
   /**
    * Projects the provider's stable subject out of the identity. Never the
@@ -424,7 +422,7 @@ export const reservedTokenParams: ReadonlySet<string> = new Set([
  */
 export const resolveClientSecret = (
   provider: OAuthProviderConfig
-): Effect.Effect<Option.Option<Redacted.Redacted<string>>, OAuthProviderError> => {
+): Effect.Effect<Option.Option<Redacted.Redacted>, OAuthProviderError> => {
   const secret = provider.clientSecret
   if (secret === undefined) return Effect.succeedNone
   return Redacted.isRedacted(secret) ? Effect.succeedSome(secret) : Effect.map(secret, Option.some)
@@ -491,7 +489,7 @@ export interface OAuthProvidersService {
  * @since 1.0.0
  */
 export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvidersService>()(
-  "effect-auth/OAuthProviders"
+  "effect-auth/oauth/Provider/OAuthProviders"
 ) {
   /**
    * Provides the registry over a fixed list of providers.
@@ -530,7 +528,7 @@ export class OAuthProviders extends Context.Service<OAuthProviders, OAuthProvide
  * @since 1.0.0
  */
 export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthProvidersService => {
-  const byId = Object.create(null) as Record<string, OAuthProviderConfig>
+  const byId: Record<string, OAuthProviderConfig> = Object.create(null)
   const ids: Array<string> = []
   for (const provider of providers) {
     if (Object.hasOwn(byId, provider.id)) {
@@ -545,7 +543,7 @@ export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthPro
     find,
     get: (id) =>
       Option.match(find(id), {
-        onNone: () => Effect.fail(new ProviderError({ providerId: id, reason: "UnknownProvider" })),
+        onNone: () => Effect.fail(ProviderError.make({ providerId: id, reason: "UnknownProvider" })),
         onSome: (provider) => Effect.succeed(provider)
       }),
     ids
@@ -559,8 +557,12 @@ export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthPro
  * @category errors
  * @since 1.0.0
  */
-export const providerError = (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError =>
-  new ProviderError({ providerId, reason })
+export const providerError: {
+  (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError
+  (reason: OAuthProviderError["reason"]): (providerId: string) => OAuthProviderError
+} = dual(2, (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError =>
+  ProviderError.make({ providerId, reason })
+)
 
 /**
  * Unwraps a `Redacted` credential for the one call that has to send it.
@@ -568,7 +570,7 @@ export const providerError = (providerId: string, reason: OAuthProviderError["re
  * @category combinators
  * @since 1.0.0
  */
-export const revealToken = (token: Redacted.Redacted<string> | null): string | null =>
+export const revealToken = (token: Redacted.Redacted | null): string | null =>
   token === null ? null : Redacted.value(token)
 
 // -----------------------------------------------------------------------------
@@ -732,7 +734,7 @@ export interface JsonResponse {
 export const fetchJson = (options: {
   readonly providerId: string
   readonly url: string
-  readonly accessToken: Redacted.Redacted<string>
+  readonly accessToken: Redacted.Redacted
   readonly headers?: Readonly<Record<string, string>> | undefined
 }): Effect.Effect<JsonResponse, OAuthProviderError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
@@ -741,9 +743,8 @@ export const fetchJson = (options: {
       acceptJson: true,
       ...(options.headers === undefined ? {} : { headers: { ...options.headers } })
     }).pipe(Request.bearerToken(options.accessToken))
-    const response = yield* Effect.mapError(
-      resilient(client.execute(request)),
-      () => new ProviderError({ providerId: options.providerId, reason: "ProviderUnavailable" })
+    const response = yield* Effect.mapError(resilient(client.execute(request)), () =>
+      ProviderError.make({ providerId: options.providerId, reason: "ProviderUnavailable" })
     )
     if (response.status >= 400) return { status: response.status, body: null }
     const body = yield* Effect.result(jsonWithin(response, providerRequestTimeout))

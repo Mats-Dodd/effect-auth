@@ -32,10 +32,14 @@ import type { Services } from "../config/Auth.js"
 import { AuthApi } from "../http/AuthApi.js"
 import { MagicLinkApiGroup } from "../magic-link/Api.js"
 import { handlers as magicLinkHandlers } from "../magic-link/Handlers.js"
-import type { Options as MagicLinkOptions, Requirements } from "../magic-link/MagicLink.js"
-import { layer as magicLinkLayer, MagicLink, MagicLinkEmails } from "../magic-link/MagicLink.js"
-import type { EmailKind } from "./TestEmails.js"
-import { TestEmails } from "./TestEmails.js"
+import {
+  layer as magicLinkLayer,
+  type MagicLink,
+  MagicLinkEmails,
+  type Options as MagicLinkOptions,
+  type Requirements
+} from "../magic-link/MagicLink.js"
+import { type EmailKind, TestEmails } from "./TestEmails.js"
 import * as AuthTest from "./TestLayer.js"
 
 /**

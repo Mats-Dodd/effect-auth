@@ -23,7 +23,7 @@ const aad = (accountId: string, field: ProviderTokenField): ArrayBuffer =>
  * salt is domain separation, not password hardening: AuthConfig requires the
  * input key material to contain at least 32 bytes.
  */
-export const make = (secret: Redacted.Redacted<string>): Effect.Effect<ProviderTokenCipher> =>
+export const make = (secret: Redacted.Redacted): Effect.Effect<ProviderTokenCipher> =>
   Effect.gen(function* () {
     const crypto = ambientCrypto()
     const material = yield* Effect.promise(() =>

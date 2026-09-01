@@ -20,7 +20,7 @@ const keyId = "FGHIJ67890"
  * client secret against.
  */
 interface AppleKeyMaterial {
-  readonly privateKey: Redacted.Redacted<string>
+  readonly privateKey: Redacted.Redacted
   readonly publicKey: CryptoKey
 }
 
@@ -28,12 +28,13 @@ interface AppleKeyMaterial {
  * The key material, behind a service so that one key pair serves a whole
  * `layer()` block.
  */
-class AppleKeys extends Context.Service<AppleKeys, AppleKeyMaterial>()("test/oauth/AppleKeys") {
+class AppleKeys extends Context.Service<AppleKeys, AppleKeyMaterial>()("effect-auth/test/oauth/Apple.test/AppleKeys") {
   static readonly layer: Layer.Layer<AppleKeys> = Layer.effect(
     AppleKeys,
-    Effect.promise(async (): Promise<AppleKeyMaterial> => {
-      const pair = await generateKeyPair("ES256", { extractable: true })
-      return { privateKey: Redacted.make(await exportPKCS8(pair.privateKey)), publicKey: pair.publicKey }
+    Effect.gen(function* () {
+      const pair = yield* Effect.promise(() => generateKeyPair("ES256", { extractable: true }))
+      const pkcs8 = yield* Effect.promise(() => exportPKCS8(pair.privateKey))
+      return { privateKey: Redacted.make(pkcs8), publicKey: pair.publicKey } satisfies AppleKeyMaterial
     })
   )
 }
@@ -66,6 +67,18 @@ const userField = JSON.stringify({
   name: { firstName: "Ada", lastName: "Lovelace" },
   email: "ada@example.com"
 })
+
+/**
+ * The other shapes Apple's `user` field arrives in, as the text it arrives as.
+ *
+ * `nameOf` reads a provider-controlled JSON *string*, so what a test hands it is
+ * a string: these are the payloads, written once here rather than built inside
+ * the assertions.
+ */
+const firstNameOnly = JSON.stringify({ name: { firstName: "Ada" } })
+const emptyName = JSON.stringify({ name: {} })
+const nameNotAnObject = JSON.stringify({ name: "Ada" })
+const addressOnly = JSON.stringify({ email: "evil@example.com" })
 
 /**
  * A transport for providers that never make a request: every route on it is a
@@ -127,14 +140,16 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         if (Option.isNone(secret)) return
 
         // The real check: Apple would verify this against the public half of the
-        // `.p8`, so the test does too. The clock is the Effect one, which under
-        // `it.effect` starts at the epoch — hence `currentDate`.
+        // `.p8`, so the test does too. `jose` reads the wall clock unless it is
+        // told otherwise, and the assertion was minted off the Effect one — so
+        // `currentDate` is that clock, which under `it.effect` is the epoch.
+        const now = DateTime.toDateUtc(yield* DateTime.now)
         const verified = yield* Effect.promise(() =>
           jwtVerify(Redacted.value(secret.value), keys.publicKey, {
             issuer: teamId,
             audience: Apple.issuer,
             algorithms: ["ES256"],
-            currentDate: new Date(0)
+            currentDate: now
           })
         )
         assert.strictEqual(verified.protectedHeader.alg, "ES256")
@@ -164,8 +179,9 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
           ...secretOptions(keys),
           secretTtl: Duration.days(365)
         })
+        const now = DateTime.toDateUtc(yield* DateTime.now)
         const verified = yield* Effect.promise(() =>
-          jwtVerify(Redacted.value(secret), keys.publicKey, { currentDate: new Date(0) })
+          jwtVerify(Redacted.value(secret), keys.publicKey, { currentDate: now })
         )
         assert.strictEqual(verified.payload.exp, Duration.toSeconds(Apple.maximumSecretTtl))
       })
@@ -200,16 +216,15 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
           privateKey: Config.redacted("APPLE_PRIVATE_KEY"),
           appBundleIdentifier: Config.string("APPLE_BUNDLE_ID")
         }).pipe(
-          Effect.provide(
-            ConfigProvider.layer(
-              ConfigProvider.fromUnknown({
-                APPLE_CLIENT_ID: clientId,
-                APPLE_TEAM_ID: teamId,
-                APPLE_KEY_ID: keyId,
-                APPLE_PRIVATE_KEY: Redacted.value(keys.privateKey),
-                APPLE_BUNDLE_ID: "com.example.app"
-              })
-            )
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown({
+              APPLE_CLIENT_ID: clientId,
+              APPLE_TEAM_ID: teamId,
+              APPLE_KEY_ID: keyId,
+              APPLE_PRIVATE_KEY: Redacted.value(keys.privateKey),
+              APPLE_BUNDLE_ID: "com.example.app"
+            })
           )
         )
         assert.strictEqual(provider.clientId, clientId)
@@ -231,15 +246,14 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
             keyId: Config.string("APPLE_KEY_ID"),
             privateKey: Config.redacted("APPLE_PRIVATE_KEY")
           }).pipe(
-            Effect.provide(
-              ConfigProvider.layer(
-                ConfigProvider.fromUnknown({
-                  APPLE_CLIENT_ID: clientId,
-                  APPLE_TEAM_ID: teamId,
-                  APPLE_KEY_ID: keyId,
-                  APPLE_PRIVATE_KEY: "not-a-pem-at-all"
-                })
-              )
+            Effect.provideService(
+              ConfigProvider.ConfigProvider,
+              ConfigProvider.fromUnknown({
+                APPLE_CLIENT_ID: clientId,
+                APPLE_TEAM_ID: teamId,
+                APPLE_KEY_ID: keyId,
+                APPLE_PRIVATE_KEY: "not-a-pem-at-all"
+              })
             )
           )
         )
@@ -252,19 +266,21 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
     it.effect("reads the two halves Apple sends once, and nothing else", () =>
       Effect.sync(() => {
         assert.strictEqual(Apple.nameOf(userField), "Ada Lovelace")
-        assert.strictEqual(Apple.nameOf(JSON.stringify({ name: { firstName: "Ada" } })), "Ada")
+        assert.strictEqual(Apple.nameOf(firstNameOnly), "Ada")
         assert.isNull(Apple.nameOf(undefined))
         assert.isNull(Apple.nameOf("not json at all"))
-        assert.isNull(Apple.nameOf(JSON.stringify({ name: {} })))
-        assert.isNull(Apple.nameOf(JSON.stringify({ name: "Ada" })))
+        assert.isNull(Apple.nameOf(emptyName))
+        assert.isNull(Apple.nameOf(nameNotAnObject))
         // The address in there is Apple's *unsigned* echo, and is never read:
         // the identity's address comes from the token.
-        assert.strictEqual(Apple.nameOf(JSON.stringify({ email: "evil@example.com" })), null)
+        assert.strictEqual(Apple.nameOf(addressOnly), null)
       })
     )
   })
 
-  describe("userInfo", () => {
+  // Every test here proves the provider makes no request at all, so the
+  // 404-only transport is the block's rather than each test's.
+  it.layer(noNetwork)("userInfo", (it) => {
     it.effect("takes the identity from the token and the name from the callback", () =>
       Effect.gen(function* () {
         const provider = Apple.make(secretOptions(yield* AppleKeys))
@@ -276,7 +292,7 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         assert.strictEqual(info.email, "ada@privaterelay.appleid.com")
         assert.isTrue(info.emailVerified)
         assert.strictEqual(info.name, "Ada Lovelace")
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("falls back to the address on every later sign-in", () =>
@@ -285,7 +301,7 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         // Apple sends `user` exactly once, on the first authorization.
         const info = yield* provider.userInfo(MockProvider.tokensOf("apple-access-token", { idTokenClaims: claims() }))
         assert.strictEqual(info.name, "ada@privaterelay.appleid.com")
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("fails closed when the flow handed it no verified claims", () =>
@@ -295,7 +311,7 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
 
     it.effect("fails when the token carries no address", () =>
@@ -307,7 +323,7 @@ layer(AppleKeys.layer)("oauth/providers/Apple", (it) => {
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "UserInfoFailed")
-      }).pipe(Effect.provide(noNetwork))
+      })
     )
   })
 })
@@ -421,18 +437,23 @@ describe.sequential("oauth/providers/Apple form_post", () => {
         const state = authorize.searchParams.get("state") ?? ""
 
         yield* Effect.sync(() =>
-          server.on(Apple.tokenUrl, async () => {
-            const idToken = await signer.sign(
-              { sub: "001234.apple.subject", email, email_verified: "true", nonce },
-              { issuer: Apple.issuer, audience: clientId }
-            )
-            return MockProvider.json({
-              access_token: "apple-access-token",
-              token_type: "bearer",
-              expires_in: 3600,
-              id_token: idToken
-            })
-          })
+          // The route is a `fetch`-shaped callback, so what it hands back is a
+          // promise rather than an Effect: the signer's own promise, mapped.
+          server.on(Apple.tokenUrl, () =>
+            signer
+              .sign(
+                { sub: "001234.apple.subject", email, email_verified: "true", nonce },
+                { issuer: Apple.issuer, audience: clientId }
+              )
+              .then((idToken) =>
+                MockProvider.json({
+                  access_token: "apple-access-token",
+                  token_type: "bearer",
+                  expires_in: 3600,
+                  id_token: idToken
+                })
+              )
+          )
         )
 
         // Apple posts the callback cross-site. That request carries no
@@ -475,12 +496,15 @@ describe.sequential("oauth/providers/Apple form_post", () => {
         assert.strictEqual(form.get("grant_type"), "authorization_code")
         assert.strictEqual(form.get("client_id"), clientId)
         const assertion = form.get("client_secret") ?? ""
+        // The assertion was minted off the Effect clock, so it is verified
+        // against that clock rather than against the wall one.
+        const now = DateTime.toDateUtc(yield* DateTime.now)
         const verified = yield* Effect.promise(() =>
           jwtVerify(assertion, keys.publicKey, {
             issuer: teamId,
             audience: Apple.issuer,
             algorithms: ["ES256"],
-            currentDate: new Date(0)
+            currentDate: now
           })
         )
         assert.strictEqual(verified.payload.sub, clientId)

@@ -183,14 +183,12 @@ export const make = (options?: {
       authorization = request.headers["authorization"]
 
       if (transportBroken) {
-        return yield* Effect.fail(
-          new ClientError.HttpClientError({
-            reason: new ClientError.TransportError({
-              request,
-              cause: new Error("network is down")
-            })
+        return yield* new ClientError.HttpClientError({
+          reason: new ClientError.TransportError({
+            request,
+            cause: new Error("network is down")
           })
-        )
+        })
       }
 
       const route = Object.hasOwn(routes, call) ? routes[call] : undefined

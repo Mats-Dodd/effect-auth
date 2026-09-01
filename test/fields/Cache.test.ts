@@ -14,7 +14,7 @@
  * testable, but middleware will always resolve the authoritative database row.
  */
 import { assert, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Encoding, Result } from "effect"
+import { DateTime, Duration, Effect, Encoding, Result, Schema } from "effect"
 import { passwordsOf } from "../../src/domain/Passwords.js"
 import { userStoreOf } from "../../src/domain/Stores.js"
 import { cacheCookieSeparator, sessionCacheOf } from "../../src/http/SessionCache.js"
@@ -25,6 +25,13 @@ import { model } from "./model.js"
 const cache = sessionCacheOf(model)
 const passwords = passwordsOf(model)
 const users = userStoreOf(model)
+
+/**
+ * The JSON half of a cookie value, read as a value rather than asserted onto
+ * one: only `user` is claimed, and only as the open record it actually is.
+ */
+const WrittenPayload = Schema.Struct({ user: Schema.Record(Schema.String, Schema.Unknown) })
+const readWritten = Schema.decodeEffect(Schema.fromJsonString(WrittenPayload))
 
 /** The JSON half of a cookie value, as it goes on the wire. */
 const payloadText = (value: string): string => {
@@ -67,7 +74,7 @@ layer(AuthTest.layer({ cookieCache: { enabled: true }, user: { model } }))("fiel
       // What the browser is actually handed: signed, not encrypted, so this is
       // the assertion that matters.
       const json = payloadText(value)
-      const written = JSON.parse(json) as { readonly user: Record<string, unknown> }
+      const written = yield* readWritten(json)
       assert.strictEqual(written.user["plan"], "pro")
       assert.strictEqual(written.user["role"], "user")
       assert.isFalse("apiSecret" in written.user, "a hidden field must not reach the cookie")

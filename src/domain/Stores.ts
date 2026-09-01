@@ -202,7 +202,7 @@ export interface UserStoreService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class UserStore extends Context.Service<UserStore, UserStoreService>()("effect-auth/UserStore") {}
+export class UserStore extends Context.Service<UserStore, UserStoreService>()("effect-auth/domain/Stores/UserStore") {}
 
 /**
  * {@link UserStore}, seen through a model's custom fields.
@@ -228,7 +228,7 @@ export class UserStore extends Context.Service<UserStore, UserStoreService>()("e
 export const userStoreOf = <F extends UserFields>(
   _model: UserModel<F>
 ): Context.Service<UserStore, UserStoreService<F>> =>
-  Context.Service<UserStore, UserStoreService<F>>("effect-auth/UserStore")
+  Context.Service<UserStore, UserStoreService<F>>("effect-auth/domain/Stores/UserStore")
 
 // -----------------------------------------------------------------------------
 // SessionStore
@@ -321,7 +321,9 @@ export interface SessionStoreService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class SessionStore extends Context.Service<SessionStore, SessionStoreService>()("effect-auth/SessionStore") {}
+export class SessionStore extends Context.Service<SessionStore, SessionStoreService>()(
+  "effect-auth/domain/Stores/SessionStore"
+) {}
 
 /**
  * {@link SessionStore}, seen through a model's custom fields.
@@ -335,7 +337,7 @@ export class SessionStore extends Context.Service<SessionStore, SessionStoreServ
 export const sessionStoreOf = <F extends UserFields>(
   _model: UserModel<F>
 ): Context.Service<SessionStore, SessionStoreService<F>> =>
-  Context.Service<SessionStore, SessionStoreService<F>>("effect-auth/SessionStore")
+  Context.Service<SessionStore, SessionStoreService<F>>("effect-auth/domain/Stores/SessionStore")
 
 // -----------------------------------------------------------------------------
 // AccountStore
@@ -490,7 +492,9 @@ export interface AccountStoreService {
  * @category services
  * @since 1.0.0
  */
-export class AccountStore extends Context.Service<AccountStore, AccountStoreService>()("effect-auth/AccountStore") {}
+export class AccountStore extends Context.Service<AccountStore, AccountStoreService>()(
+  "effect-auth/domain/Stores/AccountStore"
+) {}
 
 // -----------------------------------------------------------------------------
 // VerificationStore
@@ -560,7 +564,7 @@ export interface VerificationStoreService {
  * @since 1.0.0
  */
 export class VerificationStore extends Context.Service<VerificationStore, VerificationStoreService>()(
-  "effect-auth/VerificationStore"
+  "effect-auth/domain/Stores/VerificationStore"
 ) {}
 
 // -----------------------------------------------------------------------------
@@ -599,7 +603,7 @@ export interface WithAuthTransactionService {
  * @since 1.0.0
  */
 export class WithAuthTransaction extends Context.Service<WithAuthTransaction, WithAuthTransactionService>()(
-  "effect-auth/WithAuthTransaction"
+  "effect-auth/domain/Stores/WithAuthTransaction"
 ) {}
 
 /**

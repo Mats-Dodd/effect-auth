@@ -21,7 +21,7 @@
  *
  * @since 1.0.0
  */
-import { PgliteClient } from "@effect/sql-pglite"
+import type { PgliteClient } from "@effect/sql-pglite"
 import { Schema } from "effect"
 import type { Layer } from "effect"
 import { HttpApi } from "effect/unstable/httpapi"

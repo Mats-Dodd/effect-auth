@@ -79,7 +79,7 @@ describe("domain/Schema", () => {
 describe("domain/Errors", () => {
   it.effect("encodes a tagged error", () =>
     Effect.gen(function* () {
-      const error = new PasswordPolicyViolation({ reason: "TooShort", minLength: 8, maxLength: 128 })
+      const error = PasswordPolicyViolation.make({ reason: "TooShort", minLength: 8, maxLength: 128 })
       const encoded = yield* Schema.encodeEffect(PasswordPolicyViolation)(error)
 
       assert.deepStrictEqual(encoded, {
@@ -90,14 +90,14 @@ describe("domain/Errors", () => {
       })
 
       const decoded = yield* Schema.decodeEffect(PasswordPolicyViolation)(encoded)
-      assert.strictEqual(decoded instanceof PasswordPolicyViolation, true)
+      assert.strictEqual(Schema.is(PasswordPolicyViolation)(decoded), true)
       assert.strictEqual(decoded.reason, "TooShort")
     })
   )
 
   it.effect("is yieldable as a typed failure", () =>
     Effect.gen(function* () {
-      const failure = yield* Effect.flip(Effect.fail(new InvalidCredentials()))
+      const failure = yield* Effect.flip(Effect.fail(InvalidCredentials.make()))
       assert.strictEqual(failure._tag, "InvalidCredentials")
     })
   )
@@ -191,6 +191,11 @@ describe("config/AuthEmails", () => {
     })
     const url = verifyEmailUrl(config, Redacted.make("tok3n"))
 
+    // `Redacted` prints as `<redacted>`, which is what keeps an accidental log
+    // line from carrying the link. It gets `toString` from `Inspectable` at
+    // runtime but does not declare one in its type, so the type-aware rule sees
+    // `Object.prototype.toString`; that rendering is exactly the assertion.
+    // oxlint-disable-next-line typescript/no-base-to-string
     assert.strictEqual(String(url), "<redacted>")
     assert.strictEqual(Redacted.value(url), "https://app.example.com/auth/verify-email?token=tok3n")
   })

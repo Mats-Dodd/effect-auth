@@ -39,7 +39,7 @@
  *
  * @since 1.0.0
  */
-import { Context, Duration, Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Context, Duration, Effect, Layer, Option, type Redacted, Schema } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { tokenUrl } from "../config/AuthEmails.js"
 import type { EmailDeliveryError } from "../domain/Errors.js"
@@ -169,9 +169,9 @@ export interface MagicLinkEmail {
   /** The account it belongs to, or `null` when the address has none. */
   readonly user: User | null
   /** The raw single-use token, for a client that would rather build its own link. */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /** The link itself: `{baseUrl}{path}?token=…`. */
-  readonly url: Redacted.Redacted<string>
+  readonly url: Redacted.Redacted
 }
 
 /**
@@ -200,7 +200,7 @@ export interface MagicLinkEmailsService {
  * @since 1.0.0
  */
 export class MagicLinkEmails extends Context.Service<MagicLinkEmails, MagicLinkEmailsService>()(
-  "effect-auth/magic-link/MagicLinkEmails"
+  "effect-auth/magic-link/MagicLink/MagicLinkEmails"
 ) {}
 
 // -----------------------------------------------------------------------------
@@ -333,7 +333,7 @@ export interface RequestOptions {
  */
 export interface VerifyOptions {
   /** The token out of the link. */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /** Recorded on the session row, so a person can recognise their own devices. */
   readonly ipAddress?: string | null | undefined
   readonly userAgent?: string | null | undefined
@@ -352,7 +352,7 @@ export interface VerifyResult {
    * The session's raw token — the only copy that will ever exist. Put it in a
    * `Set-Cookie` and drop it.
    */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /** What the request asked for, carried through the token's payload. */
   readonly rememberMe: boolean
   /** `true` when spending this link is what created the account. */
@@ -397,6 +397,17 @@ export type VerifyOutcome =
     }
 
 /**
+ * The codes themselves, keyed by tag. The mapped type is what keeps the set
+ * closed: a new member of {@link VerifyError} is a compile error here rather
+ * than a silent fall-through to somebody else's code.
+ */
+const errorCodes: { readonly [Tag in VerifyError["_tag"]]: string } = {
+  SignUpDisabled: "sign_up_disabled",
+  PolicyRefused: "policy_refused",
+  InvalidToken: "invalid_token"
+}
+
+/**
  * The safe error code a failed link reports in the redirect's query string.
  *
  * **Details**
@@ -415,16 +426,7 @@ export type VerifyOutcome =
  * @category combinators
  * @since 1.0.0
  */
-export const errorCode = (error: VerifyError): string => {
-  switch (error._tag) {
-    case "SignUpDisabled":
-      return "sign_up_disabled"
-    case "PolicyRefused":
-      return "policy_refused"
-    case "InvalidToken":
-      return "invalid_token"
-  }
-}
+export const errorCode = (error: VerifyError): string => errorCodes[error._tag]
 
 // -----------------------------------------------------------------------------
 // Service
@@ -500,7 +502,7 @@ export interface MagicLinkService {
  * @category services
  * @since 1.0.0
  */
-export class MagicLink extends Context.Service<MagicLink, MagicLinkService>()("effect-auth/MagicLink") {}
+export class MagicLink extends Context.Service<MagicLink, MagicLinkService>()("effect-auth/magic-link/MagicLink") {}
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -750,7 +752,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
      * one live: somebody with a few minutes of mailbox access would otherwise keep
      * a working key.
      */
-    const claim = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+    const claim = Effect.fnUntraced(function* (token: Redacted.Redacted) {
       const claimed = yield* verifications.claim(magicLinkPurpose, token)
       yield* verifications.retire(magicLinkPurpose, claimed.subject)
       return claimed
@@ -760,7 +762,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       const found = yield* users.findByEmail(email)
       if (Option.isNone(found)) {
         if (settings.disableSignUp) {
-          return yield* Effect.fail(new SignUpDisabled())
+          return yield* SignUpDisabled.make()
         }
         return { user: yield* create(email, payload.name), userCreated: true }
       }
@@ -768,7 +770,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       if (Option.isNone(settled)) {
         // The row went between the two reads — a concurrent deletion. The token
         // is spent and there is nobody to sign in.
-        return yield* Effect.fail(new InvalidToken())
+        return yield* InvalidToken.make()
       }
       return { user: settled.value, userCreated: false }
     })
@@ -843,7 +845,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
       function* (options: VerifyOptions) {
         const claimed = yield* Effect.result(claim(options.token))
         if (claimed._tag === "Failure") {
-          if (claimed.failure._tag === "PersistenceError") return yield* Effect.fail(claimed.failure)
+          if (claimed.failure._tag === "PersistenceError") return yield* claimed.failure
           // No payload was ever read, so there is no error URL to honour: the
           // token is not one this deployment minted.
           return failure(claimed.failure, null)
@@ -853,7 +855,7 @@ export const make: (options?: Options) => Effect.Effect<MagicLinkService, never,
           // A fault is the one failure this endpoint cannot answer with a
           // redirect: it is a `500`, not a place to send somebody.
           if (finished.failure._tag === "PersistenceError") {
-            return yield* Effect.fail(finished.failure)
+            return yield* finished.failure
           }
           // The error URL comes out of the claimed payload, which is the one
           // thing this path needs that `verify` does not — and it is in hand

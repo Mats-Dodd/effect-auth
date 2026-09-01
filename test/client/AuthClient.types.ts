@@ -25,11 +25,17 @@ const S = AtomHttpApi.Service()("x", {
   httpClient: Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make(() => Effect.die("no"))
-  ) as any
+  )
 })
 
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
-const eq = <T extends true>(_: T): void => {}
+
+/**
+ * Compiles only when the type argument it is given is `true`. Nothing reads the
+ * result; it is the identity so that `T` is load-bearing in the signature
+ * rather than a constraint that appears once.
+ */
+const eq = <T extends true>(_: T): T => _
 
 eq<Exact<Atom.Failure<ReturnType<typeof S.mutation<"auth", "signOut">>>, E.Unauthorized>>(true)
 eq<
@@ -113,7 +119,8 @@ const Todos = HttpApiGroup.make("todos").add(
 
 const ComposedApi = HttpApi.make("app").addHttpApi(AuthApi).add(Todos)
 
-const built = <T extends AuthClient.AuthClient>(_: T): void => {}
+/** Compiles only when what it is handed is an `AuthClient`; see `eq`. */
+const built = <T extends AuthClient.AuthClient>(_: T): T => _
 
 built(AuthClient.make({ api: ComposedApi, baseUrl: "http://localhost:3000" }))
 // And the default — no API at all — still infers.

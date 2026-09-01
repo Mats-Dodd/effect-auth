@@ -33,6 +33,7 @@
  */
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
+import { dual } from "effect/Function"
 import { optionalConfig } from "../../internal/config.js"
 import { trimTrailingSlashes } from "../../internal/url.js"
 import type { KeyResolver } from "../IdToken.js"
@@ -150,7 +151,10 @@ export const endpointsOf = (options?: {
  * @category combinators
  * @since 1.0.0
  */
-export const issuerOfTenant = (authority: string, tenantId: string): string => `${authority}/${tenantId}/v2.0`
+export const issuerOfTenant: {
+  (authority: string, tenantId: string): string
+  (tenantId: string): (authority: string) => string
+} = dual(2, (authority: string, tenantId: string): string => `${authority}/${tenantId}/v2.0`)
 
 // -----------------------------------------------------------------------------
 // Reading Entra's claims
@@ -235,7 +239,7 @@ export interface Options {
    * single-page application authorizing with PKCE — which have no secret to
    * keep. Omitting it sends no `client_secret` on the token request at all.
    */
-  readonly clientSecret?: Redacted.Redacted<string> | undefined
+  readonly clientSecret?: Redacted.Redacted | undefined
   /**
    * Which accounts may sign in: a tenant GUID or domain for one organization,
    * or `"common"` / `"organizations"` / `"consumers"`.
@@ -338,22 +342,22 @@ export const make = (options: Options): OAuthProviderConfig => {
     const verified = tokens.idTokenClaims
     // The flow verifies the token before calling this and refuses the callback
     // when there is none. A null here would mean the OIDC path was skipped.
-    if (verified === null) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
+    if (verified === null) return yield* providerError(id, "IdTokenInvalid")
     const decoded = readClaims(verified.raw)
-    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
+    if (Option.isNone(decoded)) return yield* providerError(id, "IdTokenInvalid")
     const claims = decoded.value
 
     // `oid`, not `sub`: Entra's `sub` is per application, `oid` is the account.
     // Without one there is no stable identity to anchor an account row on.
     const subject = claims.oid ?? null
-    if (subject === null) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
+    if (subject === null) return yield* providerError(id, "IdTokenInvalid")
 
     // Entra emits `email` only when the application registration asked for it,
     // so the UPN is the fallback address. It is never a *verified* one — see
     // `emailVerifiedOf` — which is what keeps it from linking onto an existing
     // local account by itself.
     const email = claims.email ?? claims.preferred_username ?? null
-    if (email === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (email === null) return yield* providerError(id, "UserInfoFailed")
 
     return {
       id: subject,
@@ -401,7 +405,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
-  readonly clientSecret?: Config.Config<Redacted.Redacted<string>> | undefined
+  readonly clientSecret?: Config.Config<Redacted.Redacted> | undefined
   readonly tenantId?: Config.Config<string> | undefined
   readonly authority?: Config.Config<string> | undefined
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
@@ -413,7 +417,7 @@ export interface ConfigOptions {
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface Settings {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string> | undefined
+  readonly clientSecret: Redacted.Redacted | undefined
   readonly tenantId: string | undefined
   readonly authority: string | undefined
   readonly scopes: ReadonlyArray<string> | undefined

@@ -41,6 +41,7 @@
  * @since 1.0.0
  */
 import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
+import { dual } from "effect/Function"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
 import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -49,7 +50,7 @@ import { AuthConfig } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
 import type { Session, UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
-import { Sessions, sessionsOf } from "../domain/Sessions.js"
+import { type Sessions, sessionsOf } from "../domain/Sessions.js"
 import {
   expiredOAuthStateCookieOptions,
   expiredSessionCookieOptions,
@@ -61,7 +62,7 @@ import {
 import type { CurrentUser } from "./Middleware.js"
 import { Authenticated, AuthoritativeSession, CurrentSession, currentUserOf } from "./Middleware.js"
 import { checkOrigin } from "./OriginCheck.js"
-import { SessionCache, sessionCacheOf } from "./SessionCache.js"
+import { type SessionCache, sessionCacheOf } from "./SessionCache.js"
 
 // -----------------------------------------------------------------------------
 // Cookies
@@ -107,19 +108,37 @@ export const remainingLifetime = (session: Session): Effect.Effect<Duration.Dura
  * @category combinators
  * @since 1.0.0
  */
-export const setSessionCookie = (
-  config: AuthConfigService,
-  session: Session,
-  token: Redacted.Redacted<string>,
-  options?: { readonly persistent?: boolean | undefined } | undefined
-): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
-  Effect.flatMap(remainingLifetime(session), (maxAge) => {
-    const attributes: NonNullable<Cookies.Cookie["options"]> =
-      options?.persistent === false
-        ? { ...sessionCookieOptions(config, { maxAge }), maxAge: undefined }
-        : sessionCookieOptions(config, { maxAge })
-    return HttpApiBuilder.securitySetCookie(sessionCookieSecurity(config), token, attributes)
-  })
+export const setSessionCookie: {
+  (
+    session: Session,
+    token: Redacted.Redacted,
+    options?: { readonly persistent?: boolean | undefined }
+  ): (config: AuthConfigService) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
+  (
+    config: AuthConfigService,
+    session: Session,
+    token: Redacted.Redacted,
+    options?: { readonly persistent?: boolean | undefined }
+  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
+} = dual(
+  // Not an arity, because the optional `options` makes three arguments mean
+  // either style. What is in the second slot does not: the data-first call has
+  // the session row there, the pipeable one the redacted token.
+  (args) => !Redacted.isRedacted(args[1]),
+  (
+    config: AuthConfigService,
+    session: Session,
+    token: Redacted.Redacted,
+    options?: { readonly persistent?: boolean | undefined }
+  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+    Effect.flatMap(remainingLifetime(session), (maxAge) => {
+      const attributes: NonNullable<Cookies.Cookie["options"]> =
+        options?.persistent === false
+          ? { ...sessionCookieOptions(config, { maxAge }), maxAge: undefined }
+          : sessionCookieOptions(config, { maxAge })
+      return HttpApiBuilder.securitySetCookie(sessionCookieSecurity(config), token, attributes)
+    })
+)
 
 /**
  * Expires the session cookie on the response being built.
@@ -159,16 +178,29 @@ export const clearSessionCookie = (
  * @category combinators
  * @since 1.0.0
  */
-export const setOAuthStateCookie = (
-  config: AuthConfigService,
-  state: Redacted.Redacted<string>,
-  options: { readonly maxAge: Duration.Duration }
-): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
-  HttpApiBuilder.securitySetCookie(
-    oauthStateCookieSecurity(config),
-    state,
-    oauthStateCookieOptions(config, { maxAge: options.maxAge })
-  )
+export const setOAuthStateCookie: {
+  (
+    state: Redacted.Redacted,
+    options: { readonly maxAge: Duration.Duration }
+  ): (config: AuthConfigService) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
+  (
+    config: AuthConfigService,
+    state: Redacted.Redacted,
+    options: { readonly maxAge: Duration.Duration }
+  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
+} = dual(
+  3,
+  (
+    config: AuthConfigService,
+    state: Redacted.Redacted,
+    options: { readonly maxAge: Duration.Duration }
+  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+    HttpApiBuilder.securitySetCookie(
+      oauthStateCookieSecurity(config),
+      state,
+      oauthStateCookieOptions(config, { maxAge: options.maxAge })
+    )
+)
 
 /**
  * Expires the OAuth state-binding cookie on the response being built.
@@ -219,14 +251,14 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
     Effect.fnUntraced(function* <A, E, R>(
       httpEffect: Effect.Effect<A, E, R>,
       options: {
-        readonly credential: Redacted.Redacted<string>
+        readonly credential: Redacted.Redacted
         readonly endpoint: HttpApiEndpoint.Top
       }
     ) {
       // An absent cookie or header decodes to the empty credential. Failing here
       // is what lets `HttpApiBuilder` try the next declared transport.
       if (Redacted.value(options.credential).length === 0) {
-        return yield* Effect.fail(new Unauthorized())
+        return yield* Unauthorized.make()
       }
 
       if (transport.cookie) {
@@ -262,7 +294,7 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
         }
         // `SessionExpired` and an unknown token are one answer at this layer:
         // the endpoint's contract declares only `Unauthorized`.
-        return yield* Effect.fail(new Unauthorized())
+        return yield* Unauthorized.make()
       }
 
       const { refreshed, session, user } = verified.success
@@ -293,10 +325,10 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
   const refused = <A, E, R>(
     _httpEffect: Effect.Effect<A, E, R>,
     _options: {
-      readonly credential: Redacted.Redacted<string>
+      readonly credential: Redacted.Redacted
       readonly endpoint: HttpApiEndpoint.Top
     }
-  ): Effect.Effect<A, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> => Effect.fail(new Unauthorized())
+  ): Effect.Effect<A, E | Unauthorized, Exclude<R, CurrentUser | CurrentSession>> => Effect.fail(Unauthorized.make())
 
   return Authenticated.of({
     secureSessionCookie: config.cookie.secure ? cookie : refused,

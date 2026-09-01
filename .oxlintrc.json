@@ -168,5 +168,20 @@
     "unicorn/no-accessor-recursion": "error"
   },
 
-  "ignorePatterns": ["dist", "node_modules"]
+  "ignorePatterns": ["dist", "node_modules"],
+
+  "overrides": [
+    {
+      // scripts/ holds plain Node .mjs tooling that runs under bare `node` outside
+      // any Effect runtime (prepublish-guard runs during `npm publish`, before the
+      // package is even installed). Effect's logging and Schema APIs are not
+      // reachable there, so the Effect rules cannot apply. Effect's own repo
+      // carves scripts/ out the same way.
+      "files": ["scripts/**"],
+      "rules": {
+        "effecttsgo/global-console": "off",
+        "effecttsgo/strict-boolean-expressions": "off"
+      }
+    }
+  ]
 }

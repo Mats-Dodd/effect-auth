@@ -23,7 +23,8 @@
  *
  * @since 1.0.0
  */
-import { Context, DateTime, Duration, Effect, Layer, Redacted } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, type Redacted } from "effect"
+import { dual } from "effect/Function"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
@@ -32,8 +33,7 @@ import { NotFound, SessionExpired, SessionNotFresh, Unauthorized } from "./Error
 import { AuthEvents, publishSafely } from "./Events.js"
 import type { Session, SessionId, UserFields, UserId, UserModel, UserOf } from "./Schema.js"
 import { baseUserModel, Session as SessionModel } from "./Schema.js"
-import type { PersistenceError } from "./Stores.js"
-import { SessionStore, sessionStoreOf } from "./Stores.js"
+import { type PersistenceError, type SessionStore, sessionStoreOf } from "./Stores.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -78,7 +78,7 @@ export interface CreateOptions {
  */
 export interface CreatedSession {
   readonly session: Session
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
 }
 
 /**
@@ -124,10 +124,13 @@ export interface VerifiedSession<F extends UserFields = {}> {
  * @category combinators
  * @since 1.0.0
  */
-export const grantedLifetime = (session: Session, config: AuthConfigService): Duration.Duration => {
+export const grantedLifetime: {
+  (config: AuthConfigService): (session: Session) => Duration.Duration
+  (session: Session, config: AuthConfigService): Duration.Duration
+} = dual(2, (session: Session, config: AuthConfigService): Duration.Duration => {
   const lifetime = DateTime.distance(session.updatedAt, session.expiresAt)
   return Duration.isPositive(lifetime) ? lifetime : config.session.expiresIn
-}
+})
 
 /**
  * The instant a session becomes due for a rolling refresh:
@@ -136,11 +139,15 @@ export const grantedLifetime = (session: Session, config: AuthConfigService): Du
  * @category combinators
  * @since 1.0.0
  */
-export const refreshDueAt = (session: Session, config: AuthConfigService): DateTime.Utc =>
+export const refreshDueAt: {
+  (config: AuthConfigService): (session: Session) => DateTime.Utc
+  (session: Session, config: AuthConfigService): DateTime.Utc
+} = dual(2, (session: Session, config: AuthConfigService): DateTime.Utc =>
   DateTime.addDuration(
     DateTime.subtractDuration(session.expiresAt, grantedLifetime(session, config)),
     config.session.updateAge
   )
+)
 
 /**
  * Whether a session's expiry is due to be rolled forward at `now`.
@@ -148,8 +155,12 @@ export const refreshDueAt = (session: Session, config: AuthConfigService): DateT
  * @category guards
  * @since 1.0.0
  */
-export const isRefreshDue = (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
+export const isRefreshDue: {
+  (config: AuthConfigService, now: DateTime.Utc): (session: Session) => boolean
+  (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean
+} = dual(3, (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
   DateTime.isLessThanOrEqualTo(refreshDueAt(session, config), now)
+)
 
 /**
  * Whether a session has expired at `now`.
@@ -157,8 +168,10 @@ export const isRefreshDue = (session: Session, config: AuthConfigService, now: D
  * @category guards
  * @since 1.0.0
  */
-export const isExpired = (session: Session, now: DateTime.Utc): boolean =>
-  DateTime.isLessThanOrEqualTo(session.expiresAt, now)
+export const isExpired: {
+  (now: DateTime.Utc): (session: Session) => boolean
+  (session: Session, now: DateTime.Utc): boolean
+} = dual(2, (session: Session, now: DateTime.Utc): boolean => DateTime.isLessThanOrEqualTo(session.expiresAt, now))
 
 /**
  * Whether a session is fresh enough for a sensitive operation at `now`.
@@ -166,8 +179,12 @@ export const isExpired = (session: Session, now: DateTime.Utc): boolean =>
  * @category guards
  * @since 1.0.0
  */
-export const isFreshAt = (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
+export const isFreshAt: {
+  (config: AuthConfigService, now: DateTime.Utc): (session: Session) => boolean
+  (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean
+} = dual(3, (session: Session, config: AuthConfigService, now: DateTime.Utc): boolean =>
   DateTime.isGreaterThan(DateTime.addDuration(session.createdAt, config.session.freshAge), now)
+)
 
 // -----------------------------------------------------------------------------
 // Service
@@ -204,7 +221,7 @@ export interface SessionsService<F extends UserFields = {}> {
    * in", and neither reveals anything about another account.
    */
   readonly verify: (
-    token: Redacted.Redacted<string>
+    token: Redacted.Redacted
   ) => Effect.Effect<VerifiedSession<F>, Unauthorized | SessionExpired | PersistenceError>
 
   /**
@@ -261,7 +278,7 @@ export interface SessionsService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/Sessions") {}
+export class Sessions extends Context.Service<Sessions, SessionsService>()("effect-auth/domain/Sessions") {}
 
 /**
  * {@link Sessions}, seen through a model's custom fields.
@@ -274,7 +291,7 @@ export class Sessions extends Context.Service<Sessions, SessionsService>()("effe
  * @since 1.0.0
  */
 export const sessionsOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<Sessions, SessionsService<F>> =>
-  Context.Service<Sessions, SessionsService<F>>("effect-auth/Sessions")
+  Context.Service<Sessions, SessionsService<F>>("effect-auth/domain/Sessions")
 
 // -----------------------------------------------------------------------------
 // Implementation
@@ -318,17 +335,17 @@ export const make: <F extends UserFields>(
       return { session, token } satisfies CreatedSession
     })
 
-    const verify = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+    const verify = Effect.fnUntraced(function* (token: Redacted.Redacted) {
       const tokenHash = yield* tokens.hashToken(token)
       const found = yield* store.findByTokenHash(tokenHash)
-      const { session, user } = yield* Effect.fromOption(found, () => new Unauthorized())
+      const { session, user } = yield* Effect.fromOption(found, () => Unauthorized.make())
       const now = yield* DateTime.now
 
       if (isExpired(session, now)) {
         // The row is dead weight and the presented token is already useless, so
         // dropping it is safe; a storage failure here must not change the answer.
         yield* Effect.ignore(store.deleteById(session.id, session.userId))
-        return yield* Effect.fail(new SessionExpired())
+        return yield* SessionExpired.make()
       }
 
       if (!isRefreshDue(session, config, now)) {
@@ -338,7 +355,7 @@ export const make: <F extends UserFields>(
       const expiresAt = DateTime.addDuration(now, grantedLifetime(session, config))
       const touched = yield* store.touch(session.id, expiresAt)
       // A `None` means the session was revoked between the read and the update.
-      const refreshed = yield* Effect.fromOption(touched, () => new Unauthorized())
+      const refreshed = yield* Effect.fromOption(touched, () => Unauthorized.make())
       return { session: refreshed, user, refreshed: true } satisfies VerifiedSession<F>
     })
 
@@ -351,9 +368,9 @@ export const make: <F extends UserFields>(
     const revoke = Effect.fnUntraced(function* (sessionId: SessionId, userId: UserId) {
       const removed = yield* store.deleteById(sessionId, userId)
       if (!removed) {
-        return yield* Effect.fail(new NotFound())
+        return yield* NotFound.make()
       }
-      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 })
+      return yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 })
     })
 
     const revokeAll = Effect.fnUntraced(function* (userId: UserId) {
@@ -373,9 +390,9 @@ export const make: <F extends UserFields>(
 
     const requireFresh = Effect.fnUntraced(function* (session: Session) {
       const fresh = yield* isFresh(session)
-      if (!fresh) {
-        return yield* Effect.fail(new SessionNotFresh({ freshAgeSeconds: Duration.toSeconds(config.session.freshAge) }))
-      }
+      return yield* fresh
+        ? Effect.void
+        : SessionNotFresh.make({ freshAgeSeconds: Duration.toSeconds(config.session.freshAge) })
     })
 
     return sessionsOf(model).of({

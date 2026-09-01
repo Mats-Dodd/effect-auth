@@ -18,6 +18,7 @@
  * @since 1.0.0
  */
 import { Context, Crypto, Effect, Encoding, Layer, Redacted, Result } from "effect"
+import { dual } from "effect/Function"
 import { PasswordHashError } from "../domain/Errors.js"
 import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
@@ -37,7 +38,7 @@ export interface PasswordHasherService {
   /**
    * Derives a hash for a new password, with a fresh random salt.
    */
-  readonly hash: (password: Redacted.Redacted<string>) => Effect.Effect<string, PasswordHashError>
+  readonly hash: (password: Redacted.Redacted) => Effect.Effect<string, PasswordHashError>
 
   /**
    * Checks a password against a stored hash.
@@ -51,7 +52,7 @@ export interface PasswordHasherService {
    *
    * The digest comparison is constant time (see {@link timingSafeEqualUint8}).
    */
-  readonly verify: (password: Redacted.Redacted<string>, hash: string) => Effect.Effect<boolean, PasswordHashError>
+  readonly verify: (password: Redacted.Redacted, hash: string) => Effect.Effect<boolean, PasswordHashError>
 }
 
 /**
@@ -61,7 +62,7 @@ export interface PasswordHasherService {
  * @since 1.0.0
  */
 export class PasswordHasher extends Context.Service<PasswordHasher, PasswordHasherService>()(
-  "effect-auth/PasswordHasher"
+  "effect-auth/crypto/PasswordHasher"
 ) {}
 
 // -----------------------------------------------------------------------------
@@ -186,20 +187,23 @@ export interface ParsedHash {
  * @category combinators
  * @since 1.0.0
  */
-export const timingSafeEqualUint8 = (a: Uint8Array, b: Uint8Array): boolean => {
+export const timingSafeEqualUint8: {
+  (b: Uint8Array): (a: Uint8Array) => boolean
+  (a: Uint8Array, b: Uint8Array): boolean
+} = dual(2, (a: Uint8Array, b: Uint8Array): boolean => {
   if (a.length !== b.length) return false
   let diff = 0
   for (let i = 0; i < a.length; i++) {
     diff |= a[i]! ^ b[i]!
   }
   return diff === 0
-}
+})
 
 // -----------------------------------------------------------------------------
 // Hash format
 // -----------------------------------------------------------------------------
 
-const hashError = (reason: string, cause?: unknown): PasswordHashError => new PasswordHashError({ reason, cause })
+const hashError = (reason: string, cause?: unknown): PasswordHashError => PasswordHashError.make({ reason, cause })
 
 /**
  * The shortest digest a stored hash may carry.
@@ -260,7 +264,12 @@ export const parseHash = (hash: string): Effect.Effect<ParsedHash, PasswordHashE
     if (segments.length !== 4) {
       return Effect.fail(hashError("MalformedHash"))
     }
-    const [algorithm, parameterSegment, saltSegment, keySegment] = segments as [string, string, string, string]
+    // The length check above establishes all four indices, which the array type
+    // cannot say on its own.
+    const algorithm = segments[0]!
+    const parameterSegment = segments[1]!
+    const saltSegment = segments[2]!
+    const keySegment = segments[3]!
     if (algorithm !== "scrypt" && algorithm !== "pbkdf2") {
       return Effect.fail(hashError("UnknownAlgorithm"))
     }
@@ -443,18 +452,26 @@ const pbkdf2Derive = (
   salt: Uint8Array,
   params: Pbkdf2Params
 ): Effect.Effect<Uint8Array, PasswordHashError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const subtle = ambientCrypto().subtle
-      const key = await subtle.importKey("raw", toArrayBuffer(encodeUtf8(password)), "PBKDF2", false, ["deriveBits"])
-      const bits = await subtle.deriveBits(
-        { name: "PBKDF2", salt: toArrayBuffer(salt), iterations: params.iterations, hash: "SHA-512" },
-        key,
-        params.dkLen * 8
-      )
-      return new Uint8Array(bits)
-    },
-    catch: (cause) => hashError("Pbkdf2Failed", cause)
+  Effect.gen(function* () {
+    // `ambientCrypto()` is read inside each thunk rather than once above: on a
+    // runtime with no WebCrypto the `.subtle` dereference throws, and
+    // `Effect.tryPromise` catches a synchronous throw from `try` — so that stays
+    // a typed `Pbkdf2Failed` rather than becoming a defect.
+    const key = yield* Effect.tryPromise({
+      try: () =>
+        ambientCrypto().subtle.importKey("raw", toArrayBuffer(encodeUtf8(password)), "PBKDF2", false, ["deriveBits"]),
+      catch: (cause) => hashError("Pbkdf2Failed", cause)
+    })
+    const bits = yield* Effect.tryPromise({
+      try: () =>
+        ambientCrypto().subtle.deriveBits(
+          { name: "PBKDF2", salt: toArrayBuffer(salt), iterations: params.iterations, hash: "SHA-512" },
+          key,
+          params.dkLen * 8
+        ),
+      catch: (cause) => hashError("Pbkdf2Failed", cause)
+    })
+    return new Uint8Array(bits)
   })
 
 // -----------------------------------------------------------------------------
@@ -479,10 +496,10 @@ const pbkdf2Derive = (
  * @category combinators
  * @since 1.0.0
  */
-export const verifyHash = (
-  password: Redacted.Redacted<string>,
-  hash: string
-): Effect.Effect<boolean, PasswordHashError> =>
+export const verifyHash: {
+  (hash: string): (password: Redacted.Redacted) => Effect.Effect<boolean, PasswordHashError>
+  (password: Redacted.Redacted, hash: string): Effect.Effect<boolean, PasswordHashError>
+} = dual(2, (password: Redacted.Redacted, hash: string): Effect.Effect<boolean, PasswordHashError> =>
   Effect.flatMap(parseHash(hash), (parsed) => {
     const plaintext = Redacted.value(password)
     return parsed.algorithm === "scrypt"
@@ -502,6 +519,7 @@ export const verifyHash = (
           return timingSafeEqualUint8(derived, parsed.key)
         })
   })
+)
 
 // -----------------------------------------------------------------------------
 // Implementations
@@ -514,6 +532,13 @@ export const verifyHash = (
  * @category constructors
  * @since 1.0.0
  */
+// A pipeable overload is undecidable for this signature: `options` is optional,
+// so the published one-argument call `makeScrypt(crypto)` is indistinguishable
+// at runtime from a data-last partial application. Wrapping this in `dual` would
+// silently turn that call into a function instead of a hasher — a behavior break
+// in a released constructor — so the diagnostic is suppressed rather than
+// satisfied. See also `makePbkdf2` below.
+// oxlint-disable-next-line effecttsgo/missing-pipeable-signature
 export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): PasswordHasherService => {
   const params: ScryptParams = {
     N: options?.N ?? defaultScryptOptions.N,
@@ -524,7 +549,7 @@ export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): Pass
   const parameterSegment = `n=${params.N},r=${params.r},p=${params.p}`
 
   return PasswordHasher.of({
-    hash: Effect.fnUntraced(function* (password: Redacted.Redacted<string>) {
+    hash: Effect.fnUntraced(function* (password: Redacted.Redacted) {
       const salt = yield* Effect.orDie(crypto.randomBytes(saltBytes))
       const key = yield* scryptDerive(Redacted.value(password), salt, params)
       return formatHash("scrypt", parameterSegment, salt, key)
@@ -540,6 +565,10 @@ export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): Pass
  * @category constructors
  * @since 1.0.0
  */
+// Same as `makeScrypt`: the optional `options` makes a data-last overload
+// ambiguous with the published one-argument call, so `dual` cannot be applied
+// without changing what `makePbkdf2(crypto)` returns.
+// oxlint-disable-next-line effecttsgo/missing-pipeable-signature
 export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): PasswordHasherService => {
   const params: Pbkdf2Params = {
     iterations: options?.iterations ?? defaultPbkdf2Options.iterations,
@@ -548,7 +577,7 @@ export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): Pass
   const parameterSegment = `i=${params.iterations}`
 
   return PasswordHasher.of({
-    hash: Effect.fnUntraced(function* (password: Redacted.Redacted<string>) {
+    hash: Effect.fnUntraced(function* (password: Redacted.Redacted) {
       const salt = yield* Effect.orDie(crypto.randomBytes(saltBytes))
       const key = yield* pbkdf2Derive(Redacted.value(password), salt, params)
       return formatHash("pbkdf2", parameterSegment, salt, key)

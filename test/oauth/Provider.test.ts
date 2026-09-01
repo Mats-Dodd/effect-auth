@@ -16,7 +16,7 @@ import { MockProvider } from "../../src/testing/index.js"
 const github = Github.make({ clientId: "id", clientSecret: Redacted.make("secret") })
 const google = Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
 
-describe("oauth/Provider", () => {
+describe.sequential("oauth/Provider", () => {
   describe("registry", () => {
     it("resolves a registered id and refuses everything else", () => {
       const registry = makeRegistry([github, google])
@@ -64,35 +64,41 @@ describe("oauth/Provider", () => {
       assert.throws(() => OAuthProviders.layer([github, other]), /duplicate OAuth provider id "github"/)
     })
 
-    it.effect("is empty, not absent, when a deployment configures no providers", () =>
-      Effect.gen(function* () {
-        const registry = yield* OAuthProviders
-        assert.deepStrictEqual([...registry.ids], [])
-        const result = yield* Effect.result(registry.get("github"))
-        assert.strictEqual(result._tag, "Failure")
-      }).pipe(Effect.provide(OAuthProviders.layer([])))
-    )
-
-    it.effect("gathers several provider values into a single registry", () =>
-      Effect.gen(function* () {
-        const registry = yield* OAuthProviders
-        assert.deepStrictEqual([...registry.ids], ["github", "google"])
-      }).pipe(
-        Effect.provide(
-          OAuthProviders.layer([
-            Github.make({ clientId: "id", clientSecret: Redacted.make("secret") }),
-            Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
-          ])
-        )
+    // Each of the three registries below is a deployment of its own, so each
+    // gets a block of its own rather than a layer provided inside the test.
+    it.layer(OAuthProviders.layer([]))((it) => {
+      it.effect("is empty, not absent, when a deployment configures no providers", () =>
+        Effect.gen(function* () {
+          const registry = yield* OAuthProviders
+          assert.deepStrictEqual([...registry.ids], [])
+          const result = yield* Effect.result(registry.get("github"))
+          assert.strictEqual(result._tag, "Failure")
+        })
       )
-    )
+    })
 
-    it.effect("keeps a single-provider registry usable on its own", () =>
-      Effect.gen(function* () {
-        const registry = yield* OAuthProviders
-        assert.deepStrictEqual([...registry.ids], ["mock"])
-      }).pipe(Effect.provide(OAuthProviders.layer([MockProvider.mockProvider()])))
-    )
+    it.layer(
+      OAuthProviders.layer([
+        Github.make({ clientId: "id", clientSecret: Redacted.make("secret") }),
+        Google.make({ clientId: "id", clientSecret: Redacted.make("secret") })
+      ])
+    )((it) => {
+      it.effect("gathers several provider values into a single registry", () =>
+        Effect.gen(function* () {
+          const registry = yield* OAuthProviders
+          assert.deepStrictEqual([...registry.ids], ["github", "google"])
+        })
+      )
+    })
+
+    it.layer(OAuthProviders.layer([MockProvider.mockProvider()]))((it) => {
+      it.effect("keeps a single-provider registry usable on its own", () =>
+        Effect.gen(function* () {
+          const registry = yield* OAuthProviders
+          assert.deepStrictEqual([...registry.ids], ["mock"])
+        })
+      )
+    })
   })
 
   describe("issuers", () => {
@@ -128,7 +134,14 @@ describe("oauth/Provider", () => {
     })
   })
 
-  describe("fetchJson", () => {
+  /**
+   * One stubbed provider for the whole block, which is why the block is
+   * sequential: each test replaces the route and forgets the requests its
+   * siblings made, so the log describes this test alone.
+   */
+  const server = MockProvider.mockServer()
+
+  it.layer(MockProvider.safeHttpLayer(server.fetch))("fetchJson", (it) => {
     const call = (url: string) =>
       Effect.result(
         fetchJson({
@@ -139,7 +152,7 @@ describe("oauth/Provider", () => {
       )
 
     it.effect("reports a refusal as a status rather than an error", () => {
-      const server = MockProvider.mockServer()
+      server.clear()
       server.on(MockProvider.userInfoUrl, () => MockProvider.json({ message: "no" }, 403))
       return Effect.gen(function* () {
         const result = yield* call(MockProvider.userInfoUrl)
@@ -147,22 +160,22 @@ describe("oauth/Provider", () => {
         if (result._tag !== "Success") return
         assert.strictEqual(result.success.status, 403)
         assert.isNull(result.success.body)
-      }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
+      })
     })
 
     it.effect("reads a body that is not JSON as no body at all", () => {
-      const server = MockProvider.mockServer()
+      server.clear()
       server.on(MockProvider.userInfoUrl, () => new Response("<html>nope</html>", { status: 200 }))
       return Effect.gen(function* () {
         const result = yield* call(MockProvider.userInfoUrl)
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
         assert.isNull(result.success.body)
-      }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
+      })
     })
 
     it.effect("refuses a redirect, and reports it as ProviderUnavailable", () => {
-      const server = MockProvider.mockServer()
+      server.clear()
       server.on(MockProvider.userInfoUrl, () => MockProvider.redirect("http://169.254.169.254/"))
       return Effect.gen(function* () {
         const result = yield* call(MockProvider.userInfoUrl)
@@ -170,7 +183,7 @@ describe("oauth/Provider", () => {
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "ProviderUnavailable")
         assert.strictEqual(server.requests.length, 1)
-      }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
+      })
     })
   })
 })

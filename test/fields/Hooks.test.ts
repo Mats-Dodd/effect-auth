@@ -24,7 +24,7 @@
  *   `every source` block at the bottom of this file.
  */
 import { assert, describe, layer } from "@effect/vitest"
-import { Cause, Effect, Layer, Option } from "effect"
+import { Cause, Effect, Layer, Option, Random } from "effect"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
 import { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthHooksOf, AuthHooksService } from "../../src/domain/Hooks.js"
@@ -55,7 +55,7 @@ const users = userStoreOf(model)
 const planHooks: AuthHooksOf<Fields> = {
   beforeUserCreate: ({ candidate }) =>
     candidate.email.startsWith("banned-plan-")
-      ? Effect.fail(new PolicyRefused({ code: "plan_not_available", detail: candidate.plan }))
+      ? Effect.fail(PolicyRefused.make({ code: "plan_not_available", detail: candidate.plan }))
       : Effect.succeed({
           ...candidate,
           // Read off the fields the model resolved before the hook was consulted,
@@ -175,15 +175,21 @@ const everySource = MagicLinkTest.layerMagicLink().pipe(
   Layer.provide(Layer.succeed(hooksOf(model))(planHooks))
 )
 
-/** What a provider hands back, with a subject no other test will claim. */
-const identityFor = (email: string): OAuthIdentity => ({
-  providerId: "github",
-  issuer: oauthIssuer("github"),
-  accountId: `gh-${globalThis.crypto.randomUUID()}`,
-  email,
-  emailVerified: true,
-  name: testName
-})
+/**
+ * What a provider hands back, with a subject no other test will claim.
+ *
+ * The subject is drawn from Effect's `Random` — injected randomness rather than
+ * the global `crypto` — which is why this is an effect and not a plain value.
+ */
+const identityFor = (email: string): Effect.Effect<OAuthIdentity> =>
+  Effect.map(Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER), (draw) => ({
+    providerId: "github",
+    issuer: oauthIssuer("github"),
+    accountId: `gh-${draw.toString(36)}`,
+    email,
+    emailVerified: true,
+    name: testName
+  }))
 
 // One deployment, one policy: the tests below assert the *same* row against the
 // two sources that do not build it through the model.
@@ -194,7 +200,7 @@ describe.sequential("fields/Hooks — every source", () => {
         const store = yield* users
         const email = uniqueEmail("hooks-fields-oauth")
 
-        const linked = yield* (yield* Accounts).linkOAuth(identityFor(email))
+        const linked = yield* (yield* Accounts).linkOAuth(yield* identityFor(email))
 
         assert.isTrue(linked.userCreated)
         // The very row the password source produces for a defaulted plan — the
@@ -288,7 +294,7 @@ layer(AuthTest.layer({ user: { model }, hooks: smugglingHooks, trustedProviders:
         const store = yield* users
         const email = uniqueEmail("hooks-fields-smuggle-oauth")
 
-        const exit = yield* Effect.exit((yield* Accounts).linkOAuth(identityFor(email)))
+        const exit = yield* Effect.exit((yield* Accounts).linkOAuth(yield* identityFor(email)))
 
         assert.strictEqual(exit._tag, "Failure")
         assert.isTrue(exit._tag === "Failure" && Cause.hasDies(exit.cause))

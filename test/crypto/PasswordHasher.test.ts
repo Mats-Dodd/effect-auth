@@ -1,7 +1,7 @@
 import { assert, describe, it, layer } from "@effect/vitest"
 import { Effect, Encoding, Layer, Redacted, Result, Schema } from "effect"
 import * as PasswordHasher from "../../src/crypto/PasswordHasher.js"
-import { layerWebCrypto } from "../../src/internal/crypto.js"
+import { layerWebCrypto, webCrypto } from "../../src/internal/crypto.js"
 import { testPassword } from "../fixtures.js"
 
 // Real cost parameters would make this file take minutes; the format, the
@@ -9,10 +9,20 @@ import { testPassword } from "../fixtures.js"
 // to cost. The production defaults are asserted separately, from the constants.
 // The hashing layers read their salt from the ambient `Crypto`; `Auth.layer`
 // provides the WebCrypto-backed default, and standalone use provides it here.
-const scrypt = PasswordHasher.layerScrypt({ N: 1024, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
+const scryptOptions = { N: 1024, r: 8, p: 1 } as const
 // The lowest iteration count the stored-hash floor accepts; kept cheap enough
 // for the suite while still passing the sub-floor guard in `verify`.
-const pbkdf2 = PasswordHasher.layerPbkdf2({ iterations: 10_000 }).pipe(Layer.provide(layerWebCrypto))
+const pbkdf2Options = { iterations: 10_000 } as const
+
+const scrypt = PasswordHasher.layerScrypt(scryptOptions).pipe(Layer.provide(layerWebCrypto))
+const pbkdf2 = PasswordHasher.layerPbkdf2(pbkdf2Options).pipe(Layer.provide(layerWebCrypto))
+
+// The same two hashers as plain services. A test that needs a *second* hasher
+// while a block already provides one builds it here rather than nesting an
+// `Effect.provide` inside the test body: these are exactly what the layers
+// above construct, `webCrypto` being what `layerWebCrypto` provides.
+const scryptHasher = PasswordHasher.makeScrypt(webCrypto, scryptOptions)
+const pbkdf2Hasher = PasswordHasher.makePbkdf2(webCrypto, pbkdf2Options)
 
 const password = testPassword
 const wrong = Redacted.make("correct horse battery stapl3")
@@ -90,10 +100,7 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
 
   it.effect("verifies a pbkdf2 hash under the scrypt layer", () =>
     Effect.gen(function* () {
-      const hash = yield* Effect.provide(
-        hasher.use((_) => _.hash(password)),
-        pbkdf2
-      )
+      const hash = yield* pbkdf2Hasher.hash(password)
 
       assert.strictEqual(hash.startsWith("pbkdf2$"), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
@@ -103,10 +110,7 @@ layer(scrypt)("crypto/PasswordHasher (scrypt)", (it) => {
 
   it.effect("verifies with the cost the hash was written at, not today's", () =>
     Effect.gen(function* () {
-      const legacy = yield* Effect.provide(
-        hasher.use((_) => _.hash(password)),
-        PasswordHasher.layerScrypt({ N: 2048, r: 8, p: 1 }).pipe(Layer.provide(layerWebCrypto))
-      )
+      const legacy = yield* PasswordHasher.makeScrypt(webCrypto, { N: 2048, r: 8, p: 1 }).hash(password)
 
       assert.strictEqual(legacy.split("$")[1], "n=2048,r=8,p=1")
       // Today's layer runs at a different cost and still accepts it.
@@ -325,10 +329,7 @@ layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
 
   it.effect("verifies a scrypt hash under the pbkdf2 layer", () =>
     Effect.gen(function* () {
-      const hash = yield* Effect.provide(
-        hasher.use((_) => _.hash(password)),
-        scrypt
-      )
+      const hash = yield* scryptHasher.hash(password)
 
       assert.strictEqual(hash.startsWith("scrypt$"), true)
       assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
@@ -337,22 +338,27 @@ layer(pbkdf2)("crypto/PasswordHasher (pbkdf2)", (it) => {
   )
 })
 
+// The documented cost needs 32 MiB of working memory, which is exactly
+// Node's default `maxmem`; without an explicit bound `scrypt` throws
+// `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` and every sign-up 500s. This is the
+// only test that pays for real parameters, and it is worth it — so it stays
+// outside the cheap blocks, on a layer of its own.
+layer(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto)))(
+  "crypto/PasswordHasher (production cost)",
+  (it) => {
+    it.effect("works at the documented production cost", () =>
+      Effect.gen(function* () {
+        const hash = yield* hasher.use((_) => _.hash(password))
+
+        assert.strictEqual(hash.split("$")[1], "n=16384,r=16,p=1")
+        assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
+        assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
+      })
+    )
+  }
+)
+
 describe("crypto/PasswordHasher", () => {
-  // The documented cost needs 32 MiB of working memory, which is exactly
-  // Node's default `maxmem`; without an explicit bound `scrypt` throws
-  // `ERR_CRYPTO_INVALID_SCRYPT_PARAMS` and every sign-up 500s. This is the
-  // only test that pays for real parameters, and it is worth it — so it stays
-  // outside the cheap block, on a layer of its own.
-  it.effect("works at the documented production cost", () =>
-    Effect.gen(function* () {
-      const hash = yield* hasher.use((_) => _.hash(password))
-
-      assert.strictEqual(hash.split("$")[1], "n=16384,r=16,p=1")
-      assert.strictEqual(yield* hasher.use((_) => _.verify(password, hash)), true)
-      assert.strictEqual(yield* hasher.use((_) => _.verify(wrong, hash)), false)
-    }).pipe(Effect.provide(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto))))
-  )
-
   it.effect("keeps a parameter named __proto__ off Object.prototype", () =>
     Effect.gen(function* () {
       const parsed = yield* PasswordHasher.parseHash(

@@ -2,8 +2,7 @@ import { assert, describe, it, layer } from "@effect/vitest"
 import { DateTime, Effect } from "effect"
 import { Accounts, canLinkImplicitly } from "../../src/domain/Accounts.js"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
-import { CredentialIssuer, oauthIssuer } from "../../src/domain/Schema.js"
-import type { UserId } from "../../src/domain/Schema.js"
+import { CredentialIssuer, oauthIssuer, UserId } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, forUser, signUpUser, testName, uniqueEmail } from "../fixtures.js"
@@ -14,8 +13,14 @@ import { expectSome, forUser, signUpUser, testName, uniqueEmail } from "../fixtu
  * Every test in the block writes to one database, so `gh-1000` twice over would
  * be the *same* identity — the second test would find the first one's account
  * and assert nothing.
+ *
+ * A counter rather than randomness: uniqueness is only ever needed within this
+ * module, every deployment it builds is a database of its own, and a subject
+ * that reads `gh-3` names the third identity the file minted when an assertion
+ * about it fails.
  */
-const uniqueAccountId = (label = "gh"): string => `${label}-${globalThis.crypto.randomUUID()}`
+let subjects = 0
+const uniqueAccountId = (label = "gh"): string => `${label}-${++subjects}`
 
 /**
  * What a provider hands back. `accountId` is the provider's stable subject, and
@@ -186,7 +191,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
           const user = yield* localUser(email, true)
 
           const failure = yield* Effect.flip(accounts.linkOAuth(identity({ email, emailVerified: false })))
-          if (failure._tag !== "AccountAlreadyLinked") return assert.fail(`unexpected ${failure._tag}`)
+          if (failure._tag !== "AccountAlreadyLinked") assert.fail(`unexpected ${failure._tag}`)
           assert.strictEqual(failure.providerId, "github")
 
           // Nothing was written.
@@ -278,7 +283,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
       Effect.gen(function* () {
         const accounts = yield* Accounts
         const failure = yield* Effect.flip(
-          accounts.linkToUser("01890000-0000-7000-8000-000000000000" as UserId, identity())
+          accounts.linkToUser(UserId.make("01890000-0000-7000-8000-000000000000"), identity())
         )
         assert.strictEqual(failure._tag, "UserNotFound")
       })
@@ -332,7 +337,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
 
         const adasAccounts = yield* accounts.listForUser(ada.id)
         const target = adasAccounts.find((account) => account.providerId === "github")
-        if (target === undefined) return assert.fail("expected the linked GitHub account")
+        if (target === undefined) assert.fail("expected the linked GitHub account")
 
         // Bob has one account, so his own guard would fire first; give him a
         // second so the ownership check is what refuses.
@@ -355,7 +360,7 @@ layer(AuthTest.layer())("domain/Accounts", (it) => {
  * back, and PGlite serves the whole block from a single connection, so a
  * rollback here would take a concurrent sibling's uncommitted writes with it.
  */
-describe("domain/Accounts/linkOAuth (provisioning race)", () => {
+layer(AuthTest.layer())("domain/Accounts/linkOAuth (provisioning race)", (it) => {
   it.effect("gives two concurrent callbacks for one brand-new identity the same user", () =>
     Effect.gen(function* () {
       const accounts = yield* Accounts
@@ -388,6 +393,6 @@ describe("domain/Accounts/linkOAuth (provisioning race)", () => {
       const users = yield* UserStore
       const owner = yield* expectSome(yield* users.findByEmail(email), "expected the user")
       assert.strictEqual((yield* accounts.listForUser(owner.id)).length, 1)
-    }).pipe(Effect.provide(AuthTest.layer()))
+    })
   )
 })

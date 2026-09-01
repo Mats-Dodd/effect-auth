@@ -1,5 +1,5 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { Duration, Effect, Layer, Redacted } from "effect"
+import { Duration, Effect, Layer, Redacted, type Result } from "effect"
 import { TestClock } from "effect/testing"
 import type { JWTPayload } from "jose"
 import { OAuthFlow } from "../../src/oauth/Flow.js"
@@ -63,7 +63,9 @@ const runOidc = Effect.fnUntraced(function* (options?: {
   const nonce = MockProvider.paramsOf(started.url).get("nonce")
 
   yield* Effect.sync(() =>
-    server.on(MockProvider.tokenUrl, async () => {
+    // The route is a `fetch`-shaped callback, so what it hands back is a
+    // promise rather than an Effect: the signer's own promise, mapped.
+    server.on(MockProvider.tokenUrl, () => {
       const claims = options?.claims?.(nonce, email) ?? {
         sub: email,
         email,
@@ -71,13 +73,14 @@ const runOidc = Effect.fnUntraced(function* (options?: {
         name: testName,
         nonce
       }
-      const idToken = await signer.sign(claims, options?.sign)
-      return MockProvider.json({
-        access_token: "provider-access-token",
-        token_type: "bearer",
-        expires_in: 3600,
-        ...(options?.omitIdToken === true ? {} : { id_token: idToken })
-      })
+      return signer.sign(claims, options?.sign).then((idToken) =>
+        MockProvider.json({
+          access_token: "provider-access-token",
+          token_type: "bearer",
+          expires_in: 3600,
+          ...(options?.omitIdToken === true ? {} : { id_token: idToken })
+        })
+      )
     })
   )
 
@@ -94,11 +97,19 @@ const runOidc = Effect.fnUntraced(function* (options?: {
   }
 })
 
-const assertIdTokenInvalid = (result: { readonly _tag: string; readonly failure?: unknown }) => {
+/**
+ * The callback refused the token, and said so as an `OAuthProviderError`.
+ *
+ * The parameter is a `Result` over any failure that carries a tag and a reason,
+ * so the narrowing is the `Result` union's own rather than a cast.
+ */
+const assertIdTokenInvalid = (
+  result: Result.Result<unknown, { readonly _tag: string; readonly reason?: string | undefined }>
+) => {
   assert.strictEqual(result._tag, "Failure")
-  const failure = result.failure as { _tag?: string; reason?: string } | undefined
-  assert.strictEqual(failure?._tag, "OAuthProviderError")
-  assert.strictEqual(failure?.reason, "IdTokenInvalid")
+  if (result._tag !== "Failure") return
+  assert.strictEqual(result.failure._tag, "OAuthProviderError")
+  assert.strictEqual(result.failure.reason, "IdTokenInvalid")
 }
 
 describe.sequential("oauth/Flow (OIDC)", () => {

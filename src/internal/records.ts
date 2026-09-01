@@ -4,6 +4,7 @@
  *
  * @internal
  */
+import { dual } from "effect/Function"
 
 /**
  * `record` with every key it holds `undefined` at dropped — in the type as well
@@ -60,14 +61,17 @@ export const camelToSnake = (name: string): string => name.replace(/[A-Z]/g, (le
  *
  * @internal
  */
-export const pickKeys = (record: object, keys: ReadonlyArray<string>): { readonly [key: string]: unknown } => {
+export const pickKeys: {
+  (keys: ReadonlyArray<string>): (record: object) => { readonly [key: string]: unknown }
+  (record: object, keys: ReadonlyArray<string>): { readonly [key: string]: unknown }
+} = dual(2, (record: object, keys: ReadonlyArray<string>): { readonly [key: string]: unknown } => {
   const wanted = new Set(keys)
   const picked: Record<string, unknown> = Object.create(null)
   for (const [key, value] of Object.entries(record)) {
     if (wanted.has(key)) picked[key] = value
   }
   return picked
-}
+})
 
 /**
  * `defaults`, with whatever `overrides` actually states applied over it.
@@ -80,7 +84,13 @@ export const pickKeys = (record: object, keys: ReadonlyArray<string>): { readonl
  *
  * @internal
  */
-export const withDefaults = <A extends object>(
-  defaults: A,
-  overrides: { readonly [K in keyof A]?: A[K] | undefined } | undefined
-): A => ({ ...defaults, ...omitUndefined(overrides ?? {}) })
+export const withDefaults: {
+  <A extends object>(overrides: { readonly [K in keyof A]?: A[K] | undefined } | undefined): (defaults: A) => A
+  <A extends object>(defaults: A, overrides: { readonly [K in keyof A]?: A[K] | undefined } | undefined): A
+} = dual(
+  2,
+  <A extends object>(defaults: A, overrides: { readonly [K in keyof A]?: A[K] | undefined } | undefined): A => ({
+    ...defaults,
+    ...omitUndefined(overrides ?? {})
+  })
+)

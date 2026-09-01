@@ -39,6 +39,7 @@
  * @since 1.0.0
  */
 import { DateTime, Effect, Option, Redacted, Schema } from "effect"
+import { dual } from "effect/Function"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
 import { OAuthStateMismatch } from "../domain/Errors.js"
@@ -127,9 +128,9 @@ export interface IssueOptions {
  */
 export interface IssuedState {
   /** The opaque value that travels as `state`. Only its digest is stored. */
-  readonly state: Redacted.Redacted<string>
+  readonly state: Redacted.Redacted
   /** The PKCE verifier, sent later on the token request. */
-  readonly codeVerifier: Redacted.Redacted<string>
+  readonly codeVerifier: Redacted.Redacted
   /** The `code_challenge` that goes out now: base64url SHA-256 of the verifier. */
   readonly codeChallenge: string
   /** The nonce that goes out now, when one was requested. */
@@ -214,29 +215,37 @@ export const issue: (
  * @category combinators
  * @since 1.0.0
  */
-export const consume: (
-  providerId: string,
-  state: Redacted.Redacted<string>
-) => Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore> = Effect.fnUntraced(
-  function* (providerId: string, state: Redacted.Redacted<string>) {
+export const consume: {
+  (
+    providerId: string,
+    state: Redacted.Redacted
+  ): Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore>
+  (
+    state: Redacted.Redacted
+  ): (
+    providerId: string
+  ) => Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore>
+} = dual(
+  2,
+  Effect.fnUntraced(function* (providerId: string, state: Redacted.Redacted) {
     const tokens = yield* Token
     const store = yield* VerificationStore
 
     const stateHash = yield* tokens.hashToken(state)
     const claimed = yield* store.consume(oauthStateIdentifier(stateHash), stateHash)
     if (Option.isNone(claimed)) {
-      return yield* Effect.fail(new OAuthStateMismatch())
+      return yield* OAuthStateMismatch.make()
     }
 
     const payload = claimed.value.payload
     if (payload === null) {
-      return yield* Effect.fail(new OAuthStateMismatch())
+      return yield* OAuthStateMismatch.make()
     }
 
-    const decoded = yield* Effect.mapError(Schema.decodeEffect(StateJson)(payload), () => new OAuthStateMismatch())
+    const decoded = yield* Effect.mapError(Schema.decodeEffect(StateJson)(payload), () => OAuthStateMismatch.make())
     if (decoded.providerId !== providerId) {
-      return yield* Effect.fail(new OAuthStateMismatch())
+      return yield* OAuthStateMismatch.make()
     }
     return decoded
-  }
+  })
 )

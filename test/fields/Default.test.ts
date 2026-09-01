@@ -31,6 +31,15 @@ const variants = ["select", "insert", "update", "json", "jsonCreate", "jsonUpdat
 
 const annotationsOf = (schema: Schema.Top): unknown => schema.ast.annotations
 
+/**
+ * The own enumerable fields of a decoded row, as plain data.
+ *
+ * The two sides of the round-trip assertion below come from different schema
+ * variants — one of them a `Model.Class` instance — so the prototypes must stay
+ * out of the comparison. `Object.entries` copies exactly what a spread would.
+ */
+const fieldsOf = (value: object): Record<string, unknown> => Object.fromEntries(Object.entries(value))
+
 describe("fields/Default", () => {
   it("derives the same fields as the base model, variant for variant", () => {
     const struct = Model.Struct(Model.fields(User))
@@ -68,8 +77,8 @@ describe("fields/Default", () => {
         updatedAt: "2024-01-02T00:00:00.000Z"
       }
       const throughModel = yield* baseUserModel.decodeRow(row)
-      const throughClass = yield* Schema.decodeUnknownEffect(User)(row)
-      assert.deepStrictEqual({ ...throughModel }, { ...throughClass })
+      const throughClass = yield* Schema.decodeEffect(User)(row)
+      assert.deepStrictEqual(fieldsOf(throughModel), fieldsOf(throughClass))
 
       const encoded = yield* Schema.encodeEffect(baseUserModel.json)(throughModel)
       assert.deepStrictEqual(encoded, row)

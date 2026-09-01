@@ -19,7 +19,7 @@
  *
  * @since 1.0.0
  */
-import { Context, Effect, Layer, Option, Redacted, Ref } from "effect"
+import { Context, Effect, Layer, Option, type Redacted, Ref } from "effect"
 import type { AuthEmail, ChangeEmailEmail } from "../config/AuthEmails.js"
 import { AuthEmails } from "../config/AuthEmails.js"
 import { EmailDeliveryError } from "../domain/Errors.js"
@@ -109,9 +109,9 @@ export interface SentEmail {
   /** The user it was about, or `null` when the flow does not know one. */
   readonly user: User | null
   /** The raw single-use token the link carries. */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /** The link itself. */
-  readonly url: Redacted.Redacted<string>
+  readonly url: Redacted.Redacted
 }
 
 /**
@@ -189,7 +189,7 @@ export interface TestEmailsService {
    * Fails with a defect when no such e-mail was sent — in a test that is a
    * broken assumption, not a condition to recover from.
    */
-  readonly tokenFor: (kind: EmailKind, address?: string) => Effect.Effect<Redacted.Redacted<string>>
+  readonly tokenFor: (kind: EmailKind, address?: string) => Effect.Effect<Redacted.Redacted>
 
   /**
    * Empties the outbox.
@@ -231,7 +231,7 @@ export const layerEmails = (delivery: EmailDelivery = "ok"): Layer.Layer<TestEma
       const record = (email: SentEmail) =>
         Ref.update(outbox, (sent) => [...sent, email]).pipe(
           Effect.andThen(
-            delivery === "ok" ? Effect.void : Effect.fail(new EmailDeliveryError({ reason: "TestMailerRefused" }))
+            delivery === "ok" ? Effect.void : Effect.fail(EmailDeliveryError.make({ reason: "TestMailerRefused" }))
           )
         )
 

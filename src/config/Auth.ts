@@ -30,12 +30,16 @@ import type { PasswordHasher } from "../crypto/PasswordHasher.js"
 import { layerScrypt } from "../crypto/PasswordHasher.js"
 import type { Token } from "../crypto/Token.js"
 import { layer as tokenLayer } from "../crypto/Token.js"
-import { Accounts, layer as accountsLayer } from "../domain/Accounts.js"
+import { type Accounts, layer as accountsLayer } from "../domain/Accounts.js"
 import type { DiscoveryError } from "../domain/Errors.js"
 import type { AuthEvent } from "../domain/Events.js"
 import { AuthEvents, layer as eventsLayer } from "../domain/Events.js"
-import type { PasswordsService } from "../domain/Passwords.js"
-import { layerFor as passwordsLayerFor, Passwords, passwordsOf } from "../domain/Passwords.js"
+import {
+  layerFor as passwordsLayerFor,
+  type Passwords,
+  passwordsOf,
+  type PasswordsService
+} from "../domain/Passwords.js"
 import type {
   SessionWithUserSchema,
   SignUpResponseSchema,
@@ -52,13 +56,20 @@ import {
   makeUserResponse,
   UserModelRef
 } from "../domain/Schema.js"
-import type { SessionsService } from "../domain/Sessions.js"
-import { layerFor as sessionsLayerFor, Sessions, sessionsOf } from "../domain/Sessions.js"
-import type { AccountStore, AuthStores, PersistenceError, UserStore, UserStoreService } from "../domain/Stores.js"
-import { SessionStore, userStoreOf, VerificationStore, WithAuthTransaction } from "../domain/Stores.js"
-import type { UsersService } from "../domain/Users.js"
-import { layerFor as usersLayerFor, Users, usersOf } from "../domain/Users.js"
-import { layer as verificationsLayer, Verifications } from "../domain/Verifications.js"
+import { layerFor as sessionsLayerFor, type Sessions, sessionsOf, type SessionsService } from "../domain/Sessions.js"
+import {
+  type AccountStore,
+  type AuthStores,
+  type PersistenceError,
+  SessionStore,
+  type UserStore,
+  userStoreOf,
+  type UserStoreService,
+  VerificationStore,
+  type WithAuthTransaction
+} from "../domain/Stores.js"
+import { layerFor as usersLayerFor, type Users, usersOf, type UsersService } from "../domain/Users.js"
+import { layer as verificationsLayer, type Verifications } from "../domain/Verifications.js"
 import type { AuthApiGroupOf } from "../http/AuthApi.js"
 import { makeAuthApi, makeAuthApiGroup } from "../http/AuthApi.js"
 import * as AuthCookies from "../http/Cookies.js"
@@ -67,10 +78,10 @@ import type { Authenticated, CurrentUser } from "../http/Middleware.js"
 import { currentUserOf } from "../http/Middleware.js"
 import { layerFor as middlewareLayerFor } from "../http/MiddlewareLive.js"
 import * as RateLimits from "../http/RateLimits.js"
-import { layerFor as sessionCacheLayerFor, SessionCache } from "../http/SessionCache.js"
+import { layerFor as sessionCacheLayerFor, type SessionCache } from "../http/SessionCache.js"
 import { optionalConfig } from "../internal/config.js"
 import { layerWebCrypto } from "../internal/crypto.js"
-import { layer as flowLayer, OAuthFlow } from "../oauth/Flow.js"
+import { layer as flowLayer, type OAuthFlow } from "../oauth/Flow.js"
 import type { OAuthProviderConfig } from "../oauth/Provider.js"
 import { OAuthProviders } from "../oauth/Provider.js"
 import * as Migrations from "../sql/Migrations.js"
@@ -324,7 +335,7 @@ export interface OAuthOptions<F extends UserFields = {}> extends Options<F>, OAu
  */
 export interface ConfigSettings extends Extras {
   readonly baseUrl: Config.Config<string>
-  readonly secret: Config.Config<Redacted.Redacted<string>>
+  readonly secret: Config.Config<Redacted.Redacted>
   readonly basePath?: Config.Config<string> | undefined
   readonly trustedOrigins?: Config.Config<ReadonlyArray<string>> | undefined
   readonly trustedProviders?: Config.Config<ReadonlyArray<string>> | undefined
@@ -634,7 +645,7 @@ const oauthStack = <F extends UserFields>(
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface ScalarSettings {
   readonly baseUrl: string
-  readonly secret: Redacted.Redacted<string>
+  readonly secret: Redacted.Redacted
   readonly basePath: string | undefined
   readonly trustedOrigins: ReadonlyArray<string> | undefined
   readonly trustedProviders: ReadonlyArray<string> | undefined
@@ -1083,9 +1094,9 @@ export const cleanupExpired: Effect.Effect<
  * @category layers
  * @since 1.0.0
  */
-export const layerCleanup = (
-  options?: { readonly interval?: Duration.Duration | undefined } | undefined
-): Layer.Layer<never, never, SessionStore | VerificationStore> =>
+export const layerCleanup = (options?: {
+  readonly interval?: Duration.Duration | undefined
+}): Layer.Layer<never, never, SessionStore | VerificationStore> =>
   Layer.effectDiscard(
     Effect.forkScoped(
       Effect.repeat(

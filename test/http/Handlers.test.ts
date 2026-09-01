@@ -30,7 +30,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       assert.isNotNull(registered.session)
       // The session projection is the JSON variant: the digest of the token
       // is not in it, and there is no field that could carry the token.
-      assert.isFalse(Object.hasOwn(registered.session!, "tokenHash"))
+      assert.isFalse(Object.hasOwn(registered.session, "tokenHash"))
 
       const afterSignUp = yield* TestHttpClient.sessionCookie(cookies)
       assert.isTrue(Option.isSome(afterSignUp))
@@ -84,7 +84,7 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
         "signing out should write an expiring cookie"
       )
       assert.strictEqual(cleared.value, "")
-      assert.deepStrictEqual(cleared.options?.expires, new Date(0))
+      assert.deepStrictEqual(cleared.options?.expires, DateTime.toDateUtc(DateTime.makeUnsafe(0)))
 
       const refused = yield* Effect.flip(client.auth.getSession())
       assert.strictEqual(refused._tag, "Unauthorized")
@@ -644,10 +644,10 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
       hooks: {
         beforeUserCreate: ({ candidate }) =>
           candidate.email.includes("policy-veto")
-            ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed" }))
+            ? Effect.fail(PolicyRefused.make({ code: "domain_not_allowed" }))
             : Effect.succeed(candidate),
         beforeSessionCreate: ({ user }) =>
-          user.email.includes("policy-banned") ? Effect.fail(new PolicyRefused({ code: "banned" })) : Effect.void
+          user.email.includes("policy-banned") ? Effect.fail(PolicyRefused.make({ code: "banned" })) : Effect.void
       }
     })
   )("when a deployment installed hooks", (it) => {
@@ -705,14 +705,14 @@ layer(AuthTest.layerHttp())("http/Handlers", (it) => {
 })
 
 describe("http/Handlers dieOn", () => {
-  class Broken extends Schema.TaggedError<Broken>("Broken")("Broken", {}) {}
-  class Refused extends Schema.TaggedError<Refused>("Refused")("Refused", {}) {}
+  class Broken extends Schema.TaggedError<Broken>("effect-auth/test/Broken")("Broken", {}) {}
+  class Refused extends Schema.TaggedError<Refused>("effect-auth/test/Refused")("Refused", {}) {}
 
   const filter = AuthHandlers.dieOn(["Broken"] as const)
 
   it.effect("takes the named tags out of the error channel and into the defects", () =>
     Effect.gen(function* () {
-      const died = yield* Effect.exit(filter(Effect.fail(new Broken())))
+      const died = yield* Effect.exit(filter(Effect.fail(Broken.make())))
       assert.strictEqual(died._tag, "Failure")
       assert.isTrue(died._tag === "Failure" && Cause.hasDies(died.cause))
     })
@@ -720,7 +720,7 @@ describe("http/Handlers dieOn", () => {
 
   it.effect("leaves every other failure exactly where it was", () =>
     Effect.gen(function* () {
-      const failed: Refused = yield* Effect.flip(filter(Effect.fail(new Refused())))
+      const failed: Refused = yield* Effect.flip(filter(Effect.fail(Refused.make())))
       assert.strictEqual(failed._tag, "Refused")
 
       // And the two server faults are what `serverFault` is `dieOn` of.

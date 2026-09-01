@@ -47,7 +47,7 @@ class StubFlow extends Context.Service<
     /** Forgets the recorded calls and everything staged. */
     readonly reset: Effect.Effect<void>
   }
->()("test/http/StubFlow") {}
+>()("effect-auth/test/http/OAuth.test/StubFlow") {}
 
 const stubLayer = Layer.effectContext(
   Effect.gen(function* () {
@@ -397,7 +397,7 @@ describe.sequential("http/Handlers OAuth", () => {
         yield* stub.reset
         yield* stub.setOutcome({
           _tag: "Failure",
-          error: new OAuthStateMismatch(),
+          error: OAuthStateMismatch.make(),
           redirectTo: "http://localhost:3000/oops?error=state_mismatch",
           code: "state_mismatch"
         })
@@ -427,7 +427,7 @@ describe.sequential("http/Handlers OAuth", () => {
         // the state is consumed, and this browser holds no state cookie.
         yield* stub.setOutcome({
           _tag: "Failure",
-          error: new OAuthStateMismatch(),
+          error: OAuthStateMismatch.make(),
           redirectTo: "http://localhost:3000/oops?error=state_mismatch",
           code: "state_mismatch"
         })

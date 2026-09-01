@@ -1,5 +1,5 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Option, Redacted } from "effect"
+import { DateTime, Duration, Effect, Inspectable, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { OAuthProviderError, OAuthStateMismatch } from "../../src/domain/Errors.js"
 import { oauthIssuer, User } from "../../src/domain/Schema.js"
@@ -174,7 +174,7 @@ describe.sequential("oauth/Flow", () => {
 
   describe("errorCode", () => {
     it("is a closed set that never echoes the provider", () => {
-      assert.strictEqual(errorCode(new OAuthStateMismatch()), "state_mismatch")
+      assert.strictEqual(errorCode(OAuthStateMismatch.make()), "state_mismatch")
       const reasons = [
         ["UnknownProvider", "unknown_provider"],
         ["AccessDenied", "access_denied"],
@@ -184,7 +184,7 @@ describe.sequential("oauth/Flow", () => {
         ["ProviderUnavailable", "provider_unavailable"]
       ] as const
       for (const [reason, code] of reasons) {
-        assert.strictEqual(errorCode(new OAuthProviderError({ providerId: "mock", reason })), code)
+        assert.strictEqual(errorCode(OAuthProviderError.make({ providerId: "mock", reason })), code)
       }
     })
 
@@ -590,8 +590,9 @@ describe.sequential("oauth/Flow", () => {
           assert.strictEqual(result._tag, "Failure")
           if (result._tag === "Failure" && result.failure._tag === "OAuthProviderError") {
             assert.strictEqual(result.failure.reason, "TokenExchangeFailed")
-            // Nothing of the provider's own message survives into the error.
-            assert.notInclude(JSON.stringify(result.failure), "invalid_grant")
+            // Nothing of the provider's own message survives into the error:
+            // the whole value is serialized, so a leak anywhere in it is caught.
+            assert.notInclude(Inspectable.toStringUnknown(result.failure), "invalid_grant")
           } else {
             assert.fail("expected an OAuthProviderError")
           }

@@ -99,7 +99,7 @@ const make = (): EvictingStore => {
 
   const getAdaptiveState = (key: string, now: number): AdaptiveState | undefined => {
     const state = adaptiveStates.get(key)
-    if (!state) return undefined
+    if (state === undefined) return undefined
     if (state.expiresAt <= now) {
       adaptiveStates.delete(key)
       return undefined
@@ -149,11 +149,14 @@ const make = (): EvictingStore => {
           const refillRateMillis = Duration.toMillis(options.refillRate)
           const now = clock.currentTimeMillisUnsafe()
           let counter = fixedCounters.get(options.key)
-          if (!counter || counter.expiresAt <= now) {
+          if (counter === undefined || counter.expiresAt <= now) {
             counter = { count: 0, expiresAt: now }
             fixedCounters.set(options.key, counter)
           }
-          if (options.limit && counter.count + options.tokens > options.limit) {
+          // Upstream tests `options.limit` for truthiness, so a limit of `0` is
+          // "no limit" rather than "nothing allowed". Spelled out rather than
+          // relaxed: the two conditions are the same set of values.
+          if (options.limit !== undefined && options.limit !== 0 && counter.count + options.tokens > options.limit) {
             return [counter.count + options.tokens, counter.expiresAt - now] as const
           }
           counter.count += options.tokens
@@ -167,7 +170,7 @@ const make = (): EvictingStore => {
           const refillRateMillis = Duration.toMillis(options.refillRate)
           const now = clock.currentTimeMillisUnsafe()
           let bucket = tokenBuckets.get(options.key)
-          if (!bucket) {
+          if (bucket === undefined) {
             bucket = { tokens: options.limit, lastRefill: now, expiresAt: now }
             tokenBuckets.set(options.key, bucket)
           } else {
@@ -196,7 +199,7 @@ const make = (): EvictingStore => {
         Effect.sync(() => {
           const now = clock.currentTimeMillisUnsafe()
           const state = getAdaptiveState(options.key, now)
-          if (!state) {
+          if (state === undefined) {
             return {
               delay: Duration.zero,
               epoch: 0,
@@ -273,7 +276,7 @@ const make = (): EvictingStore => {
           const now = clock.currentTimeMillisUnsafe()
           const cooldownUntil = now + retryAfterMillis
           const state = getAdaptiveState(options.key, now)
-          if (!state) {
+          if (state === undefined) {
             if (options.epoch !== 0) return
             adaptiveStates.set(options.key, {
               phase: "cooldown",
@@ -354,9 +357,9 @@ const make = (): EvictingStore => {
  *
  * @internal
  */
-export const makeStore = (
-  options?: { readonly sweepInterval?: Duration.Duration | undefined } | undefined
-): Effect.Effect<EvictingStore, never, Scope.Scope> =>
+export const makeStore = (options?: {
+  readonly sweepInterval?: Duration.Duration | undefined
+}): Effect.Effect<EvictingStore, never, Scope.Scope> =>
   Effect.suspend(() => {
     const evicting = make()
     return Effect.as(

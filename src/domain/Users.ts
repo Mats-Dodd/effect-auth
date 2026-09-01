@@ -52,7 +52,7 @@
  *
  * @since 1.0.0
  */
-import { Context, Effect, Layer, Option, Redacted } from "effect"
+import { Brand, Context, Effect, Layer, Option, type Redacted } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import {
   AuthEmails,
@@ -74,8 +74,14 @@ import { Passwords } from "./Passwords.js"
 import type { Session, UserExtras, UserFields, UserId, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 import { baseUserModel, normalizeEmail } from "./Schema.js"
 import { Sessions } from "./Sessions.js"
-import type { PersistenceError } from "./Stores.js"
-import { isUniqueViolation, UserStore, userStoreOf, VerificationStore, WithAuthTransaction } from "./Stores.js"
+import {
+  isUniqueViolation,
+  type PersistenceError,
+  type UserStore,
+  userStoreOf,
+  type VerificationStore,
+  WithAuthTransaction
+} from "./Stores.js"
 import {
   changeEmailConfirmPurpose,
   changeEmailVerifyPurpose,
@@ -224,7 +230,7 @@ export interface RequestDeletionOptions<F extends UserFields = {}> {
    * password" and "that is the wrong password" cost the same and answer the
    * same.
    */
-  readonly password?: Redacted.Redacted<string> | undefined
+  readonly password?: Redacted.Redacted | undefined
   /** Where to send the browser after the deletion completes. */
   readonly callbackURL?: string | undefined
 }
@@ -249,7 +255,7 @@ export type DeletionOutcome =
  */
 export interface ConfirmDeletionOptions {
   /** The token from the link. */
-  readonly token: Redacted.Redacted<string>
+  readonly token: Redacted.Redacted
   /**
    * The user the *session* presenting the link belongs to.
    *
@@ -345,9 +351,7 @@ export interface UsersService<F extends UserFields = {}> {
    *
    * Nothing about the account has changed when this succeeds.
    */
-  readonly confirmEmailChange: (
-    token: Redacted.Redacted<string>
-  ) => Effect.Effect<void, InvalidToken | PersistenceError>
+  readonly confirmEmailChange: (token: Redacted.Redacted) => Effect.Effect<void, InvalidToken | PersistenceError>
 
   /**
    * Claims a second-hop token and moves the account to the new address, which
@@ -362,7 +366,7 @@ export interface UsersService<F extends UserFields = {}> {
    * Emits `EmailChanged`.
    */
   readonly verifyEmailChange: (
-    token: Redacted.Redacted<string>
+    token: Redacted.Redacted
   ) => Effect.Effect<UserOf<F>, InvalidToken | UserAlreadyExists | PersistenceError>
 
   /**
@@ -419,7 +423,7 @@ export interface UsersService<F extends UserFields = {}> {
  * @category services
  * @since 1.0.0
  */
-export class Users extends Context.Service<Users, UsersService>()("effect-auth/Users") {}
+export class Users extends Context.Service<Users, UsersService>()("effect-auth/domain/Users") {}
 
 /**
  * {@link Users}, seen through a model's custom fields.
@@ -432,11 +436,24 @@ export class Users extends Context.Service<Users, UsersService>()("effect-auth/U
  * @since 1.0.0
  */
 export const usersOf = <F extends UserFields>(_model: UserModel<F>): Context.Service<Users, UsersService<F>> =>
-  Context.Service<Users, UsersService<F>>("effect-auth/Users")
+  Context.Service<Users, UsersService<F>>("effect-auth/domain/Users")
 
 // -----------------------------------------------------------------------------
 // Implementation
 // -----------------------------------------------------------------------------
+
+/**
+ * Names a claimed token's subject as the {@link UserId} it was minted under.
+ *
+ * `Verifications.claim` only answers for a row whose identifier is
+ * `<purpose>:<subject>` *and* whose secret matched, and every purpose reached
+ * from here writes `subject: user.id`. So the string it hands back is the very
+ * `UserId` that was stored at issue time; `UserId` is a nominal brand, so this
+ * restates that type without adding a runtime check.
+ *
+ * @internal
+ */
+const asUserId = Brand.nominal<UserId>()
 
 /**
  * What {@link make} needs.
@@ -585,7 +602,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
 
     const update = Effect.fnUntraced(function* (options: UpdateOptions<F>) {
       const found = yield* users.findById(options.userId)
-      const current = yield* Effect.fromOption(found, () => new UserNotFound())
+      const current = yield* Effect.fromOption(found, () => UserNotFound.make())
 
       // An absent key is a column the statement does not touch, so the two
       // `undefined`s are dropped before anything else looks at them.
@@ -609,7 +626,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       const written = yield* users.update(options.userId, patch)
       // The row went between the read above and this write — a concurrent
       // deletion, not a caller mistake.
-      const updated = yield* Effect.fromOption(written, () => new UserNotFound())
+      const updated = yield* Effect.fromOption(written, () => UserNotFound.make())
 
       yield* publishSafely(events, { _tag: "UserUpdated", userId: updated.id, fields })
       return updated
@@ -621,7 +638,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       if (newEmail === normalizeEmail(user.email)) {
         // The one refusal this step makes out loud: the caller already knows
         // their own address, so saying so tells them nothing they did not have.
-        return yield* Effect.fail(new EmailUnchanged())
+        return yield* EmailUnchanged.make()
       }
 
       // Before the lookup, and therefore before the taken/free fork: a policy that
@@ -680,14 +697,14 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       return taken ? ("Ignored" as const) : ("ConfirmationSent" as const)
     })
 
-    const confirmEmailChange = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+    const confirmEmailChange = Effect.fnUntraced(function* (token: Redacted.Redacted) {
       const claimed = yield* verifications.claim(changeEmailConfirmPurpose, token)
-      const userId = claimed.subject as UserId
+      const userId = asUserId(claimed.subject)
 
       const found = yield* users.findById(userId)
       // The account went while the link sat in a mailbox. The token is spent and
       // there is nothing to confirm.
-      const user = yield* Effect.fromOption(found, () => new InvalidToken())
+      const user = yield* Effect.fromOption(found, () => InvalidToken.make())
 
       const newEmail = normalizeEmail(claimed.payload.newEmail)
       if (Option.isSome(yield* users.findByEmail(newEmail))) {
@@ -710,13 +727,13 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       yield* sendVerificationHop(user, newEmail, undefined)
     })
 
-    const verifyEmailChange = Effect.fnUntraced(function* (token: Redacted.Redacted<string>) {
+    const verifyEmailChange = Effect.fnUntraced(function* (token: Redacted.Redacted) {
       const claimed = yield* verifications.claim(changeEmailVerifyPurpose, token)
-      const userId = claimed.subject as UserId
+      const userId = asUserId(claimed.subject)
       const newEmail = normalizeEmail(claimed.payload.newEmail)
 
       const found = yield* users.findById(userId)
-      const user = yield* Effect.fromOption(found, () => new InvalidToken())
+      const user = yield* Effect.fromOption(found, () => InvalidToken.make())
       const previousEmail = user.email
 
       const updated = yield* transaction
@@ -725,7 +742,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
             // The address ends up verified: the link that got here was delivered to
             // it, which is the whole of what verification means.
             const written = yield* users.update(userId, model.basePatch({ email: newEmail, emailVerified: true }))
-            const stored = yield* Effect.fromOption(written, () => new InvalidToken())
+            const stored = yield* Effect.fromOption(written, () => InvalidToken.make())
             // Every link that could move or take over this account dies with the one
             // just used. That is more than the two change-email hops — a first hop
             // somebody asked for in the meantime among them: a `password-reset` or
@@ -747,7 +764,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
           // Somebody claimed the address between the two hops. The unique index is
           // what settles it, so there is no check-then-act window to lose.
           Effect.catchTag("PersistenceError", (error): Effect.Effect<never, UserAlreadyExists | PersistenceError> =>
-            isUniqueViolation(error) ? Effect.fail(new UserAlreadyExists()) : Effect.fail(error)
+            isUniqueViolation(error) ? Effect.fail(UserAlreadyExists.make()) : Effect.fail(error)
           )
         )
 
@@ -779,7 +796,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
           Effect.catchTag("PasswordHashError", (error) => Effect.die(error))
         )
         if (!matches) {
-          return yield* Effect.fail(new InvalidCredentials())
+          return yield* InvalidCredentials.make()
         }
       }
 
@@ -826,11 +843,11 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // session of their own.
       const claimed = yield* verifications.claim(deleteAccountPurpose, options.token)
       if (claimed.subject !== options.userId) {
-        return yield* Effect.fail(new InvalidToken())
+        return yield* InvalidToken.make()
       }
 
       const found = yield* users.findById(options.userId)
-      const user = yield* Effect.fromOption(found, () => new InvalidToken())
+      const user = yield* Effect.fromOption(found, () => InvalidToken.make())
 
       // After the claim, deliberately: the token is spent whichever way the
       // policy answers, so a link a hook refuses cannot be parked and replayed

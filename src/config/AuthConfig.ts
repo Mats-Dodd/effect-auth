@@ -9,6 +9,7 @@
  * @since 1.0.0
  */
 import { Context, Duration, Layer, Redacted } from "effect"
+import { toEntries } from "effect/Record"
 import type { Session, User } from "../domain/Schema.js"
 import { trustedOriginSet } from "../internal/origins.js"
 import { withDefaults } from "../internal/records.js"
@@ -382,7 +383,7 @@ export interface AuthConfigService {
    * The signing secret. Kept `Redacted` end to end and unwrapped only inside
    * the HMAC service.
    */
-  readonly secret: Redacted.Redacted<string>
+  readonly secret: Redacted.Redacted
   /**
    * Origins, in addition to `baseUrl`'s, that may originate cookie
    * authenticated mutations and be redirected to. Compared by origin, never by
@@ -423,7 +424,7 @@ export interface AuthConfigService {
  * @category services
  * @since 1.0.0
  */
-export class AuthConfig extends Context.Service<AuthConfig, AuthConfigService>()("effect-auth/AuthConfig") {}
+export class AuthConfig extends Context.Service<AuthConfig, AuthConfigService>()("effect-auth/config/AuthConfig") {}
 
 // -----------------------------------------------------------------------------
 // Options
@@ -438,7 +439,7 @@ export class AuthConfig extends Context.Service<AuthConfig, AuthConfigService>()
  */
 export interface AuthConfigOptions {
   readonly baseUrl: string
-  readonly secret: Redacted.Redacted<string>
+  readonly secret: Redacted.Redacted
   readonly basePath?: string | undefined
   readonly trustedOrigins?: ReadonlyArray<string> | undefined
   readonly trustedProviders?: ReadonlyArray<string> | undefined
@@ -713,11 +714,11 @@ const validate = (config: AuthConfigService): AuthConfigService => {
       "session.updateAge must be shorter than expiresIn and no longer than rememberMeDisabledExpiresIn"
     )
   }
-  for (const [name, value] of Object.entries(config.tokens)) positiveDuration(`tokens.${name}`, value)
+  for (const [name, value] of toEntries(config.tokens)) positiveDuration(`tokens.${name}`, value)
   positiveDuration("cookieCache.maxAge", config.cookieCache.maxAge)
 
   for (const [index, origin] of config.trustedOrigins.entries()) absoluteWebUrl(`trustedOrigins[${index}]`, origin)
-  for (const [name, path] of Object.entries(config.emailPaths)) {
+  for (const [name, path] of toEntries(config.emailPaths)) {
     if (!path.startsWith("/") || path.startsWith("//") || path.includes("\\")) {
       configurationError(`emailPaths.${name} must be a path beginning with one forward slash`)
     }

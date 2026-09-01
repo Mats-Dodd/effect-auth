@@ -178,7 +178,7 @@ const readProfile = Schema.decodeUnknownOption(Profile)
  */
 export interface Options {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   /** Scopes on top of {@link defaultScopes}. */
   readonly scopes?: ReadonlyArray<string> | undefined
   /** Overrides `<baseUrl><basePath>/callback/discord`. */
@@ -223,13 +223,13 @@ export const make = (options: Options): OAuthProviderConfig => {
   const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens) {
     const response = yield* fetchJson({ providerId: id, url: userInfoUrl, accessToken: tokens.accessToken })
     const decoded = readProfile(response.body)
-    if (Option.isNone(decoded)) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (Option.isNone(decoded)) return yield* providerError(id, "UserInfoFailed")
     const profile = decoded.value
 
     // No address, no identity: Discord omits `email` entirely when the scope was
     // refused, and a user cannot be provisioned or linked without one.
     const email = profile.email ?? null
-    if (email === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (email === null) return yield* providerError(id, "UserInfoFailed")
 
     return {
       id: profile.id,
@@ -270,7 +270,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
-  readonly clientSecret: Config.Config<Redacted.Redacted<string>>
+  readonly clientSecret: Config.Config<Redacted.Redacted>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
   readonly redirectUri?: Config.Config<string> | undefined
   readonly prompt?: Config.Config<"none" | "consent"> | undefined
@@ -280,7 +280,7 @@ export interface ConfigOptions {
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface Settings {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   readonly scopes: ReadonlyArray<string> | undefined
   readonly redirectUri: string | undefined
   readonly prompt: "none" | "consent" | undefined

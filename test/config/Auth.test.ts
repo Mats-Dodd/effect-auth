@@ -26,6 +26,7 @@ import {
   Option,
   Redactable,
   Redacted,
+  Schema,
   Stream
 } from "effect"
 import { TestClock } from "effect/testing"
@@ -63,6 +64,9 @@ const noNetwork: Layer.Layer<HttpClient.HttpClient> = FetchHttpClient.layer.pipe
     )
   )
 )
+
+/** A value as the JSON text it would go on the wire as. */
+const jsonTextOf = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
 layer(AuthTest.layer())("config/Auth assembly", (it) => {
   it.effect("signs a user up, through the whole stack", () =>
@@ -163,177 +167,182 @@ layer(AuthTest.layer())("config/Auth assembly", (it) => {
   )
 })
 
-it.effect("publishes events to `Auth.events`", () =>
-  Effect.gen(function* () {
-    // Subscribe before the traffic: the hub drops, it does not replay.
-    const collected = yield* Effect.forkChild(Stream.runCollect(Stream.take(Auth.events, 2)))
-    yield* Effect.yieldNow
+// A block of its own, with one test in it: the hub is shared by everything in a
+// block, so a sibling's traffic would land in this subscription.
+layer(AuthTest.layer())("config/Auth events", (it) => {
+  it.effect("publishes events to `Auth.events`", () =>
+    Effect.gen(function* () {
+      // Subscribe before the traffic: the hub drops, it does not replay.
+      const collected = yield* Effect.forkChild(Stream.runCollect(Stream.take(Auth.events, 2)))
+      yield* Effect.yieldNow
 
-    yield* signUpUser(uniqueEmail("events"))
+      yield* signUpUser(uniqueEmail("events"))
 
-    const events = yield* Fiber.join(collected)
-    assert.deepStrictEqual(
-      events.map((event) => event._tag),
-      ["UserCreated", "SignedIn"]
-    )
-  }).pipe(Effect.provide(AuthTest.layer()))
-)
-
-it.effect("cleanupExpired reaps what has expired and leaves what has not", () =>
-  Effect.gen(function* () {
-    const passwords = yield* Passwords.Passwords
-    const sessions = yield* Sessions.Sessions
-    const email = uniqueEmail("cleanup")
-
-    const { user } = yield* signUpUser(email)
-    yield* passwords.requestReset({ email })
-    // A second session that outlives the first, so the sweep has to be
-    // selective rather than a truncate.
-    yield* sessions.create({ userId: user.id })
-
-    // Past the one-hour reset TTL, and past the sign-up session's own life:
-    // `rememberMe` defaults on, so both sessions run seven days.
-    yield* TestClock.adjust(Duration.days(8))
-
-    const first = yield* Auth.cleanupExpired
-    assert.strictEqual(first.sessions, 2)
-    assert.strictEqual(first.verifications, 1)
-
-    // Nothing is left to reap, and reaping again is not an error.
-    const second = yield* Auth.cleanupExpired
-    assert.deepStrictEqual(second, { sessions: 0, verifications: 0 })
-
-    // The user is untouched: only the dead rows went.
-    yield* passwords.signIn({ email, password: testPassword })
-  }).pipe(Effect.provide(AuthTest.layer()))
-)
-
-it.effect("layerConfig reads the scalar settings from a ConfigProvider", () =>
-  Effect.gen(function* () {
-    const config = yield* AuthConfig.AuthConfig
-    assert.strictEqual(config.baseUrl, "https://app.example.com")
-    assert.strictEqual(Redacted.value(config.secret), "from-the-environment-at-least-32-bytes")
-    // An https base URL implies a Secure cookie under the `__Secure-` prefix.
-    assert.strictEqual(config.cookie.secure, true)
-    assert.strictEqual(AuthConfig.cookieName(config), "__Secure-effect_auth.session")
-    // Sections still get their defaults.
-    assert.strictEqual(Duration.toSeconds(config.session.expiresIn), 7 * 24 * 60 * 60)
-    assert.strictEqual(config.emailPassword.enabled, true)
-  }).pipe(
-    Effect.provide(
-      Auth.layerConfig({
-        baseUrl: Config.string("BASE_URL"),
-        secret: Config.redacted("AUTH_SECRET"),
-        emailPassword: { enabled: true }
-      }).pipe(
-        Layer.provideMerge(AuthTest.layerDatabase),
-        Layer.provideMerge(AuthTest.layerEmails()),
-        Layer.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromUnknown({
-              BASE_URL: "https://app.example.com",
-              AUTH_SECRET: "from-the-environment-at-least-32-bytes"
-            })
-          )
-        )
+      const events = yield* Fiber.join(collected)
+      assert.deepStrictEqual(
+        events.map((event) => event._tag),
+        ["UserCreated", "SignedIn"]
       )
+    })
+  )
+})
+
+// Also a block of its own: the sweep is table-wide, so a sibling's live rows
+// would be counted by it.
+layer(AuthTest.layer())("config/Auth cleanupExpired", (it) => {
+  it.effect("reaps what has expired and leaves what has not", () =>
+    Effect.gen(function* () {
+      const passwords = yield* Passwords.Passwords
+      const sessions = yield* Sessions.Sessions
+      const email = uniqueEmail("cleanup")
+
+      const { user } = yield* signUpUser(email)
+      yield* passwords.requestReset({ email })
+      // A second session that outlives the first, so the sweep has to be
+      // selective rather than a truncate.
+      yield* sessions.create({ userId: user.id })
+
+      // Past the one-hour reset TTL, and past the sign-up session's own life:
+      // `rememberMe` defaults on, so both sessions run seven days.
+      yield* TestClock.adjust(Duration.days(8))
+
+      const first = yield* Auth.cleanupExpired
+      assert.strictEqual(first.sessions, 2)
+      assert.strictEqual(first.verifications, 1)
+
+      // Nothing is left to reap, and reaping again is not an error.
+      const second = yield* Auth.cleanupExpired
+      assert.deepStrictEqual(second, { sessions: 0, verifications: 0 })
+
+      // The user is untouched: only the dead rows went.
+      yield* passwords.signIn({ email, password: testPassword })
+    })
+  )
+})
+
+const configuredStack = Auth.layerConfig({
+  baseUrl: Config.string("BASE_URL"),
+  secret: Config.redacted("AUTH_SECRET"),
+  emailPassword: { enabled: true }
+}).pipe(
+  Layer.provideMerge(AuthTest.layerDatabase),
+  Layer.provideMerge(AuthTest.layerEmails()),
+  Layer.provide(
+    ConfigProvider.layer(
+      ConfigProvider.fromUnknown({
+        BASE_URL: "https://app.example.com",
+        AUTH_SECRET: "from-the-environment-at-least-32-bytes"
+      })
     )
   )
 )
 
-it.effect("layerWithOAuth assembles the flow over the providers it is handed", () =>
-  Effect.gen(function* () {
-    const flow = yield* OAuthFlow.OAuthFlow
-    const started = yield* flow.start({ providerId: "github" })
+layer(configuredStack)("config/Auth layerConfig", (it) => {
+  it.effect("reads the scalar settings from a ConfigProvider", () =>
+    Effect.gen(function* () {
+      const config = yield* AuthConfig.AuthConfig
+      assert.strictEqual(config.baseUrl, "https://app.example.com")
+      assert.strictEqual(Redacted.value(config.secret), "from-the-environment-at-least-32-bytes")
+      // An https base URL implies a Secure cookie under the `__Secure-` prefix.
+      assert.strictEqual(config.cookie.secure, true)
+      assert.strictEqual(AuthConfig.cookieName(config), "__Secure-effect_auth.session")
+      // Sections still get their defaults.
+      assert.strictEqual(Duration.toSeconds(config.session.expiresIn), 7 * 24 * 60 * 60)
+      assert.strictEqual(config.emailPassword.enabled, true)
+    })
+  )
+})
 
-    // The provider value reached the registry, and the flow addressed it.
-    const url = new URL(started.url)
-    assert.strictEqual(url.origin + url.pathname, "https://github.com/login/oauth/authorize")
-    assert.strictEqual(url.searchParams.get("client_id"), "gh-client-id")
+const oauthStack = Auth.layerWithOAuth({
+  ...AuthTest.testConfig(),
+  providers: [Github.make({ clientId: "gh-client-id", clientSecret: Redacted.make("gh-client-secret") })]
+}).pipe(Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())), Layer.provide(noNetwork))
 
-    // And an id that was never registered still misses.
-    const missing = yield* Effect.flip(flow.start({ providerId: "gitlab" }))
-    assert.strictEqual(missing._tag, "OAuthProviderError")
-  }).pipe(
-    Effect.provide(
-      Auth.layerWithOAuth({
-        ...AuthTest.testConfig(),
-        providers: [Github.make({ clientId: "gh-client-id", clientSecret: Redacted.make("gh-client-secret") })]
-      }).pipe(
-        Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())),
-        Layer.provide(noNetwork)
+layer(oauthStack)("config/Auth layerWithOAuth", (it) => {
+  it.effect("assembles the flow over the providers it is handed", () =>
+    Effect.gen(function* () {
+      const flow = yield* OAuthFlow.OAuthFlow
+      const started = yield* flow.start({ providerId: "github" })
+
+      // The provider value reached the registry, and the flow addressed it.
+      const url = new URL(started.url)
+      assert.strictEqual(url.origin + url.pathname, "https://github.com/login/oauth/authorize")
+      assert.strictEqual(url.searchParams.get("client_id"), "gh-client-id")
+
+      // And an id that was never registered still misses.
+      const missing = yield* Effect.flip(flow.start({ providerId: "gitlab" }))
+      assert.strictEqual(missing._tag, "OAuthProviderError")
+    })
+  )
+})
+
+const configuredOAuthStack = Auth.layerConfigWithOAuth({
+  baseUrl: Config.string("BASE_URL"),
+  secret: Config.redacted("AUTH_SECRET"),
+  rateLimit: { enabled: false },
+  providers: [
+    Github.makeConfig({
+      clientId: Config.string("GITHUB_CLIENT_ID"),
+      clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
+    })
+  ]
+}).pipe(
+  Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())),
+  Layer.provide(noNetwork),
+  Layer.provide(
+    ConfigProvider.layer(
+      ConfigProvider.fromUnknown({
+        BASE_URL: "https://app.example.com",
+        AUTH_SECRET: "from-the-environment-at-least-32-bytes",
+        GITHUB_CLIENT_ID: "id-from-the-environment",
+        GITHUB_CLIENT_SECRET: "secret-from-the-environment"
+      })
+    )
+  )
+)
+
+layer(configuredOAuthStack)("config/Auth layerConfigWithOAuth", (it) => {
+  it.effect("reads the provider credentials from a ConfigProvider", () =>
+    Effect.gen(function* () {
+      const config = yield* AuthConfig.AuthConfig
+      assert.strictEqual(config.baseUrl, "https://app.example.com")
+
+      const flow = yield* OAuthFlow.OAuthFlow
+      const started = yield* flow.start({ providerId: "github" })
+      assert.strictEqual(new URL(started.url).searchParams.get("client_id"), "id-from-the-environment")
+    })
+  )
+})
+
+const redactingStack = Auth.layer({
+  baseUrl: "http://localhost:3000",
+  secret: Redacted.make("effect-auth-test-secret-do-not-use-in-production"),
+  rateLimit: { enabled: false },
+  redactedHeaders: ["x-tenant-token"]
+}).pipe(Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())))
+
+layer(redactingStack)("config/Auth redacted headers", (it) => {
+  it.effect("registers the redacted header names on the application's own context", () =>
+    Effect.gen(function* () {
+      // `Headers` reads `CurrentRedactedNames` from the *current* context when a
+      // header set is logged, so the names have to reach the context the
+      // application runs on — not merely the one the stack was built with. This
+      // is a `Layer.provideMerge`, and it is load-bearing: with `Layer.provide`
+      // the reference falls back to its default and `Auth.layer`'s
+      // `redactedHeaders` option silently does nothing.
+      const names = yield* Effect.service(Headers.CurrentRedactedNames)
+
+      for (const name of AuthCookies.redactedHeaderNames) {
+        assert.include(names, name)
+      }
+      assert.include(names, "x-tenant-token")
+
+      // And the header really renders redacted under it: `Redactable.redact` is
+      // what a log line goes through, and it reads the reference off the fiber.
+      assert.strictEqual(
+        yield* jsonTextOf(Redactable.redact(Headers.fromInput({ "x-tenant-token": "hunter2", "x-public": "fine" }))),
+        `{"x-tenant-token":"<redacted>","x-public":"fine"}`
       )
-    )
+    })
   )
-)
-
-it.effect("layerConfigWithOAuth reads the provider credentials from a ConfigProvider", () =>
-  Effect.gen(function* () {
-    const config = yield* AuthConfig.AuthConfig
-    assert.strictEqual(config.baseUrl, "https://app.example.com")
-
-    const flow = yield* OAuthFlow.OAuthFlow
-    const started = yield* flow.start({ providerId: "github" })
-    assert.strictEqual(new URL(started.url).searchParams.get("client_id"), "id-from-the-environment")
-  }).pipe(
-    Effect.provide(
-      Auth.layerConfigWithOAuth({
-        baseUrl: Config.string("BASE_URL"),
-        secret: Config.redacted("AUTH_SECRET"),
-        rateLimit: { enabled: false },
-        providers: [
-          Github.makeConfig({
-            clientId: Config.string("GITHUB_CLIENT_ID"),
-            clientSecret: Config.redacted("GITHUB_CLIENT_SECRET")
-          })
-        ]
-      }).pipe(
-        Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())),
-        Layer.provide(noNetwork),
-        Layer.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromUnknown({
-              BASE_URL: "https://app.example.com",
-              AUTH_SECRET: "from-the-environment-at-least-32-bytes",
-              GITHUB_CLIENT_ID: "id-from-the-environment",
-              GITHUB_CLIENT_SECRET: "secret-from-the-environment"
-            })
-          )
-        )
-      )
-    )
-  )
-)
-
-it.effect("registers the redacted header names on the application's own context", () =>
-  Effect.gen(function* () {
-    // `Headers` reads `CurrentRedactedNames` from the *current* context when a
-    // header set is logged, so the names have to reach the context the
-    // application runs on — not merely the one the stack was built with. This
-    // is a `Layer.provideMerge`, and it is load-bearing: with `Layer.provide`
-    // the reference falls back to its default and `Auth.layer`'s
-    // `redactedHeaders` option silently does nothing.
-    const names = yield* Effect.service(Headers.CurrentRedactedNames)
-
-    for (const name of AuthCookies.redactedHeaderNames) {
-      assert.include(names, name)
-    }
-    assert.include(names, "x-tenant-token")
-
-    // And the header really renders redacted under it: `Redactable.redact` is
-    // what a log line goes through, and it reads the reference off the fiber.
-    assert.strictEqual(
-      JSON.stringify(Redactable.redact(Headers.fromInput({ "x-tenant-token": "hunter2", "x-public": "fine" }))),
-      `{"x-tenant-token":"<redacted>","x-public":"fine"}`
-    )
-  }).pipe(
-    Effect.provide(
-      Auth.layer({
-        baseUrl: "http://localhost:3000",
-        secret: Redacted.make("effect-auth-test-secret-do-not-use-in-production"),
-        rateLimit: { enabled: false },
-        redactedHeaders: ["x-tenant-token"]
-      }).pipe(Layer.provideMerge(Layer.mergeAll(AuthTest.layerDatabase, AuthTest.layerEmails())))
-    )
-  )
-)
+})

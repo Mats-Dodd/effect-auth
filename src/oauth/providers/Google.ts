@@ -99,7 +99,7 @@ export const defaultScopes: ReadonlyArray<string> = ["openid", "email", "profile
  */
 export interface Options {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   /** Scopes on top of {@link defaultScopes}. */
   readonly scopes?: ReadonlyArray<string> | undefined
   /** Overrides `<baseUrl><basePath>/callback/google`. */
@@ -188,7 +188,7 @@ export const make = (options: Options): OAuthProviderConfig => {
     const claims = tokens.idTokenClaims
     // The flow verifies the token before calling this, and refuses the callback
     // when there is none. A null here would mean the OIDC path was skipped.
-    if (claims === null) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
+    if (claims === null) return yield* providerError(id, "IdTokenInvalid")
 
     // The Workspace restriction, enforced. `authorizationParams.hd` only
     // pre-filters the account chooser and can be stripped from the URL; the
@@ -199,7 +199,7 @@ export const make = (options: Options): OAuthProviderConfig => {
         onSome: (fields) => fields.hd ?? null
       })
       if (hd !== options.hostedDomain) {
-        return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
+        return yield* providerError(id, "IdTokenInvalid")
       }
     }
 
@@ -238,7 +238,7 @@ export const make = (options: Options): OAuthProviderConfig => {
  */
 export interface ConfigOptions {
   readonly clientId: Config.Config<string>
-  readonly clientSecret: Config.Config<Redacted.Redacted<string>>
+  readonly clientSecret: Config.Config<Redacted.Redacted>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
   readonly redirectUri?: Config.Config<string> | undefined
   readonly accessType?: Config.Config<"online" | "offline"> | undefined
@@ -249,7 +249,7 @@ export interface ConfigOptions {
 /** The settings {@link ConfigOptions} reads from the environment. */
 interface Settings {
   readonly clientId: string
-  readonly clientSecret: Redacted.Redacted<string>
+  readonly clientSecret: Redacted.Redacted
   readonly scopes: ReadonlyArray<string> | undefined
   readonly redirectUri: string | undefined
   readonly accessType: "online" | "offline" | undefined

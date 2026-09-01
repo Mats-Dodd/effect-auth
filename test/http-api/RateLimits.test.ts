@@ -61,8 +61,8 @@ const brokenLimiter = Layer.succeed(RateLimiter.RateLimiter)({
   [RateLimiter.TypeId]: RateLimiter.TypeId,
   consume: () =>
     Effect.fail(
-      new RateLimiter.RateLimiterError({
-        reason: new RateLimiter.RateLimitStoreError({ message: "the store is down" })
+      RateLimiter.RateLimiterError.make({
+        reason: RateLimiter.RateLimitStoreError.make({ message: "the store is down" })
       })
     ),
   adaptiveConsume: () => Effect.die("unused"),

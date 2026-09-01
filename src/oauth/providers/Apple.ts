@@ -135,7 +135,7 @@ export interface SecretOptions {
    * client secret can be minted, so it must never reach a log line. It is
    * unwrapped exactly once, inside {@link clientSecret}, to be imported as a key.
    */
-  readonly privateKey: RedactedType.Redacted<string>
+  readonly privateKey: RedactedType.Redacted
   /**
    * How long the assertion lives. Clamped to {@link maximumSecretTtl}.
    *
@@ -164,31 +164,33 @@ export interface SecretOptions {
  * @category constructors
  * @since 1.0.0
  */
-export const clientSecret: (
-  options: SecretOptions
-) => Effect.Effect<RedactedType.Redacted<string>, OAuthProviderError> = Effect.fnUntraced(function* (
-  options: SecretOptions
-) {
-  const now = yield* DateTime.now
-  const ttl = Duration.min(options.secretTtl ?? defaultSecretTtl, maximumSecretTtl)
-  const issuedAt = Math.floor(DateTime.toEpochMillis(now) / 1000)
-  const expiresAt = issuedAt + Math.floor(Duration.toMillis(ttl) / 1000)
-  const signed = yield* Effect.tryPromise({
-    try: async () => {
-      const key = await importPKCS8(Redacted.value(options.privateKey), "ES256")
-      return await new SignJWT({})
-        .setProtectedHeader({ alg: "ES256", kid: options.keyId })
-        .setIssuer(options.teamId)
-        .setSubject(options.clientId)
-        .setAudience(issuer)
-        .setIssuedAt(issuedAt)
-        .setExpirationTime(expiresAt)
-        .sign(key)
-    },
-    catch: () => providerError(id, "ClientSecretUnavailable")
+export const clientSecret: (options: SecretOptions) => Effect.Effect<RedactedType.Redacted, OAuthProviderError> =
+  Effect.fnUntraced(function* (options: SecretOptions) {
+    const now = yield* DateTime.now
+    const ttl = Duration.min(options.secretTtl ?? defaultSecretTtl, maximumSecretTtl)
+    const issuedAt = Math.floor(DateTime.toEpochMillis(now) / 1000)
+    const expiresAt = issuedAt + Math.floor(Duration.toMillis(ttl) / 1000)
+    // Two steps at the `jose` boundary rather than one `async` body: importing the
+    // `.p8` key and signing the assertion are each a promise, and either one
+    // failing is the same `ClientSecretUnavailable` — the key is never quoted.
+    const key = yield* Effect.tryPromise({
+      try: () => importPKCS8(Redacted.value(options.privateKey), "ES256"),
+      catch: () => providerError(id, "ClientSecretUnavailable")
+    })
+    const signed = yield* Effect.tryPromise({
+      try: () =>
+        new SignJWT({})
+          .setProtectedHeader({ alg: "ES256", kid: options.keyId })
+          .setIssuer(options.teamId)
+          .setSubject(options.clientId)
+          .setAudience(issuer)
+          .setIssuedAt(issuedAt)
+          .setExpirationTime(expiresAt)
+          .sign(key),
+      catch: () => providerError(id, "ClientSecretUnavailable")
+    })
+    return Redacted.make(signed)
   })
-  return Redacted.make(signed)
-})
 
 // -----------------------------------------------------------------------------
 // The `user` field
@@ -335,16 +337,16 @@ export interface Options extends SecretOptions {
  * @since 1.0.0
  */
 export const make = (options: Options): OAuthProviderConfig => {
-  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens, info?: UserInfoOptions | undefined) {
+  const userInfo = Effect.fnUntraced(function* (tokens: OAuthTokens, info?: UserInfoOptions) {
     const claims = tokens.idTokenClaims
     // The whole identity is in the token: Apple has no user-info endpoint.
-    if (claims === null) return yield* Effect.fail(providerError(id, "IdTokenInvalid"))
+    if (claims === null) return yield* providerError(id, "IdTokenInvalid")
 
     // The first authorization is the only one that carries a name. Every later
     // sign-in has none, and falls back to what the token says. `emailVerified`
     // is Apple's `true` or `"true"`, which `verify` has already normalized.
     const identity = identityOf(claims, nameOf(info?.params?.user))
-    if (identity === null) return yield* Effect.fail(providerError(id, "UserInfoFailed"))
+    if (identity === null) return yield* providerError(id, "UserInfoFailed")
     return identity
   })
 
@@ -389,7 +391,7 @@ export interface ConfigOptions {
   readonly clientId: Config.Config<string>
   readonly teamId: Config.Config<string>
   readonly keyId: Config.Config<string>
-  readonly privateKey: Config.Config<RedactedType.Redacted<string>>
+  readonly privateKey: Config.Config<RedactedType.Redacted>
   readonly scopes?: Config.Config<ReadonlyArray<string>> | undefined
   readonly redirectUri?: Config.Config<string> | undefined
   readonly appBundleIdentifier?: Config.Config<string> | undefined
@@ -404,7 +406,7 @@ interface Settings {
   readonly clientId: string
   readonly teamId: string
   readonly keyId: string
-  readonly privateKey: RedactedType.Redacted<string>
+  readonly privateKey: RedactedType.Redacted
   readonly scopes: ReadonlyArray<string> | undefined
   readonly redirectUri: string | undefined
   readonly appBundleIdentifier: string | undefined

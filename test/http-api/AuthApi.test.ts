@@ -1,6 +1,5 @@
 import { assert, describe, expect, it } from "@effect/vitest"
 import { Context, Effect, Option, Redacted, Schema } from "effect"
-import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { AuthApi, AuthApiGroup, SignInEmailPayload } from "../../src/http/AuthApi.js"
 import { Authenticated, AuthoritativeSession } from "../../src/http/Middleware.js"
@@ -231,22 +230,41 @@ const authoritative = [
   "refreshToken"
 ] as const
 
-const endpoints = AuthApiGroup.endpoints as unknown as Readonly<Record<string, HttpApiEndpoint.Top>>
+/**
+ * The part of an endpoint these assertions read, keyed by identifier.
+ *
+ * **Gotchas**
+ *
+ * Not `HttpApiEndpoint.Top`: that alias fixes `"~Request"` to a shape a concrete
+ * endpoint's own request type is not assignable to, so no group's `endpoints`
+ * map widens to it without a cast. Naming the five runtime members the suite
+ * actually touches gets the same lookup, checked rather than asserted.
+ */
+interface EndpointView {
+  readonly method: string
+  readonly path: string
+  readonly error: ReadonlySet<Schema.Top>
+  readonly annotations: Context.Context<never>
+  readonly middlewares: ReadonlySet<Context.Key<unknown, unknown>>
+}
 
-const endpointOf = (identifier: string): HttpApiEndpoint.Top => {
+const endpoints: Readonly<Record<string, EndpointView>> = AuthApiGroup.endpoints
+
+const endpointOf = (identifier: string): EndpointView => {
   const endpoint = Object.hasOwn(endpoints, identifier) ? endpoints[identifier] : undefined
   if (endpoint === undefined) throw new Error(`no endpoint "${identifier}" in the auth group`)
   return endpoint
 }
 
+/** The OpenAPI key for one of the two methods this contract uses. */
+const methodKey = (method: "GET" | "POST"): OpenApi.OpenAPISpecMethodName => (method === "GET" ? "get" : "post")
+
 // Error schemas are identified by the `Schema.TaggedError` identifier they were
 // declared with, which is what the OpenAPI component names are derived from.
-const errorTags = (endpoint: HttpApiEndpoint.Top): ReadonlyArray<string> =>
+const errorTags = (endpoint: EndpointView): ReadonlyArray<string> =>
   Array.from(endpoint.error, (schema) => {
-    const identifier = (schema.ast.annotations?.["identifier"] ?? schema.ast.annotations?.["title"]) as
-      | string
-      | undefined
-    return identifier ?? "<anonymous>"
+    const identifier = schema.ast.annotations?.["identifier"] ?? schema.ast.annotations?.["title"]
+    return typeof identifier === "string" ? identifier : "<anonymous>"
   })
 
 describe("http/AuthApi", () => {
@@ -268,9 +286,7 @@ describe("http/AuthApi", () => {
 
   it("applies Authenticated to exactly the session-bound endpoints", () => {
     const expected = contract.filter((entry) => entry.authenticated).map((entry) => entry.identifier)
-    const actual = Object.keys(endpoints).filter((identifier) =>
-      endpointOf(identifier).middlewares.has(Authenticated as never)
-    )
+    const actual = Object.keys(endpoints).filter((identifier) => endpointOf(identifier).middlewares.has(Authenticated))
     assert.deepStrictEqual(actual, expected)
     assert.strictEqual(expected.length, 17)
   })
@@ -308,10 +324,7 @@ describe("http/AuthApi", () => {
     // paths are removed and the rest of the document asserted against, so a
     // token field reintroduced anywhere else — a `listAccounts` that started
     // returning `accessToken`, say — fails here.
-    const spec = OpenApi.fromApi(AuthApi) as unknown as {
-      readonly paths: Record<string, unknown>
-      readonly components: unknown
-    }
+    const spec = OpenApi.fromApi(AuthApi)
     const elsewhere = Object.fromEntries(
       Object.entries(spec.paths).filter(([path]) => path !== "/auth/get-access-token" && path !== "/auth/refresh-token")
     )
@@ -325,8 +338,7 @@ describe("http/AuthApi", () => {
     it("merges into an application HttpApi via addHttpApi", () => {
       const api = HttpApi.make("app").addHttpApi(AuthApi)
       assert.deepStrictEqual(Object.keys(api.groups), ["auth"])
-      const group = api.groups.auth as unknown as { readonly endpoints: Record<string, unknown> }
-      assert.strictEqual(Object.keys(group.endpoints).length, 28)
+      assert.strictEqual(Object.keys(api.groups.auth.endpoints).length, 28)
     })
 
     it("generates an OpenAPI document without throwing", () => {
@@ -369,13 +381,13 @@ describe("http/AuthApi", () => {
 
     it("serves the form_post callback beside the redirect callback on one path", () => {
       const spec = OpenApi.fromApi(HttpApi.make("app").addHttpApi(AuthApi))
-      const operations = (spec.paths as Record<string, Record<string, unknown>>)["/auth/callback/{providerId}"]
+      const operations = spec.paths["/auth/callback/{providerId}"]
 
       assert.isDefined(operations)
       assert.deepStrictEqual(Object.keys(operations ?? {}).sort(), ["get", "post"])
     })
 
-    it("matches the committed OpenAPI snapshot", async () => {
+    it("matches the committed OpenAPI snapshot", () => {
       // The Definition of done asks for a snapshot, and it earns its keep next
       // to the targeted assertions above: those pin the paths, the errors and
       // the absence of sensitive fields, while this catches drift anywhere else
@@ -383,7 +395,9 @@ describe("http/AuthApi", () => {
       // field that quietly became optional. Regenerate with `vitest -u` and
       // read the diff before accepting it.
       const spec = OpenApi.fromApi(AuthApi)
-      await expect(JSON.stringify(spec, null, 2)).toMatchFileSnapshot("./__snapshots__/openapi.json")
+      // Returned rather than awaited: vitest settles a promise a test hands
+      // back, so the assertion needs no `async` wrapper of its own.
+      return expect(JSON.stringify(spec, null, 2)).toMatchFileSnapshot("./__snapshots__/openapi.json")
     })
 
     it("documents the cookie and bearer security schemes", () => {
@@ -409,19 +423,19 @@ describe("http/AuthApi", () => {
 
     it("requires a credential on the session-bound operations only", () => {
       const spec = OpenApi.fromApi(HttpApi.make("app").addHttpApi(AuthApi))
-      const paths = spec.paths as Record<string, Record<string, { security?: ReadonlyArray<unknown> }>>
+      const paths = spec.paths
 
-      const securityOf = (path: string, method: string): ReadonlyArray<unknown> => {
-        const operations = Object.hasOwn(paths, path) ? paths[path] : undefined
-        if (operations === undefined || !Object.hasOwn(operations, method)) {
+      const securityOf = (path: string, method: OpenApi.OpenAPISpecMethodName): ReadonlyArray<unknown> => {
+        const operation = Object.hasOwn(paths, path) ? paths[path]?.[method] : undefined
+        if (operation === undefined) {
           throw new Error(`no ${method} ${path} operation`)
         }
-        return operations[method]?.security ?? []
+        return operation.security
       }
 
       for (const entry of contract) {
         const path = entry.path.replace(":providerId", "{providerId}")
-        const security = securityOf(path, entry.method.toLowerCase())
+        const security = securityOf(path, methodKey(entry.method))
         if (entry.authenticated) {
           assert.deepStrictEqual(
             security,
@@ -436,22 +450,15 @@ describe("http/AuthApi", () => {
 
     it("answers 401 on the session-bound operations", () => {
       const spec = OpenApi.fromApi(HttpApi.make("app").addHttpApi(AuthApi))
-      const paths = spec.paths as Record<string, Record<string, { responses: Record<string, unknown> }>>
-
       for (const entry of contract.filter((entry) => entry.authenticated)) {
-        const operations = paths[entry.path]
-        const operation = operations?.[entry.method.toLowerCase()]
+        const operation = spec.paths[entry.path]?.[methodKey(entry.method)]
         assert.isTrue(operation !== undefined && Object.hasOwn(operation.responses, "401"), entry.identifier)
       }
     })
 
     it("answers 302 with a Location header on the OAuth callback", () => {
       const spec = OpenApi.fromApi(HttpApi.make("app").addHttpApi(AuthApi))
-      const paths = spec.paths as Record<
-        string,
-        Record<string, { responses: Record<string, { headers?: Record<string, unknown> }> }>
-      >
-      const response = paths["/auth/callback/{providerId}"]?.get?.responses?.["302"]
+      const response = spec.paths["/auth/callback/{providerId}"]?.get?.responses[302]
 
       assert.isDefined(response)
       assert.isTrue(response !== undefined && Object.hasOwn(response.headers ?? {}, "location"))
@@ -461,13 +468,22 @@ describe("http/AuthApi", () => {
   describe("payloads", () => {
     it.effect("decodes a password into a Redacted that renders as <redacted>", () =>
       Effect.gen(function* () {
-        const payload = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(SignInEmailPayload))({
+        const payload = yield* Schema.decodeEffect(Schema.toCodecJson(SignInEmailPayload))({
           email: "ada@example.com",
           password: testPasswordText
         })
 
         assert.strictEqual(Redacted.value(payload.password), testPasswordText)
+        // `Redacted` gets `toString` from `Inspectable` at runtime but declares
+        // none in its type, so the type-aware rule sees the `Object.prototype`
+        // one; that rendering is exactly what this asserts.
+        // oxlint-disable-next-line typescript/no-base-to-string
         assert.strictEqual(String(payload.password), "<redacted>")
+        // `JSON.stringify` is the renderer under test, not a codec choice: it is
+        // the naive serializer a logger or a careless handler reaches for, and a
+        // schema encode would assert about a different string than the one that
+        // would leak.
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
         assert.isFalse(JSON.stringify(payload).includes(testPasswordText))
       })
     )

@@ -45,40 +45,43 @@ const makeSession = Effect.gen(function* () {
   })
 })
 
-const security = (
-  Authenticated as unknown as {
-    readonly security: Record<string, { readonly _tag: string; readonly key?: string; readonly in?: string }>
-  }
-).security
+const security = Authenticated.security
 
 describe("http/Middleware", () => {
   describe("Authenticated", () => {
     it("is security middleware", () => {
-      assert.isTrue(HttpApiMiddleware.isSecurity(Authenticated as never))
+      // `isSecurity` takes `HttpApiMiddleware.AnyService`, whose static side
+      // declares a `provides` property that `HttpApiMiddleware.ServiceClass` —
+      // the type of every middleware class effect itself produces — never has.
+      // No middleware value can satisfy that parameter, so the runtime check
+      // (`hasProperty(u, SecurityTypeId)`, and `SecurityTypeId` is not exported)
+      // is reachable only through a cast. Upstream typing gap, not ours.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+      assert.isTrue(HttpApiMiddleware.isSecurity(Authenticated as unknown as HttpApiMiddleware.AnyService))
     })
 
     it("tries the secure cookie, then the plain cookie, then a bearer token", () => {
       assert.deepStrictEqual(Object.keys(security), ["secureSessionCookie", "sessionCookie", "bearer"])
 
-      assert.strictEqual(security.secureSessionCookie?._tag, "ApiKey")
-      assert.strictEqual(security.secureSessionCookie?.key, "__Secure-effect_auth.session")
-      assert.strictEqual(security.secureSessionCookie?.in, "cookie")
+      assert.strictEqual(security.secureSessionCookie._tag, "ApiKey")
+      assert.strictEqual(security.secureSessionCookie.key, "__Secure-effect_auth.session")
+      assert.strictEqual(security.secureSessionCookie.in, "cookie")
 
-      assert.strictEqual(security.sessionCookie?._tag, "ApiKey")
-      assert.strictEqual(security.sessionCookie?.key, "effect_auth.session")
-      assert.strictEqual(security.sessionCookie?.in, "cookie")
+      assert.strictEqual(security.sessionCookie._tag, "ApiKey")
+      assert.strictEqual(security.sessionCookie.key, "effect_auth.session")
+      assert.strictEqual(security.sessionCookie.in, "cookie")
 
-      assert.strictEqual(security.bearer?._tag, "Http")
+      assert.strictEqual(security.bearer._tag, "Http")
     })
 
     it("declares Unauthorized and is required on generated clients", () => {
-      assert.strictEqual((Authenticated as unknown as { readonly error: ReadonlySet<unknown> }).error.size, 1)
-      assert.isTrue((Authenticated as unknown as { readonly requiredForClient: boolean }).requiredForClient)
+      assert.strictEqual(Authenticated.error.size, 1)
+      assert.isTrue(Authenticated.requiredForClient)
     })
 
     it("keys the principal under distinct service ids", () => {
-      assert.strictEqual(CurrentSession.key, "effect-auth/CurrentSession")
-      assert.strictEqual(CurrentUser.key, "effect-auth/CurrentUser")
+      assert.strictEqual(CurrentSession.key, "effect-auth/http/Middleware/CurrentSession")
+      assert.strictEqual(CurrentUser.key, "effect-auth/http/Middleware/CurrentUser")
     })
   })
 

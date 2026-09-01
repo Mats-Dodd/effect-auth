@@ -24,7 +24,7 @@
  * over `MagicLink.layer().pipe(Layer.provideMerge(AuthLive))` does.
  */
 import { assert, describe, layer } from "@effect/vitest"
-import { Effect, Layer, Option, Redacted } from "effect"
+import { Effect, Layer, Option, Redacted, Schema } from "effect"
 import type { AuthHooksService } from "../../src/domain/Hooks.js"
 import { layer as hooksLayer, PolicyRefused } from "../../src/domain/Hooks.js"
 import { UserStore } from "../../src/domain/Stores.js"
@@ -54,6 +54,9 @@ const makeClient = () => TestHttpClient.makeClient(MagicLinkTest.TestApi)
 const linkToken = (email: string) =>
   Effect.flatMap(AuthTest.TestEmails, (emails) => emails.tokenFor(MagicLinkTest.magicLinkKind, email))
 
+/** The schema's own runtime check, rather than a prototype test. */
+const isPolicyRefused = Schema.is(PolicyRefused)
+
 /**
  * The refusal a failure carries, failing the test when it is something else.
  *
@@ -61,7 +64,7 @@ const linkToken = (email: string) =>
  * so the compiler is the one that decides `code` is readable.
  */
 const refusal = (error: { readonly _tag: string }): PolicyRefused => {
-  if (!(error instanceof PolicyRefused)) {
+  if (!isPolicyRefused(error)) {
     return assert.fail(`expected a PolicyRefused, got ${error._tag}`)
   }
   return error
@@ -74,7 +77,7 @@ describe.sequential("magic-link/Hooks", () => {
       // deployment serves, and only the magic link half is refused here.
       beforeUserCreate: ({ candidate, source }) =>
         source._tag === "MagicLink" && candidate.email.startsWith("refused-")
-          ? Effect.fail(new PolicyRefused({ code: "magic_link_not_allowed", detail: "no links for that address" }))
+          ? Effect.fail(PolicyRefused.make({ code: "magic_link_not_allowed", detail: "no links for that address" }))
           : Effect.succeed({ ...candidate, name: `${candidate.name} (by link)` })
     })
   )("a policy that vets the accounts links create", (it) => {
@@ -120,7 +123,7 @@ describe.sequential("magic-link/Hooks", () => {
     deployment({
       // The related row a tenant-shaped deployment writes beside the user, here
       // standing in for one that cannot be written.
-      afterUserCreate: () => Effect.fail(new PolicyRefused({ code: "tenant_unavailable" }))
+      afterUserCreate: () => Effect.fail(PolicyRefused.make({ code: "tenant_unavailable" }))
     })
   )("a policy whose after-hook fails", (it) => {
     it.effect("leaves no user row when the related write is refused", () =>
@@ -145,10 +148,10 @@ describe.sequential("magic-link/Hooks", () => {
     httpDeployment({
       beforeUserCreate: ({ candidate }) =>
         candidate.email.startsWith("http-refused-")
-          ? Effect.fail(new PolicyRefused({ code: "domain_not_allowed" }))
+          ? Effect.fail(PolicyRefused.make({ code: "domain_not_allowed" }))
           : Effect.succeed(candidate),
       beforeSessionCreate: ({ user }) =>
-        user.email.startsWith("banned-") ? Effect.fail(new PolicyRefused({ code: "account_suspended" })) : Effect.void
+        user.email.startsWith("banned-") ? Effect.fail(PolicyRefused.make({ code: "account_suspended" })) : Effect.void
     })
   )("the endpoints under a policy", (it) => {
     it.effect("redirects a refused link to its own error page with the hook's code", () =>
