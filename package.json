@@ -3,12 +3,15 @@
   "version": "0.1.0",
   "description": "An Effect-native authentication library: sessions, email/password and OAuth, built on Effect v4 primitives.",
   "license": "MIT",
+  "files": [
+    "src/**/*.ts",
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map"
+  ],
   "type": "module",
   "sideEffects": [],
-  "engines": {
-    "node": ">=20"
-  },
-  "packageManager": "pnpm@9.12.3",
   "exports": {
     "./package.json": "./package.json",
     ".": "./src/index.ts",
@@ -16,7 +19,6 @@
     "./testing": "./src/testing/index.ts"
   },
   "publishConfig": {
-    "access": "public",
     "exports": {
       "./package.json": "./package.json",
       ".": {
@@ -31,21 +33,35 @@
         "types": "./dist/testing/index.d.ts",
         "default": "./dist/testing/index.js"
       }
-    }
+    },
+    "access": "public"
   },
-  "files": [
-    "src/**/*.ts",
-    "dist/**/*.js",
-    "dist/**/*.js.map",
-    "dist/**/*.d.ts",
-    "dist/**/*.d.ts.map"
-  ],
   "scripts": {
+    "prepare": "effect-tsgo patch --oxlint",
     "build": "tsc -b tsconfig.build.json",
-    "check": "tsc --noEmit",
-    "test": "vitest run",
+    "check": "oxlint --type-aware --type-check",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "oxlint --type-aware --fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "test": "vitest run --maxWorkers=2",
     "prepack": "pnpm build",
     "prepublishOnly": "node scripts/prepublish-guard.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.2.10"
+  },
+  "devDependencies": {
+    "@effect/sql-pglite": "4.0.0-rc.112",
+    "@effect/tsgo": "^0.38.0",
+    "@effect/vitest": "4.0.0-rc.112",
+    "@types/node": "^22.10.2",
+    "effect": "4.0.0-rc.112",
+    "oxfmt": "^0.65.0",
+    "oxlint": "^1.80.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "peerDependencies": {
     "@effect/sql-pglite": "4.0.0-rc.112",
@@ -56,15 +72,8 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "jose": "^6.2.10"
+  "engines": {
+    "node": ">=20"
   },
-  "devDependencies": {
-    "@effect/sql-pglite": "4.0.0-rc.112",
-    "@effect/vitest": "4.0.0-rc.112",
-    "@types/node": "^22.10.2",
-    "effect": "4.0.0-rc.112",
-    "typescript": "^5.7",
-    "vitest": "^4.1.10"
-  }
+  "packageManager": "pnpm@9.12.3"
 }

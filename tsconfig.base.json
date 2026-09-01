@@ -24,6 +24,17 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "removeComments": false
+    "removeComments": false,
+
+    // Editor-side Effect intelligence: hovers, completions, refactors, quick fixes.
+    // `diagnostics: false` because oxlint owns diagnostics (see .oxlintrc.json) —
+    // the tsgo docs prescribe this to avoid every finding being reported twice.
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "diagnostics": false,
+        "namespaceImportPackages": ["effect", "@effect/*"]
+      }
+    ]
   }
 }
