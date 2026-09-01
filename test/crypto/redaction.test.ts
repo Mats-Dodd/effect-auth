@@ -18,11 +18,8 @@ const captureLogs = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.suspend(() => {
     const lines: Array<string> = []
     const logger = Logger.formatLogFmt.pipe(Logger.map((line) => void lines.push(line)))
-    // Exactly what `Logger.layer([logger])` installs — the reference holding the
-    // fiber's logger set — provided as a service rather than as a layer, so
-    // nothing here depends on a scope this helper does not own.
     return effect.pipe(
-      Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
+      Effect.provide(Logger.layer([logger])),
       Effect.map((value) => ({ value, lines }))
     )
   })
@@ -47,13 +44,7 @@ describe("crypto/redaction", () => {
   it("renders a redacted password as <redacted> through String and JSON", () => {
     const password = Redacted.make(plaintext)
 
-    // `Redacted` gets its `toString` from `Inspectable` at runtime, but its
-    // published interface does not declare one, so the type-aware rules below
-    // see `Object.prototype.toString`. Stringifying a `Redacted` is precisely
-    // the leak this test exists to catch, so the calls stay as written.
-    // oxlint-disable-next-line typescript/no-base-to-string
     assert.strictEqual(String(password), "<redacted>")
-    // oxlint-disable-next-line typescript/no-base-to-string, typescript/restrict-template-expressions
     assert.strictEqual(`${password}`, "<redacted>")
     assert.notInclude(JSON.stringify({ password }), plaintext)
     assert.strictEqual(Redacted.value(password), plaintext)
@@ -68,8 +59,6 @@ layer(Token.layer.pipe(Layer.provide(layerWebCrypto)))("crypto/redaction (tokens
       const raw = Redacted.value(token)
 
       assert.strictEqual(raw.length, Token.tokenLength)
-      // Same false positive as above: the rendering is the assertion.
-      // oxlint-disable-next-line typescript/no-base-to-string
       assert.strictEqual(String(token), "<redacted>")
 
       const { lines } = yield* captureLogs(
@@ -99,10 +88,6 @@ layer(PasswordHasher.layerScrypt().pipe(Layer.provide(layerWebCrypto)))("crypto/
 
       const failure = Option.getOrThrow(Cause.findErrorOption(cause))
       assert.strictEqual(failure._tag, "PasswordHashError")
-      // `JSON.stringify` is the renderer under test, not a codec choice: an
-      // error that reaches a JSON body goes through exactly this, and a schema
-      // encode would assert about a different string than the one that leaks.
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
       assert.notInclude(JSON.stringify(failure), plaintext)
       assert.notInclude(String(failure), plaintext)
 

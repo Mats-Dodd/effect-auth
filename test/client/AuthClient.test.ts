@@ -224,15 +224,7 @@ describe("AuthClient", () => {
       // system. It is a string on the wire and `Redacted` the moment it is
       // decoded, so a client that logs the whole result logs nothing.
       assert.strictEqual(Redacted.value(tokens.accessToken), "provider-access-token")
-      // `Redacted` does not declare a `toString` in its type, so the rule reads
-      // this as an accidental `[object Object]`. Pinning what the *runtime*
-      // renders is the whole assertion: it is what a careless log line prints.
-      // oxlint-disable-next-line typescript/no-base-to-string
       assert.strictEqual(String(tokens.accessToken), "<redacted>")
-      // Not a codec: this is the naive `JSON.stringify` a logger or an error
-      // reporter reaches for. Encoding through a Schema instead would assert the
-      // opposite of what is wanted here — that the secret *does* round-trip.
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
       assert.isFalse(JSON.stringify(tokens).includes("provider-access-token"))
       assert.deepStrictEqual([...tokens.scopes], ["read:user", "user:email"])
       assert.deepStrictEqual(stub.calls, ["POST /auth/get-access-token"])

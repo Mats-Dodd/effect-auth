@@ -18,7 +18,6 @@
  */
 import type { Redacted } from "effect"
 import { Array, Config, Effect, Option, Schema } from "effect"
-import { dual } from "effect/Function"
 import { optionalConfig } from "../../internal/config.js"
 import { trimTrailingSlashes } from "../../internal/url.js"
 import type { OAuthProviderConfig, OAuthTokens, OAuthUserInfo } from "../Provider.js"
@@ -104,10 +103,7 @@ export interface SelectedEmail {
  * @category combinators
  * @since 1.0.0
  */
-export const selectEmail: {
-  (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null
-  (emails: ReadonlyArray<GithubEmail>): (profileEmail: string | null) => SelectedEmail | null
-} = dual(2, (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null => {
+export const selectEmail = (profileEmail: string | null, emails: ReadonlyArray<GithubEmail>): SelectedEmail | null => {
   const primary = emails.find((entry) => entry.primary)
   if (primary !== undefined && primary.verified) {
     return { email: primary.email, emailVerified: true }
@@ -123,7 +119,7 @@ export const selectEmail: {
   if (verified !== undefined) return { email: verified.email, emailVerified: true }
   const first = emails[0]
   return first === undefined ? null : { email: first.email, emailVerified: first.verified }
-})
+}
 
 // -----------------------------------------------------------------------------
 // Reading GitHub's JSON

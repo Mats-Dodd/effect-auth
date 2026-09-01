@@ -474,16 +474,7 @@ describe("http/AuthApi", () => {
         })
 
         assert.strictEqual(Redacted.value(payload.password), testPasswordText)
-        // `Redacted` gets `toString` from `Inspectable` at runtime but declares
-        // none in its type, so the type-aware rule sees the `Object.prototype`
-        // one; that rendering is exactly what this asserts.
-        // oxlint-disable-next-line typescript/no-base-to-string
         assert.strictEqual(String(payload.password), "<redacted>")
-        // `JSON.stringify` is the renderer under test, not a codec choice: it is
-        // the naive serializer a logger or a careless handler reaches for, and a
-        // schema encode would assert about a different string than the one that
-        // would leak.
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
         assert.isFalse(JSON.stringify(payload).includes(testPasswordText))
       })
     )

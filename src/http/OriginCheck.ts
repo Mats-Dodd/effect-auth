@@ -18,7 +18,6 @@
  * @since 1.0.0
  */
 import { Effect, Option } from "effect"
-import { dual } from "effect/Function"
 import { HttpServerRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { Unauthorized } from "../domain/Errors.js"
@@ -106,13 +105,10 @@ export const trustedOrigins = (config: AuthConfigService): ReadonlySet<string> =
  * @category guards
  * @since 1.0.0
  */
-export const isTrustedOrigin: {
-  (origin: string): (config: AuthConfigService) => boolean
-  (config: AuthConfigService, origin: string): boolean
-} = dual(2, (config: AuthConfigService, origin: string): boolean => {
+export const isTrustedOrigin = (config: AuthConfigService, origin: string): boolean => {
   const parsed = originOf(origin)
   return Option.isSome(parsed) && trustedOrigins(config).has(parsed.value)
-})
+}
 
 // -----------------------------------------------------------------------------
 // Open-redirect defence
@@ -165,10 +161,7 @@ export const isPathRelative = (candidate: string): boolean => {
  * @category combinators
  * @since 1.0.0
  */
-export const resolveUrl: {
-  (candidate: string | null | undefined): (config: AuthConfigService) => string
-  (config: AuthConfigService, candidate: string | null | undefined): string
-} = dual(2, (config: AuthConfigService, candidate: string | null | undefined): string => {
+export const resolveUrl = (config: AuthConfigService, candidate: string | null | undefined): string => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return config.baseUrl
   if (isPathRelative(candidate)) {
     const resolved = resolveAgainst(candidate, config.baseUrl)
@@ -179,7 +172,7 @@ export const resolveUrl: {
       : config.baseUrl
   }
   return isTrustedOrigin(config, candidate) ? candidate : config.baseUrl
-})
+}
 
 /**
  * The same validation as {@link resolveUrl}, but answering `None` instead of
@@ -194,14 +187,11 @@ export const resolveUrl: {
  * @category combinators
  * @since 1.0.0
  */
-export const validateUrl: {
-  (candidate: string | null | undefined): (config: AuthConfigService) => Option.Option<string>
-  (config: AuthConfigService, candidate: string | null | undefined): Option.Option<string>
-} = dual(2, (config: AuthConfigService, candidate: string | null | undefined): Option.Option<string> => {
+export const validateUrl = (config: AuthConfigService, candidate: string | null | undefined): Option.Option<string> => {
   if (candidate === null || candidate === undefined || candidate.length === 0) return Option.none()
   const resolved = resolveUrl(config, candidate)
   return resolved === config.baseUrl && candidate !== config.baseUrl ? Option.none() : Option.some(resolved)
-})
+}
 
 /**
  * Appends an error code to a URL a browser is about to be sent to.
@@ -221,14 +211,11 @@ export const validateUrl: {
  * @category combinators
  * @since 1.0.0
  */
-export const withErrorCode: {
-  (code: string): (url: string) => string
-  (url: string, code: string): string
-} = dual(2, (url: string, code: string): string => {
+export const withErrorCode = (url: string, code: string): string => {
   const parsed = new URL(url)
   parsed.searchParams.set("error", code)
   return parsed.toString()
-})
+}
 
 /**
  * Where a browser goes when a deployment's own hook refused what the link it
@@ -259,14 +246,15 @@ export const withErrorCode: {
  * @category combinators
  * @since 1.0.0
  */
-export const policyRefusedTarget: {
-  (errorURL: string | null | undefined, code: string): (config: AuthConfigService) => string
-  (config: AuthConfigService, errorURL: string | null | undefined, code: string): string
-} = dual(3, (config: AuthConfigService, errorURL: string | null | undefined, code: string): string => {
+export const policyRefusedTarget = (
+  config: AuthConfigService,
+  errorURL: string | null | undefined,
+  code: string
+): string => {
   const url = new URL(withErrorCode(resolveUrl(config, errorURL), "policy_refused"))
   url.searchParams.set("code", code)
   return url.toString()
-})
+}
 
 /**
  * The failure half of a redirect-shaped outcome: the error, somewhere to send
@@ -310,32 +298,22 @@ const isPolicyRefused = (error: { readonly _tag: string }): error is PolicyRefus
  * @category combinators
  * @since 1.0.0
  */
-export const redirectFailure: {
-  <E extends { readonly _tag: string }>(
-    errorCode: (error: E) => string
-  ): (config: AuthConfigService) => (error: E, errorURL: string | null | undefined) => RedirectFailure<E>
-  <E extends { readonly _tag: string }>(
-    config: AuthConfigService,
-    errorCode: (error: E) => string
-  ): (error: E, errorURL: string | null | undefined) => RedirectFailure<E>
-} = dual(
-  2,
+export const redirectFailure =
   <E extends { readonly _tag: string }>(
     config: AuthConfigService,
     errorCode: (error: E) => string
   ): ((error: E, errorURL: string | null | undefined) => RedirectFailure<E>) =>
-    (error, errorURL) => {
-      const code = errorCode(error)
-      return {
-        _tag: "Failure",
-        error,
-        redirectTo: isPolicyRefused(error)
-          ? policyRefusedTarget(config, errorURL, error.code)
-          : withErrorCode(resolveUrl(config, errorURL), code),
-        code
-      }
+  (error, errorURL) => {
+    const code = errorCode(error)
+    return {
+      _tag: "Failure",
+      error,
+      redirectTo: isPolicyRefused(error)
+        ? policyRefusedTarget(config, errorURL, error.code)
+        : withErrorCode(resolveUrl(config, errorURL), code),
+      code
     }
-)
+  }
 
 // -----------------------------------------------------------------------------
 // CSRF

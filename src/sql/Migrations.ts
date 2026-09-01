@@ -31,7 +31,6 @@
  */
 import { Effect, Layer, Option, Predicate, SchemaAST } from "effect"
 import type { Schema } from "effect"
-import { dual } from "effect/Function"
 import { Migrator, SqlClient, type SqlError } from "effect/unstable/sql"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { camelToSnake } from "../internal/records.js"
@@ -307,58 +306,42 @@ const columnKindFor = (field: string, ast: SchemaAST.AST): Effect.Effect<ColumnK
  * @category constructors
  * @since 1.0.0
  */
-export const forUserFields: {
-  <F extends UserFields>(
-    model: UserModel<F>,
-    options?: { readonly table?: string | undefined }
-  ): Effect.Effect<void, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient>
-  (options?: {
-    readonly table?: string | undefined
-  }): <F extends UserFields>(
-    model: UserModel<F>
-  ) => Effect.Effect<void, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient>
-} = dual(
-  // Arity cannot separate the two styles here — `options` is optional — so the
-  // subject is recognised instead: a `UserModel` is the only argument that
-  // carries `extraKeys`.
-  (args) => Predicate.hasProperty(args[0], "extraKeys"),
-  <F extends UserFields>(
-    model: UserModel<F>,
-    options?: { readonly table?: string | undefined }
-  ): Effect.Effect<void, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> => {
-    // Neither guard needs the client, so both are decided before the generator
-    // is entered — which leaves it with a single exit and no early `return`.
-    if (model.extraKeys.length === 0) return Effect.void
+export const forUserFields = <F extends UserFields>(
+  model: UserModel<F>,
+  options?: { readonly table?: string | undefined }
+): Effect.Effect<void, Migrator.MigrationError | SqlError.SqlError, SqlClient.SqlClient> => {
+  // Neither guard needs the client, so both are decided before the generator is
+  // entered.
+  if (model.extraKeys.length === 0) return Effect.void
 
-    const table = options?.table ?? "users"
-    if (!identifier.test(table)) return Effect.fail(migrationError(`effect-auth: ${table} is not a valid table name`))
+  const table = options?.table ?? "users"
+  if (!identifier.test(table)) return Effect.fail(migrationError(`effect-auth: ${table} is not a valid table name`))
 
-    return Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient
-      const dialect = yield* dialectFor(sql, table)
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const dialect = yield* dialectFor(sql, table)
 
-      const defaults = yield* model.extraDefaults
-      const existing = yield* dialect.existingColumns
+    const defaults = yield* model.extraDefaults
+    const existing = yield* dialect.existingColumns
 
-      for (const field of model.extraKeys) {
-        const schema: Schema.Top | undefined = model.selectFields[field]
-        if (schema === undefined) continue
+    for (const field of model.extraKeys) {
+      const schema: Schema.Top | undefined = model.selectFields[field]
+      if (schema === undefined) continue
 
-        const column = yield* columnFor(field)
-        if (existing.has(column)) continue
+      const column = yield* columnFor(field)
+      if (existing.has(column)) continue
 
-        const kind = yield* columnKindFor(field, schema.ast)
+      const kind = yield* columnKindFor(field, schema.ast)
 
-        const value = defaultLiteral(defaults[field], dialect)
-        const nullable = isNullable(schema.ast)
-        const definition = `${column} ${dialect.type(kind)}${nullable ? "" : " NOT NULL"}${
-          Option.isSome(value) ? ` DEFAULT ${value.value}` : ""
-        }`
-        yield* sql.unsafe(dialect.addColumn(table, definition))
-      }
-    })
-  }
-)
+      const value = defaultLiteral(defaults[field], dialect)
+      const nullable = isNullable(schema.ast)
+      const definition = `${column} ${dialect.type(kind)}${nullable ? "" : " NOT NULL"}${
+        Option.isSome(value) ? ` DEFAULT ${value.value}` : ""
+      }`
+      yield* sql.unsafe(dialect.addColumn(table, definition))
+    }
+  })
+}
 
 // -----------------------------------------------------------------------------
 // Migration sets

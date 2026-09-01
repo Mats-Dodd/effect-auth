@@ -12,7 +12,6 @@
  */
 import type { Redacted } from "effect"
 import { Effect, Option, Schema } from "effect"
-import { dual } from "effect/Function"
 import type { HttpClient } from "effect/unstable/http"
 import type { OAuthProviderError } from "../../domain/Errors.js"
 import type { IdTokenClaims } from "../IdToken.js"
@@ -49,25 +48,16 @@ const readUserInfo = Schema.decodeUnknownOption(UserInfoBody)
  *
  * @internal
  */
-export const identityOf: {
-  (name?: string | null): (claims: IdTokenClaims) => OAuthUserInfo | null
-  (claims: IdTokenClaims, name?: string | null): OAuthUserInfo | null
-} = dual(
-  // Arity cannot decide this one: a one-argument call is data-first with the
-  // claims and data-last with the name. The claims are always an object and the
-  // name never is, so the first argument itself is what separates the two.
-  (args) => args.length === 2 || (typeof args[0] === "object" && args[0] !== null),
-  (claims: IdTokenClaims, name?: string | null): OAuthUserInfo | null =>
-    claims.email === null
-      ? null
-      : {
-          id: claims.subject,
-          email: claims.email,
-          emailVerified: claims.emailVerified,
-          name: name ?? claims.name ?? claims.email,
-          image: claims.picture
-        }
-)
+export const identityOf = (claims: IdTokenClaims, name?: string | null): OAuthUserInfo | null =>
+  claims.email === null
+    ? null
+    : {
+        id: claims.subject,
+        email: claims.email,
+        emailVerified: claims.emailVerified,
+        name: name ?? claims.name ?? claims.email,
+        image: claims.picture
+      }
 
 /**
  * The identity a provider's userinfo endpoint reports, for a token that carried

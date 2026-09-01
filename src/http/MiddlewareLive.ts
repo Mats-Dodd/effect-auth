@@ -41,7 +41,6 @@
  * @since 1.0.0
  */
 import { Context, DateTime, Duration, Effect, Layer, Option, Redacted } from "effect"
-import { dual } from "effect/Function"
 import type { Cookies, HttpServerRequest } from "effect/unstable/http"
 import type { HttpApiEndpoint } from "effect/unstable/httpapi"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -108,37 +107,19 @@ export const remainingLifetime = (session: Session): Effect.Effect<Duration.Dura
  * @category combinators
  * @since 1.0.0
  */
-export const setSessionCookie: {
-  (
-    session: Session,
-    token: Redacted.Redacted,
-    options?: { readonly persistent?: boolean | undefined }
-  ): (config: AuthConfigService) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
-  (
-    config: AuthConfigService,
-    session: Session,
-    token: Redacted.Redacted,
-    options?: { readonly persistent?: boolean | undefined }
-  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
-} = dual(
-  // Not an arity, because the optional `options` makes three arguments mean
-  // either style. What is in the second slot does not: the data-first call has
-  // the session row there, the pipeable one the redacted token.
-  (args) => !Redacted.isRedacted(args[1]),
-  (
-    config: AuthConfigService,
-    session: Session,
-    token: Redacted.Redacted,
-    options?: { readonly persistent?: boolean | undefined }
-  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
-    Effect.flatMap(remainingLifetime(session), (maxAge) => {
-      const attributes: NonNullable<Cookies.Cookie["options"]> =
-        options?.persistent === false
-          ? { ...sessionCookieOptions(config, { maxAge }), maxAge: undefined }
-          : sessionCookieOptions(config, { maxAge })
-      return HttpApiBuilder.securitySetCookie(sessionCookieSecurity(config), token, attributes)
-    })
-)
+export const setSessionCookie = (
+  config: AuthConfigService,
+  session: Session,
+  token: Redacted.Redacted,
+  options?: { readonly persistent?: boolean | undefined }
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.flatMap(remainingLifetime(session), (maxAge) => {
+    const attributes: NonNullable<Cookies.Cookie["options"]> =
+      options?.persistent === false
+        ? { ...sessionCookieOptions(config, { maxAge }), maxAge: undefined }
+        : sessionCookieOptions(config, { maxAge })
+    return HttpApiBuilder.securitySetCookie(sessionCookieSecurity(config), token, attributes)
+  })
 
 /**
  * Expires the session cookie on the response being built.
@@ -178,29 +159,16 @@ export const clearSessionCookie = (
  * @category combinators
  * @since 1.0.0
  */
-export const setOAuthStateCookie: {
-  (
-    state: Redacted.Redacted,
-    options: { readonly maxAge: Duration.Duration }
-  ): (config: AuthConfigService) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
-  (
-    config: AuthConfigService,
-    state: Redacted.Redacted,
-    options: { readonly maxAge: Duration.Duration }
-  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
-} = dual(
-  3,
-  (
-    config: AuthConfigService,
-    state: Redacted.Redacted,
-    options: { readonly maxAge: Duration.Duration }
-  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
-    HttpApiBuilder.securitySetCookie(
-      oauthStateCookieSecurity(config),
-      state,
-      oauthStateCookieOptions(config, { maxAge: options.maxAge })
-    )
-)
+export const setOAuthStateCookie = (
+  config: AuthConfigService,
+  state: Redacted.Redacted,
+  options: { readonly maxAge: Duration.Duration }
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  HttpApiBuilder.securitySetCookie(
+    oauthStateCookieSecurity(config),
+    state,
+    oauthStateCookieOptions(config, { maxAge: options.maxAge })
+  )
 
 /**
  * Expires the OAuth state-binding cookie on the response being built.

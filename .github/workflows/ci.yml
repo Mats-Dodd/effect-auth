@@ -15,6 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       # `prepare` runs `effect-tsgo patch --oxlint`, which patches the TypeScript and
@@ -30,16 +35,17 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # oxlint --type-aware --type-check runs the TypeScript typecheck and every lint
-      # rule off one program, replacing a separate `tsc --noEmit` step.
-      - name: Check (typecheck + lint)
+      # Two passes over one program: oxlint --type-aware --type-check runs the Effect
+      # and type-aware lint rules plus the checker diagnostics, and `pnpm check` then
+      # runs `tsc -b tsconfig.build.json`. The second is not redundant — oxlint's
+      # type-check does not emit declarations, so the declaration-emit diagnostics
+      # (TS4025, TS2742) that break a published .d.ts only surface from the build.
+      # This step therefore covers the Build step as well.
+      - name: Check (lint + typecheck + build)
         run: pnpm check
 
       - name: Format
         run: pnpm format:check
-
-      - name: Build
-        run: pnpm build
 
       # --maxWorkers=2 is set in the `test` script: the PGlite-backed suites time out
       # against the 10s tripwire when vitest runs at full concurrency.

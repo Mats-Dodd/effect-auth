@@ -1,5 +1,5 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Inspectable, Option, Redacted } from "effect"
+import { DateTime, Duration, Effect, Option, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { OAuthProviderError, OAuthStateMismatch } from "../../src/domain/Errors.js"
 import { oauthIssuer, User } from "../../src/domain/Schema.js"
@@ -592,7 +592,7 @@ describe.sequential("oauth/Flow", () => {
             assert.strictEqual(result.failure.reason, "TokenExchangeFailed")
             // Nothing of the provider's own message survives into the error:
             // the whole value is serialized, so a leak anywhere in it is caught.
-            assert.notInclude(Inspectable.toStringUnknown(result.failure), "invalid_grant")
+            assert.notInclude(JSON.stringify(result.failure), "invalid_grant")
           } else {
             assert.fail("expected an OAuthProviderError")
           }

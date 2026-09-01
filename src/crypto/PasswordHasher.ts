@@ -18,7 +18,6 @@
  * @since 1.0.0
  */
 import { Context, Crypto, Effect, Encoding, Layer, Redacted, Result } from "effect"
-import { dual } from "effect/Function"
 import { PasswordHashError } from "../domain/Errors.js"
 import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
@@ -187,17 +186,14 @@ export interface ParsedHash {
  * @category combinators
  * @since 1.0.0
  */
-export const timingSafeEqualUint8: {
-  (b: Uint8Array): (a: Uint8Array) => boolean
-  (a: Uint8Array, b: Uint8Array): boolean
-} = dual(2, (a: Uint8Array, b: Uint8Array): boolean => {
+export const timingSafeEqualUint8 = (a: Uint8Array, b: Uint8Array): boolean => {
   if (a.length !== b.length) return false
   let diff = 0
   for (let i = 0; i < a.length; i++) {
     diff |= a[i]! ^ b[i]!
   }
   return diff === 0
-})
+}
 
 // -----------------------------------------------------------------------------
 // Hash format
@@ -496,10 +492,7 @@ const pbkdf2Derive = (
  * @category combinators
  * @since 1.0.0
  */
-export const verifyHash: {
-  (hash: string): (password: Redacted.Redacted) => Effect.Effect<boolean, PasswordHashError>
-  (password: Redacted.Redacted, hash: string): Effect.Effect<boolean, PasswordHashError>
-} = dual(2, (password: Redacted.Redacted, hash: string): Effect.Effect<boolean, PasswordHashError> =>
+export const verifyHash = (password: Redacted.Redacted, hash: string): Effect.Effect<boolean, PasswordHashError> =>
   Effect.flatMap(parseHash(hash), (parsed) => {
     const plaintext = Redacted.value(password)
     return parsed.algorithm === "scrypt"
@@ -519,7 +512,6 @@ export const verifyHash: {
           return timingSafeEqualUint8(derived, parsed.key)
         })
   })
-)
 
 // -----------------------------------------------------------------------------
 // Implementations
@@ -532,13 +524,6 @@ export const verifyHash: {
  * @category constructors
  * @since 1.0.0
  */
-// A pipeable overload is undecidable for this signature: `options` is optional,
-// so the published one-argument call `makeScrypt(crypto)` is indistinguishable
-// at runtime from a data-last partial application. Wrapping this in `dual` would
-// silently turn that call into a function instead of a hasher — a behavior break
-// in a released constructor — so the diagnostic is suppressed rather than
-// satisfied. See also `makePbkdf2` below.
-// oxlint-disable-next-line effecttsgo/missing-pipeable-signature
 export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): PasswordHasherService => {
   const params: ScryptParams = {
     N: options?.N ?? defaultScryptOptions.N,
@@ -565,10 +550,6 @@ export const makeScrypt = (crypto: Crypto.Crypto, options?: ScryptOptions): Pass
  * @category constructors
  * @since 1.0.0
  */
-// Same as `makeScrypt`: the optional `options` makes a data-last overload
-// ambiguous with the published one-argument call, so `dual` cannot be applied
-// without changing what `makePbkdf2(crypto)` returns.
-// oxlint-disable-next-line effecttsgo/missing-pipeable-signature
 export const makePbkdf2 = (crypto: Crypto.Crypto, options?: Pbkdf2Options): PasswordHasherService => {
   const params: Pbkdf2Params = {
     iterations: options?.iterations ?? defaultPbkdf2Options.iterations,

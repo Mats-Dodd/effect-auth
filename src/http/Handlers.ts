@@ -33,11 +33,10 @@
  */
 import type { Layer, Scope } from "effect"
 import { Effect, Option, Redacted } from "effect"
-import { dual } from "effect/Function"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { HttpServerResponse } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
-import { HttpApi, HttpApiBuilder, type HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi"
+import { type HttpApi, HttpApiBuilder, type HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Accounts } from "../domain/Accounts.js"
@@ -115,10 +114,13 @@ export const dieOn =
   <A, E extends Tagged, R>(
     effect: Effect.Effect<A, E, R>
   ): Effect.Effect<A, Exclude<E, Extract<E, { readonly _tag: Tags[number] }>>, R> =>
-    // `Exclude<E, Extract<E, …>>` rather than `Exclude<E, …>` because that is
-    // what `catchIf` computes from the refinement, and the two are only
-    // *provably* the same once `E` is a concrete union — which it always is at a
-    // call site. For a tagged union they name the same set either way.
+    // `catchIf` rather than `Effect.catch` + `Effect.fail`: on the pass-through
+    // branch it re-fails the *original* Cause, keeping its annotations and any
+    // sibling reasons, where a fresh `Effect.fail(error)` would drop them. The
+    // price is the explicit type arguments — inference cannot recover them from
+    // the refinement — and the `Exclude<E, Extract<E, …>>` spelling, which is
+    // what `catchIf` computes and which TS cannot equate with `Exclude<E, …>`
+    // for a generic `E`. For a tagged union they name the same set either way.
     Effect.catchIf<A, E, R, Extract<E, { readonly _tag: Tags[number] }>, never, never, never>(
       effect,
       isNamedFault<E, Tags>(tags),
@@ -171,24 +173,13 @@ export const serverFault: <A, E extends Tagged, R>(
  * @category combinators
  * @since 1.0.0
  */
-export const clientMeta: {
-  (
-    request: HttpServerRequest.HttpServerRequest
-  ): (config: AuthConfigService) => { readonly ipAddress: string | null; readonly userAgent: string | null }
-  (
-    config: AuthConfigService,
-    request: HttpServerRequest.HttpServerRequest
-  ): { readonly ipAddress: string | null; readonly userAgent: string | null }
-} = dual(
-  2,
-  (
-    config: AuthConfigService,
-    request: HttpServerRequest.HttpServerRequest
-  ): { readonly ipAddress: string | null; readonly userAgent: string | null } => ({
-    ipAddress: Option.getOrNull(clientAddress(config, request)),
-    userAgent: request.headers["user-agent"] ?? null
-  })
-)
+export const clientMeta = (
+  config: AuthConfigService,
+  request: HttpServerRequest.HttpServerRequest
+): { readonly ipAddress: string | null; readonly userAgent: string | null } => ({
+  ipAddress: Option.getOrNull(clientAddress(config, request)),
+  userAgent: request.headers["user-agent"] ?? null
+})
 
 /**
  * The response for an endpoint whose feature is switched off.
@@ -240,34 +231,11 @@ export const acknowledged = { success: true } as const
  * @category combinators
  * @since 1.0.0
  */
-export const clearSessionCookies: {
-  (
-    cache: SessionCacheService
-  ): (config: AuthConfigService) => Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
-  (
-    config: AuthConfigService,
-    cache: SessionCacheService
-  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest>
-} = dual(
-  2,
-  (
-    config: AuthConfigService,
-    cache: SessionCacheService
-  ): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
-    Effect.andThen(clearSessionCookie(config), cache.clear)
-)
-
-/**
- * The body a `form_post` provider posts to the callback — named only so the two
- * overloads below can share it, exactly as {@link Tagged} is named.
- */
-interface CallbackForm {
-  readonly code?: string | undefined
-  readonly state?: string | undefined
-  readonly error?: string | undefined
-  readonly error_description?: string | undefined
-  readonly user?: string | undefined
-}
+export const clearSessionCookies = (
+  config: AuthConfigService,
+  cache: SessionCacheService
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.andThen(clearSessionCookie(config), cache.clear)
 
 /**
  * The `GET` callback this deployment serves, carrying everything a `form_post`
@@ -283,16 +251,23 @@ interface CallbackForm {
  * @category combinators
  * @since 1.0.0
  */
-export const callbackFormTarget: {
-  (providerId: string, form: CallbackForm): (config: AuthConfigService) => string
-  (config: AuthConfigService, providerId: string, form: CallbackForm): string
-} = dual(3, (config: AuthConfigService, providerId: string, form: CallbackForm): string => {
+export const callbackFormTarget = (
+  config: AuthConfigService,
+  providerId: string,
+  form: {
+    readonly code?: string | undefined
+    readonly state?: string | undefined
+    readonly error?: string | undefined
+    readonly error_description?: string | undefined
+    readonly user?: string | undefined
+  }
+): string => {
   const url = new URL(`${config.basePath}/callback/${encodeURIComponent(providerId)}`, config.baseUrl)
   for (const [key, value] of Object.entries(form)) {
     if (value !== undefined) url.searchParams.set(key, value)
   }
   return url.toString()
-})
+}
 
 // -----------------------------------------------------------------------------
 // Layer
@@ -364,45 +339,21 @@ export type HandlerServices =
  * @category combinators
  * @since 1.0.0
  */
-export const forGroup: {
-  <const Id extends string, Group extends HttpApiGroup.Constraint, Return>(
-    build: (handlers: HttpApiBuilder.Handlers.FromGroup<Group>) => HttpApiBuilder.Handlers.ValidateReturn<Return>
-  ): (
-    group: Group & { readonly identifier: Id }
-  ) => <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly [K in Id]: Group } }
-  ) => Layer.Layer<
-    HttpApiGroup.Service<ApiId, Id>,
-    HttpApiBuilder.Handlers.Error<Return>,
-    Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
-  >
-  <const Id extends string, Group extends HttpApiGroup.Constraint, Return>(
-    group: Group & { readonly identifier: Id },
-    build: (handlers: HttpApiBuilder.Handlers.FromGroup<Group>) => HttpApiBuilder.Handlers.ValidateReturn<Return>
-  ): <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly [K in Id]: Group } }
-  ) => Layer.Layer<
-    HttpApiGroup.Service<ApiId, Id>,
-    HttpApiBuilder.Handlers.Error<Return>,
-    Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
-  >
-} = dual(
-  2,
+export const forGroup =
   <const Id extends string, Group extends HttpApiGroup.Constraint, Return>(
     // `Id` is inferred from the value's own `identifier`, which is what makes the
     // key of the mapped type below a literal rather than `string`.
     group: Group & { readonly identifier: Id },
     build: (handlers: HttpApiBuilder.Handlers.FromGroup<Group>) => HttpApiBuilder.Handlers.ValidateReturn<Return>
   ) =>
-    <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-      api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly [K in Id]: Group } }
-    ): Layer.Layer<
-      HttpApiGroup.Service<ApiId, Id>,
-      HttpApiBuilder.Handlers.Error<Return>,
-      Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
-    > =>
-      buildGroup(api, group, build)
-)
+  <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
+    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly [K in Id]: Group } }
+  ): Layer.Layer<
+    HttpApiGroup.Service<ApiId, Id>,
+    HttpApiBuilder.Handlers.Error<Return>,
+    Exclude<HttpApiBuilder.Handlers.Context<Return>, Scope.Scope>
+  > =>
+    buildGroup(api, group, build)
 
 /**
  * `HttpApiBuilder.group`, restated for one named group of a composed API.
@@ -448,14 +399,7 @@ export const forGroup: {
  * (It goes via `unknown` because the two signatures are not comparable in either
  * direction — which is the whole point of restating one as the other.)
  */
-// REFACTOR.md §5.1: one of the five boundary casts this repo sanctions, and the
-// only one in this module. It cannot be written as a checked conversion —
-// `HttpApi` is invariant in its group union and `HttpApiBuilder.group`'s group
-// identifier is a conditional type that stays deferred under a type parameter,
-// so no assignment the compiler can verify exists. The JSDoc above is the
-// soundness argument, and every caller re-pins `groups[id]` to the group it was
-// handed, which is the check the types can no longer make.
-// oxlint-disable-next-line typescript/no-unsafe-type-assertion
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- REFACTOR.md §5 boundary cast
 const buildGroup = (<Return>(
   api: HttpApi.HttpApi<string, HttpApiGroup.Constraint>,
   group: HttpApiGroup.Constraint,
@@ -525,38 +469,22 @@ const buildGroup = (<Return>(
  * @category layers
  * @since 1.0.0
  */
-export const layer: {
-  <F extends UserFields = {}>(
-    model?: UserModel<F>
-  ): <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } }
-  ) => Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, HandlerServices>
-  <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
-    // `NoInfer`, so that `F` comes from the model alone and the API is *checked*
-    // against the group that model declares. It is what makes both mistakes a
-    // compile error rather than a silent one: a parameterized API served by
-    // handlers built without its model (`F` falls back to `{}`, and the API's
-    // group is not `AuthApiGroupOf<{}>`), and the base API served with somebody's
-    // model. Without it the compiler would also read `F` off the group's own inner
-    // types, where it appears as `BaseUserFields & F`, and report the mismatch
-    // between two spellings of the same thing.
-    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
-    model?: UserModel<F>
-  ): Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, HandlerServices>
-} = dual(
-  // Not an arity: `model` is optional, so one argument means either style. The
-  // API is what tells them apart — `layer(api)` is by far the commonest call
-  // there is, and it must not silently become a curried function.
-  (args) => HttpApi.isHttpApi(args[0]),
-  <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
-    api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
-    model?: UserModel<F>
-  ): Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, HandlerServices> =>
-    // Two branches because `UserModel<F>` and `UserModel<{}>` are different types:
-    // "the model, or the base one" is a choice that has to be made before anything
-    // is built with it.
-    model === undefined ? build(api, baseUserModel) : build(api, model)
-)
+export const layer = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
+  // `NoInfer`, so that `F` comes from the model alone and the API is *checked*
+  // against the group that model declares. It is what makes both mistakes a
+  // compile error rather than a silent one: a parameterized API served by
+  // handlers built without its model (`F` falls back to `{}`, and the API's
+  // group is not `AuthApiGroupOf<{}>`), and the base API served with somebody's
+  // model. Without it the compiler would also read `F` off the group's own inner
+  // types, where it appears as `BaseUserFields & F`, and report the mismatch
+  // between two spellings of the same thing.
+  api: HttpApi.HttpApi<ApiId, Groups> & { readonly groups: { readonly auth: NoInfer<AuthApiGroupOf<F>> } },
+  model?: UserModel<F>
+): Layer.Layer<HttpApiGroup.Service<ApiId, "auth">, never, HandlerServices> =>
+  // Two branches because `UserModel<F>` and `UserModel<{}>` are different types:
+  // "the model, or the base one" is a choice that has to be made before anything
+  // is built with it.
+  model === undefined ? build(api, baseUserModel) : build(api, model)
 
 const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
   api: HttpApi.HttpApi<ApiId, Groups>,

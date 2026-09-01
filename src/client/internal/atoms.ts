@@ -20,7 +20,6 @@
  */
 import type { Record } from "effect"
 import { Layer } from "effect"
-import { dual } from "effect/Function"
 import type { HttpClient } from "effect/unstable/http"
 import { FetchHttpClient } from "effect/unstable/http"
 import type { AsyncResult } from "effect/unstable/reactivity"
@@ -80,19 +79,16 @@ const isControl = (u: unknown): u is Atom.Reset | Atom.Interrupt => u === Atom.R
  *
  * @internal
  */
-export const rewrite: {
-  <Req, Arg, A, E>(self: Atom.AtomResultFn<Req, A, E>, encode: (arg: Arg) => Req): Atom.AtomResultFn<Arg, A, E>
-  <Req, Arg>(encode: (arg: Arg) => Req): <A, E>(self: Atom.AtomResultFn<Req, A, E>) => Atom.AtomResultFn<Arg, A, E>
-} = dual(
-  2,
-  <Req, Arg, A, E>(self: Atom.AtomResultFn<Req, A, E>, encode: (arg: Arg) => Req): Atom.AtomResultFn<Arg, A, E> =>
-    Atom.writable<AsyncResult.AsyncResult<A, E>, Arg | Atom.Reset | Atom.Interrupt>(
-      (get) => get(self),
-      (ctx, value) => {
-        ctx.set(self, isControl(value) ? value : encode(value))
-      }
-    )
-)
+export const rewrite = <Req, Arg, A, E>(
+  self: Atom.AtomResultFn<Req, A, E>,
+  encode: (arg: Arg) => Req
+): Atom.AtomResultFn<Arg, A, E> =>
+  Atom.writable<AsyncResult.AsyncResult<A, E>, Arg | Atom.Reset | Atom.Interrupt>(
+    (get) => get(self),
+    (ctx, value) => {
+      ctx.set(self, isControl(value) ? value : encode(value))
+    }
+  )
 
 /**
  * A mutation an application drives with the payload alone.
@@ -125,21 +121,10 @@ export const withQuery =
  *
  * @internal
  */
-export const withoutPayload: {
-  <A, E>(
-    self: Atom.AtomResultFn<Keyed, A, E>,
-    reactivityKeys: ReactivityKeys | undefined
-  ): Atom.AtomResultFn<void, A, E>
-  (
-    reactivityKeys: ReactivityKeys | undefined
-  ): <A, E>(self: Atom.AtomResultFn<Keyed, A, E>) => Atom.AtomResultFn<void, A, E>
-} = dual(
-  2,
-  <A, E>(
-    self: Atom.AtomResultFn<Keyed, A, E>,
-    reactivityKeys: ReactivityKeys | undefined
-  ): Atom.AtomResultFn<void, A, E> => rewrite<Keyed, void, A, E>(self, () => ({ reactivityKeys }))
-)
+export const withoutPayload = <A, E>(
+  self: Atom.AtomResultFn<Keyed, A, E>,
+  reactivityKeys: ReactivityKeys | undefined
+): Atom.AtomResultFn<void, A, E> => rewrite<Keyed, void, A, E>(self, () => ({ reactivityKeys }))
 
 /**
  * The default transport a generated client is built on: `fetch`, told what to

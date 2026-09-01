@@ -112,7 +112,7 @@ layer(MockProvider.IdTokenSigner.layer)("oauth/IdToken", (it) => {
         const signer = yield* MockProvider.IdTokenSigner
         // The one place a second key pair is worth its cost: a forgery is a
         // token that verifies perfectly against the wrong key set.
-        const forger = yield* MockProvider.makeIdTokenSigner
+        const forger = yield* MockProvider.makeIdTokenSigner()
         const forged = yield* sign(forger, { sub: "s" }, { expiresAt })
 
         const result = yield* verifying(forged, signer.jwks)

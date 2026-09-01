@@ -33,7 +33,6 @@
  */
 import type { Redacted } from "effect"
 import { Config, Effect, Option, Schema } from "effect"
-import { dual } from "effect/Function"
 import { optionalConfig } from "../../internal/config.js"
 import { trimTrailingSlashes } from "../../internal/url.js"
 import type { KeyResolver } from "../IdToken.js"
@@ -151,10 +150,7 @@ export const endpointsOf = (options?: {
  * @category combinators
  * @since 1.0.0
  */
-export const issuerOfTenant: {
-  (authority: string, tenantId: string): string
-  (tenantId: string): (authority: string) => string
-} = dual(2, (authority: string, tenantId: string): string => `${authority}/${tenantId}/v2.0`)
+export const issuerOfTenant = (authority: string, tenantId: string): string => `${authority}/${tenantId}/v2.0`
 
 // -----------------------------------------------------------------------------
 // Reading Entra's claims

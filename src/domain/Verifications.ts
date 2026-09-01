@@ -30,7 +30,6 @@
  * @since 1.0.0
  */
 import { Context, DateTime, type Duration, Effect, Encoding, Layer, Option, Redacted, Result, Schema } from "effect"
-import { dual } from "effect/Function"
 import { Token } from "../crypto/Token.js"
 import { insertRow } from "../internal/effects.js"
 import { InvalidToken } from "./Errors.js"
@@ -82,12 +81,8 @@ export interface SubjectToken {
  * @category constructors
  * @since 1.0.0
  */
-export const encodeSubjectToken: {
-  (secret: Redacted.Redacted): (subject: string) => Redacted.Redacted
-  (subject: string, secret: Redacted.Redacted): Redacted.Redacted
-} = dual(2, (subject: string, secret: Redacted.Redacted): Redacted.Redacted =>
+export const encodeSubjectToken = (subject: string, secret: Redacted.Redacted): Redacted.Redacted =>
   Redacted.make(`${Encoding.encodeBase64Url(subject)}${subjectTokenSeparator}${Redacted.value(secret)}`)
-)
 
 /**
  * Splits a subject token back into its subject and its secret, or `None` when
@@ -182,19 +177,7 @@ export interface TokenPurpose<P> {
  */
 export function purpose(name: string): TokenPurpose<null>
 export function purpose<S extends PurposePayload>(name: string, payload: S): TokenPurpose<S["Type"]>
-export function purpose<S extends PurposePayload>(payload: S): (name: string) => TokenPurpose<S["Type"]>
-export function purpose(
-  nameOrPayload: string | PurposePayload,
-  payload?: PurposePayload
-): TokenPurpose<unknown> | ((name: string) => TokenPurpose<unknown>) {
-  // The data-last form. A purpose is named by a string and carries a schema, so
-  // the two forms are told apart by what the first argument *is* rather than by
-  // how many there are — which is what keeps the one-argument `purpose(name)`
-  // (a purpose with no payload) meaning what it has always meant.
-  if (typeof nameOrPayload !== "string") {
-    return (name: string) => purpose(name, nameOrPayload)
-  }
-  const name = nameOrPayload
+export function purpose(name: string, payload?: PurposePayload): TokenPurpose<unknown> {
   if (payload === undefined) {
     return { name, payload: null, decodePayload: () => Effect.succeed(null) }
   }
@@ -221,10 +204,7 @@ export function purpose(
  * @category combinators
  * @since 1.0.0
  */
-export const identifierOf: {
-  (subject: string): (purpose: TokenPurpose<unknown>) => string
-  (purpose: TokenPurpose<unknown>, subject: string): string
-} = dual(2, (purpose: TokenPurpose<unknown>, subject: string): string => `${purpose.name}:${subject}`)
+export const identifierOf = (purpose: TokenPurpose<unknown>, subject: string): string => `${purpose.name}:${subject}`
 
 /**
  * The purpose of an e-mail verification link.
@@ -364,12 +344,11 @@ export const userSubjectPurposes: ReadonlyArray<TokenPurpose<unknown>> = [
  * @category combinators
  * @since 1.0.0
  */
-export const retireUserSubjectTokens: {
-  (userId: UserId): (verifications: VerificationsService) => Effect.Effect<void, PersistenceError>
-  (verifications: VerificationsService, userId: UserId): Effect.Effect<void, PersistenceError>
-} = dual(2, (verifications: VerificationsService, userId: UserId): Effect.Effect<void, PersistenceError> =>
+export const retireUserSubjectTokens = (
+  verifications: VerificationsService,
+  userId: UserId
+): Effect.Effect<void, PersistenceError> =>
   Effect.forEach(userSubjectPurposes, (purpose) => verifications.retire(purpose, userId), { discard: true })
-)
 
 // -----------------------------------------------------------------------------
 // Service

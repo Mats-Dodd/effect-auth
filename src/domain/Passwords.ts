@@ -27,7 +27,6 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Option, Redacted } from "effect"
-import { dual } from "effect/Function"
 import { AuthConfig } from "../config/AuthConfig.js"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthEmails, resetPasswordUrl, verifyEmailUrl, withCallbackUrl } from "../config/AuthEmails.js"
@@ -139,10 +138,10 @@ const passwordSource: ProvisionSource = { _tag: "EmailPassword" }
  * @category combinators
  * @since 1.0.0
  */
-export const checkPolicy: {
-  (config: AuthConfigService): (password: Redacted.Redacted) => Effect.Effect<void, PasswordPolicyViolation>
-  (password: Redacted.Redacted, config: AuthConfigService): Effect.Effect<void, PasswordPolicyViolation>
-} = dual(2, (password: Redacted.Redacted, config: AuthConfigService): Effect.Effect<void, PasswordPolicyViolation> => {
+export const checkPolicy = (
+  password: Redacted.Redacted,
+  config: AuthConfigService
+): Effect.Effect<void, PasswordPolicyViolation> => {
   const { maxPasswordLength, minPasswordLength } = config.emailPassword
   const length = Redacted.value(password).length
   if (length < minPasswordLength) {
@@ -160,7 +159,7 @@ export const checkPolicy: {
     )
   }
   return Effect.void
-})
+}
 
 // -----------------------------------------------------------------------------
 // Models
@@ -923,7 +922,7 @@ export const make: <F extends UserFields>(
           Option.match({ onNone: () => created, onSome: Effect.succeed })
         )
 
-    return yield* publishSafely(events, {
+    yield* publishSafely(events, {
       _tag: "AccountLinked",
       userId: options.userId,
       accountId: account.id,
@@ -961,7 +960,7 @@ export const make: <F extends UserFields>(
         : sessions.revokeOthers(options.userId, options.currentSessionId)
     }
 
-    return yield* publishSafely(events, { _tag: "PasswordChanged", userId: options.userId, viaReset: false })
+    yield* publishSafely(events, { _tag: "PasswordChanged", userId: options.userId, viaReset: false })
   })
 
   const sendVerificationEmail = Effect.fnUntraced(function* (options: {

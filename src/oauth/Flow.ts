@@ -51,7 +51,6 @@
  * @since 1.0.0
  */
 import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema, String } from "effect"
-import { dual } from "effect/Function"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -180,14 +179,8 @@ const joinUrl = (baseUrl: string, path: string): string => `${trimTrailingSlashe
  * @category combinators
  * @since 1.0.0
  */
-export const callbackUri: {
-  (config: AuthConfigService, provider: OAuthProviderConfig): string
-  (provider: OAuthProviderConfig): (config: AuthConfigService) => string
-} = dual(
-  2,
-  (config: AuthConfigService, provider: OAuthProviderConfig): string =>
-    provider.redirectUri ?? joinUrl(config.baseUrl, `${config.basePath}/callback/${encodeURIComponent(provider.id)}`)
-)
+export const callbackUri = (config: AuthConfigService, provider: OAuthProviderConfig): string =>
+  provider.redirectUri ?? joinUrl(config.baseUrl, `${config.basePath}/callback/${encodeURIComponent(provider.id)}`)
 
 /**
  * The scopes actually requested: the provider's own, plus whatever the caller
@@ -196,12 +189,10 @@ export const callbackUri: {
  * @category combinators
  * @since 1.0.0
  */
-export const mergeScopes: {
-  (provider: OAuthProviderConfig, extra: ReadonlyArray<string> | undefined): ReadonlyArray<string>
-  (extra: ReadonlyArray<string> | undefined): (provider: OAuthProviderConfig) => ReadonlyArray<string>
-} = dual(2, (provider: OAuthProviderConfig, extra: ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
-  Array.dedupe([...provider.scopes, ...(extra ?? [])].filter((scope) => scope.length > 0))
-)
+export const mergeScopes = (
+  provider: OAuthProviderConfig,
+  extra: ReadonlyArray<string> | undefined
+): ReadonlyArray<string> => Array.dedupe([...provider.scopes, ...(extra ?? [])].filter((scope) => scope.length > 0))
 
 /**
  * Builds the authorization URL the browser is sent to.
@@ -285,10 +276,7 @@ const readTokenResponse = Schema.decodeUnknownOption(TokenResponse)
  * @category combinators
  * @since 1.0.0
  */
-export const decodeTokens: {
-  (body: unknown, now: DateTime.Utc): OAuthTokens | null
-  (now: DateTime.Utc): (body: unknown) => OAuthTokens | null
-} = dual(2, (body: unknown, now: DateTime.Utc): OAuthTokens | null =>
+export const decodeTokens = (body: unknown, now: DateTime.Utc): OAuthTokens | null =>
   Option.match(readTokenResponse(body), {
     onNone: () => null,
     onSome: (fields) => ({
@@ -303,7 +291,6 @@ export const decodeTokens: {
       scope: fields.scope ?? null
     })
   })
-)
 
 const addSeconds = (now: DateTime.Utc, seconds: number): DateTime.Utc =>
   DateTime.addDuration(now, Duration.seconds(Math.max(0, Math.trunc(seconds))))

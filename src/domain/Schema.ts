@@ -1157,11 +1157,7 @@ export const makeUserModel = <const F extends UserFields>(fields: F): UserModel<
   // field map that is still a type parameter. `UserModel<F>` is the statement of
   // what that value is, and every consumer in the library is checked against the
   // statement rather than against the construction.
-  //
-  // Suppressed rather than removed: this is boundary cast 5.3 of the five
-  // REFACTOR.md §5 sanctions, and it has no cast-free spelling — the erasure it
-  // restates is precisely what the type system cannot prove.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- REFACTOR.md §5 boundary cast
   buildUserModel(fields) as unknown as UserModel<F>
 
 /**

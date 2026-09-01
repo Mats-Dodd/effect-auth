@@ -10,14 +10,28 @@
 
   "rules": {
     // ==================================================================
-    // Effect — all 96 rules @effect/tsgo ships, at error. No exceptions.
+    // Effect — all 96 rules @effect/tsgo ships, listed explicitly.
+    //
+    // Effect's own `recommended` preset calibrates 82 of these (13 error,
+    // 69 warn) and excludes 14 outright. We run stricter than that on
+    // purpose — error is the default here — but the four `warn` entries and
+    // two `off` entries in this block (a third `off`, typescript/consistent-return,
+    // lives in the core block below) are the rules where the audit found the
+    // preset was right and blanket-error cost ergonomics with no safety
+    // gain. See SPEC.md Amendment 18 for the per-rule rationale.
     // ==================================================================
     "effecttsgo/abort-controller-in-effect": "error",
     "effecttsgo/any-unknown-in-error-context": "error",
-    "effecttsgo/async-function": "error",
+    // warn: `recommended` warns. An `async` function at a genuine platform
+    // boundary (jose, WebCrypto, the PGlite driver) is the correct code, so
+    // this is a prompt to look, not a defect.
+    "effecttsgo/async-function": "warn",
     "effecttsgo/catch-all-to-map-error": "error",
     "effecttsgo/catch-chain-to-first-success-of": "error",
-    "effecttsgo/catch-conditional-refail-to-catch-if": "error",
+    // warn: `recommended` warns. The rewrite to `catchIf` is a readability
+    // preference; at error it forced refactors of catch blocks whose
+    // conditional refail was already the clearer form.
+    "effecttsgo/catch-conditional-refail-to-catch-if": "warn",
     "effecttsgo/catch-tag-to-catch-reason": "error",
     "effecttsgo/catch-to-ignore": "error",
     "effecttsgo/catch-to-or-else-succeed": "error",
@@ -25,7 +39,11 @@
     "effecttsgo/class-self-mismatch": "error",
     "effecttsgo/crypto-random-uuid": "error",
     "effecttsgo/crypto-random-uuid-in-effect": "error",
-    "effecttsgo/deterministic-keys": "error",
+    // off: excluded from `recommended`. Its key-naming scheme is a house
+    // style, not a correctness property. The service-key renames it prompted
+    // are kept (they are wire-visible and already shipped); only the standing
+    // rule goes, so future keys are chosen for the wire, not for the linter.
+    "effecttsgo/deterministic-keys": "off",
     "effecttsgo/duplicate-package": "error",
     "effecttsgo/effect-do-notation": "error",
     "effecttsgo/effect-fn-iife": "error",
@@ -44,8 +62,11 @@
     "effecttsgo/generic-effect-services": "error",
     "effecttsgo/global-console": "error",
     "effecttsgo/global-console-in-effect": "error",
-    "effecttsgo/global-date": "error",
-    "effecttsgo/global-date-in-effect": "error",
+    // warn (both): `recommended` warns. `DateTime`/`Clock` is right inside an
+    // Effect, but `Date` in a pure helper, a type-level default or a doc
+    // example is not a defect, and at error the rule reached all of them.
+    "effecttsgo/global-date": "warn",
+    "effecttsgo/global-date-in-effect": "warn",
     "effecttsgo/global-error-in-effect-catch": "error",
     "effecttsgo/global-error-in-effect-failure": "error",
     "effecttsgo/global-fetch": "error",
@@ -64,7 +85,10 @@
     "effecttsgo/missing-effect-error": "error",
     "effecttsgo/missing-effect-service-dependency": "error",
     "effecttsgo/missing-layer-context": "error",
-    "effecttsgo/missing-pipeable-signature": "error",
+    // off: excluded from `recommended`. It demands a data-last `dual()`
+    // overload on every exported combinator; satisfying it added 69 dead
+    // overloads no caller in the library or its examples ever used.
+    "effecttsgo/missing-pipeable-signature": "off",
     "effecttsgo/missing-return-yield-star": "error",
     "effecttsgo/missing-star-in-yield-effect-gen": "error",
     "effecttsgo/multiple-catch-tag": "error",
@@ -145,6 +169,11 @@
     "typescript/no-confusing-non-null-assertion": "off",
     // `@ts-expect-error` is load-bearing in the negative type tests.
     "typescript/ban-ts-comment": "off",
+    // A guard clause that returns early and a tail that returns a value is
+    // the normal shape of an Effect handler. The rule's fix is an explicit
+    // `return undefined`, which the type system already knows and which
+    // reads as an oversight; it found no defect in the whole tree.
+    "typescript/consistent-return": "off",
 
     // Enabled beyond the categories above.
     "typescript/no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
@@ -181,7 +210,42 @@
       "rules": {
         "effecttsgo/global-console": "off",
         "effecttsgo/strict-boolean-expressions": "off",
+        // node:child_process / node:fs / node:path are the only APIs there are
+        // here; the @effect/platform equivalents need a runtime this code runs
+        // before (prepare.mjs is what patches the toolchain in the first place).
+        "effecttsgo/node-builtin-import": "off",
         "eslint/no-console": "off"
+      }
+    },
+    {
+      // Tests and the test kit are entry points, not library code. Several of
+      // these rules say so in their own message ("disable this rule in tests").
+      // A test is allowed to construct a fixed Date, a literal UUID, a JSON
+      // blob or a bare `async` helper — that is the arrangement the assertion
+      // is about, and routing it through Clock/Schema/Random would replace the
+      // thing under test with the thing being tested against.
+      "files": ["test/**", "src/testing/**"],
+      "rules": {
+        // A test provides exactly the layers its subject needs, by hand.
+        "effecttsgo/strict-effect-provide": "off",
+        // No test helper is a public combinator; dual() overloads are dead weight.
+        "effecttsgo/missing-pipeable-signature": "off",
+        // Fixtures and wire-format assertions are literal JSON on purpose.
+        "effecttsgo/prefer-schema-over-json": "off",
+        "effecttsgo/crypto-random-uuid": "off",
+        "effecttsgo/crypto-random-uuid-in-effect": "off",
+        // Fixed timestamps are how a time-dependent assertion is made stable.
+        "effecttsgo/global-date": "off",
+        "effecttsgo/global-date-in-effect": "off",
+        "effecttsgo/async-function": "off",
+        // A lazily-constructed Effect in a fixture is a fixture, not a bug.
+        "effecttsgo/lazy-effect": "off",
+        "effecttsgo/deterministic-keys": "off",
+        // Assertion messages and snapshot labels stringify freely.
+        "typescript/no-base-to-string": "off",
+        "typescript/restrict-template-expressions": "off",
+        // Test-kit generics are written for the call site, not for inference.
+        "typescript/no-unnecessary-type-parameters": "off"
       }
     }
   ]

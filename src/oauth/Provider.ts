@@ -24,7 +24,6 @@
  */
 import type { Cause, DateTime } from "effect"
 import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
-import { dual } from "effect/Function"
 import type { HttpClientError } from "effect/unstable/http"
 import { HttpClient, HttpClientRequest as Request } from "effect/unstable/http"
 import type { OAuthProviderError } from "../domain/Errors.js"
@@ -557,12 +556,8 @@ export const makeRegistry = (providers: Iterable<OAuthProviderConfig>): OAuthPro
  * @category errors
  * @since 1.0.0
  */
-export const providerError: {
-  (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError
-  (reason: OAuthProviderError["reason"]): (providerId: string) => OAuthProviderError
-} = dual(2, (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError =>
+export const providerError = (providerId: string, reason: OAuthProviderError["reason"]): OAuthProviderError =>
   ProviderError.make({ providerId, reason })
-)
 
 /**
  * Unwraps a `Redacted` credential for the one call that has to send it.

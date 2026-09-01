@@ -26,7 +26,6 @@
 import { PgliteClient } from "@effect/sql-pglite"
 import type { Crypto, Scope } from "effect"
 import { Effect, FileSystem, Layer, Path, PubSub, Redacted } from "effect"
-import { dual } from "effect/Function"
 import { TestClock } from "effect/testing"
 import type { HttpClient } from "effect/unstable/http"
 import { Etag, FetchHttpClient, HttpPlatform } from "effect/unstable/http"
@@ -578,62 +577,48 @@ type TestHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F
  *
  * **Gotchas**
  *
- * Separate signatures rather than one optional `extra` parameter, because a
- * `Layer`'s output is contravariant: there is no value that "provides `Extra`"
- * to fall back on when no layer was given, and inventing one would need a cast.
- * Each signature says the same thing one call shape means — including the two
- * data-last ones, which take the settings and hand back a function of the API.
+ * Two signatures rather than one optional parameter, because a `Layer`'s output
+ * is contravariant: there is no value that "provides `Extra`" to fall back on
+ * when no layer was given, and inventing one would need a cast. The two
+ * signatures say the same thing the two call shapes mean.
  *
  * @category layers
  * @since 1.0.0
  */
-export const layerHttpApi: {
-  <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
-    api: TestHttpApi<ApiId, Groups, F>,
-    options?: Options<F>
-  ): HttpApiLayer<ApiId>
-  <ApiId extends string, Groups extends HttpApiGroup.Constraint, Extra, F extends UserFields = {}>(
-    api: TestHttpApi<ApiId, Groups, F>,
-    options: Options<F> | undefined,
-    extra: Layer.Layer<Extra, never, DeploymentServices>
-  ): HttpApiLayer<ApiId, Extra>
-  <F extends UserFields = {}>(
-    options?: Options<F>
-  ): <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api: TestHttpApi<ApiId, Groups, F>
-  ) => HttpApiLayer<ApiId>
-  <Extra, F extends UserFields = {}>(
-    options: Options<F> | undefined,
-    extra: Layer.Layer<Extra, never, DeploymentServices>
-  ): <ApiId extends string, Groups extends HttpApiGroup.Constraint>(
-    api: TestHttpApi<ApiId, Groups, F>
-  ) => HttpApiLayer<ApiId, Extra>
-} = dual(
-  // `options` and `extra` are both optional-or-absent, so arity cannot tell the
-  // two call styles apart. The API can: it is the only argument that is an
-  // `HttpApi`, and it is the one a data-last call pipes in.
-  (args) => HttpApi.isHttpApi(args[0]),
-  <ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
-    api: TestHttpApi<ApiId, Groups, F>,
-    options?: Options<F>,
-    // `Layer<never, …>` accepts a layer providing anything at all — the output
-    // channel is contravariant — so this is the widest parameter, not the
-    // narrowest.
-    extra?: Layer.Layer<never, never, DeploymentServices>
-  ): HttpApiLayer<ApiId> => {
-    // One build, provided to both halves: a plugin's handlers and the auth
-    // handlers then share the deployment's services rather than getting two
-    // instances of them — which is the whole point of the seam, since a plugin
-    // reads `Sessions`, `UserStore` and the rest of what the deployment published.
-    const deployment = layer(options)
-    // `options.user.model` reaches both halves: the handlers, so sign-up accepts
-    // the deployment's own fields, and the deployment, so its stores write them.
-    // `AuthHandlers.layer` is what rejects an API and a model that disagree.
-    const handlers = AuthHandlers.layer(api, options?.user?.model)
-    const groups = extra === undefined ? handlers : Layer.merge(handlers, extra)
-    return Layer.merge(groups.pipe(Layer.provideMerge(deployment)), layerPlatform)
-  }
-)
+export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields = {}>(
+  api: TestHttpApi<ApiId, Groups, F>,
+  options?: Options<F>
+): HttpApiLayer<ApiId>
+export function layerHttpApi<
+  ApiId extends string,
+  Groups extends HttpApiGroup.Constraint,
+  Extra,
+  F extends UserFields = {}
+>(
+  api: TestHttpApi<ApiId, Groups, F>,
+  options: Options<F> | undefined,
+  extra: Layer.Layer<Extra, never, DeploymentServices>
+): HttpApiLayer<ApiId, Extra>
+export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.Constraint, F extends UserFields>(
+  api: TestHttpApi<ApiId, Groups, F>,
+  options?: Options<F>,
+  // `Layer<never, …>` accepts a layer providing anything at all — the output
+  // channel is contravariant — so this is the widest parameter, not the
+  // narrowest.
+  extra?: Layer.Layer<never, never, DeploymentServices>
+): HttpApiLayer<ApiId> {
+  // One build, provided to both halves: a plugin's handlers and the auth
+  // handlers then share the deployment's services rather than getting two
+  // instances of them — which is the whole point of the seam, since a plugin
+  // reads `Sessions`, `UserStore` and the rest of what the deployment published.
+  const deployment = layer(options)
+  // `options.user.model` reaches both halves: the handlers, so sign-up accepts
+  // the deployment's own fields, and the deployment, so its stores write them.
+  // `AuthHandlers.layer` is what rejects an API and a model that disagree.
+  const handlers = AuthHandlers.layer(api, options?.user?.model)
+  const groups = extra === undefined ? handlers : Layer.merge(handlers, extra)
+  return Layer.merge(groups.pipe(Layer.provideMerge(deployment)), layerPlatform)
+}
 
 /**
  * Everything a test deployment publishes — what an `extra` layer handed to
@@ -670,24 +655,17 @@ export type HttpApiLayer<ApiId extends string, Extra = never> = Layer.Layer<
  * @category layers
  * @since 1.0.0
  */
-export const layerHttp: {
-  (options?: Settings): HttpApiLayer<"test-app">
-  <Extra>(
-    options: Settings | undefined,
-    extra: Layer.Layer<Extra, never, DeploymentServices>
-  ): HttpApiLayer<"test-app", Extra>
-  <Extra>(
-    extra: Layer.Layer<Extra, never, DeploymentServices>
-  ): (options: Settings | undefined) => HttpApiLayer<"test-app", Extra>
-} = dual(
-  // `options` is optional, so arity cannot tell the two call styles apart: a
-  // lone argument is the settings unless it is the plugin layer, which is what
-  // the data-last call partially applies. See {@link layerHttp} for why both
-  // exist.
-  (args) => !(args.length === 1 && Layer.isLayer(args[0])),
-  (options?: Settings, extra?: Layer.Layer<never, never, DeploymentServices>): HttpApiLayer<"test-app"> =>
-    extra === undefined ? layerHttpApi(TestApi, options) : layerHttpApi(TestApi, options, extra)
-)
+export function layerHttp(options?: Settings): HttpApiLayer<"test-app">
+export function layerHttp<Extra>(
+  options: Settings | undefined,
+  extra: Layer.Layer<Extra, never, DeploymentServices>
+): HttpApiLayer<"test-app", Extra>
+export function layerHttp(
+  options?: Settings,
+  extra?: Layer.Layer<never, never, DeploymentServices>
+): HttpApiLayer<"test-app"> {
+  return extra === undefined ? layerHttpApi(TestApi, options) : layerHttpApi(TestApi, options, extra)
+}
 
 /**
  * {@link layerHttp} on a `TestClock` of its own, which a test in the block may
@@ -728,26 +706,19 @@ export const layerHttp: {
  * @category layers
  * @since 1.0.0
  */
-export const layerHttpMovingClock: {
-  (options?: Settings): HttpApiLayer<"test-app", TestClock.TestClock>
-  <Extra>(
-    options: Settings | undefined,
-    extra: Layer.Layer<Extra, never, DeploymentServices>
-  ): HttpApiLayer<"test-app", Extra | TestClock.TestClock>
-  <Extra>(
-    extra: Layer.Layer<Extra, never, DeploymentServices>
-  ): (options: Settings | undefined) => HttpApiLayer<"test-app", Extra | TestClock.TestClock>
-} = dual(
-  // See {@link layerHttp}: a lone argument is the settings unless it is a layer.
-  (args) => !(args.length === 1 && Layer.isLayer(args[0])),
-  (
-    options?: Settings,
-    extra?: Layer.Layer<never, never, DeploymentServices>
-  ): HttpApiLayer<"test-app", TestClock.TestClock> =>
-    (extra === undefined ? layerHttp(options) : layerHttp(options, extra)).pipe(
-      Layer.provideMerge(Layer.fresh(TestClock.layer()))
-    )
-)
+export function layerHttpMovingClock(options?: Settings): HttpApiLayer<"test-app", TestClock.TestClock>
+export function layerHttpMovingClock<Extra>(
+  options: Settings | undefined,
+  extra: Layer.Layer<Extra, never, DeploymentServices>
+): HttpApiLayer<"test-app", Extra | TestClock.TestClock>
+export function layerHttpMovingClock(
+  options?: Settings,
+  extra?: Layer.Layer<never, never, DeploymentServices>
+): HttpApiLayer<"test-app", TestClock.TestClock> {
+  return (extra === undefined ? layerHttp(options) : layerHttp(options, extra)).pipe(
+    Layer.provideMerge(Layer.fresh(TestClock.layer()))
+  )
+}
 
 // -----------------------------------------------------------------------------
 // Seams
@@ -789,11 +760,7 @@ export const layerHttpMovingClock: {
  */
 export const freshClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
   // A clock scoped to one test body is the whole of what this combinator is;
-  // composing it at the block's entry point would give the block's tests one
-  // shared clock again, which is exactly the thing it exists to avoid. The
-  // scope this rule protects is the one wanted: the clock is built when the
-  // body starts and released when it ends.
-  // oxlint-disable-next-line effecttsgo/strict-effect-provide
+  // composing it at the block's entry point would share one clock across tests.
   Effect.provide(effect, TestClock.layer())
 
 /**

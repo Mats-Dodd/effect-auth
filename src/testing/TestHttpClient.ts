@@ -12,7 +12,6 @@
  * @since 1.0.0
  */
 import { Effect, Option, Redacted, Ref } from "effect"
-import { dual } from "effect/Function"
 import type { HttpClientResponse } from "effect/unstable/http"
 import {
   Cookies,
@@ -107,13 +106,6 @@ export const makeClient = Effect.fnUntraced(function* <ApiId extends string, Gro
     httpClient,
     baseUrl: options?.baseUrl ?? testBaseUrl
   }).pipe(
-    // Not composable at an entry point: the client middleware closes over
-    // *this* call's `options.bearerToken`, so it is built per client, and
-    // `HttpApiMiddleware` exports no `ForClient` key for `Effect.provideService`
-    // to take. What the rule guards against — a layer released before the value
-    // that depends on it — cannot happen here: `layerClient` over a plain
-    // function is scopeless and has no finalizer.
-    // oxlint-disable-next-line effecttsgo/strict-effect-provide
     Effect.provide(
       HttpApiMiddleware.layerClient(Authenticated, ({ next, request }) => {
         const token = options?.bearerToken?.()
@@ -214,18 +206,10 @@ export const refusedStatus = <A, E, R>(request: Effect.Effect<A, E, R>): Effect.
  * @category combinators
  * @since 1.0.0
  */
-export const responseCookie: {
-  (name?: string): (response: HttpClientResponse.HttpClientResponse) => Option.Option<Cookies.Cookie>
-  (response: HttpClientResponse.HttpClientResponse, name?: string): Option.Option<Cookies.Cookie>
-} = dual(
-  // `name` is optional, so arity cannot tell the two call styles apart. The
-  // first argument does: a cookie name is a `string`, a response is not.
-  (args) => args.length > 0 && typeof args[0] !== "string",
-  (
-    response: HttpClientResponse.HttpClientResponse,
-    name: string = insecureSessionCookieName
-  ): Option.Option<Cookies.Cookie> => Cookies.get(response.cookies, name)
-)
+export const responseCookie = (
+  response: HttpClientResponse.HttpClientResponse,
+  name: string = insecureSessionCookieName
+): Option.Option<Cookies.Cookie> => Cookies.get(response.cookies, name)
 
 /**
  * The session cookie currently in a jar, if there is one.
@@ -247,17 +231,10 @@ export const sessionCookie = (cookies: Ref.Ref<Cookies.Cookies>): Effect.Effect<
  * @category combinators
  * @since 1.0.0
  */
-export const responseCacheCookie: {
-  (name?: string): (response: HttpClientResponse.HttpClientResponse) => Option.Option<Cookies.Cookie>
-  (response: HttpClientResponse.HttpClientResponse, name?: string): Option.Option<Cookies.Cookie>
-} = dual(
-  // See {@link responseCookie}: a `string` first argument is the data-last name.
-  (args) => args.length > 0 && typeof args[0] !== "string",
-  (
-    response: HttpClientResponse.HttpClientResponse,
-    name: string = insecureSessionCacheCookieName
-  ): Option.Option<Cookies.Cookie> => Cookies.get(response.cookies, name)
-)
+export const responseCacheCookie = (
+  response: HttpClientResponse.HttpClientResponse,
+  name: string = insecureSessionCacheCookieName
+): Option.Option<Cookies.Cookie> => Cookies.get(response.cookies, name)
 
 /**
  * The session cache cookie currently in a jar, if there is one.
@@ -265,17 +242,10 @@ export const responseCacheCookie: {
  * @category combinators
  * @since 1.0.0
  */
-export const sessionCacheCookie: {
-  (name?: string): (cookies: Ref.Ref<Cookies.Cookies>) => Effect.Effect<Option.Option<Cookies.Cookie>>
-  (cookies: Ref.Ref<Cookies.Cookies>, name?: string): Effect.Effect<Option.Option<Cookies.Cookie>>
-} = dual(
-  // See {@link responseCookie}: a `string` first argument is the data-last name.
-  (args) => args.length > 0 && typeof args[0] !== "string",
-  (
-    cookies: Ref.Ref<Cookies.Cookies>,
-    name: string = insecureSessionCacheCookieName
-  ): Effect.Effect<Option.Option<Cookies.Cookie>> => Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, name))
-)
+export const sessionCacheCookie = (
+  cookies: Ref.Ref<Cookies.Cookies>,
+  name: string = insecureSessionCacheCookieName
+): Effect.Effect<Option.Option<Cookies.Cookie>> => Effect.map(Ref.get(cookies), (jar) => Cookies.get(jar, name))
 
 /**
  * The value of the session cookie, `""` when it was expired away, and

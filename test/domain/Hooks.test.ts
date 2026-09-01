@@ -81,18 +81,11 @@ class Installed extends Context.Service<Installed, AuthHooksService>()(
  */
 const installed: Layer.Layer<Installed> = Layer.effect(Installed, AuthHooks)
 
-/**
- * Builds `composition` and answers the hook set it left in the reference.
- *
- * The layer is built into a scope of the caller's own rather than provided to
- * an effect: what is under test is what the *build* resolved, and `Layer.build`
- * says exactly that.
- */
+/** Builds `composition` and answers the hook set it left in the reference. */
 const resolve = (composition: Layer.Layer<never>): Effect.Effect<AuthHooksService> =>
-  Effect.scoped(
-    Effect.map(Layer.build(installed.pipe(Layer.provide(composition))), (context): AuthHooksService =>
-      Context.get(context, Installed)
-    )
+  Effect.provide(
+    Effect.map(Installed, (hooks): AuthHooksService => hooks),
+    installed.pipe(Layer.provide(composition))
   )
 
 /** Unwraps an optional hook member, failing the test when the composition dropped it. */
@@ -198,8 +191,9 @@ describe("domain/Hooks", () => {
       // context provided the reference, rather than being skipped entirely.
       const trace: Array<string> = []
       const updated = Layer.updateService(installed, AuthHooks, (hooks) => combine(hooks, recording(trace, "only")))
-      const hooks = yield* Effect.scoped(
-        Effect.map(Layer.build(updated), (context): AuthHooksService => Context.get(context, Installed))
+      const hooks = yield* Effect.provide(
+        Effect.map(Installed, (h): AuthHooksService => h),
+        updated
       )
 
       const beforeCreate = yield* beforeCreateOf(hooks)

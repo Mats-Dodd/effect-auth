@@ -41,7 +41,6 @@
  */
 import type { Redacted } from "effect"
 import { Effect, Layer } from "effect"
-import { dual } from "effect/Function"
 import type { HttpClient } from "effect/unstable/http"
 import { HttpClientRequest } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
@@ -618,11 +617,7 @@ export const make = <
     // (It goes via `unknown` because a one-step conversion is refused:
     // `HttpApi.prefix`'s return type makes the two sides non-overlapping to the
     // compiler's comparability check.)
-    //
-    // REFACTOR.md §5.2 sanctions exactly this cast; there is no assertion-free
-    // spelling of it, because the invariance it works around is in `HttpApi`'s
-    // own declaration.
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- REFACTOR.md §5 boundary cast
     api: (options?.api ?? AuthApi) as unknown as HttpApi.HttpApi<string, AuthApiGroupOf<F>>,
     httpClient: Layer.merge(httpClient, forClient),
     baseUrl: options?.baseUrl,
@@ -644,10 +639,7 @@ export const make = <
   // conditional. Only the *argument* is being named: the atom, the request it
   // issues and the schema it encodes through are the ones `AtomHttpApi` built
   // from the API that was passed in.
-  //
-  // REFACTOR.md §5.4 sanctions it: a deferred conditional has no assignable
-  // spelling, so there is nothing to write here that is not an assertion.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- REFACTOR.md §5 boundary cast
   const signUpMutation = service.mutation("auth", "signUpEmail") as unknown as Atom.AtomResultFn<
     PayloadRequest<SignUpEmailOf<F>>,
     SignUpResponseOf<F>,
@@ -659,9 +651,7 @@ export const make = <
   // branches on the payload type, and a conditional over an unresolved `F` has no
   // writable form inside this function — while at a call site, where `F` is a
   // concrete field map, it resolves to exactly what is stated here.
-  //
-  // REFACTOR.md §5.4 sanctions this one too, for the same reason.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- REFACTOR.md §5 boundary cast
   const updateUserMutation = service.mutation("auth", "updateUser") as unknown as Atom.AtomResultFn<
     PayloadRequest<UpdateUserOf<F>>,
     { readonly user: UserPublicOf<F> },
@@ -758,17 +748,11 @@ export const make = <
  * @category combinators
  * @since 1.0.0
  */
-export const run: {
-  <Arg>(arg: Arg): <A, E>(self: Atom.AtomResultFn<Arg, A, E>) => Effect.Effect<A, E, AtomRegistry.AtomRegistry>
-  <Arg, A, E>(self: Atom.AtomResultFn<Arg, A, E>, arg: Arg): Effect.Effect<A, E, AtomRegistry.AtomRegistry>
-} = dual(
-  // Arity cannot decide this one: the argument of a `void` mutation atom may be
-  // omitted, so `run(client.signOut)` is a one-argument *data-first* call. The
-  // atom is what tells the two styles apart, exactly as `Atom.map` does upstream.
-  (args) => Atom.isAtom(args[0]),
-  <Arg, A, E>(self: Atom.AtomResultFn<Arg, A, E>, arg: Arg): Effect.Effect<A, E, AtomRegistry.AtomRegistry> =>
-    Effect.flatMap(Atom.set(self, arg), () => Atom.getResult(self, { suspendOnWaiting: true }))
-)
+export const run = <Arg, A, E>(
+  self: Atom.AtomResultFn<Arg, A, E>,
+  arg: Arg
+): Effect.Effect<A, E, AtomRegistry.AtomRegistry> =>
+  Effect.flatMap(Atom.set(self, arg), () => Atom.getResult(self, { suspendOnWaiting: true }))
 
 /**
  * Sends the browser to a URL.

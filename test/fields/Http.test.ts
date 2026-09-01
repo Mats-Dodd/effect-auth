@@ -96,9 +96,6 @@ const UserEnvelope = Schema.Struct({ user: Schema.Record(Schema.String, Schema.U
 const readUser = (body: unknown): Effect.Effect<Record<string, unknown>, Schema.SchemaError> =>
   Effect.map(Schema.decodeUnknownEffect(UserEnvelope)(body), (envelope) => envelope.user)
 
-/** A value as the JSON text it would go on the wire as. */
-const jsonTextOf = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
-
 layer(layerFields)("fields/Http", (it) => {
   it.effect("takes a custom field at sign-up and answers with it", () =>
     Effect.gen(function* () {
@@ -165,8 +162,8 @@ layer(layerFields)("fields/Http", (it) => {
       })
       const current = yield* client.auth.getSession()
 
-      assert.notInclude(yield* jsonTextOf(registered), "apiSecret")
-      assert.notInclude(yield* jsonTextOf(current), "apiSecret")
+      assert.notInclude(JSON.stringify(registered), "apiSecret")
+      assert.notInclude(JSON.stringify(current), "apiSecret")
     })
   )
 

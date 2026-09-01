@@ -92,7 +92,10 @@ export class Sessions extends Context.Service<Sessions, SessionsService>()("effe
 Rules:
 - Interface name = `<ClassName>Service` (e.g. `SessionsService`, `PasswordHasherService`,
   `UserStoreService`). Where an equivalent inline/anonymous shape exists today, extract it —
-  service keys and runtime behavior must not change.
+  service keys and runtime behavior must not change *in this wave*. (The keys were later
+  module-qualified as their own deliberate step: `"effect-auth/Sessions"` →
+  `"effect-auth/domain/Sessions"`, SPEC.md Amendment 17. The example above is already in the
+  current form.)
 - `make` returns the interface type explicitly.
 - Applies to: Sessions, Accounts, Passwords, AuthEvents, the four stores, WithAuthTransaction,
   PasswordHasher, Hmac, Token, AuthConfig, AuthEmails, OAuthProviders, OAuthFlow, and any other
@@ -112,15 +115,26 @@ returns exactly these five lines, and no others:
 
 | # | Site | What is restated |
 |---|---|---|
-| 5.1 | `src/http/Handlers.ts:405` | `HttpApiBuilder.group`, for one named group of a composed API |
-| 5.3 | `src/domain/Schema.ts:1089` | `makeUserModel`, re-typing the erased model build |
-| 5.2 | `src/client/AuthClient.ts:622` | `AtomHttpApi.Service`, the same boundary as 5.1 |
+| 5.1 | `src/http/Handlers.ts:397` | `HttpApiBuilder.group`, for one named group of a composed API |
+| 5.3 | `src/domain/Schema.ts:1161` | `makeUserModel`, re-typing the erased model build |
+| 5.2 | `src/client/AuthClient.ts:621` | `AtomHttpApi.Service`, the same boundary as 5.1 |
 | 5.4 | `src/client/AuthClient.ts:643` | the argument type of the `signUpEmail` mutation atom |
-| 5.4 | `src/client/AuthClient.ts:654` | the argument type of the `updateUser` mutation atom |
+| 5.4 | `src/client/AuthClient.ts:655` | the argument type of the `updateUser` mutation atom |
 
 Line numbers move; the count and the modules do not. Three casts is the ceiling for
 `AuthClient.ts`, one for `Handlers.ts`, one for `Schema.ts`, and zero everywhere else in `src/`.
 Each is justified in-code at its own site, at the length the four entries below give it.
+
+**This gate is no longer prose.** `typescript/no-unsafe-type-assertion` runs at error over the whole
+tree, so a sixth cast does not need a reviewer to notice it — `pnpm check` refuses it. The five
+above are the five `// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- REFACTOR.md
+§5 boundary cast` suppressions in `src/`, and adding one is a visible, greppable, reviewable act
+rather than a line that reads like any other. The grep above still works and is still the fastest
+way to see the list; it is now a cross-check on the linter rather than the only enforcement. The
+rule has one further suppression outside `src/`, in `test/http-api/Middleware.test.ts`, where
+`HttpApiMiddleware.isSecurity` can only be reached through a cast past an upstream typing gap; the
+`src/` ceiling of five is unchanged. Amending this section means editing both the table and the
+suppression in the file.
 
 1. `src/http/Handlers.ts` — `HttpApiBuilder.group`, restated for one named group of a composed
    API (`buildGroup`). Two things about its signature make it unusable from a library: `HttpApi`
@@ -162,13 +176,21 @@ Each is justified in-code at its own site, at the length the four entries below 
 ## 6. Definition of done (gates — the final reviewer runs all of these)
 
 1. `pnpm build && pnpm check && pnpm test` green (count must not go down; 357 at the end of the
-   tightening refactor, 643 at the end of the v2 wave).
+   tightening refactor, 643 at the end of the v2 wave, 743 after the lint calibration).
+   `pnpm check` at zero lines of output — a warn-level finding is a finding.
 2. Grep gate over `src/` (tests excluded):
    `grep -rnE "as any|as unknown|: any\b|<any[,>]| as Layer| as Effect|@ts-expect-error|@ts-ignore" src/`
    returns EXACTLY the five §5 casts and nothing else — no `any` in a type position anywhere in
-   `src/`, forced or otherwise, and no suppression comment. (If effect's own APIs ever force one,
-   it needs a one-line comment naming the forcing API and the final reviewer has to agree it is
-   forced. None does today.)
+   `src/`, forced or otherwise. (If effect's own APIs ever force one, it needs a one-line comment
+   naming the forcing API and the final reviewer has to agree it is forced. None does today.)
+   Since the lint calibration this is belt-and-braces: `typescript/no-unsafe-type-assertion` at
+   error is what actually holds the line, and the reviewable artefact is the suppression list —
+   `grep -rn "oxlint-disable" src test`, which must return the five §5 casts, the two
+   `effecttsgo/global-date` epoch constants in `src/http/Cookies.ts`, the one
+   `effecttsgo/catch-conditional-refail-to-catch-if` in `src/http/Handlers.ts`, and the one
+   `typescript/no-unsafe-type-assertion` in `test/http-api/Middleware.test.ts`. Every suppression is
+   a single `oxlint-disable-next-line` with its reason — inline after `--`, or, where the reason
+   needs a paragraph, in the comment block directly above it. No blanket or file-level disables.
 3. No conditional types in any exported layer/function signature, and exactly one `ReturnType` in an
    exported signature (`AuthApiGroupOf`, sanctioned in SPEC.md §8.4). `grep -rn ReturnType src/`
    returns a second hit, `Effect.Services<ReturnType<typeof respond>>` in

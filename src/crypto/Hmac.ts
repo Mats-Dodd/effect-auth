@@ -7,7 +7,6 @@
  * @since 1.0.0
  */
 import { Context, Effect, Layer, Redacted } from "effect"
-import { dual } from "effect/Function"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { ambientCrypto, encodeUtf8, toArrayBuffer } from "../internal/crypto.js"
 
@@ -71,10 +70,7 @@ export class Hmac extends Context.Service<Hmac, HmacService>()("effect-auth/cryp
  * @category constructors
  * @since 1.0.0
  */
-export const make: {
-  (secret: Redacted.Redacted): (crypto: Crypto) => Effect.Effect<HmacService>
-  (crypto: Crypto, secret: Redacted.Redacted): Effect.Effect<HmacService>
-} = dual(2, (crypto: Crypto, secret: Redacted.Redacted): Effect.Effect<HmacService> =>
+export const make = (crypto: Crypto, secret: Redacted.Redacted): Effect.Effect<HmacService> =>
   Effect.map(
     Effect.promise(() =>
       crypto.subtle.importKey(
@@ -99,7 +95,6 @@ export const make: {
           Effect.promise(() => crypto.subtle.verify("HMAC", key, toArrayBuffer(mac), toArrayBuffer(data)))
       })
   )
-)
 
 /**
  * Provides {@link Hmac} over WebCrypto, with the key imported once from

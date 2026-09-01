@@ -6,7 +6,6 @@
  */
 import type { SchemaIssue } from "effect"
 import { Effect } from "effect"
-import { dual } from "effect/Function"
 
 /**
  * The subset of a model's `insert` variant this package constructs rows with.
@@ -31,10 +30,8 @@ export interface Insertable<in I, out A> {
  *
  * @internal
  */
-export const insertRow: {
-  <I>(input: I): <A>(model: Insertable<I, A>) => Effect.Effect<A>
-  <I, A>(model: Insertable<I, A>, input: I): Effect.Effect<A>
-} = dual(2, <I, A>(model: Insertable<I, A>, input: I): Effect.Effect<A> => Effect.orDie(model.makeEffect(input)))
+export const insertRow = <I, A>(model: Insertable<I, A>, input: I): Effect.Effect<A> =>
+  Effect.orDie(model.makeEffect(input))
 
 /**
  * Puts what a `beforeUserCreate` hook answered with back through the model's
@@ -62,25 +59,12 @@ export const insertRow: {
  *
  * @internal
  */
-export const revalidateRewrite: {
-  <I>(
-    answer: I,
-    normalizeEmail: (email: string) => string
-  ): <A extends { readonly email: string }>(makeInsert: (input: I) => Effect.Effect<A>) => Effect.Effect<A>
-  <I, A extends { readonly email: string }>(
-    makeInsert: (input: I) => Effect.Effect<A>,
-    answer: I,
-    normalizeEmail: (email: string) => string
-  ): Effect.Effect<A>
-} = dual(
-  3,
-  <I, A extends { readonly email: string }>(
-    makeInsert: (input: I) => Effect.Effect<A>,
-    answer: I,
-    normalizeEmail: (email: string) => string
-  ): Effect.Effect<A> =>
-    Effect.map(makeInsert(answer), (validated) => Object.assign(validated, { email: normalizeEmail(validated.email) }))
-)
+export const revalidateRewrite = <I, A extends { readonly email: string }>(
+  makeInsert: (input: I) => Effect.Effect<A>,
+  answer: I,
+  normalizeEmail: (email: string) => string
+): Effect.Effect<A> =>
+  Effect.map(makeInsert(answer), (validated) => Object.assign(validated, { email: normalizeEmail(validated.email) }))
 
 /**
  * The annotations every log this library writes carries.
@@ -116,9 +100,5 @@ export const annotateAuthLogs = <A, E, R>(effect: Effect.Effect<A, E, R>): Effec
  *
  * @internal
  */
-export const deliverEmail: {
-  (message: string): <E>(email: Effect.Effect<void, E>) => Effect.Effect<void>
-  <E>(email: Effect.Effect<void, E>, message: string): Effect.Effect<void>
-} = dual(2, <E>(email: Effect.Effect<void, E>, message: string): Effect.Effect<void> =>
+export const deliverEmail = <E>(email: Effect.Effect<void, E>, message: string): Effect.Effect<void> =>
   annotateAuthLogs(Effect.ignore(email, { log: "Warn", message }))
-)

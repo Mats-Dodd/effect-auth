@@ -63,9 +63,7 @@ const runOidc = Effect.fnUntraced(function* (options?: {
   const nonce = MockProvider.paramsOf(started.url).get("nonce")
 
   yield* Effect.sync(() =>
-    // The route is a `fetch`-shaped callback, so what it hands back is a
-    // promise rather than an Effect: the signer's own promise, mapped.
-    server.on(MockProvider.tokenUrl, () => {
+    server.on(MockProvider.tokenUrl, async () => {
       const claims = options?.claims?.(nonce, email) ?? {
         sub: email,
         email,
@@ -73,14 +71,13 @@ const runOidc = Effect.fnUntraced(function* (options?: {
         name: testName,
         nonce
       }
-      return signer.sign(claims, options?.sign).then((idToken) =>
-        MockProvider.json({
-          access_token: "provider-access-token",
-          token_type: "bearer",
-          expires_in: 3600,
-          ...(options?.omitIdToken === true ? {} : { id_token: idToken })
-        })
-      )
+      const idToken = await signer.sign(claims, options?.sign)
+      return MockProvider.json({
+        access_token: "provider-access-token",
+        token_type: "bearer",
+        expires_in: 3600,
+        ...(options?.omitIdToken === true ? {} : { id_token: idToken })
+      })
     })
   )
 

@@ -26,7 +26,6 @@ import {
   Option,
   Redactable,
   Redacted,
-  Schema,
   Stream
 } from "effect"
 import { TestClock } from "effect/testing"
@@ -64,9 +63,6 @@ const noNetwork: Layer.Layer<HttpClient.HttpClient> = FetchHttpClient.layer.pipe
     )
   )
 )
-
-/** A value as the JSON text it would go on the wire as. */
-const jsonTextOf = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))
 
 layer(AuthTest.layer())("config/Auth assembly", (it) => {
   it.effect("signs a user up, through the whole stack", () =>
@@ -340,7 +336,7 @@ layer(redactingStack)("config/Auth redacted headers", (it) => {
       // And the header really renders redacted under it: `Redactable.redact` is
       // what a log line goes through, and it reads the reference off the fiber.
       assert.strictEqual(
-        yield* jsonTextOf(Redactable.redact(Headers.fromInput({ "x-tenant-token": "hunter2", "x-public": "fine" }))),
+        JSON.stringify(Redactable.redact(Headers.fromInput({ "x-tenant-token": "hunter2", "x-public": "fine" }))),
         `{"x-tenant-token":"<redacted>","x-public":"fine"}`
       )
     })

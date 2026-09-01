@@ -439,21 +439,18 @@ describe.sequential("oauth/providers/Apple form_post", () => {
         yield* Effect.sync(() =>
           // The route is a `fetch`-shaped callback, so what it hands back is a
           // promise rather than an Effect: the signer's own promise, mapped.
-          server.on(Apple.tokenUrl, () =>
-            signer
-              .sign(
-                { sub: "001234.apple.subject", email, email_verified: "true", nonce },
-                { issuer: Apple.issuer, audience: clientId }
-              )
-              .then((idToken) =>
-                MockProvider.json({
-                  access_token: "apple-access-token",
-                  token_type: "bearer",
-                  expires_in: 3600,
-                  id_token: idToken
-                })
-              )
-          )
+          server.on(Apple.tokenUrl, async () => {
+            const idToken = await signer.sign(
+              { sub: "001234.apple.subject", email, email_verified: "true", nonce },
+              { issuer: Apple.issuer, audience: clientId }
+            )
+            return MockProvider.json({
+              access_token: "apple-access-token",
+              token_type: "bearer",
+              expires_in: 3600,
+              id_token: idToken
+            })
+          })
         )
 
         // Apple posts the callback cross-site. That request carries no

@@ -191,11 +191,6 @@ describe("config/AuthEmails", () => {
     })
     const url = verifyEmailUrl(config, Redacted.make("tok3n"))
 
-    // `Redacted` prints as `<redacted>`, which is what keeps an accidental log
-    // line from carrying the link. It gets `toString` from `Inspectable` at
-    // runtime but does not declare one in its type, so the type-aware rule sees
-    // `Object.prototype.toString`; that rendering is exactly the assertion.
-    // oxlint-disable-next-line typescript/no-base-to-string
     assert.strictEqual(String(url), "<redacted>")
     assert.strictEqual(Redacted.value(url), "https://app.example.com/auth/verify-email?token=tok3n")
   })

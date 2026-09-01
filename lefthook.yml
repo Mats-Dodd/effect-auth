@@ -1,0 +1,17 @@
+# Git hooks. Installed by scripts/prepare.mjs on `pnpm install` in this repo
+# (never in a consumer's install). Docs: https://lefthook.dev/configuration/
+#
+# Deliberately only the two cheap gates. The real gate is `pnpm check`, which
+# also runs the build; it is too slow for every commit and belongs in CI.
+
+pre-commit:
+  parallel: true
+  jobs:
+    # `pnpm exec`: the hook's shell does not have node_modules/.bin on PATH.
+    - name: format
+      glob: ["*.ts", "*.mts", "*.mjs", "*.json"]
+      run: pnpm exec oxfmt --check {staged_files}
+
+    - name: lint
+      glob: ["*.ts", "*.mts", "*.mjs"]
+      run: pnpm exec oxlint --type-aware {staged_files}

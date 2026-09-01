@@ -239,9 +239,7 @@ export const requireFresh: Effect.Effect<void, SessionNotFresh, CurrentSession |
   const session = yield* CurrentSession
   const config = yield* AuthConfig
   const freshUntil = DateTime.addDuration(session.createdAt, config.session.freshAge)
-  // `undefined` rather than a bare `return`: the failing exit has to be
-  // `return yield*`, and a generator may not then leave another path unvalued.
-  if (yield* DateTime.isFuture(freshUntil)) return undefined
+  if (yield* DateTime.isFuture(freshUntil)) return
   return yield* SessionNotFresh.make({
     freshAgeSeconds: Duration.toSeconds(config.session.freshAge)
   })

@@ -6,7 +6,6 @@
  */
 import type { Cause, Duration, Schema } from "effect"
 import { Effect } from "effect"
-import { dual } from "effect/Function"
 import type { HttpClientError, HttpClientResponse } from "effect/unstable/http"
 
 /**
@@ -26,21 +25,8 @@ import type { HttpClientError, HttpClientResponse } from "effect/unstable/http"
  *
  * @internal
  */
-export const jsonWithin: {
-  (
-    timeout: Duration.Input
-  ): (
-    response: HttpClientResponse.HttpClientResponse
-  ) => Effect.Effect<Schema.Json, HttpClientError.HttpClientError | Cause.TimeoutError>
-  (
-    response: HttpClientResponse.HttpClientResponse,
-    timeout: Duration.Input
-  ): Effect.Effect<Schema.Json, HttpClientError.HttpClientError | Cause.TimeoutError>
-} = dual(
-  2,
-  (
-    response: HttpClientResponse.HttpClientResponse,
-    timeout: Duration.Input
-  ): Effect.Effect<Schema.Json, HttpClientError.HttpClientError | Cause.TimeoutError> =>
-    Effect.timeout(response.json, timeout)
-)
+export const jsonWithin = (
+  response: HttpClientResponse.HttpClientResponse,
+  timeout: Duration.Input
+): Effect.Effect<Schema.Json, HttpClientError.HttpClientError | Cause.TimeoutError> =>
+  Effect.timeout(response.json, timeout)

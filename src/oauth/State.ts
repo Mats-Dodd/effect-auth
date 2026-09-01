@@ -39,7 +39,6 @@
  * @since 1.0.0
  */
 import { DateTime, Effect, Option, Redacted, Schema } from "effect"
-import { dual } from "effect/Function"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { Token } from "../crypto/Token.js"
 import { OAuthStateMismatch } from "../domain/Errors.js"
@@ -215,19 +214,11 @@ export const issue: (
  * @category combinators
  * @since 1.0.0
  */
-export const consume: {
-  (
-    providerId: string,
-    state: Redacted.Redacted
-  ): Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore>
-  (
-    state: Redacted.Redacted
-  ): (
-    providerId: string
-  ) => Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore>
-} = dual(
-  2,
-  Effect.fnUntraced(function* (providerId: string, state: Redacted.Redacted) {
+export const consume: (
+  providerId: string,
+  state: Redacted.Redacted
+) => Effect.Effect<StatePayload, OAuthStateMismatch | PersistenceError, Token | VerificationStore> = Effect.fnUntraced(
+  function* (providerId: string, state: Redacted.Redacted) {
     const tokens = yield* Token
     const store = yield* VerificationStore
 
@@ -247,5 +238,5 @@ export const consume: {
       return yield* OAuthStateMismatch.make()
     }
     return decoded
-  })
+  }
 )

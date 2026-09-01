@@ -12,26 +12,16 @@ const clientId = "mock-client-id"
  * Runs discovery against a stubbed `.well-known`, exactly as a boot would: the
  * transport is the redirect-refusing one every outbound OAuth request uses.
  */
-/**
- * One stubbed provider for the whole block, which is why the block is
- * sequential: `discover` replaces its routes and forgets the requests earlier
- * tests made, so the log describes this discovery alone.
- */
-const wellKnown = MockProvider.mockServer()
-
-/** That server, wrapped exactly as every outbound OAuth request is. */
-const wellKnownHttp = MockProvider.safeHttpLayer(wellKnown.fetch)
-
 const discover = (
   handler: MockProvider.RouteHandler,
   options?: Partial<OidcDiscovery.Options>,
   routes?: (server: MockProvider.MockServer) => void
 ) => {
-  wellKnown.clear()
-  wellKnown.on(MockProvider.discoveryUrl, handler)
-  routes?.(wellKnown)
+  const server = MockProvider.mockServer()
+  server.on(MockProvider.discoveryUrl, handler)
+  routes?.(server)
   return {
-    server: wellKnown,
+    server,
     run: Effect.result(
       OidcDiscovery.make({
         id: "acme",
@@ -40,7 +30,7 @@ const discover = (
         clientSecret: Redacted.make("mock-client-secret"),
         ...options
       })
-    )
+    ).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   }
 }
 
@@ -58,7 +48,7 @@ const reasonOf = (result: Result.Result<unknown, DiscoveryError>): string => {
   return failure.reason
 }
 
-describe.sequential("oauth/Discovery", () => {
+describe("oauth/Discovery", () => {
   describe("discoveryUrlOf", () => {
     it("appends the well-known path to the issuer, path and all", () => {
       // Keycloak and Zitadel serve under the issuer's own path, so the path is
@@ -89,7 +79,7 @@ describe.sequential("oauth/Discovery", () => {
     })
   })
 
-  it.layer(wellKnownHttp)("failures", (it) => {
+  describe("failures", () => {
     it.effect("reports an endpoint that is not there", () =>
       Effect.gen(function* () {
         const { run } = discover(() => MockProvider.json({ message: "no such realm" }, 404))
@@ -159,7 +149,7 @@ describe.sequential("oauth/Discovery", () => {
     )
   })
 
-  it.layer(wellKnownHttp)("success", (it) => {
+  describe("success", () => {
     it.effect("builds a provider out of the document", () =>
       Effect.gen(function* () {
         const { run, server } = discover(serving(MockProvider.discoveryDocument()))
@@ -207,8 +197,8 @@ describe.sequential("oauth/Discovery", () => {
     it.effect("reads the document from a stated URL, and accepts a pinned key set", () =>
       Effect.gen(function* () {
         const elsewhere = `${MockProvider.providerOrigin}/oidc/config`
-        wellKnown.clear()
-        wellKnown.on(elsewhere, () => MockProvider.json(MockProvider.discoveryDocument({ jwks_uri: null })))
+        const server = MockProvider.mockServer()
+        server.on(elsewhere, () => MockProvider.json(MockProvider.discoveryDocument({ jwks_uri: null })))
         const result = yield* Effect.result(
           OidcDiscovery.make({
             id: "acme",
@@ -219,7 +209,7 @@ describe.sequential("oauth/Discovery", () => {
             // verifiable.
             jwks: () => Promise.reject(new Error("unused"))
           })
-        )
+        ).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
 
         assert.strictEqual(result._tag, "Success")
         if (result._tag !== "Success") return
@@ -236,7 +226,7 @@ describe.sequential("oauth/Discovery", () => {
     )
   })
 
-  it.layer(wellKnownHttp)("the default userInfo", (it) => {
+  describe("the default userInfo", () => {
     const provider = (document?: Readonly<Record<string, unknown>>) =>
       Effect.gen(function* () {
         const { run } = discover(serving(MockProvider.discoveryDocument(document)))
@@ -258,25 +248,29 @@ describe.sequential("oauth/Discovery", () => {
       raw: {}
     }
 
-    it.effect("takes the identity from the verified token, with no request at all", () =>
-      Effect.gen(function* () {
+    it.effect("takes the identity from the verified token, with no request at all", () => {
+      const server = MockProvider.mockServer()
+      return Effect.gen(function* () {
         const acme = yield* provider()
-        const info = yield* acme.userInfo(MockProvider.tokensOf("access-token", { idTokenClaims: { ...claims } }))
+        const info = yield* acme
+          .userInfo(MockProvider.tokensOf("access-token", { idTokenClaims: { ...claims } }))
+          .pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
         assert.strictEqual(info.id, "the-subject")
         assert.strictEqual(info.email, "ada@example.com")
-        assert.strictEqual(wellKnown.to(MockProvider.userInfoUrl).length, 0)
+        assert.strictEqual(server.to(MockProvider.userInfoUrl).length, 0)
       })
-    )
+    })
 
     it.effect("consults the discovered userinfo endpoint when the token carries no address", () => {
-      wellKnown.on(MockProvider.userInfoUrl, () =>
+      const server = MockProvider.mockServer()
+      server.on(MockProvider.userInfoUrl, () =>
         MockProvider.json({ sub: "somebody-else", email: "ada@example.com", email_verified: true })
       )
       return Effect.gen(function* () {
         const acme = yield* provider()
-        const info = yield* acme.userInfo(
-          MockProvider.tokensOf("access-token", { idTokenClaims: { ...claims, email: null, name: null } })
-        )
+        const info = yield* acme
+          .userInfo(MockProvider.tokensOf("access-token", { idTokenClaims: { ...claims, email: null, name: null } }))
+          .pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
         // The address may come from the bearer-authenticated body; the subject
         // never does — it stays the one the signature covered.
         assert.strictEqual(info.id, "the-subject")
@@ -285,27 +279,31 @@ describe.sequential("oauth/Discovery", () => {
       })
     })
 
-    it.effect("fails when there is no address and no endpoint to ask", () =>
-      Effect.gen(function* () {
+    it.effect("fails when there is no address and no endpoint to ask", () => {
+      const server = MockProvider.mockServer()
+      return Effect.gen(function* () {
         const acme = yield* provider({ userinfo_endpoint: null })
         const result = yield* Effect.result(
           acme.userInfo(MockProvider.tokensOf("access-token", { idTokenClaims: { ...claims, email: null } }))
-        )
+        ).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "UserInfoFailed")
       })
-    )
+    })
 
-    it.effect("fails closed when the flow handed it no verified claims", () =>
-      Effect.gen(function* () {
+    it.effect("fails closed when the flow handed it no verified claims", () => {
+      const server = MockProvider.mockServer()
+      return Effect.gen(function* () {
         const acme = yield* provider()
-        const result = yield* Effect.result(acme.userInfo(MockProvider.tokensOf("access-token")))
+        const result = yield* Effect.result(acme.userInfo(MockProvider.tokensOf("access-token"))).pipe(
+          Effect.provide(MockProvider.safeHttpLayer(server.fetch))
+        )
         assert.strictEqual(result._tag, "Failure")
         if (result._tag !== "Failure") return
         assert.strictEqual(result.failure.reason, "IdTokenInvalid")
       })
-    )
+    })
   })
 })
 
@@ -372,26 +370,21 @@ describe.sequential("oauth/Discovery (end to end)", () => {
         const nonce = MockProvider.paramsOf(started.url).get("nonce")
 
         yield* Effect.sync(() =>
-          // The route is a `fetch`-shaped callback, so what it hands back is a
-          // promise rather than an Effect: the signer's own promise, mapped.
-          server.on(MockProvider.tokenUrl, () =>
-            signer
-              .sign({
-                sub: email,
-                email,
-                email_verified: true,
-                name: testName,
-                nonce
-              })
-              .then((idToken) =>
-                MockProvider.json({
-                  access_token: "provider-access-token",
-                  token_type: "bearer",
-                  expires_in: 3600,
-                  id_token: idToken
-                })
-              )
-          )
+          server.on(MockProvider.tokenUrl, async () => {
+            const idToken = await signer.sign({
+              sub: email,
+              email,
+              email_verified: true,
+              name: testName,
+              nonce
+            })
+            return MockProvider.json({
+              access_token: "provider-access-token",
+              token_type: "bearer",
+              expires_in: 3600,
+              id_token: idToken
+            })
+          })
         )
 
         const done = yield* flow.callback({

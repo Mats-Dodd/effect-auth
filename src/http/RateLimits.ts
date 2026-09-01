@@ -18,7 +18,6 @@
  * @since 1.0.0
  */
 import { Duration, Effect, Layer, Option } from "effect"
-import { dual } from "effect/Function"
 import { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
 import type { AuthConfigService } from "../config/AuthConfig.js"
@@ -109,10 +108,10 @@ export const sharedKey = "shared"
  * @category combinators
  * @since 1.0.0
  */
-export const clientAddress: {
-  (request: HttpServerRequest.HttpServerRequest): (config: AuthConfigService) => Option.Option<string>
-  (config: AuthConfigService, request: HttpServerRequest.HttpServerRequest): Option.Option<string>
-} = dual(2, (config: AuthConfigService, request: HttpServerRequest.HttpServerRequest): Option.Option<string> => {
+export const clientAddress = (
+  config: AuthConfigService,
+  request: HttpServerRequest.HttpServerRequest
+): Option.Option<string> => {
   for (const header of config.rateLimit.ipHeaders) {
     const value = request.headers[header.toLowerCase()]
     if (value === undefined) continue
@@ -120,7 +119,7 @@ export const clientAddress: {
     if (first !== undefined && first.length > 0) return Option.some(first)
   }
   return request.remoteAddress
-})
+}
 
 /**
  * Whether a `%XX` escape is one the router leaves *literal* rather than
@@ -268,14 +267,8 @@ export const requestPath = (request: HttpServerRequest.HttpServerRequest): strin
  * @category combinators
  * @since 1.0.0
  */
-export const keyFor: {
-  (path: string, client: Option.Option<string>): (bucket: Bucket) => string
-  (bucket: Bucket, path: string, client: Option.Option<string>): string
-} = dual(
-  3,
-  (bucket: Bucket, path: string, client: Option.Option<string>): string =>
-    `effect-auth:${bucket.name}:${path}:${Option.getOrElse(client, () => sharedKey)}`
-)
+export const keyFor = (bucket: Bucket, path: string, client: Option.Option<string>): string =>
+  `effect-auth:${bucket.name}:${path}:${Option.getOrElse(client, () => sharedKey)}`
 
 // -----------------------------------------------------------------------------
 // Consumption
@@ -337,14 +330,9 @@ export const consumeWith = (options: {
   readonly bucket: Bucket
   readonly request: HttpServerRequest.HttpServerRequest
 }): Effect.Effect<void, RateLimited> =>
-  // Every exit is written as a `return` of a value — `undefined` where the
-  // request is allowed through, `yield*` of the error where it is not — because
-  // the two failing exits have to be `return yield*` (`missing-return-yield-star`)
-  // and a generator may not then leave any other path unvalued
-  // (`consistent-return`). The order of the checks is unchanged.
   Effect.gen(function* () {
     const { bucket, config, limiter, request } = options
-    if (!config.rateLimit.enabled) return undefined
+    if (!config.rateLimit.enabled) return
     const key = keyFor(bucket, requestPath(request), clientAddress(config, request))
 
     const result = yield* Effect.result(
@@ -356,7 +344,7 @@ export const consumeWith = (options: {
         key
       })
     )
-    if (result._tag === "Success") return undefined
+    if (result._tag === "Success") return
 
     const reason = result.failure.reason
     if (reason._tag === "RateLimitExceeded") {
@@ -373,7 +361,6 @@ export const consumeWith = (options: {
       // guesses, so the window's own length is what the caller is told to wait.
       return yield* RateLimited.make({ retryAfterSeconds: retryAfterSeconds(bucket.window) })
     }
-    return undefined
   })
 
 /**
@@ -382,27 +369,11 @@ export const consumeWith = (options: {
  * @category combinators
  * @since 1.0.0
  */
-export const limit: {
-  <A, E, R>(
-    effect: Effect.Effect<A, E, R>
-  ): (
-    bucket: Bucket
-  ) => Effect.Effect<A, E | RateLimited, R | AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest>
-  <A, E, R>(
-    bucket: Bucket,
-    effect: Effect.Effect<A, E, R>
-  ): Effect.Effect<A, E | RateLimited, R | AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest>
-} = dual(
-  2,
-  <A, E, R>(
-    bucket: Bucket,
-    effect: Effect.Effect<A, E, R>
-  ): Effect.Effect<
-    A,
-    E | RateLimited,
-    R | AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest
-  > => Effect.flatMap(consume(bucket), () => effect)
-)
+export const limit = <A, E, R>(
+  bucket: Bucket,
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, E | RateLimited, R | AuthConfig | RateLimiter.RateLimiter | HttpServerRequest.HttpServerRequest> =>
+  Effect.flatMap(consume(bucket), () => effect)
 
 // -----------------------------------------------------------------------------
 // Layer

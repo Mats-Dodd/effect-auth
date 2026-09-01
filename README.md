@@ -1049,6 +1049,44 @@ Planned next:
 - **Authorization**, as a separate package: a policy middleware that `require`s `CurrentUser` and
   `CurrentSession`, most likely Cedar-backed. Deliberately not in this one.
 
+## Toolchain
+
+Working on this repo. Four scripts are the whole contract:
+
+```sh
+pnpm check   # oxlint --type-aware --type-check, then tsc -b tsconfig.build.json
+pnpm fix     # oxlint --fix (twice), then oxfmt .
+pnpm build   # tsc -b tsconfig.build.json
+pnpm test    # vitest run --maxWorkers=2
+```
+
+`pnpm check` must end at zero lines of output. It runs the typechecker twice on purpose:
+`oxlint --type-check` reports checker diagnostics but never emits declarations, so it cannot see
+the declaration-emit errors (TS4025, TS2742) that are exactly the ones a library ships a broken
+`.d.ts` over — hence the trailing `tsc -b`. Because `check` builds, a separate `pnpm build` is only
+for when you want the artifacts. `pnpm fix` runs the fixer twice because one pass does not converge
+on `consistent-type-imports`, and `oxfmt` runs last because the fixer's rewritten import lists are
+not formatted. `--maxWorkers=2` in `test` is not a preference: the PGlite-backed suites time out
+against the 10s tripwire at full concurrency.
+
+Lint severities live in `.oxlintrc.json`, one line per rule with the reason inline; the calibration
+behind them is SPEC.md Amendment 18.
+
+`typescript`, `@effect/tsgo`, `oxlint` and `oxlint-tsgolint` are pinned exactly, no `^`, and move in
+lockstep — `@effect/tsgo` patches the TypeScript and oxlint binaries in place, so a floating range
+on any one of them silently unpatches the Effect rules. Bump all four together, and only to a
+combination listed under "Supported Package Versions" in `node_modules/@effect/tsgo/README.md`.
+
+`pnpm install` runs `scripts/prepare.mjs`, which applies that patch (`effect-tsgo patch --oxlint`)
+and installs the git hooks (`lefthook install`). It does neither in a *consumer's* install: it
+compares `INIT_CWD` against the checkout and exits 0 when they differ, because a dependency has no
+business rewriting the binaries of the project that depends on it. `npx effect-tsgo unpatch`
+restores the original binaries if you want an unpatched toolchain.
+
+The lefthook `pre-commit` hook runs `oxfmt --check` and `oxlint --type-aware` over staged files
+only — deliberately the two cheap gates. The real gate is `pnpm check`, which is too slow per commit
+and runs in CI.
+
 ## License
 
 MIT.

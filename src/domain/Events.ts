@@ -39,7 +39,6 @@
  */
 import type { Scope } from "effect"
 import { Context, Effect, Layer, PubSub, Schema, Stream } from "effect"
-import { dual } from "effect/Function"
 import { annotateAuthLogs } from "../internal/effects.js"
 import { AccountId, SessionId, UserId } from "./Schema.js"
 
@@ -604,11 +603,7 @@ export const emit = (event: AuthEvent): Effect.Effect<void, never, AuthEvents> =
  * @category combinators
  * @since 1.0.0
  */
-export const publishSafely: {
-  (event: AuthEvent): (events: AuthEventsService) => Effect.Effect<void>
-  (events: AuthEventsService, event: AuthEvent): Effect.Effect<void>
-} = dual(2, (events: AuthEventsService, event: AuthEvent): Effect.Effect<void> =>
+export const publishSafely = (events: AuthEventsService, event: AuthEvent): Effect.Effect<void> =>
   Effect.catchCause(events.publish(event), (cause) =>
     annotateAuthLogs(Effect.logDebug("an auth event was not published", cause))
   )
-)

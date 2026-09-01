@@ -1,14 +1,8 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Redacted } from "effect"
+import { Duration, Effect, Redacted } from "effect"
 import { Headers } from "effect/unstable/http"
 import * as AuthConfig from "../../src/config/AuthConfig.js"
 import * as AuthCookies from "../../src/http/Cookies.js"
-
-/**
- * The instant `expiredSessionCookieOptions` and its OAuth sibling write, built
- * the same way they build it — through `DateTime`, never off the wall clock.
- */
-const epochExpiry = DateTime.toDateUtc(DateTime.makeUnsafe(0))
 
 /** A deployment over TLS, optionally with the cookie section configured. */
 const secure = (cookie?: AuthConfig.AuthConfigOptions["cookie"]): AuthConfig.AuthConfigService =>
@@ -145,7 +139,7 @@ describe("http/Cookies", () => {
       assert.strictEqual(expired.sameSite, set.sameSite)
       assert.strictEqual(expired.secure, set.secure)
       assert.strictEqual(expired.httpOnly, true)
-      assert.deepStrictEqual(expired.expires, epochExpiry)
+      assert.deepStrictEqual(expired.expires, new Date(0))
       assert.strictEqual(expired.maxAge, undefined)
     })
 
@@ -187,7 +181,7 @@ describe("http/Cookies", () => {
       assert.strictEqual(expired.sameSite, "lax")
       assert.strictEqual(expired.secure, set.secure)
       assert.strictEqual(expired.httpOnly, true)
-      assert.deepStrictEqual(expired.expires, epochExpiry)
+      assert.deepStrictEqual(expired.expires, new Date(0))
       assert.strictEqual(expired.maxAge, undefined)
     })
   })
@@ -204,10 +198,6 @@ describe("http/Cookies", () => {
           "x-request-id": "abc"
         })
 
-        // `JSON.stringify` is the renderer under test, not a codec choice: it
-        // is the naive serializer a logger or a careless handler reaches for,
-        // and it is the path a real leak would take.
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
         const rendered = JSON.stringify(headers)
 
         assert.isFalse(rendered.includes("super-secret-token"))
@@ -225,10 +215,6 @@ describe("http/Cookies", () => {
           "x-tenant-token": "tenant-secret"
         })
 
-        // `JSON.stringify` is the renderer under test, not a codec choice: it
-        // is the naive serializer a logger or a careless handler reaches for,
-        // and it is the path a real leak would take.
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json
         const rendered = JSON.stringify(headers)
 
         assert.isFalse(rendered.includes("super-secret-token"))

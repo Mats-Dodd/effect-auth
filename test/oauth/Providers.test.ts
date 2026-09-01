@@ -38,7 +38,7 @@ const claims = (overrides?: Partial<IdTokenClaims>): IdTokenClaims => ({
   ...overrides
 })
 
-describe.sequential("oauth/providers/Github", () => {
+describe("oauth/providers/Github", () => {
   describe("selectEmail", () => {
     it("prefers the primary address, and only calls it verified when it is", () => {
       assert.deepStrictEqual(
@@ -170,21 +170,16 @@ describe.sequential("oauth/providers/Github", () => {
     )
   })
 
-  /**
-   * One stubbed GitHub for the whole block, which is why the block is
-   * sequential: `withProfile` replaces its routes and forgets the requests
-   * earlier tests made, so the log describes this test alone.
-   */
-  const server = MockProvider.mockServer()
-
-  it.layer(MockProvider.safeHttpLayer(server.fetch))("userInfo", (it) => {
+  describe("userInfo", () => {
     const withProfile = (profile: unknown, emails: { readonly body: unknown; readonly status?: number }) => {
-      server.clear()
+      const server = MockProvider.mockServer()
       server.on(`${githubApi}/user`, () => MockProvider.json(profile))
       server.on(`${githubApi}/user/emails`, () => MockProvider.json(emails.body, emails.status ?? 200))
       return {
         server,
-        run: Effect.result(github.userInfo(MockProvider.tokensOf("github-access-token")))
+        run: Effect.result(github.userInfo(MockProvider.tokensOf("github-access-token"))).pipe(
+          Effect.provide(MockProvider.safeHttpLayer(server.fetch))
+        )
       }
     }
 
@@ -264,191 +259,177 @@ describe.sequential("oauth/providers/Github", () => {
   })
 })
 
-describe.sequential("oauth/providers/Google", () => {
+describe("oauth/providers/Google", () => {
   const google = Google.make({
     clientId: "google-client",
     clientSecret: Redacted.make("google-client-secret")
   })
 
-  /**
-   * One stubbed Google for the whole block, which is why the block is
-   * sequential: a test that reads the request log is reading the one every
-   * sibling shares, so each starts by forgetting what came before it.
-   */
-  const server = MockProvider.mockServer()
+  it("is an OIDC provider with an issuer, a key set and offline access", () => {
+    assert.strictEqual(google.id, "google")
+    assert.strictEqual(google.oidc?.issuer, "https://accounts.google.com")
+    assert.strictEqual(providerIssuer(google), "https://accounts.google.com")
+    // The key source is a union, and Google's arm of it is a URL to fetch.
+    assert.deepStrictEqual(google.oidc?.keys, { jwksUrl: "https://www.googleapis.com/oauth2/v3/certs" })
+    assert.strictEqual(google.authorizationUrl, "https://accounts.google.com/o/oauth2/v2/auth")
+    assert.strictEqual(google.tokenUrl, "https://oauth2.googleapis.com/token")
+    assert.deepStrictEqual([...google.scopes], ["openid", "email", "profile"])
+    assert.strictEqual(google.authorizationParams?.access_type, "offline")
+  })
 
-  it.layer(MockProvider.safeHttpLayer(server.fetch))((it) => {
-    it("is an OIDC provider with an issuer, a key set and offline access", () => {
-      assert.strictEqual(google.id, "google")
-      assert.strictEqual(google.oidc?.issuer, "https://accounts.google.com")
-      assert.strictEqual(providerIssuer(google), "https://accounts.google.com")
-      // The key source is a union, and Google's arm of it is a URL to fetch.
-      assert.deepStrictEqual(google.oidc?.keys, { jwksUrl: "https://www.googleapis.com/oauth2/v3/certs" })
-      assert.strictEqual(google.authorizationUrl, "https://accounts.google.com/o/oauth2/v2/auth")
-      assert.strictEqual(google.tokenUrl, "https://oauth2.googleapis.com/token")
-      assert.deepStrictEqual([...google.scopes], ["openid", "email", "profile"])
-      assert.strictEqual(google.authorizationParams?.access_type, "offline")
+  it("passes prompt and a hosted domain through as authorization parameters", () => {
+    const restricted = Google.make({
+      clientId: "id",
+      clientSecret: Redacted.make("secret"),
+      accessType: "online",
+      prompt: "consent",
+      hostedDomain: "acme.test"
     })
-
-    it("passes prompt and a hosted domain through as authorization parameters", () => {
-      const restricted = Google.make({
-        clientId: "id",
-        clientSecret: Redacted.make("secret"),
-        accessType: "online",
+    assert.deepStrictEqual(
+      { ...restricted.authorizationParams },
+      {
+        access_type: "online",
         prompt: "consent",
-        hostedDomain: "acme.test"
-      })
-      assert.deepStrictEqual(
-        { ...restricted.authorizationParams },
-        {
-          access_type: "online",
-          prompt: "consent",
-          hd: "acme.test"
-        }
-      )
-    })
+        hd: "acme.test"
+      }
+    )
+  })
 
-    it.effect("takes the identity from the verified id_token, with no request at all", () => {
-      server.clear()
-      return Effect.gen(function* () {
-        const info = yield* google.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
-        assert.strictEqual(info.id, "google-subject-1")
-        assert.strictEqual(info.email, "ada@example.com")
-        assert.isTrue(info.emailVerified)
-        assert.strictEqual(info.name, "Ada Lovelace")
-        assert.strictEqual(info.image, "https://cdn.test/ada.png")
-        assert.strictEqual(server.requests.length, 0)
-      })
-    })
+  it.effect("takes the identity from the verified id_token, with no request at all", () => {
+    const server = MockProvider.mockServer()
+    return Effect.gen(function* () {
+      const info = yield* google.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
+      assert.strictEqual(info.id, "google-subject-1")
+      assert.strictEqual(info.email, "ada@example.com")
+      assert.isTrue(info.emailVerified)
+      assert.strictEqual(info.name, "Ada Lovelace")
+      assert.strictEqual(info.image, "https://cdn.test/ada.png")
+      assert.strictEqual(server.requests.length, 0)
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
+  })
 
-    it.effect("consults the userinfo endpoint only when the token carries no address", () => {
-      server.clear()
-      server.on(Google.userInfoUrl, () =>
-        MockProvider.json({
-          sub: "somebody-else",
-          email: "ada@example.com",
-          email_verified: true,
-          name: "From userinfo"
+  it.effect("consults the userinfo endpoint only when the token carries no address", () => {
+    const server = MockProvider.mockServer()
+    server.on(Google.userInfoUrl, () =>
+      MockProvider.json({
+        sub: "somebody-else",
+        email: "ada@example.com",
+        email_verified: true,
+        name: "From userinfo"
+      })
+    )
+    return Effect.gen(function* () {
+      const info = yield* google.userInfo(
+        MockProvider.tokensOf("google-access-token", {
+          idTokenClaims: claims({ email: null, name: null, picture: null })
         })
       )
-      return Effect.gen(function* () {
-        const info = yield* google.userInfo(
-          MockProvider.tokensOf("google-access-token", {
-            idTokenClaims: claims({ email: null, name: null, picture: null })
-          })
-        )
-        // The address may come from the bearer-authenticated body; the subject
-        // never does — it stays the one the signature covered.
-        assert.strictEqual(info.id, "google-subject-1")
-        assert.strictEqual(info.email, "ada@example.com")
-        assert.isTrue(info.emailVerified)
-        assert.strictEqual(server.requests.length, 1)
-        assert.strictEqual(server.requests[0]?.redirect, "manual")
-      })
-    })
+      // The address may come from the bearer-authenticated body; the subject
+      // never does — it stays the one the signature covered.
+      assert.strictEqual(info.id, "google-subject-1")
+      assert.strictEqual(info.email, "ada@example.com")
+      assert.isTrue(info.emailVerified)
+      assert.strictEqual(server.requests.length, 1)
+      assert.strictEqual(server.requests[0]?.redirect, "manual")
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
+  })
 
-    it.effect("refuses a token from outside the configured hosted domain", () => {
-      server.clear()
-      server.on(Google.userInfoUrl, () =>
-        MockProvider.json({ sub: "s", email: "ada@personal.test", email_verified: true })
+  it.effect("refuses a token from outside the configured hosted domain", () => {
+    const server = MockProvider.mockServer()
+    server.on(Google.userInfoUrl, () =>
+      MockProvider.json({ sub: "s", email: "ada@personal.test", email_verified: true })
+    )
+    const restricted = Google.make({
+      clientId: "google-client",
+      clientSecret: Redacted.make("google-client-secret"),
+      hostedDomain: "acme.test"
+    })
+    return Effect.gen(function* () {
+      // `hd` on the authorization request only pre-filters Google's account
+      // chooser and can be stripped from the URL, so the restriction is only
+      // real if the *claim* is checked. A personal account carries none.
+      const personal = yield* Effect.result(
+        restricted.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
       )
-      const restricted = Google.make({
-        clientId: "google-client",
-        clientSecret: Redacted.make("google-client-secret"),
-        hostedDomain: "acme.test"
+      assert.strictEqual(personal._tag, "Failure")
+      if (personal._tag === "Failure") {
+        assert.strictEqual(personal.failure.reason, "IdTokenInvalid")
+      }
+
+      // Another Workspace domain is refused just the same.
+      const elsewhere = yield* Effect.result(
+        restricted.userInfo(
+          MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "evil.test" } }) })
+        )
+      )
+      assert.strictEqual(elsewhere._tag, "Failure")
+
+      // The configured domain passes.
+      const admitted = yield* restricted.userInfo(
+        MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "acme.test" } }) })
+      )
+      assert.strictEqual(admitted.email, "ada@example.com")
+
+      // And the check runs before the userinfo fallback, so a token with no
+      // address does not even reach the network.
+      const noAddress = yield* Effect.result(
+        restricted.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null }) }))
+      )
+      assert.strictEqual(noAddress._tag, "Failure")
+      assert.strictEqual(server.requests.length, 0)
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
+  })
+
+  it.effect("builds the same value from the environment", () =>
+    Effect.gen(function* () {
+      const provider = yield* Google.makeConfig({
+        clientId: Config.string("GOOGLE_CLIENT_ID"),
+        clientSecret: Config.redacted("GOOGLE_CLIENT_SECRET"),
+        hostedDomain: Config.string("GOOGLE_HOSTED_DOMAIN")
       })
-      return Effect.gen(function* () {
-        // `hd` on the authorization request only pre-filters Google's account
-        // chooser and can be stripped from the URL, so the restriction is only
-        // real if the *claim* is checked. A personal account carries none.
-        const personal = yield* Effect.result(
-          restricted.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims() }))
-        )
-        assert.strictEqual(personal._tag, "Failure")
-        if (personal._tag === "Failure") {
-          assert.strictEqual(personal.failure.reason, "IdTokenInvalid")
-        }
-
-        // Another Workspace domain is refused just the same.
-        const elsewhere = yield* Effect.result(
-          restricted.userInfo(
-            MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "evil.test" } }) })
-          )
-        )
-        assert.strictEqual(elsewhere._tag, "Failure")
-
-        // The configured domain passes.
-        const admitted = yield* restricted.userInfo(
-          MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ raw: { hd: "acme.test" } }) })
-        )
-        assert.strictEqual(admitted.email, "ada@example.com")
-
-        // And the check runs before the userinfo fallback, so a token with no
-        // address does not even reach the network.
-        const noAddress = yield* Effect.result(
-          restricted.userInfo(MockProvider.tokensOf("google-access-token", { idTokenClaims: claims({ email: null }) }))
-        )
-        assert.strictEqual(noAddress._tag, "Failure")
-        assert.strictEqual(server.requests.length, 0)
-      })
-    })
-
-    it.effect("builds the same value from the environment", () =>
-      Effect.gen(function* () {
-        const provider = yield* Google.makeConfig({
-          clientId: Config.string("GOOGLE_CLIENT_ID"),
-          clientSecret: Config.redacted("GOOGLE_CLIENT_SECRET"),
-          hostedDomain: Config.string("GOOGLE_HOSTED_DOMAIN")
+      assert.strictEqual(provider.id, "google")
+      assert.strictEqual(provider.clientId, "0123.from-the-environment")
+      assert.deepStrictEqual(yield* secretOf(provider), Option.some("google-secret-from-the-environment"))
+      assert.strictEqual(provider.oidc?.issuer, "https://accounts.google.com")
+      assert.strictEqual(provider.authorizationParams?.hd, "acme.test")
+    }).pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({
+          GOOGLE_CLIENT_ID: "0123.from-the-environment",
+          GOOGLE_CLIENT_SECRET: "google-secret-from-the-environment",
+          GOOGLE_HOSTED_DOMAIN: "acme.test"
         })
-        assert.strictEqual(provider.id, "google")
-        assert.strictEqual(provider.clientId, "0123.from-the-environment")
-        assert.deepStrictEqual(yield* secretOf(provider), Option.some("google-secret-from-the-environment"))
-        assert.strictEqual(provider.oidc?.issuer, "https://accounts.google.com")
-        assert.strictEqual(provider.authorizationParams?.hd, "acme.test")
-      }).pipe(
-        Effect.provideService(
-          ConfigProvider.ConfigProvider,
-          ConfigProvider.fromUnknown({
-            GOOGLE_CLIENT_ID: "0123.from-the-environment",
-            GOOGLE_CLIENT_SECRET: "google-secret-from-the-environment",
-            GOOGLE_HOSTED_DOMAIN: "acme.test"
-          })
-        )
       )
     )
+  )
 
-    it.effect("fails closed when the flow handed it no verified claims", () => {
-      server.clear()
-      return Effect.gen(function* () {
-        const result = yield* Effect.result(google.userInfo(MockProvider.tokensOf("google-access-token")))
-        assert.strictEqual(result._tag, "Failure")
-        if (result._tag !== "Failure") return
-        assert.strictEqual(result.failure.reason, "IdTokenInvalid")
-        assert.strictEqual(server.requests.length, 0)
-      })
-    })
+  it.effect("fails closed when the flow handed it no verified claims", () => {
+    const server = MockProvider.mockServer()
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(google.userInfo(MockProvider.tokensOf("google-access-token")))
+      assert.strictEqual(result._tag, "Failure")
+      if (result._tag !== "Failure") return
+      assert.strictEqual(result.failure.reason, "IdTokenInvalid")
+      assert.strictEqual(server.requests.length, 0)
+    }).pipe(Effect.provide(MockProvider.safeHttpLayer(server.fetch)))
   })
 })
 
-describe.sequential("oauth/providers/Discord", () => {
+describe("oauth/providers/Discord", () => {
   const discord = Discord.make({
     clientId: "discord-client",
     clientSecret: Redacted.make("discord-client-secret")
   })
 
-  /**
-   * One stubbed Discord for the whole block, which is why the block is
-   * sequential: `withProfile` replaces its route and forgets the requests
-   * earlier tests made, so the log describes this test alone.
-   */
-  const server = MockProvider.mockServer()
-
   const withProfile = (profile: unknown) => {
-    server.clear()
+    const server = MockProvider.mockServer()
     server.on(Discord.userInfoUrl, () => MockProvider.json(profile))
     return {
       server,
-      run: Effect.result(discord.userInfo(MockProvider.tokensOf("discord-access-token")))
+      run: Effect.result(discord.userInfo(MockProvider.tokensOf("discord-access-token"))).pipe(
+        Effect.provide(MockProvider.safeHttpLayer(server.fetch))
+      )
     }
   }
 
@@ -520,7 +501,7 @@ describe.sequential("oauth/providers/Discord", () => {
     })
   })
 
-  it.layer(MockProvider.safeHttpLayer(server.fetch))("userInfo", (it) => {
+  describe("userInfo", () => {
     it.effect("reads the identity from one bearer-authenticated call", () => {
       const { run, server } = withProfile({
         id: "80351110224678912",
@@ -614,26 +595,21 @@ describe.sequential("oauth/providers/Discord", () => {
   )
 })
 
-describe.sequential("oauth/providers/Gitlab", () => {
+describe("oauth/providers/Gitlab", () => {
   const gitlab = Gitlab.make({
     clientId: "gitlab-client",
     clientSecret: Redacted.make("gitlab-client-secret")
   })
 
-  /**
-   * One stubbed GitLab for the whole block, which is why the block is
-   * sequential: `withProfile` replaces its routes and forgets the requests
-   * earlier tests made, so the log describes this test alone.
-   */
-  const server = MockProvider.mockServer()
-
   const withProfile = (profile: unknown, provider: OAuthProviderConfig = gitlab) => {
-    server.clear()
+    const server = MockProvider.mockServer()
     server.on(Gitlab.endpointsOf().userInfoUrl, () => MockProvider.json(profile))
     server.on("https://gitlab.acme.internal/api/v4/user", () => MockProvider.json(profile))
     return {
       server,
-      run: Effect.result(provider.userInfo(MockProvider.tokensOf("gitlab-access-token")))
+      run: Effect.result(provider.userInfo(MockProvider.tokensOf("gitlab-access-token"))).pipe(
+        Effect.provide(MockProvider.safeHttpLayer(server.fetch))
+      )
     }
   }
 
@@ -663,7 +639,7 @@ describe.sequential("oauth/providers/Gitlab", () => {
     })
   })
 
-  it.layer(MockProvider.safeHttpLayer(server.fetch))("userInfo", (it) => {
+  describe("userInfo", () => {
     it.effect("reads the identity from the API, with the numeric id as a string", () => {
       const { run, server } = withProfile(active)
       return Effect.gen(function* () {

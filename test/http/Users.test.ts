@@ -15,19 +15,13 @@
  * going unasserted.
  */
 import { assert, describe, layer } from "@effect/vitest"
-import { Duration, Effect, Redacted, Schema } from "effect"
+import { Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import type { AuthHooksService } from "../../src/domain/Hooks.js"
 import { PolicyRefused } from "../../src/domain/Hooks.js"
 import { AuthTest, TestHttpClient } from "../../src/testing/index.js"
 import { expectSome, testPassword, uniqueEmail } from "../fixtures.js"
 import { makeClient, signedUp } from "./helpers.js"
-
-/**
- * A decoded response as the JSON text it went over the wire as, so a test can
- * assert about the whole body rather than about the keys it thought to name.
- */
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))
 
 /** The deployment these tests run against: both opt-in flows switched on. */
 const served: AuthTest.Options = {
@@ -87,7 +81,7 @@ layer(AuthTest.layerHttp(served))("http/Users", (it) => {
 
       // The response is the public projection: no hash, no digest, no address
       // change smuggled in through a body key the schema does not declare.
-      assert.notInclude(encodeJson(cleared), "passwordHash")
+      assert.notInclude(JSON.stringify(cleared), "passwordHash")
     })
   )
 

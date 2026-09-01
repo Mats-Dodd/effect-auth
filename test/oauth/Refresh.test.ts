@@ -1,5 +1,5 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Inspectable, Redacted } from "effect"
+import { DateTime, Duration, Effect, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import { Account, oauthIssuer, User } from "../../src/domain/Schema.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
@@ -356,7 +356,7 @@ describe.sequential("oauth/Refresh", () => {
           assert.strictEqual(failure.reason, "RefreshRejected")
           // Everything the error carries, serialized: the check is that no
           // fragment of the provider's message survives *anywhere* in it.
-          assert.notInclude(Inspectable.toStringUnknown(failure), "invalid_grant")
+          assert.notInclude(JSON.stringify(failure), "invalid_grant")
 
           // A rejected refresh leaves the stored pair alone: the access token
           // may still be good, and the caller may want to tell them apart.
