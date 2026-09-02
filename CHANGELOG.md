@@ -11,6 +11,91 @@ and "breaking" below means what a consumer would have had to change had there be
 
 ## [Unreleased]
 
+### Tagged unions on Effect primitives (2026-09-02)
+
+Every hand-rolled `_tag` in `src/` — union types spelled member by member, `{ _tag: "X", ... }`
+literals, `value._tag === "X"` checks, `Extract<E, { readonly _tag: … }>` derivations — now goes
+through the primitive `effect@4.0.0-rc.112` ships for it: `Data.taggedEnum` for in-memory unions,
+`Schema.TaggedStruct` / `Schema.toTaggedUnion` for wire unions, `Result` for success-or-failure
+values, `Effect.catchTag` / `catchReason` / `Match.tagsExhaustive` for branching, and
+`Types.ExtractTag` / `Types.Tags` for derived types. **No tag value changed.** Every wire encoding
+and the OpenAPI document are byte-identical; the residual `_tag` spellings in `src/` are generic
+constraints, `toTaggedUnion("_tag")` calls, and doc lines about `"_tag" in result`. SPEC.md
+Amendment 20 records the design decisions and the three places rc.112's types forced a fallback.
+
+#### Breaking
+
+- **`OriginCheck.RedirectFailure<E>` no longer carries `_tag: "Failure"`**, and
+  `OriginCheck.redirectFailure(config, errorCode)` now produces
+  `Result.Result<never, RedirectFailure<E>>`. A redirect-shaped completion *is* a `Result`: branch
+  with `Result.isSuccess` / `Result.isFailure` / `Result.match`, read `.success` / `.failure`.
+- **`OAuthFlow.complete` answers `CallbackOutcome = Result.Result<CallbackResult,
+  RedirectFailure<CallbackError>>`** instead of a hand-rolled `Success`/`Failure` union.
+  `CallbackResult`'s fields are unchanged.
+- **`EmailOtp.follow` answers `LinkOutcome = Result.Result<SignedIn | Challenged,
+  RedirectFailure<VerifyError>>`** instead of a three-armed union with an inline failure arm.
+- **`EmailOtp.VerifyResult` is a `Data.TaggedEnum`** with a value of the same name carrying
+  `SignedIn`, `Challenge`, `Verified`, `PasswordReset`, `$is` and `$match`. `SignedIn`,
+  `Challenged`, `Verified` and `PasswordReset` are still exported and structurally unchanged, but
+  are `Data.TaggedEnum.Value<VerifyResult, …>` aliases rather than standalone interfaces.
+- **`EmailOtp.EmailOtpSignedIn`, `EmailOtpVerified`, `EmailOtpPasswordReset` are
+  `Schema.TaggedStruct`s** (`.make` fills `_tag`), and `EmailOtpResult` is a
+  `Schema.toTaggedUnion` gaining `.cases`, `.guards`, `.isAnyOf`, `.discriminants`, `.match`,
+  `.matchOrElse`. Encoding unchanged.
+- **`Passkeys.PasskeyAuthentication`, `TwoFactor.Factor`, `TwoFactor.ChallengeSubject` are
+  `Data.TaggedEnum`s**, each with a value of the same name beside the type (constructors, `$is`,
+  `$match`). Member shapes and tag values are unchanged, so an existing literal still typechecks.
+- **`AuthClient.withStepUp`'s `onStepUp` parameter is `Types.ExtractTag<E, "StepUpRequired">`**
+  rather than a hand-written `Extract<…>`. Same type; the emitted `.d.ts` text changes.
+- **`AuthTest.tagsOf` is generic in its element type**
+  (`<E extends { readonly _tag: string }>(values: ReadonlyArray<E>) => ReadonlyArray<string>`).
+  Every existing call compiles; the answer is still `ReadonlyArray<string>`.
+
+#### Added
+
+- `Hooks.ProvisionSource` **value**: `EmailPassword()`, `OAuth({ providerId, info })`,
+  `MagicLink()`, `Plugin({ plugin })`, `$is`, `$match`. The type is now the `Data.TaggedEnum`
+  with the same four members; existing literals still typecheck.
+- `SignIn.SignInDecision` **value** (`Proceed()`, `Challenge({...})`, `$is`, `$match`);
+  `SignIn.SignInChallenge` is now `Data.TaggedEnum.Value<SignInDecision, "Challenge">`, one
+  declaration for the shape. `SignIn.proceed` is unchanged.
+- `SignIn.SignInComplete<F>` (the `Complete` member of `SignInResult<F>`, previously anonymous)
+  and a `SignIn.SignInResult` **value** with `Complete`, `Challenge`, `$is`, `$match`. Hand-written
+  rather than `Data.taggedEnum`, because the enum cannot carry a constrained generic (Amendment 20.2).
+- `AuthEvents.AuthEvent` is a `Schema.toTaggedUnion("_tag")` union: `.cases`, `.guards`,
+  `.isAnyOf`, `.discriminants`, `.match`, `.matchOrElse`. Decoding and encoding unchanged.
+- `AuthApi.MfaRequired` is a `Schema.TaggedStruct`; `MfaRequired.make({ available, expiresAt })`
+  builds one. Identical encoding.
+- `AuthHandlers.mfaRequired(config, challenge)` sets the pending-authentication cookie for a
+  `SignInChallenge` and returns the `202` body. It replaces the copy-pasted `Challenge` branch in
+  all seven sign-in handlers, so the pending-cookie lifetime is computed in one place.
+- `Stores.persistenceFailureKind(cause)`, the single classifier of a driver failure into
+  `PersistenceFailureKind` (replacing five identical private copies), and
+  `Stores.isUniqueViolationFailure(error)`, a refinement for a retry `while:`.
+
+#### Changed — no API change
+
+- `AuthHandlers.dieOn` / `serverFault` signatures use `Types.ExtractTag`; the computed error
+  channel is the same set. Their test is built from `Predicate.isTagged`.
+- `OAuthFlow.errorCode` and `EmailOtp.errorCode` are built with `Match.tagsExhaustive`; the
+  private mapped types over `E["_tag"]` are gone. A new union member is still a compile error.
+- `OAuthFlow.complete`, `EmailOtp.follow`, `Passwords.signUp` and the passkeys session lookup no
+  longer materialise inner effects with `Effect.result`: they `catchTag` the failures they handle,
+  so a `PersistenceError` propagates with the `Cause` it was raised with instead of being re-failed.
+  Declared types unchanged.
+- `RateLimits` classifies a limiter failure with `Effect.catchReason("RateLimiterError",
+  "RateLimitExceeded", …)`; same two outcomes, same `retryAfterSeconds`, same fail-closed behaviour.
+- The session middleware's verify path rewrites only `SessionExpired` into `Unauthorized`; an
+  `Unauthorized` raised by `Sessions.verify` reaches the caller as the original value. Both encode
+  identically (`Unauthorized` carries no fields).
+- `Provider.ts`'s transport retry predicate is `Filter.reason("HttpClientError", "TransportError")`.
+- Every `AuthEvent` published anywhere is built with its `Schema.TaggedStruct` constructor, every
+  `ProvisionSource` with its constructor, and the anonymous, passkeys, phone, username and SQL
+  stores classify failures through `Stores.persistenceFailureKind`. Encodings byte-identical.
+- Doc comments that said "branch on `_tag`" now name the primitive (`AuthEvent.match`,
+  `Match.tagsExhaustive`, `ProvisionSource.EmailPassword`). The client docs that say
+  `"_tag" in result` stay: the other arm of those unions is untagged.
+
 The Phase 1 wave (human authentication — session assurance, a single sign-in choke point, and seven
 plugins) is recorded first, breaking items ahead of additions. SPEC.md Amendment 19 has the
 reasoning; this file has the call sites. Everything below that is the earlier tightening pass.

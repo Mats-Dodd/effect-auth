@@ -2210,3 +2210,103 @@ call-site detail; this is the reviewer's checklist.
     session that reached `aal2` without answering *this* plugin's factor no longer passes them.
 26. `SessionCache` writes its envelope through `Hmac.signedValue` — byte-identical, no snapshot
     invalidated by the move itself.
+
+### 20. Tagged unions on Effect primitives (2026-09-02)
+
+The tree carried 192 hand-rolled `_tag` sites in `src/`: union types spelled member by member,
+`{ _tag: "X", ... }` literals, `value._tag === "X"` checks, `Extract<E, { readonly _tag: … }>`
+derivations, and five byte-identical copies of the `SqlError` unique-violation test. Meanwhile it
+already declared 47 `Schema.TaggedError`s and 15 `Schema.TaggedStruct`s and never called the
+constructors they provide, used `Result.isFailure` in `src/crypto` while inspecting `._tag` on the
+same `Result` type everywhere else, and never touched `Data.taggedEnum`, `Match`, `Predicate.isTagged`
+or `Schema.toTaggedUnion`. This amendment moves all of it onto the primitive rc.112 ships for each
+case. `CHANGELOG.md` has the call sites; this records the decisions.
+
+**The tag values are unchanged.** They are wire bytes (`{"_tag": "InvalidCredentials"}`), they
+derive the OpenAPI component names, and the redirect error codes are computed from them. The
+byte-compared OpenAPI snapshot did not move. What changed is how tagged values are declared,
+constructed and inspected. Nineteen `_tag` spellings remain in `src/`, all of one of three kinds:
+`{ readonly _tag: string }` as a generic constraint (core has no alias and writes it the same
+way), the literal key in `Schema.toTaggedUnion("_tag")`, and doc lines explaining `"_tag" in result`
+for the client unions whose other arm carries no tag.
+
+#### 20.1 Which primitive, where
+
+- **In-memory, never serialised** → `Data.taggedEnum`: `ProvisionSource`, `SignInDecision`,
+  `VerifyResult`, `PasskeyAuthentication`, `Factor`, `ChallengeSubject`. Each exports a value of
+  the same name beside the type with constructors, `$is` and `$match`. The values are plain objects
+  with the same shape as before, so an existing literal still typechecks. `$is` checks only the
+  tag; every site that uses it is on a value this process built, never one decoded from a request.
+- **Crosses the wire** → `Schema.TaggedStruct` per member, `Schema.toTaggedUnion("_tag")` over the
+  union: `AuthEvent`, `EmailOtpResult`, `MfaRequired`. Encoding is identical to `Schema.Struct`
+  with a `Schema.tag` field, which the snapshot proves. `.guards` are full structural checks.
+- **A success or a failure** → `Result`. `CallbackOutcome` and `LinkOutcome` were both
+  `{ _tag: "Success" } & S | { _tag: "Failure"; error; redirectTo; code }`, which is
+  `Result.Result<S, RedirectFailure<E>>` with the failure fields hoisted. `RedirectFailure<E>` loses
+  its `_tag` and `redirectFailure` returns the `Result` directly. This supersedes the value shape
+  Amendment 16.4 describes; the construction still lives once, as 16.4 requires.
+- **A closed code table** → `Match.tagsExhaustive`. The two `errorCode` maps were total mapped
+  types over `E["_tag"]` whose whole point is that a new union member is a compile error rather
+  than an `undefined` code in a redirect. `tagsExhaustive` gives the same compile error and absorbs
+  the `OAuthProviderError` case that used to sit outside the map as a ternary.
+- **A tag check in an Effect pipeline** → `Effect.catchTag` (the rc.112 array form),
+  `Effect.catchReason` for a nested `reason._tag` (`RateLimiterError`), `Filter.reason` for a retry
+  predicate over one (`HttpClientError`). Where a site used `Effect.result` only to re-fail one tag
+  and handle the rest, the `Effect.result` is gone: `catchTag` names the tags it handles and leaves
+  `PersistenceError` in the channel with its original `Cause`. Where a `Result` genuinely has to
+  exist (a field of the failure is read after unwrapping), `Result.isSuccess` / `isFailure` /
+  `match` / `getOrElse` / `merge` replace the `._tag` comparison.
+- **A derived type** → `Types.ExtractTag`, `Types.ExcludeTag`, `Types.Tags`.
+- **The five `kindOf` copies** → `Stores.persistenceFailureKind`, one classifier in `domain/Stores.ts`
+  beside `isUniqueViolation`. It imports `SqlError` from `effect/unstable/sql` into `domain/`;
+  `PersistenceError` already lives there and this only classifies the driver failure that produces
+  it, so the layering rule (domain never imports http) is intact.
+
+#### 20.2 Where rc.112's types forced a fallback
+
+Three places could not take the primitive the plan named. Each was tried, refused by the
+compiler, and replaced with the nearest primitive; none needed a cast, and the cast budget is
+still five.
+
+1. **`SignInResult<F>` is not a `Data.taggedEnum`.** It is generic in `F extends UserFields`.
+   `Data.TaggedEnum.WithGenerics<1>` declares its parameter as `unknown` and `TaggedEnum.Kind`
+   applies no constraint, so `UserOf<this["A"]>` fails with `TS2344`. `SignInComplete<F>` is a
+   declared interface, `SignInChallenge` is `Data.TaggedEnum.Value<SignInDecision, "Challenge">`
+   so the challenge shape is written once, and the `SignInResult` value is a hand-written bundle
+   (`Complete`, `Challenge` aliased to `SignInDecision.Challenge`, `$is` which is
+   `Predicate.isTagged`, `$match` over `SignInDecision.$is`). It is the one place in `src/` that
+   still writes `_tag: "Complete"`, and it is the union's single declaration.
+2. **`dieOn`, `serverFault` and `withStepUp` keep `Effect.catchIf`.** `Effect.catchTag`'s tag
+   parameter is constrained by `Types.Tags<E>`, a conditional TypeScript leaves deferred while `E`
+   is a type parameter, so no literal satisfies it inside a function generic in `E` (`TS2769`).
+   `Filter.tagged` has the same constraint. The refinement's test is now `Predicate.isTagged` and
+   its type is `Types.ExtractTag<E, …>`; the comment explaining why the pass-through must re-fail
+   the original `Cause` stays.
+3. **`redirectFailure`'s policy-refusal narrowing is a local refinement, not bare
+   `Predicate.isTagged`.** `isTagged` refines to `{ _tag: K }` without intersecting the input, so
+   `error.code` would not typecheck. `(error: E): error is E & PolicyRefused =>
+   Predicate.isTagged(error, "PolicyRefused")` carries the hook's `code` through with no cast.
+
+Two related refusals worth recording: `AuthTest.tagsOf` cannot answer `ReadonlyArray<Types.Tags<E>>`
+for the same deferred-conditional reason and still answers `ReadonlyArray<string>`; and
+`Stores.isUniqueViolationFailure` is a retry `while:` only — on a channel that is already
+`PersistenceError`, using it as a `catchIf` refinement would compute `Exclude<PersistenceError,
+PersistenceError> = never` and erase an error the runtime can still raise.
+
+#### 20.3 Behaviour that moved, deliberately
+
+- A `PersistenceError` inside `OAuthFlow.complete`, `EmailOtp.follow`, `Passwords.signUp` and the
+  passkeys session lookup now propagates with the `Cause` it was raised with; before, it was
+  unwrapped from a `Result` and re-failed, which dropped annotations.
+- The session middleware's verify path no longer rewrites an `Unauthorized` from
+  `Sessions.verify` into a fresh `Unauthorized`; only `SessionExpired` is rewritten. Same tag,
+  same empty payload, same 401.
+- The anonymous merge hook's `catchIf(not PolicyRefused, die)` became
+  `catchTag(["PersistenceError", "SqlError"], die)`: the statement inverted from "everything that
+  is not a refusal" to the two failures the hook can raise, so a failure added later must be
+  classified there rather than silently becoming a defect.
+- `test/domain/Events.test.ts`'s coverage assertion compares sorted tag sets from
+  `AuthEvent.discriminants` rather than counts, so a member added without a sample is named.
+
+Test assertions of the form `assert.strictEqual(x._tag, "…")` were left as they are: they assert a
+wire value, which this amendment fixes as unchanged, and a guard would assert less.

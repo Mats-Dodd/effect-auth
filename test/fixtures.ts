@@ -20,7 +20,8 @@ import { Effect, Option, Redacted } from "effect"
 import type { AuthEvent } from "../src/domain/Events.js"
 import { Passwords } from "../src/domain/Passwords.js"
 import type { UserFields } from "../src/domain/Schema.js"
-import type { SignInResult } from "../src/domain/SignIn.js"
+import type { SignInComplete, SignInResult } from "../src/domain/SignIn.js"
+import { SignInResult as SignInResultEnum } from "../src/domain/SignIn.js"
 
 /**
  * Narrows a sign-in to the half that produced a session.
@@ -36,11 +37,9 @@ import type { SignInResult } from "../src/domain/SignIn.js"
  * The HTTP equivalent, over the wire union, is `completeSignIn` in
  * `test/http/helpers.ts`.
  */
-export const completed = <F extends UserFields>(
-  result: SignInResult<F>
-): Extract<SignInResult<F>, { readonly _tag: "Complete" }> => {
-  if (result._tag !== "Complete") {
-    return assert.fail(`expected a completed sign-in, got ${result._tag}`)
+export const completed = <F extends UserFields>(result: SignInResult<F>): SignInComplete<F> => {
+  if (SignInResultEnum.$is("Challenge")(result)) {
+    return assert.fail(`expected a completed sign-in, got a ${result.kind} challenge`)
   }
   return result
 }
