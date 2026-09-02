@@ -41,7 +41,8 @@ import {
   EmailNotVerified as EmailNotVerifiedError,
   InvalidCredentials as InvalidCredentialsError
 } from "../domain/Errors.js"
-import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import { ProvisionSource } from "../domain/Hooks.js"
 import { absentUserId, passwordEvidence, Passwords } from "../domain/Passwords.js"
 import type { UserId } from "../domain/Schema.js"
 import type { SignInResult } from "../domain/SignIn.js"
@@ -79,7 +80,7 @@ export const usernamePlugin = "username"
  * @category constructors
  * @since 0.2.0
  */
-export const usernameSource: ProvisionSource = { _tag: "Plugin", plugin: usernamePlugin }
+export const usernameSource: ProvisionSource = ProvisionSource.Plugin({ plugin: usernamePlugin })
 
 /**
  * The names this library refuses out of the box: the words an application

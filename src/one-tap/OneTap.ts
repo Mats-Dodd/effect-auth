@@ -43,7 +43,8 @@ import type { OAuthIdentity } from "../domain/Accounts.js"
 import { Accounts } from "../domain/Accounts.js"
 import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../domain/Errors.js"
 import { oauthMethod } from "../domain/Events.js"
-import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import { ProvisionSource } from "../domain/Hooks.js"
 import type { Evidence } from "../domain/Sessions.js"
 import type { SignInResult } from "../domain/SignIn.js"
 import { SignIn } from "../domain/SignIn.js"
@@ -334,11 +335,8 @@ export type Requirements = OAuthProviders | Accounts | SignIn | Token | Jwks | H
  * branching on the source must not have to know which road a Google identity
  * arrived by, and `Accounts.linkOAuth` is the same call either way.
  */
-const sourceOf = (provider: OAuthProviderConfig, info: OAuthUserInfo): ProvisionSource => ({
-  _tag: "OAuth",
-  providerId: provider.id,
-  info
-})
+const sourceOf = (provider: OAuthProviderConfig, info: OAuthUserInfo): ProvisionSource =>
+  ProvisionSource.OAuth({ providerId: provider.id, info })
 
 /**
  * Builds the {@link OneTap} implementation.

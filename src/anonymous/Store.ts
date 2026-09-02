@@ -10,10 +10,10 @@
  */
 import type { Option } from "effect"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
-import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
+import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { UserId } from "../domain/Schema.js"
 import type { PersistenceError as PersistenceErrorType } from "../domain/Stores.js"
-import { PersistenceError } from "../domain/Stores.js"
+import { PersistenceError, persistenceFailureKind } from "../domain/Stores.js"
 
 // -----------------------------------------------------------------------------
 // Model
@@ -91,9 +91,6 @@ export class AnonymousStore extends Context.Service<AnonymousStore, AnonymousSto
 
 const columns = `user_id AS "userId", created_at AS "createdAt", last_seen_at AS "lastSeenAt"`
 
-const kindOf = (cause: unknown) =>
-  SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
-
 const StampRequest = Schema.Struct({ userId: UserId, now: Schema.DateTimeUtcFromString })
 
 const IdleRequest = Schema.Struct({
@@ -116,7 +113,9 @@ export const makeAnonymousStore: Effect.Effect<AnonymousStoreService, never, Sql
     const mapErrors =
       (operation: string) =>
       <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, PersistenceErrorType, R> =>
-        Effect.mapError(effect, (cause) => PersistenceError.make({ operation, kind: kindOf(cause), cause }))
+        Effect.mapError(effect, (cause) =>
+          PersistenceError.make({ operation, kind: persistenceFailureKind(cause), cause })
+        )
 
     const selectByUserId = SqlSchema.findOneOption({
       Request: UserId,

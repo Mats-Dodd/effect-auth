@@ -22,10 +22,11 @@
  *
  * @since 0.2.0
  */
-import { DateTime, Duration, Effect } from "effect"
+import { Duration, Effect } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
 import { AuthConfig } from "../config/AuthConfig.js"
+import { SignInResult } from "../domain/SignIn.js"
 import * as AuthHandlers from "../http/Handlers.js"
 import { CurrentUser } from "../http/Middleware.js"
 import { setSessionCookie } from "../http/MiddlewareLive.js"
@@ -112,16 +113,12 @@ export const handlers = AuthHandlers.forGroup(UsernameApiGroup, (handlers) =>
             })
             .pipe(AuthHandlers.serverFault)
 
-          if (result._tag === "Challenge") {
+          if (SignInResult.$is("Challenge")(result)) {
             // The pending token, and only the pending token: no session was
             // minted, so no session cookie may be written here. A response
             // carrying both would be a half-authenticated credential the second
             // factor no longer gates.
-            const now = yield* DateTime.now
-            yield* AuthHandlers.setPendingCookie(config, result.token, {
-              maxAge: Duration.max(Duration.zero, DateTime.distance(now, result.expiresAt))
-            })
-            return { _tag: "MfaRequired" as const, available: result.available, expiresAt: result.expiresAt }
+            return yield* AuthHandlers.mfaRequired(config, result)
           }
 
           yield* setSessionCookie(config, result.session, result.token, {
