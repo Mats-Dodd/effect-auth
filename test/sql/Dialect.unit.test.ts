@@ -349,12 +349,15 @@ describe("sql/Mutations — rendered statements", () => {
     ])
 
     // The guard is evaluated once, under the lock, and the write and the
-    // read-back both address the row it selected.
+    // read-back both address the row it selected. The read-back is a locking
+    // read as well: an update that assigns the values a row already holds writes
+    // no new version of it, and a plain read would then answer from this
+    // transaction's snapshot rather than from the row.
     assert.deepStrictEqual(await rendered("mysql", update), [
       "BEGIN",
       "SELECT `id` FROM `widgets` WHERE id = ? AND label IS NOT NULL FOR UPDATE",
       "UPDATE `widgets` SET `label` = ? WHERE `id` = ?",
-      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE `id` = ?',
+      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE `id` = ? FOR UPDATE',
       "COMMIT"
     ])
 
@@ -383,16 +386,20 @@ describe("sql/Mutations — rendered statements", () => {
     assert.deepStrictEqual(await rendered("mysql", remove), [
       "BEGIN",
       "SELECT `id` FROM `widgets` WHERE owner_id = ? FOR UPDATE",
-      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE `id` = ?',
+      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE `id` = ? FOR UPDATE',
       "DELETE FROM `widgets` WHERE `id` = ?",
       "COMMIT"
     ])
 
+    // The caller's read-back, `FOR UPDATE`: the same person claiming the same
+    // name twice makes the conditional assignment a no-op, and a no-op writes no
+    // row version, so a plain read would miss the row the first claim committed
+    // and report the claimant's own name as somebody else's.
     assert.deepStrictEqual(await rendered("mysql", claim), [
       "BEGIN",
       "INSERT INTO `effect_auth_usernames` (`username_key`,`username`,`user_id`,`created_at`) VALUES (?,?,?,?) AS new " +
         "ON DUPLICATE KEY UPDATE `username` = IF(`effect_auth_usernames`.`user_id` = new.`user_id`, new.`username`, `effect_auth_usernames`.`username`)",
-      'SELECT username_key AS "usernameKey", username FROM `effect_auth_usernames` WHERE username_key = ? AND user_id = ?',
+      'SELECT username_key AS "usernameKey", username FROM `effect_auth_usernames` WHERE username_key = ? AND user_id = ? FOR UPDATE',
       "COMMIT"
     ])
   })

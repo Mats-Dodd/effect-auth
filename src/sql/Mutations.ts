@@ -35,7 +35,7 @@
  * ```text
  * SELECT <key> FROM <table> WHERE <predicate> FOR UPDATE   -- 0 rows → None
  * UPDATE <table> SET … WHERE <key>                          -- or DELETE
- * SELECT <columns> FROM <table> WHERE <key>
+ * SELECT <columns> FROM <table> WHERE <key> FOR UPDATE
  * ```
  *
  * Two things fall out of that order, and both are why it is not "update, then
@@ -55,6 +55,25 @@
  * Because the row is locked by our own transaction from before the mutation
  * until after the read-back, no other connection can change it in between: the
  * row a MySQL write-then-read returns is the row that write produced.
+ *
+ * **Every read-back is a locking read**, and that is not decoration. InnoDB's
+ * `REPEATABLE READ` gives a transaction one snapshot, taken at its *first*
+ * consistent read, and a plain `SELECT` answers from that snapshot however much
+ * later it runs. A store call is usually inside a `WithAuthTransaction` that has
+ * already read something — `consumeOne`'s first statement is deliberately a
+ * plain read, and every store method the domain called before this one is
+ * another — so a row a neighbouring transaction committed after that point is
+ * invisible to a plain read-back. The mutation itself does not make it visible:
+ * a transaction sees its *own* writes, and an `UPDATE` that assigns the values a
+ * row already holds, or an `ON DUPLICATE KEY UPDATE` whose `IF` resolves to the
+ * stored value, writes no new row version at all. A plain read-back then finds
+ * nothing and the helper answers `None` — "somebody else holds this name" for a
+ * name the caller had just been given. `FOR UPDATE` reads the row as it is now
+ * rather than as the snapshot has it, and it costs nothing: the read-back
+ * addresses a row this transaction already holds an exclusive lock on, by a
+ * unique key, so it takes no new lock and no gap. {@link insertAndRead} is the
+ * one read-back without it, because the row it reads is one this transaction
+ * inserted a statement earlier and a transaction always sees its own insert.
  *
  * **Details — the two conditional upserts, worked**
  *
@@ -92,12 +111,15 @@
  *   `username` = IF(`effect_auth_usernames`.`user_id` = new.`user_id`,
  *                   new.`username`,
  *                   `effect_auth_usernames`.`username`);
- * SELECT … FROM `effect_auth_usernames` WHERE username_key = ? AND user_id = ?
+ * SELECT … FROM `effect_auth_usernames`
+ *   WHERE username_key = ? AND user_id = ? FOR UPDATE
  * ```
  *
  * The read-back is the caller's, and it is what turns "the update did nothing"
  * into `None`: the row comes back only while the claimant owns it, which on
- * PostgreSQL is what the empty `RETURNING` says.
+ * PostgreSQL is what the empty `RETURNING` says. It is a locking read for the
+ * reason above — the same person submitting a claim twice makes the assignment a
+ * no-op, and a plain read would then miss the row the first submission committed.
  *
  * `src/two-factor/Store.ts` writes a *pending* TOTP enrolment, replacing a
  * pending one and refusing to touch an active one:
@@ -372,6 +394,10 @@ export interface InsertAndRead extends Keyed {
  * row back by `key`, on the transaction's connection — deterministic, because
  * the key was in the row this library just wrote.
  *
+ * The only read-back in this module that is not a locking read, and the reason
+ * is that same sentence: a transaction always sees its own insert, whatever
+ * snapshot it is reading everything else from.
+ *
  * @internal
  */
 export const insertAndRead = <A extends object = SqlConnection.Row>(
@@ -445,7 +471,7 @@ export const updateAndRead = <A extends object = SqlConnection.Row>(
       if (locked.length === 0) return empty
       const by = keysOf(sql, key, locked)
       yield* sql`UPDATE ${table} SET ${sql.update(set)} WHERE ${by}`
-      return yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${by}`
+      return yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${by}${lock}`
     })
   )
 }
@@ -511,7 +537,8 @@ export interface DeleteAndRead extends Keyed {
 /**
  * Deletes the rows matching `where` and answers with them as they were.
  *
- * On MySQL: lock the matching rows, read them, delete them by their own key.
+ * On MySQL: lock the matching rows, read them back under that same lock, delete
+ * them by their own key.
  *
  * **Gotchas**
  *
@@ -543,7 +570,7 @@ export const deleteAndRead = <A extends object = SqlConnection.Row>(
       const locked = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where}${lock}`
       if (locked.length === 0) return empty
       const by = keysOf(sql, key, locked)
-      const rows = yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${by}`
+      const rows = yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${by}${lock}`
       yield* sql`DELETE FROM ${table} WHERE ${by}`
       return rows
     })
@@ -686,6 +713,11 @@ export interface UpsertAndRead extends Target {
    * ?`, `user_id = ? AND verified_at IS NULL` — and no row means the condition
    * held for somebody else, which is what an empty `RETURNING` means on the other
    * two dialects.
+   *
+   * It is run `FOR UPDATE`, so it has to address the row by a unique key — the
+   * key the insert conflicts on, narrowed by whatever the condition tested. Both
+   * predicates above lead with a primary key, which is what makes the locking
+   * read a single record lock rather than a range and its gap.
    */
   readonly readBack: Statement.Fragment
 }
@@ -716,6 +748,7 @@ export const upsertAndRead = <A extends object = SqlConnection.Row>(
       RETURNING ${columns}`
   }
 
+  const lock = lockClause(sql, dialect)
   const incoming = (column: string): Statement.Fragment => sql`new.${identifier(sql, column)}`
   const guard = condition(current, incoming)
   const assignments = sql.csv(
@@ -727,7 +760,7 @@ export const upsertAndRead = <A extends object = SqlConnection.Row>(
     Effect.gen(function* () {
       yield* sql`INSERT INTO ${table} ${sql.insert(record)} AS new
         ON DUPLICATE KEY UPDATE ${assignments}`
-      return yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${options.readBack}`
+      return yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${options.readBack}${lock}`
     })
   )
 }

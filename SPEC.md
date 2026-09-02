@@ -2366,12 +2366,15 @@ a per-dialect branch.
 
 `src/sql/Mutations.ts` holds six helpers — `insertAndRead`, `updateAndRead`, `deleteAndCount`,
 `deleteAndRead`, `consumeOne`, `upsertAndRead`. On PostgreSQL and SQLite each renders the single
-statement the store wrote before. On MySQL each is a `sql.withTransaction` block — a savepoint when
-the caller is already inside `WithAuthTransaction`, which is the only transaction primitive any of
-them uses.
+statement the store wrote before. On MySQL each is a `sql.withTransaction` block when it is the
+outermost one, and the caller's own transaction — opening nothing, not even a savepoint — when the
+caller is already inside `WithAuthTransaction`: a MySQL deadlock rolls the whole transaction back,
+so a savepoint taken inside it stops existing at that moment and the `ROLLBACK TO SAVEPOINT` that
+would follow is a defect over a statement with a perfectly good typed failure of its own. On
+PostgreSQL and SQLite a nested block is the savepoint `sql.withTransaction` gives it.
 
 The MySQL shape is **lock the row, then mutate, then read back by its key**, and not the "update
-then select" the design doc sketched. Two reasons, both load-bearing:
+then select" the design doc sketched. Three reasons, all load-bearing:
 
 - `ROW_COUNT()` after an `UPDATE` counts rows *changed*, not *matched*. `SessionStore.touch` under a
   frozen clock writes the same expiry and the same `updated_at`, so a count-based answer would be
@@ -2379,6 +2382,12 @@ then select" the design doc sketched. Two reasons, both load-bearing:
 - Selecting by the key *after* a guarded update returns a row the guard refused — `confirmTotp`'s
   `WHERE verified_at IS NULL` is the case. The read has to be of the row the predicate actually
   matched, which is the row the `SELECT … FOR UPDATE` took.
+- **Every read-back is a locking read.** `REPEATABLE READ` fixes a transaction's snapshot at its
+  first consistent read, and neither an `UPDATE` that assigns the values a row already holds nor an
+  `ON DUPLICATE KEY UPDATE` whose `IF` resolves to the stored value writes a new row version — so a
+  plain read-back answers `None` over a row a neighbour committed after that snapshot, which is a
+  caller's own username reported as somebody else's. `insertAndRead` is the exception, because a
+  transaction always sees its own insert.
 
 `consumeOne` — the exactly-once claim — is `SELECT … FOR UPDATE` with `LIMIT 1`, then a delete by
 the selected primary key. That diverges from `DELETE … RETURNING` on the other two dialects if a

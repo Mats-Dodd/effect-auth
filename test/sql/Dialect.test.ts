@@ -18,10 +18,18 @@ import { SqlClient } from "effect/unstable/sql"
 import { oauthIssuer } from "../../src/domain/Schema.js"
 import { AccountStore, SessionStore, UserStore, WithAuthTransaction } from "../../src/domain/Stores.js"
 import { columnType } from "../../src/sql/Dialect.js"
+import * as Mutations from "../../src/sql/Mutations.js"
 import * as Database from "../../src/testing/Database.js"
 import { AuthTest } from "../../src/testing/index.js"
 import { expectSome, uniqueEmail } from "../fixtures.js"
 import { createOauthAccount, createSession, createUser, unique } from "./helpers.js"
+
+/** The row of the ad-hoc table the MySQL snapshot case writes and reads back. */
+interface Probe {
+  readonly id: string
+  readonly owner: string
+  readonly label: string
+}
 
 /**
  * Runs `effect` only on the dialects the fact is about.
@@ -265,6 +273,95 @@ layer(AuthTest.layerStores)("sql/Dialect", (it) => {
             "expected the updated user"
           )
           assert.strictEqual(updated.name, "Ada L.")
+        })
+      )
+    )
+
+    it.effect("reads a row back as it is now, not as its transaction's snapshot has it", () =>
+      on(
+        ["mysql"],
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const dialect = yield* Database.dialect
+          const id = unique("snapshot")
+          const owner = unique("snapshot-owner")
+          const table = "effect_auth_snapshot_probe"
+          const columns = sql.literal("id, owner, label")
+
+          yield* sql`CREATE TABLE effect_auth_snapshot_probe (
+            id ${sql.literal(columnType("mysql", "id"))} NOT NULL PRIMARY KEY,
+            owner ${sql.literal(columnType("mysql", "identity"))} NOT NULL,
+            label ${sql.literal(columnType("mysql", "text"))} NOT NULL
+          )`
+
+          const snapshotTaken = yield* Latch.make(false)
+          const neighbourCommitted = yield* Latch.make(false)
+
+          const reader = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                // InnoDB takes a `REPEATABLE READ` transaction's snapshot at its
+                // first consistent read, and every plain `SELECT` after it
+                // answers from that snapshot. This is the statement a real
+                // caller has already run: `consumeOne` opens with a plain read,
+                // and so does every store call the domain made earlier in the
+                // same `WithAuthTransaction`.
+                yield* sql`SELECT id FROM effect_auth_snapshot_probe WHERE id = ${id}`
+                yield* snapshotTaken.open
+                yield* neighbourCommitted.await
+
+                // Three read-backs over a row committed after that snapshot,
+                // none of which writes a new version of it: the upsert's
+                // assignment resolves to the stored value, the update assigns
+                // the value the row already holds, and the delete reads before
+                // it deletes. A plain read-back would answer `None` for all
+                // three — the caller's own row reported as somebody else's.
+                const upserted = yield* Mutations.upsertAndRead<Probe>({
+                  sql,
+                  dialect,
+                  table,
+                  record: { id, owner, label: "spanner" },
+                  conflict: ["id"],
+                  update: ["label"],
+                  condition: (current, incoming) => sql`${current("owner")} = ${incoming("owner")}`,
+                  columns,
+                  readBack: sql`id = ${id} AND owner = ${owner}`
+                })
+                const updated = yield* Mutations.updateAndRead<Probe>({
+                  sql,
+                  dialect,
+                  table,
+                  key: ["id"],
+                  set: { label: "spanner" },
+                  where: sql`id = ${id}`,
+                  columns
+                })
+                const removed = yield* Mutations.deleteAndRead<Probe>({
+                  sql,
+                  dialect,
+                  table,
+                  key: ["id"],
+                  where: sql`id = ${id}`,
+                  columns
+                })
+                return { removed, updated, upserted }
+              })
+            )
+          )
+
+          // The neighbour — the same person's first submission, on another
+          // connection — lands and commits after the reader's snapshot.
+          yield* snapshotTaken.await
+          yield* sql`INSERT INTO effect_auth_snapshot_probe ${sql.insert({ id, owner, label: "spanner" })}`
+          yield* neighbourCommitted.open
+
+          const { removed, updated, upserted } = yield* Fiber.join(reader)
+          yield* sql`DROP TABLE effect_auth_snapshot_probe`
+
+          const row: Probe = { id, owner, label: "spanner" }
+          assert.deepStrictEqual([...upserted], [row])
+          assert.deepStrictEqual([...updated], [row])
+          assert.deepStrictEqual([...removed], [row])
         })
       )
     )
