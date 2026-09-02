@@ -1160,9 +1160,17 @@ export const layerCleanup = (options?: {
  *
  * ```ts
  * import { Effect, Stream } from "effect"
- * import { Auth } from "effect-auth"
+ * import { Auth, AuthEvents } from "effect-auth"
  *
- * const audit = Stream.runForEach(Auth.events, (event) => Effect.log(event._tag))
+ * // `AuthEvent.matchOrElse` names the members this sink reports on and hands
+ * // the rest to one fallback; `AuthEvent.match` is the exhaustive form.
+ * const audit = Stream.runForEach(
+ *   Auth.events,
+ *   AuthEvents.AuthEvent.matchOrElse(
+ *     { SignedIn: (event) => Effect.log("signed in", event.userId) },
+ *     (event) => Effect.logDebug("auth event", event)
+ *   )
+ * )
  * ```
  *
  * **Gotchas**

@@ -1,6 +1,6 @@
 import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Effect, Layer, Option, Redacted } from "effect"
-import { PolicyRefused } from "../../src/domain/Hooks.js"
+import { PolicyRefused, ProvisionSource } from "../../src/domain/Hooks.js"
 import { Passwords } from "../../src/domain/Passwords.js"
 import type { CompleteOptions, SignInDecision, SignInPipelineService } from "../../src/domain/SignIn.js"
 import {
@@ -10,7 +10,9 @@ import {
   methodOf,
   proceed,
   SignIn,
-  SignInPipeline
+  SignInDecision as SignInDecisionEnum,
+  SignInPipeline,
+  SignInResult
 } from "../../src/domain/SignIn.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { EmailOtp } from "../../src/email-otp/index.js"
@@ -22,13 +24,13 @@ import { forUser, signUpUser, testName, testPassword, uniqueEmail } from "../fix
  * test is that a challenge stops the mint, not what answering one does, so the
  * token here addresses nothing.
  */
-const challengeOf = (kind: string, available: ReadonlyArray<string>): SignInDecision => ({
-  _tag: "Challenge",
-  kind,
-  available,
-  token: Redacted.make(`pending-${kind}`),
-  expiresAt: DateTime.makeUnsafe(0)
-})
+const challengeOf = (kind: string, available: ReadonlyArray<string>): SignInDecision =>
+  SignInDecisionEnum.Challenge({
+    kind,
+    available,
+    token: Redacted.make(`pending-${kind}`),
+    expiresAt: DateTime.makeUnsafe(0)
+  })
 
 /**
  * The deployment installs exactly one decider and one `beforeSessionCreate`,
@@ -71,7 +73,7 @@ const completeOptions = Effect.fnUntraced(function* (label: string) {
   const { user } = yield* signUpUser(uniqueEmail(label))
   return {
     user,
-    source: { _tag: "EmailPassword" },
+    source: ProvisionSource.EmailPassword(),
     evidence: [{ method: "password", factor: "knowledge", phishingResistant: false, restricted: false }],
     current: Option.none(),
     request: { ipAddress: null, userAgent: null }
@@ -100,8 +102,7 @@ describe.sequential("domain/SignIn", () => {
 
         const { events, result } = yield* AuthTest.recordingEvents(passwords.signIn({ email, password: testPassword }))
 
-        assert.strictEqual(result._tag, "Complete")
-        if (result._tag !== "Complete") return
+        if (SignInResult.$is("Challenge")(result)) return assert.fail("expected a completed sign-in")
         assert.deepStrictEqual(
           result.session.methods.map((entry) => entry.method),
           ["password"]
@@ -129,8 +130,7 @@ describe.sequential("domain/SignIn", () => {
 
         const { events, result } = yield* AuthTest.recordingEvents(passwords.signIn({ email, password: testPassword }))
 
-        assert.strictEqual(result._tag, "Challenge")
-        if (result._tag !== "Challenge") return
+        if (!SignInResult.$is("Challenge")(result)) return assert.fail("expected a challenge")
         assert.strictEqual(result.kind, "mfa")
         assert.deepStrictEqual(result.available, ["totp"])
         // Nothing was minted …
@@ -299,13 +299,13 @@ describe.sequential("domain/SignIn", () => {
 
         const result = yield* signIn.complete({
           user,
-          source: { _tag: "Plugin", plugin: "test" },
+          source: ProvisionSource.Plugin({ plugin: "test" }),
           evidence: [{ method: "test", factor: "possession", phishingResistant: false, restricted: false }],
           current: Option.none(),
           request: { ipAddress: null, userAgent: null }
         })
 
-        assert.strictEqual(result._tag, "Challenge")
+        assert.ok(SignInResult.$is("Challenge")(result))
         assert.strictEqual((yield* sessions.list(user.id)).length, before)
       })
     )
@@ -327,17 +327,18 @@ describe.sequential("domain/SignIn", () => {
     )
     it.effect("methodOf names the entry point for every provisioning source", () =>
       Effect.sync(() => {
-        assert.strictEqual(methodOf({ _tag: "EmailPassword" }), "password")
+        assert.strictEqual(methodOf(ProvisionSource.EmailPassword()), "password")
         assert.strictEqual(
-          methodOf({
-            _tag: "OAuth",
-            providerId: "github",
-            info: { id: "1", email: "ada@example.com", emailVerified: true, image: null }
-          }),
+          methodOf(
+            ProvisionSource.OAuth({
+              providerId: "github",
+              info: { id: "1", email: "ada@example.com", emailVerified: true, image: null }
+            })
+          ),
           "oauth:github"
         )
-        assert.strictEqual(methodOf({ _tag: "MagicLink" }), "magic-link")
-        assert.strictEqual(methodOf({ _tag: "Plugin", plugin: "passkeys" }), "passkeys")
+        assert.strictEqual(methodOf(ProvisionSource.MagicLink()), "magic-link")
+        assert.strictEqual(methodOf(ProvisionSource.Plugin({ plugin: "passkeys" })), "passkeys")
       })
     )
 

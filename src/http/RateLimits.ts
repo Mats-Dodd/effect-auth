@@ -421,32 +421,38 @@ const spend = (options: {
     const { bucket, config, key, limiter } = options
     if (!config.rateLimit.enabled && options.always !== true) return
 
-    const result = yield* Effect.result(
-      limiter.consume({
+    yield* limiter
+      .consume({
         algorithm: "fixed-window",
         onExceeded: "fail",
         window: bucket.window,
         limit: bucket.limit,
         key
       })
-    )
-    if (result._tag === "Success") return
-
-    const reason = result.failure.reason
-    if (reason._tag === "RateLimitExceeded") {
-      return yield* RateLimited.make({ retryAfterSeconds: retryAfterSeconds(reason.retryAfter) })
-    }
-    const failClosed = config.rateLimit.failClosed
-    yield* Effect.logWarning(
-      failClosed
-        ? "the rate limiter store failed; request refused (rateLimit.failClosed)"
-        : "the rate limiter store failed; request allowed"
-    ).pipe(Effect.annotateLogs({ ...authLogAnnotations, bucket: bucket.name }))
-    if (failClosed) {
-      // No counter means no way to tell an ordinary caller from a run of
-      // guesses, so the window's own length is what the caller is told to wait.
-      return yield* RateLimited.make({ retryAfterSeconds: retryAfterSeconds(bucket.window) })
-    }
+      .pipe(
+        // `RateLimiterError` carries its two outcomes as a nested `reason`, so the
+        // two arms are named directly. Both are handled, which is what clears
+        // `RateLimiterError` from the channel and leaves `RateLimited` alone.
+        Effect.catchReason(
+          "RateLimiterError",
+          "RateLimitExceeded",
+          (reason) => Effect.fail(RateLimited.make({ retryAfterSeconds: retryAfterSeconds(reason.retryAfter) })),
+          () =>
+            Effect.gen(function* () {
+              const failClosed = config.rateLimit.failClosed
+              yield* Effect.logWarning(
+                failClosed
+                  ? "the rate limiter store failed; request refused (rateLimit.failClosed)"
+                  : "the rate limiter store failed; request allowed"
+              ).pipe(Effect.annotateLogs({ ...authLogAnnotations, bucket: bucket.name }))
+              if (failClosed) {
+                // No counter means no way to tell an ordinary caller from a run of
+                // guesses, so the window's own length is what the caller is told to wait.
+                return yield* RateLimited.make({ retryAfterSeconds: retryAfterSeconds(bucket.window) })
+              }
+            })
+        )
+      )
   })
 
 /**

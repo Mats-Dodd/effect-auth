@@ -5,7 +5,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
 import type { AuthenticatorSummary } from "../../src/domain/Authenticators.js"
 import type { SignInPipelineService } from "../../src/domain/SignIn.js"
-import { proceed } from "../../src/domain/SignIn.js"
+import { proceed, SignInDecision } from "../../src/domain/SignIn.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AuthApi } from "../../src/http/AuthApi.js"
 import { pluginCookieFor } from "../../src/http/Cookies.js"
@@ -55,13 +55,14 @@ const enrolled = new Set<string>()
 const pipeline: SignInPipelineService = {
   decide: (options) =>
     enrolled.has(options.user.email)
-      ? Effect.map(DateTime.now, (now) => ({
-          _tag: "Challenge" as const,
-          kind: "mfa",
-          available: ["totp"],
-          token: Redacted.make(pendingToken),
-          expiresAt: DateTime.addDuration(now, challengeTtl)
-        }))
+      ? Effect.map(DateTime.now, (now) =>
+          SignInDecision.Challenge({
+            kind: "mfa",
+            available: ["totp"],
+            token: Redacted.make(pendingToken),
+            expiresAt: DateTime.addDuration(now, challengeTtl)
+          })
+        )
       : Effect.succeed(proceed)
 }
 

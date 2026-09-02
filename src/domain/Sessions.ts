@@ -40,7 +40,7 @@ import { insertRow } from "../internal/effects.js"
 import type { Aal, AssurancePolicy, AuthenticationFactor, AuthenticationMethod } from "./Assurance.js"
 import { deriveAal, policyToJson } from "./Assurance.js"
 import { NotFound, SessionExpired, StepUpRequired, Unauthorized } from "./Errors.js"
-import { AuthEvents, publishSafely } from "./Events.js"
+import { AuthEvents, publishSafely, SessionElevated, SessionRevoked, SignedOut } from "./Events.js"
 import type { Session, SessionId, UserFields, UserId, UserModel, UserOf } from "./Schema.js"
 import { baseUserModel, Session as SessionModel } from "./Schema.js"
 import { PersistenceError, type SessionStore, sessionStoreOf } from "./Stores.js"
@@ -653,12 +653,14 @@ export const make: <F extends UserFields>(
           cause: "the session was revoked while it was being elevated"
         })
       )
-      yield* publishSafely(events, {
-        _tag: "SessionElevated",
-        userId: elevated.userId,
-        sessionId: elevated.id,
-        method: evidence.method
-      })
+      yield* publishSafely(
+        events,
+        SessionElevated.make({
+          userId: elevated.userId,
+          sessionId: elevated.id,
+          method: evidence.method
+        })
+      )
       return { session: elevated, token } satisfies ElevatedSession
     })
 
@@ -689,7 +691,7 @@ export const make: <F extends UserFields>(
     const signOut = Effect.fnUntraced(function* (session: Session) {
       const removed = yield* store.deleteById(session.id, session.userId)
       if (!removed) return
-      yield* publishSafely(events, { _tag: "SignedOut", userId: session.userId, sessionId: session.id })
+      yield* publishSafely(events, SignedOut.make({ userId: session.userId, sessionId: session.id }))
     })
 
     const revoke = Effect.fnUntraced(function* (sessionId: SessionId, userId: UserId) {
@@ -697,18 +699,18 @@ export const make: <F extends UserFields>(
       if (!removed) {
         return yield* NotFound.make()
       }
-      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 })
+      yield* publishSafely(events, SessionRevoked.make({ userId, sessionId, scope: "single", count: 1 }))
     })
 
     const revokeAll = Effect.fnUntraced(function* (userId: UserId) {
       const count = yield* store.deleteByUserId(userId)
-      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId: null, scope: "all", count })
+      yield* publishSafely(events, SessionRevoked.make({ userId, sessionId: null, scope: "all", count }))
       return count
     })
 
     const revokeOthers = Effect.fnUntraced(function* (userId: UserId, currentSessionId: SessionId) {
       const count = yield* store.deleteByUserIdExcept(userId, currentSessionId)
-      yield* publishSafely(events, { _tag: "SessionRevoked", userId, sessionId: null, scope: "others", count })
+      yield* publishSafely(events, SessionRevoked.make({ userId, sessionId: null, scope: "others", count }))
       return count
     })
 

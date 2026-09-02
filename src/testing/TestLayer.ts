@@ -990,9 +990,9 @@ export const recordingEvents = <A, E, R>(
   })
 
 /**
- * The `_tag` of each value, in order — the tags of what {@link recordingEvents}
- * collected, for asserting on a published sequence without naming every
- * payload.
+ * The discriminant of each value, in order — the tags of what
+ * {@link recordingEvents} collected, for asserting on a published sequence
+ * without naming every payload.
  *
  * **Gotchas**
  *
@@ -1000,8 +1000,14 @@ export const recordingEvents = <A, E, R>(
  * plugin publishes events of its own and a test that narrows a recording to one
  * user usually holds `ReadonlyArray<{ readonly _tag: string }>` by then.
  *
+ * The answer is `string` rather than `Types.Tags<E>`: TypeScript leaves that
+ * conditional deferred while `E` is a type parameter, so the narrower return
+ * type cannot be produced from `value._tag` without a cast, and there is no
+ * sixth cast. Assert against `AuthEvent`'s own member names, which are literals
+ * on the expected side.
+ *
  * @category combinators
  * @since 0.1.0
  */
-export const tagsOf = (values: ReadonlyArray<{ readonly _tag: string }>): ReadonlyArray<string> =>
+export const tagsOf = <E extends { readonly _tag: string }>(values: ReadonlyArray<E>): ReadonlyArray<string> =>
   values.map((value) => value._tag)

@@ -42,13 +42,23 @@ import {
   PasswordPolicyViolation,
   UserAlreadyExists
 } from "./Errors.js"
-import { AuthEvents, passwordMethod, publishSafely } from "./Events.js"
-import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
-import { AuthHooks } from "./Hooks.js"
+import {
+  AccountLinked,
+  AuthEvents,
+  EmailVerified,
+  PasswordChanged,
+  PasswordResetRequested,
+  passwordMethod,
+  publishSafely,
+  SessionRevoked,
+  UserCreated
+} from "./Events.js"
+import type { PolicyRefused } from "./Hooks.js"
+import { AuthHooks, ProvisionSource } from "./Hooks.js"
 import type { SessionId, UserExtras, UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
 import { Account, baseUserModel, CredentialIssuer, normalizeEmail, UserId } from "./Schema.js"
-import type { SignIn, SignInResult } from "./SignIn.js"
-import { signInOf } from "./SignIn.js"
+import type { SignIn } from "./SignIn.js"
+import { signInOf, SignInResult } from "./SignIn.js"
 import type { CreatedSession, Evidence } from "./Sessions.js"
 import { Sessions } from "./Sessions.js"
 import {
@@ -122,7 +132,7 @@ export const absentUserId = UserId.make("00000000-0000-0000-0000-000000000000")
  * from. One value rather than a literal per call site: a hook branching on the
  * source must see the same tag from the sign-up as from the sign-in.
  */
-const passwordSource: ProvisionSource = { _tag: "EmailPassword" }
+const passwordSource: ProvisionSource = ProvisionSource.EmailPassword()
 
 // -----------------------------------------------------------------------------
 // Policy
@@ -729,13 +739,15 @@ export const make: <F extends UserFields>(
         )
       )
 
-    yield* publishSafely(events, {
-      _tag: "UserCreated",
-      userId: user.id,
-      email: user.email,
-      emailVerified: user.emailVerified,
-      method: passwordMethod
-    })
+    yield* publishSafely(
+      events,
+      UserCreated.make({
+        userId: user.id,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        method: passwordMethod
+      })
+    )
 
     if (config.emailPassword.requireEmailVerification) {
       yield* sendVerificationTo(user, options.callbackURL)
@@ -753,54 +765,55 @@ export const make: <F extends UserFields>(
     // `autoSignIn: false` already does, with an account that exists and no
     // session, rather than deleting somebody who was accepted a moment ago. A
     // challenge answers the same way, for the same reason: nothing was minted.
-    const completed = yield* Effect.result(
-      completeSignIn({
-        user,
-        source: passwordSource,
-        evidence: [passwordEvidence],
-        current: Option.none(),
-        request: {
-          ipAddress: options.ipAddress ?? null,
-          userAgent: options.userAgent ?? null,
-          rememberMe: options.rememberMe
-        }
-      })
-    )
-    if (completed._tag === "Failure") {
-      if (completed.failure._tag === "PersistenceError") return yield* completed.failure
-      // The refusal does not reach the caller, so it is written down: an
-      // operator asking why a registration produced no session should not have
-      // to guess between this and the two configuration switches above. `code`
-      // is deployment-authored and documented as carrying no secret.
-      yield* annotateAuthLogs(
-        Effect.logDebug("a policy refused the session a sign-up would have started", completed.failure)
-      )
-      return { user, session: Option.none() } satisfies SignUpResult<F>
-    }
-    const result = completed.success
-    if (result._tag === "Challenge") {
-      // A brand-new account holds no second factor, so a decider that
-      // challenges a sign-up has asked for something nobody can answer.
-      // `SignUpResult` has no shape for a challenge and this endpoint has no
-      // pending cookie, so the answer is the one `autoSignIn: false` already
-      // gives — an account, and no session — and whatever the decider issued on
-      // the way is stranded. That is the *contract*, stated in
-      // `SignInPipeline`: a decider must `Proceed` on an `EmailPassword`
-      // sign-up. It is logged at `Warn` rather than `Debug` because a decider
-      // that reaches here is misconfigured, not merely strict.
-      yield* annotateAuthLogs(
-        Effect.logWarning(
-          "the sign-in pipeline challenged a sign-up; a decider must Proceed on EmailPassword sign-ups, " +
-            "because a new account has no second factor to answer with and no session was minted",
-          { kind: result.kind }
+    const registered = { user, session: Option.none() } satisfies SignUpResult<F>
+    return yield* completeSignIn({
+      user,
+      source: passwordSource,
+      evidence: [passwordEvidence],
+      current: Option.none(),
+      request: {
+        ipAddress: options.ipAddress ?? null,
+        userAgent: options.userAgent ?? null,
+        rememberMe: options.rememberMe
+      }
+    }).pipe(
+      Effect.flatMap((result) =>
+        SignInResult.$match(result, {
+          Complete: (complete) =>
+            Effect.succeed({
+              user,
+              session: Option.some({ session: complete.session, token: complete.token } satisfies CreatedSession)
+            } satisfies SignUpResult<F>),
+          // A brand-new account holds no second factor, so a decider that
+          // challenges a sign-up has asked for something nobody can answer.
+          // `SignUpResult` has no shape for a challenge and this endpoint has no
+          // pending cookie, so the answer is the one `autoSignIn: false` already
+          // gives — an account, and no session — and whatever the decider issued on
+          // the way is stranded. That is the *contract*, stated in
+          // `SignInPipeline`: a decider must `Proceed` on an `EmailPassword`
+          // sign-up. It is logged at `Warn` rather than `Debug` because a decider
+          // that reaches here is misconfigured, not merely strict.
+          Challenge: (challenge) =>
+            annotateAuthLogs(
+              Effect.logWarning(
+                "the sign-in pipeline challenged a sign-up; a decider must Proceed on EmailPassword sign-ups, " +
+                  "because a new account has no second factor to answer with and no session was minted",
+                { kind: challenge.kind }
+              )
+            ).pipe(Effect.as(registered))
+        })
+      ),
+      // Only the refusal is caught: `PersistenceError` stays in the channel and
+      // still fails the call. The refusal does not reach the caller, so it is
+      // written down — an operator asking why a registration produced no session
+      // should not have to guess between this and the two configuration switches
+      // above. `code` is deployment-authored and documented as carrying no secret.
+      Effect.catchTag("PolicyRefused", (refusal) =>
+        annotateAuthLogs(Effect.logDebug("a policy refused the session a sign-up would have started", refusal)).pipe(
+          Effect.as(registered)
         )
       )
-      return { user, session: Option.none() } satisfies SignUpResult<F>
-    }
-    return {
-      user,
-      session: Option.some({ session: result.session, token: result.token } satisfies CreatedSession)
-    } satisfies SignUpResult<F>
+    )
   })
 
   const signIn = Effect.fnUntraced(function* (options: SignInOptions) {
@@ -870,7 +883,7 @@ export const make: <F extends UserFields>(
       "password reset e-mail delivery failed",
       user.email
     )
-    yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: user.id })
+    yield* publishSafely(events, PasswordResetRequested.make({ userId: user.id }))
   })
 
   const resetPassword = Effect.fnUntraced(function* (options: {
@@ -924,14 +937,16 @@ export const make: <F extends UserFields>(
       })
     )
 
-    yield* publishSafely(events, {
-      _tag: "SessionRevoked",
-      userId,
-      sessionId: null,
-      scope: "all",
-      count: revoked
-    })
-    yield* publishSafely(events, { _tag: "PasswordChanged", userId, viaReset: true })
+    yield* publishSafely(
+      events,
+      SessionRevoked.make({
+        userId,
+        sessionId: null,
+        scope: "all",
+        count: revoked
+      })
+    )
+    yield* publishSafely(events, PasswordChanged.make({ userId, viaReset: true }))
   })
 
   const verifyPassword = Effect.fnUntraced(function* (userId: UserId, password: Redacted.Redacted) {
@@ -1003,13 +1018,15 @@ export const make: <F extends UserFields>(
           Option.match({ onNone: () => created, onSome: Effect.succeed })
         )
 
-    yield* publishSafely(events, {
-      _tag: "AccountLinked",
-      userId: options.userId,
-      accountId: account.id,
-      providerId: account.providerId,
-      issuer: account.issuer
-    })
+    yield* publishSafely(
+      events,
+      AccountLinked.make({
+        userId: options.userId,
+        accountId: account.id,
+        providerId: account.providerId,
+        issuer: account.issuer
+      })
+    )
   })
 
   const changePassword = Effect.fnUntraced(function* (options: ChangePasswordOptions) {
@@ -1041,7 +1058,7 @@ export const make: <F extends UserFields>(
         : sessions.revokeOthers(options.userId, options.currentSessionId)
     }
 
-    yield* publishSafely(events, { _tag: "PasswordChanged", userId: options.userId, viaReset: false })
+    yield* publishSafely(events, PasswordChanged.make({ userId: options.userId, viaReset: false }))
   })
 
   const sendVerificationEmail = Effect.fnUntraced(function* (options: {
@@ -1066,11 +1083,13 @@ export const make: <F extends UserFields>(
     // is nothing to verify.
     const verified = yield* Effect.fromOption(updated, () => InvalidToken.make())
 
-    yield* publishSafely(events, {
-      _tag: "EmailVerified",
-      userId: verified.id,
-      email: verified.email
-    })
+    yield* publishSafely(
+      events,
+      EmailVerified.make({
+        userId: verified.id,
+        email: verified.email
+      })
+    )
     return verified
   })
 

@@ -21,8 +21,16 @@ import { assert, describe, it, layer } from "@effect/vitest"
 import { Context, Effect, Layer, Option, Redacted, Result } from "effect"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
 import { Accounts } from "../../src/domain/Accounts.js"
-import type { AuthHooksService, ProvisionSource } from "../../src/domain/Hooks.js"
-import { append, AuthHooks, combine, hooksOf, layer as hooksLayer, PolicyRefused } from "../../src/domain/Hooks.js"
+import type { AuthHooksService } from "../../src/domain/Hooks.js"
+import {
+  append,
+  AuthHooks,
+  combine,
+  hooksOf,
+  layer as hooksLayer,
+  PolicyRefused,
+  ProvisionSource
+} from "../../src/domain/Hooks.js"
 import { Passwords } from "../../src/domain/Passwords.js"
 import type { UserInsertOf } from "../../src/domain/Schema.js"
 import { baseUserModel, oauthIssuer } from "../../src/domain/Schema.js"
@@ -34,7 +42,7 @@ import { AuthTest, EmailOtpTest, MockProvider } from "../../src/testing/index.js
 import { completed, expectSome, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /** The source every test here provisions with, unless it is testing the source. */
-const testSource: ProvisionSource = { _tag: "Plugin", plugin: "test" }
+const testSource: ProvisionSource = ProvisionSource.Plugin({ plugin: "test" })
 
 /** A candidate row, built the way every provisioning flow builds one. */
 const candidateFor = (email: string): Effect.Effect<UserInsertOf<{}>> =>
@@ -641,7 +649,13 @@ const crossTrace: Array<string> = []
  * What a source calls itself. A plugin's source is `Plugin` whatever plugin it
  * is, so the name it carries is the interesting half.
  */
-const labelOf = (source: ProvisionSource): string => (source._tag === "Plugin" ? source.plugin : source._tag)
+const labelOf = (source: ProvisionSource): string =>
+  ProvisionSource.$match(source, {
+    EmailPassword: () => "EmailPassword",
+    OAuth: () => "OAuth",
+    MagicLink: () => "MagicLink",
+    Plugin: (plugin) => plugin.plugin
+  })
 
 const crossHooks: AuthHooksService = {
   beforeUserCreate: ({ candidate, source }) =>

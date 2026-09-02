@@ -31,7 +31,7 @@
  * @since 0.2.0
  */
 import type { PgliteClient } from "@effect/sql-pglite"
-import { Effect, Encoding, Layer } from "effect"
+import { Effect, Encoding, Layer, Result } from "effect"
 import { TestClock } from "effect/testing"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -322,7 +322,7 @@ const hexBytes = (hex: string): Uint8Array<ArrayBuffer> => {
 
 const base64UrlBytes = (value: string): Uint8Array<ArrayBuffer> => {
   const decoded = Encoding.decodeBase64Url(value)
-  if (decoded._tag === "Failure") throw new Error(`not base64url: ${value}`)
+  if (Result.isFailure(decoded)) throw new Error(`not base64url: ${value}`)
   return new Uint8Array(decoded.success)
 }
 

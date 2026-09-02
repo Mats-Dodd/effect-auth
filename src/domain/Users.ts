@@ -67,7 +67,7 @@ import { omitUndefined, pickKeys } from "../internal/records.js"
 import type { StepUpRequired } from "./Errors.js"
 import { EmailUnchanged, InvalidCredentials, InvalidToken, UserAlreadyExists, UserNotFound } from "./Errors.js"
 import type { UpdatedUserField } from "./Events.js"
-import { AuthEvents, publishSafely } from "./Events.js"
+import { AuthEvents, EmailChanged, publishSafely, UserDeleted, UserUpdated } from "./Events.js"
 import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
 import { AuthHooks } from "./Hooks.js"
 import { Passwords } from "./Passwords.js"
@@ -554,7 +554,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // the event says a user was deleted and this call deleted nobody: a second
       // `UserDeleted` would have a subscriber act twice on one deletion.
       if (!removed) return
-      yield* publishSafely(events, { _tag: "UserDeleted", userId: user.id, email: user.email })
+      yield* publishSafely(events, UserDeleted.make({ userId: user.id, email: user.email }))
     })
 
     // ---------------------------------------------------------------------------
@@ -627,7 +627,7 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
       // deletion, not a caller mistake.
       const updated = yield* Effect.fromOption(written, () => UserNotFound.make())
 
-      yield* publishSafely(events, { _tag: "UserUpdated", userId: updated.id, fields })
+      yield* publishSafely(events, UserUpdated.make({ userId: updated.id, fields }))
       return updated
     })
 
@@ -768,12 +768,14 @@ export const make: <F extends UserFields>(model: UserModel<F>) => Effect.Effect<
           )
         )
 
-      yield* publishSafely(events, {
-        _tag: "EmailChanged",
-        userId: updated.id,
-        previousEmail,
-        email: updated.email
-      })
+      yield* publishSafely(
+        events,
+        EmailChanged.make({
+          userId: updated.id,
+          previousEmail,
+          email: updated.email
+        })
+      )
       return updated
     })
 

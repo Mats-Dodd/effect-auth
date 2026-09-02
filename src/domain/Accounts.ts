@@ -24,13 +24,13 @@ import { insertRow, revalidateRewrite } from "../internal/effects.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import { Authenticators, list as listAuthenticators } from "./Authenticators.js"
 import { AccountAlreadyLinked, CannotUnlinkLastAccount, NotFound, UserNotFound } from "./Errors.js"
-import { AuthEvents, oauthMethod, publishSafely } from "./Events.js"
-import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
-import { AuthHooks } from "./Hooks.js"
+import { AccountLinked, AccountUnlinked, AuthEvents, oauthMethod, publishSafely, UserCreated } from "./Events.js"
+import type { PolicyRefused } from "./Hooks.js"
+import { AuthHooks, ProvisionSource } from "./Hooks.js"
 import type { AccountId, User, UserId, UserInsertOf } from "./Schema.js"
 import { Account, CredentialIssuer, normalizeEmail, User as UserModel, UserModelRef } from "./Schema.js"
 import type { AccountTokens, PersistenceError } from "./Stores.js"
-import { AccountStore, isUniqueViolation, UserStore, WithAuthTransaction } from "./Stores.js"
+import { AccountStore, isUniqueViolationFailure, UserStore, WithAuthTransaction } from "./Stores.js"
 
 // -----------------------------------------------------------------------------
 // Models
@@ -382,11 +382,10 @@ export const make: Effect.Effect<
    * `afterUserCreate`, take the account row down with the user.
    */
   const provision = Effect.fnUntraced(function* (identity: OAuthIdentity, email: string) {
-    const source: ProvisionSource = {
-      _tag: "OAuth",
+    const source: ProvisionSource = ProvisionSource.OAuth({
       providerId: identity.providerId,
       info: userInfoOf(identity)
-    }
+    })
     // Built from the base fields — they are all this module knows — and then
     // completed by the model, *before* the hook is consulted rather than after
     // it: a policy installed through `hooksOf` is promised a candidate carrying
@@ -415,13 +414,15 @@ export const make: Effect.Effect<
   })
 
   const linked = (userId: UserId, account: Account) =>
-    publishSafely(events, {
-      _tag: "AccountLinked",
-      userId,
-      accountId: account.id,
-      providerId: account.providerId,
-      issuer: account.issuer
-    })
+    publishSafely(
+      events,
+      AccountLinked.make({
+        userId,
+        accountId: account.id,
+        providerId: account.providerId,
+        issuer: account.issuer
+      })
+    )
 
   const attemptLinkOAuth = Effect.fnUntraced(function* (identity: OAuthIdentity) {
     // 1. The provider identity is already known: an ordinary sign-in.
@@ -472,13 +473,15 @@ export const make: Effect.Effect<
       })
     )
 
-    yield* publishSafely(events, {
-      _tag: "UserCreated",
-      userId: result.user.id,
-      email: result.user.email,
-      emailVerified: result.user.emailVerified,
-      method: oauthMethod(identity.providerId)
-    })
+    yield* publishSafely(
+      events,
+      UserCreated.make({
+        userId: result.user.id,
+        email: result.user.email,
+        emailVerified: result.user.emailVerified,
+        method: oauthMethod(identity.providerId)
+      })
+    )
     yield* linked(result.user.id, result.account)
     return { ...result, userCreated: true, accountCreated: true } satisfies LinkResult
   })
@@ -493,7 +496,7 @@ export const make: Effect.Effect<
    */
   const linkOAuth = (identity: OAuthIdentity) =>
     Effect.retry(attemptLinkOAuth(identity), {
-      while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error),
+      while: isUniqueViolationFailure,
       times: 1
     })
 
@@ -560,13 +563,15 @@ export const make: Effect.Effect<
       })
     )
 
-    yield* publishSafely(events, {
-      _tag: "AccountUnlinked",
-      userId,
-      accountId: removed.id,
-      providerId: removed.providerId,
-      issuer: removed.issuer
-    })
+    yield* publishSafely(
+      events,
+      AccountUnlinked.make({
+        userId,
+        accountId: removed.id,
+        providerId: removed.providerId,
+        issuer: removed.issuer
+      })
+    )
   })
 
   return Accounts.of({

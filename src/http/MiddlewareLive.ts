@@ -427,18 +427,18 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
       // declare a policy.
       const guarded = (session: Session, user: UserOf<F>) =>
         Effect.gen(function* () {
-          if (required !== undefined) {
-            const available = yield* Effect.orDie(availableFactors(authenticators, user.id))
-            const checked = yield* Effect.result(
-              requireAssuranceFor(session, resolveAssurancePolicy(config, required), available)
-            )
-            if (checked._tag === "Failure") {
-              return yield* stepUpResponse(checked.failure)
-            }
+          const endpointEffect = () =>
+            httpEffect.pipe(Effect.provideService(currentUser, user), Effect.provideService(CurrentSession, session))
+          if (required === undefined) {
+            return yield* endpointEffect()
           }
-          return yield* httpEffect.pipe(
-            Effect.provideService(currentUser, user),
-            Effect.provideService(CurrentSession, session)
+          const available = yield* Effect.orDie(availableFactors(authenticators, user.id))
+          // A refusal answers the request itself. `matchEffect` rather than a
+          // `catch` around both halves, so a `StepUpRequired` the endpoint's own
+          // effect raises still travels to the caller as the endpoint declared
+          // it, instead of being turned into this middleware's 403.
+          return yield* requireAssuranceFor(session, resolveAssurancePolicy(config, required), available).pipe(
+            Effect.matchEffect({ onFailure: stepUpResponse, onSuccess: endpointEffect })
           )
         })
 
@@ -464,20 +464,19 @@ export const make = Effect.fnUntraced(function* <F extends UserFields>(model: Us
         }
       }
 
-      const verified = yield* Effect.result(sessions.verify(options.credential))
-      if (verified._tag === "Failure") {
-        // A storage fault is the server's problem, not the caller's: reporting
-        // it as `Unauthorized` would tell a signed-in person their session is
-        // gone, and would sign them out of a working browser.
-        if (verified.failure._tag === "PersistenceError") {
-          return yield* Effect.die(verified.failure)
-        }
-        // `SessionExpired` and an unknown token are one answer at this layer:
-        // the endpoint's contract declares only `Unauthorized`.
-        return yield* Unauthorized.make()
-      }
-
-      const { refreshed, session, user } = verified.success
+      const { refreshed, session, user } = yield* sessions.verify(options.credential).pipe(
+        Effect.catchTags({
+          // A storage fault is the server's problem, not the caller's: reporting
+          // it as `Unauthorized` would tell a signed-in person their session is
+          // gone, and would sign them out of a working browser.
+          PersistenceError: Effect.die,
+          // `SessionExpired` and an unknown token are one answer at this layer:
+          // the endpoint's contract declares only `Unauthorized`. Only the expiry
+          // is rewritten — the unknown token already fails with the error the
+          // endpoint declares, and is left carrying the cause it was raised with.
+          SessionExpired: () => Effect.fail(Unauthorized.make())
+        })
+      )
       if (transport.cookie && refreshed) {
         // The row records whether the person asked to be remembered, so the
         // re-sent cookie keeps its persistence rather than being promoted to a

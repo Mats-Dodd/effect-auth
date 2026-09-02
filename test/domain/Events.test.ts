@@ -2,12 +2,27 @@ import { assert, describe, it, layer } from "@effect/vitest"
 import { DateTime, Effect, Fiber, Schema, Stream } from "effect"
 import type { AuthEvent } from "../../src/domain/Events.js"
 import {
+  AccountLinked,
+  AccountUnlinked,
   AuthEvent as AuthEventSchema,
   AuthEvents,
+  EmailChanged,
+  EmailVerified,
   emit,
   layer as authEventsLayer,
   oauthMethod,
-  passwordMethod
+  PasswordChanged,
+  PasswordResetRequested,
+  passwordMethod,
+  PluginEvent,
+  SessionElevated,
+  SessionRevoked,
+  SignedIn,
+  SignedOut,
+  TokensRefreshed,
+  UserCreated,
+  UserDeleted,
+  UserUpdated
 } from "../../src/domain/Events.js"
 import { AccountId, SessionId, UserId } from "../../src/domain/Schema.js"
 
@@ -16,9 +31,8 @@ const sessionId = SessionId.make("01890000-0000-7000-8000-00000000000b")
 const accountId = AccountId.make("01890000-0000-7000-8000-00000000000c")
 
 const everyEvent: ReadonlyArray<AuthEvent> = [
-  { _tag: "UserCreated", userId, email: "ada@example.com", emailVerified: false, method: passwordMethod },
-  {
-    _tag: "SignedIn",
+  UserCreated.make({ userId, email: "ada@example.com", emailVerified: false, method: passwordMethod }),
+  SignedIn.make({
     userId,
     sessionId,
     method: oauthMethod("github"),
@@ -31,30 +45,30 @@ const everyEvent: ReadonlyArray<AuthEvent> = [
         completedAt: DateTime.makeUnsafe(0)
       }
     ]
-  },
+  }),
   // The log a mint that recorded no evidence carries: `aal0`, and a subscriber
   // that reads `methods` has to accept it as readily as a full one.
-  { _tag: "SignedIn", userId, sessionId, method: passwordMethod, methods: [] },
-  { _tag: "SessionElevated", userId, sessionId, method: "totp" },
-  { _tag: "SignedOut", userId, sessionId },
-  { _tag: "SessionRevoked", userId, sessionId, scope: "single", count: 1 },
-  { _tag: "SessionRevoked", userId, sessionId: null, scope: "all", count: 3 },
-  { _tag: "SessionRevoked", userId, sessionId: null, scope: "others", count: 2 },
-  { _tag: "PasswordChanged", userId, viaReset: true },
-  { _tag: "PasswordResetRequested", userId },
-  { _tag: "EmailVerified", userId, email: "ada@example.com" },
-  { _tag: "UserUpdated", userId, fields: ["name", "image"] },
+  SignedIn.make({ userId, sessionId, method: passwordMethod, methods: [] }),
+  SessionElevated.make({ userId, sessionId, method: "totp" }),
+  SignedOut.make({ userId, sessionId }),
+  SessionRevoked.make({ userId, sessionId, scope: "single", count: 1 }),
+  SessionRevoked.make({ userId, sessionId: null, scope: "all", count: 3 }),
+  SessionRevoked.make({ userId, sessionId: null, scope: "others", count: 2 }),
+  PasswordChanged.make({ userId, viaReset: true }),
+  PasswordResetRequested.make({ userId }),
+  EmailVerified.make({ userId, email: "ada@example.com" }),
+  UserUpdated.make({ userId, fields: ["name", "image"] }),
   // The empty `fields` an update that touched nothing but a deployment's own
   // columns publishes — a shape the array's schema has to accept as readily as
   // the full one.
-  { _tag: "UserUpdated", userId, fields: [] },
-  { _tag: "EmailChanged", userId, previousEmail: "ada@example.com", email: "ada@lovelace.example" },
-  { _tag: "UserDeleted", userId, email: "ada@example.com" },
-  { _tag: "TokensRefreshed", userId, accountId, providerId: "github" },
-  { _tag: "AccountLinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
-  { _tag: "AccountUnlinked", userId, accountId, providerId: "github", issuer: "local:oauth:github" },
-  { _tag: "PluginEvent", plugin: "email-otp", event: "requested", userId: null, data: { newUser: true } },
-  { _tag: "PluginEvent", plugin: "email-otp", event: "verified", userId, data: {} }
+  UserUpdated.make({ userId, fields: [] }),
+  EmailChanged.make({ userId, previousEmail: "ada@example.com", email: "ada@lovelace.example" }),
+  UserDeleted.make({ userId, email: "ada@example.com" }),
+  TokensRefreshed.make({ userId, accountId, providerId: "github" }),
+  AccountLinked.make({ userId, accountId, providerId: "github", issuer: "local:oauth:github" }),
+  AccountUnlinked.make({ userId, accountId, providerId: "github", issuer: "local:oauth:github" }),
+  PluginEvent.make({ plugin: "email-otp", event: "requested", userId: null, data: { newUser: true } }),
+  PluginEvent.make({ plugin: "email-otp", event: "verified", userId, data: {} })
 ]
 
 describe("domain/Events/schema", () => {
@@ -76,8 +90,10 @@ describe("domain/Events/schema", () => {
     // The two tests below are only as good as this list, so the list is pinned
     // to the union itself: a member added without a sample here fails this
     // assertion rather than quietly going unasserted in both of them.
-    const sampled = new Set(everyEvent.map((event) => event._tag))
-    assert.strictEqual(sampled.size, AuthEventSchema.members.length)
+    // `discriminants` is the tagged union's own ordered tuple of tags, so this
+    // names the missing member rather than reporting a count that is one short.
+    const sampled = new Set<string>(everyEvent.map((event) => event._tag))
+    assert.deepStrictEqual([...sampled].sort(), [...AuthEventSchema.discriminants].sort())
   })
 
   it("carries no credential-shaped field", () => {
@@ -111,8 +127,8 @@ layer(authEventsLayer())("domain/Events/hub", (it) => {
         // it does not replay.
         yield* Effect.yieldNow
 
-        yield* events.publish({ _tag: "PasswordResetRequested", userId })
-        yield* events.publish({ _tag: "PasswordChanged", userId, viaReset: true })
+        yield* events.publish(PasswordResetRequested.make({ userId }))
+        yield* events.publish(PasswordChanged.make({ userId, viaReset: true }))
 
         const collected = yield* Fiber.join(fiber)
         assert.deepStrictEqual(
@@ -139,9 +155,9 @@ layer(authEventsLayer({ capacity: 2 }))("domain/Events/hub (capacity 2)", (it) =
         // back-pressuring hub would wedge the sign-in that published them.
         const events = yield* AuthEvents
         for (let i = 0; i < 32; i++) {
-          yield* events.publish({ _tag: "PasswordResetRequested", userId })
+          yield* events.publish(PasswordResetRequested.make({ userId }))
         }
-        yield* emit({ _tag: "SignedOut", userId, sessionId })
+        yield* emit(SignedOut.make({ userId, sessionId }))
         assert.ok(true)
       }),
     10_000
@@ -156,7 +172,7 @@ layer(authEventsLayer({ capacity: 2 }))("domain/Events/hub (capacity 2)", (it) =
         yield* events.subscribe
 
         for (let i = 0; i < 32; i++) {
-          yield* events.publish({ _tag: "PasswordChanged", userId, viaReset: false })
+          yield* events.publish(PasswordChanged.make({ userId, viaReset: false }))
         }
         assert.ok(true)
       }),

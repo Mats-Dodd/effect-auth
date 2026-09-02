@@ -54,7 +54,6 @@ import type {
   AccountStoreService,
   AccountTokens,
   AuthStores,
-  PersistenceFailureKind,
   SessionStoreService,
   SessionWithUser,
   UserPatch,
@@ -65,6 +64,7 @@ import type {
 import {
   AccountStore,
   PersistenceError,
+  persistenceFailureKind,
   sessionStoreOf,
   userStoreOf,
   VerificationStore,
@@ -167,14 +167,8 @@ const NowRequest = Schema.Struct({ now: IsoString })
 // Helpers
 // -----------------------------------------------------------------------------
 
-/**
- * Classifies a driver failure for the domain, which acts on exactly one
- * distinction: a lost race to create a row.
- */
-const kindOf = (cause: unknown): PersistenceFailureKind =>
-  SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
-
-const fail = (operation: string) => (cause: unknown) => PersistenceError.make({ operation, kind: kindOf(cause), cause })
+const fail = (operation: string) => (cause: unknown) =>
+  PersistenceError.make({ operation, kind: persistenceFailureKind(cause), cause })
 
 const persist =
   (operation: string) =>
