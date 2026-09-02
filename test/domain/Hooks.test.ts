@@ -18,7 +18,7 @@
  * test rather than a deployment.
  */
 import { assert, describe, it, layer } from "@effect/vitest"
-import { Context, Effect, Layer, Option, Redacted } from "effect"
+import { Context, Effect, Layer, Option, Redacted, Result } from "effect"
 import type { OAuthIdentity } from "../../src/domain/Accounts.js"
 import { Accounts } from "../../src/domain/Accounts.js"
 import type { AuthHooksService, ProvisionSource } from "../../src/domain/Hooks.js"
@@ -744,12 +744,12 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
           "after:email-otp"
         ])
 
-        assert.strictEqual(outcome._tag, "Success")
-        if (outcome._tag !== "Success") return
+        assert.isTrue(Result.isSuccess(outcome))
+        if (!Result.isSuccess(outcome)) return
         // The rewrite the one policy made, on the row each source wrote — read
         // back from the store, so it was stored and not merely answered with.
         assert.strictEqual(registered.user.name, `${testName} via EmailPassword`)
-        assert.strictEqual(outcome.user.name, `${testName} via OAuth`)
+        assert.strictEqual(outcome.success.user.name, `${testName} via OAuth`)
         assert.strictEqual(byCode._tag, "SignedIn")
         if (byCode._tag !== "SignedIn") return
         assert.strictEqual(byCode.user.name, `${testName} via email-otp`)
@@ -788,10 +788,10 @@ describe.sequential("domain/Hooks — one policy, every source", () => {
         if (refusedPassword._tag === "PolicyRefused") assert.strictEqual(refusedPassword.detail, "EmailPassword")
         assert.strictEqual(refusedOtp._tag, "PolicyRefused")
         if (refusedOtp._tag === "PolicyRefused") assert.strictEqual(refusedOtp.detail, "email-otp")
-        assert.strictEqual(outcome._tag, "Failure")
-        if (outcome._tag === "Failure") {
-          assert.strictEqual(outcome.code, "policy_refused")
-          assert.strictEqual(MockProvider.queryOf(outcome.redirectTo)["code"], "related_row_refused")
+        assert.isTrue(Result.isFailure(outcome))
+        if (Result.isFailure(outcome)) {
+          assert.strictEqual(outcome.failure.code, "policy_refused")
+          assert.strictEqual(MockProvider.queryOf(outcome.failure.redirectTo)["code"], "related_row_refused")
         }
 
         // The row existed when the hook ran — that is what `afterUserCreate` is

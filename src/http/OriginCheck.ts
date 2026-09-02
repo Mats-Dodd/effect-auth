@@ -19,7 +19,7 @@
  *
  * @since 0.1.0
  */
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Predicate, Result, Schema } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -263,11 +263,16 @@ export const policyRefusedTarget = (
  * The failure half of a redirect-shaped outcome: the error, somewhere to send
  * the browser, and the safe code that was appended to it.
  *
+ * **Details**
+ *
+ * It carries no discriminant of its own. A redirect-shaped completion answers
+ * with `Result.Result<TheSuccess, RedirectFailure<TheError>>`, so `Result`'s
+ * own `isSuccess` / `isFailure` / `match` are what a caller branches on.
+ *
  * @category models
  * @since 0.1.0
  */
 export interface RedirectFailure<E> {
-  readonly _tag: "Failure"
   readonly error: E
   /**
    * The validated error URL, carrying `?error=<code>` — and, when a
@@ -277,9 +282,6 @@ export interface RedirectFailure<E> {
   /** The safe, closed-set error code that was appended. */
   readonly code: string
 }
-
-/** A refusal among a flow's own errors, without naming the flow's union. */
-const isPolicyRefused = (error: { readonly _tag: string }): error is PolicyRefused => error._tag === "PolicyRefused"
 
 /**
  * Builds the {@link RedirectFailure} a flow answers a failed completion with.
@@ -298,25 +300,31 @@ const isPolicyRefused = (error: { readonly _tag: string }): error is PolicyRefus
  * unchanged by that: a flow's `errorCode` already answers `policy_refused` for
  * that case, and it stays the closed set it was.
  *
+ * The result is a failed `Result`, so a flow writes `return failure(error, url)`
+ * and its caller reads it with `Result.isFailure` or `Result.match`.
+ *
  * @category combinators
  * @since 0.1.0
  */
-export const redirectFailure =
-  <E extends { readonly _tag: string }>(
-    config: AuthConfigService,
-    errorCode: (error: E) => string
-  ): ((error: E, errorURL: string | null | undefined) => RedirectFailure<E>) =>
-  (error, errorURL) => {
+export const redirectFailure = <E extends { readonly _tag: string }>(
+  config: AuthConfigService,
+  errorCode: (error: E) => string
+): ((error: E, errorURL: string | null | undefined) => Result.Result<never, RedirectFailure<E>>) => {
+  // A refusal among the flow's own errors, without naming the flow's union:
+  // the tag test is `Predicate.isTagged`, and the refinement is what carries
+  // the hook's `code` through it.
+  const isPolicyRefused = (error: E): error is E & PolicyRefused => Predicate.isTagged(error, "PolicyRefused")
+  return (error, errorURL) => {
     const code = errorCode(error)
-    return {
-      _tag: "Failure",
+    return Result.fail({
       error,
       redirectTo: isPolicyRefused(error)
         ? policyRefusedTarget(config, errorURL, error.code)
         : withErrorCode(resolveUrl(config, errorURL), code),
       code
-    }
+    })
   }
+}
 
 // -----------------------------------------------------------------------------
 // CSRF

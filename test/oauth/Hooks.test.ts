@@ -16,7 +16,7 @@
  * writes into, and because it shares one stubbed provider server.
  */
 import { assert, describe, layer } from "@effect/vitest"
-import { Effect, Option, Redacted } from "effect"
+import { Effect, Option, Redacted, Result } from "effect"
 import type { AuthHooksService } from "../../src/domain/Hooks.js"
 import { PolicyRefused } from "../../src/domain/Hooks.js"
 import { SessionStore, UserStore } from "../../src/domain/Stores.js"
@@ -139,14 +139,14 @@ describe.sequential("oauth/Hooks", () => {
 
         const outcome = yield* complete()
 
-        assert.strictEqual(outcome._tag, "Success")
-        if (outcome._tag !== "Success") return
-        assert.isTrue(outcome.userCreated)
+        assert.isTrue(Result.isSuccess(outcome))
+        if (!Result.isSuccess(outcome)) return
+        assert.isTrue(outcome.success.userCreated)
         // Written by the hook off `source.info`, not by the flow off the
         // identity — the flow's own default would have been the display name.
-        assert.strictEqual(outcome.user.name, `${provider.id}:${identity.sub}`)
-        assert.notStrictEqual(outcome.user.name, testName)
-        assert.isNotNull(outcome.session)
+        assert.strictEqual(outcome.success.user.name, `${provider.id}:${identity.sub}`)
+        assert.notStrictEqual(outcome.success.user.name, testName)
+        assert.isNotNull(outcome.success.session)
       })
     )
 
@@ -159,16 +159,16 @@ describe.sequential("oauth/Hooks", () => {
 
         const outcome = yield* complete("/sign-in")
 
-        assert.strictEqual(outcome._tag, "Failure")
-        if (outcome._tag !== "Failure") return
+        assert.isTrue(Result.isFailure(outcome))
+        if (!Result.isFailure(outcome)) return
         // This library's classification, and the deployment's beside it.
-        assert.strictEqual(outcome.code, "policy_refused")
-        assert.strictEqual(outcome.error._tag, "PolicyRefused")
-        const query = MockProvider.queryOf(outcome.redirectTo)
+        assert.strictEqual(outcome.failure.code, "policy_refused")
+        assert.strictEqual(outcome.failure.error._tag, "PolicyRefused")
+        const query = MockProvider.queryOf(outcome.failure.redirectTo)
         assert.strictEqual(query["error"], "policy_refused")
         assert.strictEqual(query["code"], "domain_not_allowed")
         // The error URL the flow was started with, not the base URL.
-        assert.isTrue(outcome.redirectTo.startsWith(`${appOrigin}/sign-in?`))
+        assert.isTrue(outcome.failure.redirectTo.startsWith(`${appOrigin}/sign-in?`))
 
         // The refusal aborted the transaction that would have written the row.
         const found = yield* users.findByEmail(identity.email)
@@ -202,9 +202,9 @@ describe.sequential("oauth/Hooks", () => {
         // The account exists and signs in exactly once, before the policy
         // changes its mind about it.
         const first = yield* complete()
-        assert.strictEqual(first._tag, "Success")
-        if (first._tag !== "Success") return
-        const user = first.user
+        assert.isTrue(Result.isSuccess(first))
+        if (!Result.isSuccess(first)) return
+        const user = first.success.user
         const held = yield* sessions.listByUserId(user.id)
         assert.strictEqual(held.length, 1)
 
@@ -213,10 +213,10 @@ describe.sequential("oauth/Hooks", () => {
         // already knows, which is the shape a ban has to catch.
         const second = yield* complete()
 
-        assert.strictEqual(second._tag, "Failure")
-        if (second._tag !== "Failure") return
-        assert.strictEqual(second.code, "policy_refused")
-        const query = MockProvider.queryOf(second.redirectTo)
+        assert.isTrue(Result.isFailure(second))
+        if (!Result.isFailure(second)) return
+        assert.strictEqual(second.failure.code, "policy_refused")
+        const query = MockProvider.queryOf(second.failure.redirectTo)
         assert.strictEqual(query["error"], "policy_refused")
         assert.strictEqual(query["code"], "account_suspended")
 

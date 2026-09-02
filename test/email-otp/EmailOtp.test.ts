@@ -1,5 +1,5 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { Duration, Effect, Option, Redacted } from "effect"
+import { Duration, Effect, Option, Redacted, Result } from "effect"
 import { TestClock } from "effect/testing"
 import { SqlClient } from "effect/unstable/sql"
 import { Passwords } from "../../src/domain/Passwords.js"
@@ -237,9 +237,11 @@ describe.sequential("email-otp/EmailOtp", () => {
         const token = yield* EmailOtpTest.awaitLinkToken(email)
 
         const followed = yield* otp.follow({ token: Redacted.make(token) })
-        assert.strictEqual(followed._tag, "SignedIn")
-        if (followed._tag !== "SignedIn") return
-        assert.strictEqual(followed.user.email, email)
+        assert.isTrue(Result.isSuccess(followed))
+        if (!Result.isSuccess(followed)) return
+        assert.strictEqual(followed.success._tag, "SignedIn")
+        if (followed.success._tag !== "SignedIn") return
+        assert.strictEqual(followed.success.user.email, email)
 
         const answered = yield* Effect.result(otp.verify({ handle, code }))
         assert.strictEqual(answered._tag, "Failure")

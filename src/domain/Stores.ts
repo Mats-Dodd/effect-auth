@@ -22,7 +22,8 @@
  * @since 0.1.0
  */
 import type { DateTime, Effect, Option } from "effect"
-import { Context, Schema } from "effect"
+import { Context, Predicate, Schema } from "effect"
+import { SqlError } from "effect/unstable/sql"
 import type { Aal, AuthenticationMethod } from "./Assurance.js"
 import type {
   Account,
@@ -112,6 +113,57 @@ export class PersistenceError extends Schema.TaggedError<PersistenceError>("effe
  * @since 0.1.0
  */
 export const isUniqueViolation = (error: PersistenceError): boolean => error.kind === "UniqueViolation"
+
+/**
+ * Classifies a driver failure into the one distinction the domain acts on: a
+ * lost race to create a row.
+ *
+ * **When to use**
+ *
+ * From a store implementation, to fill {@link PersistenceError}'s `kind`. Every
+ * store this package ships builds its failures with it, and a third-party store
+ * over `@effect/sql` should too — {@link isUniqueViolation} answers `false` for
+ * a store that never classifies, so the callers that resolve a race silently
+ * stop resolving it.
+ *
+ * **Gotchas**
+ *
+ * Anything that is not an `SqlError` carrying a `UniqueViolation` reason is
+ * `"Unknown"`, including a driver whose error the SQL client did not recognise.
+ * The classification is a hint for a retry, never an authorization decision.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const persistenceFailureKind = (cause: unknown): PersistenceFailureKind =>
+  SqlError.isSqlError(cause) && Predicate.isTagged(cause.reason, "UniqueViolation") ? "UniqueViolation" : "Unknown"
+
+/** Whether a failure is a {@link PersistenceError}, shape and all. */
+const isPersistenceError = Schema.is(PersistenceError)
+
+/**
+ * Whether a failure is a {@link PersistenceError} that lost a race to a unique
+ * index.
+ *
+ * **When to use**
+ *
+ * As a retry `while:`, where the losing side of a concurrent write has a
+ * graceful answer on a second attempt — a second OAuth callback for one new
+ * identity, a second link spend for one address.
+ *
+ * **Gotchas**
+ *
+ * Retry once. The race has exactly one loser, and a store that does not
+ * classify its failures never matches here at all. It is a refinement, but
+ * `Effect.retry` narrows the residual error channel only when no `times:` caps
+ * the policy — with one, `PersistenceError` stays in the channel, which is what
+ * a caller wants: the second attempt can lose too.
+ *
+ * @category guards
+ * @since 0.2.0
+ */
+export const isUniqueViolationFailure = (error: unknown): error is PersistenceError =>
+  isPersistenceError(error) && isUniqueViolation(error)
 
 // -----------------------------------------------------------------------------
 // UserStore

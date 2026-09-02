@@ -46,7 +46,7 @@
  *
  * @since 0.2.0
  */
-import { Context, type DateTime, Duration, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect"
+import { Context, type DateTime, Duration, Effect, Layer, Option, Redacted, Result, Schema, type Scope } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { tokenUrl } from "../config/AuthEmails.js"
 import { Authenticators, revokeAll as revokeAllAuthenticators } from "../domain/Authenticators.js"
@@ -66,6 +66,7 @@ import { AccountStore, isUniqueViolation, SessionStore, UserStore, WithAuthTrans
 import { Users } from "../domain/Users.js"
 import type { TokenPurpose } from "../domain/Verifications.js"
 import { passwordResetPurpose, purpose, retireUserSubjectTokens, Verifications } from "../domain/Verifications.js"
+import type { RedirectFailure } from "../http/OriginCheck.js"
 import { redirectFailure, resolveUrl, validateUrl } from "../http/OriginCheck.js"
 import { deliverEmail, insertRow } from "../internal/effects.js"
 import { withDefaults } from "../internal/records.js"
@@ -671,17 +672,7 @@ export type VerifyError = InvalidCode | SignUpDisabled | PolicyRefused
  * @category models
  * @since 0.2.0
  */
-export type LinkOutcome =
-  | SignedIn
-  | Challenged
-  | {
-      readonly _tag: "Failure"
-      readonly error: VerifyError
-      /** The validated error URL, carrying `?error=<code>`. */
-      readonly redirectTo: string
-      /** The safe, closed-set error code that was appended. */
-      readonly code: string
-    }
+export type LinkOutcome = Result.Result<SignedIn | Challenged, RedirectFailure<VerifyError>>
 
 /**
  * The codes themselves, keyed by tag. The mapped type is what keeps the set
@@ -1330,7 +1321,7 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
           }
           return failure(finished.failure, claimed.success.payload.errorCallbackURL)
         }
-        return finished.success
+        return Result.succeed(finished.success) satisfies LinkOutcome
       },
       (effect) => Effect.withSpan(effect, "EmailOtp.follow")
     )

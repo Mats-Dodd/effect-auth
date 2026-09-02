@@ -28,7 +28,7 @@
  *
  * @since 0.2.0
  */
-import { DateTime, Duration, Effect, Option, Redacted } from "effect"
+import { DateTime, Duration, Effect, Option, Redacted, Result } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
@@ -263,22 +263,23 @@ export const handlers = AuthHandlers.forGroup(EmailOtpApiGroup, (handlers) =>
           // may still be holding names nothing.
           yield* clearHandleCookie
 
-          if (outcome._tag === "SignedIn") {
-            yield* setSessionCookie(config, outcome.session, outcome.token, { persistent: outcome.rememberMe })
-            return AuthHandlers.redirectTo(outcome.redirectTo)
+          if (Result.isFailure(outcome)) {
+            // The browser arrived by a top-level navigation and leaves by one,
+            // and no cookie is set: no session exists.
+            return AuthHandlers.redirectTo(outcome.failure.redirectTo)
           }
-          if (outcome._tag === "Challenge") {
-            // A browser that arrived by a top-level navigation cannot be
-            // answered with a 202, so the pending token goes in its cookie and
-            // the landing page is told by `?mfa=required`. No session cookie.
-            yield* AuthHandlers.setPendingCookie(config, outcome.challenge.token, {
-              maxAge: yield* remainingLifetime(outcome.challenge.expiresAt)
-            })
-            return AuthHandlers.redirectTo(AuthHandlers.withMfaRequired(outcome.redirectTo))
+          const settled = outcome.success
+          if (settled._tag === "SignedIn") {
+            yield* setSessionCookie(config, settled.session, settled.token, { persistent: settled.rememberMe })
+            return AuthHandlers.redirectTo(settled.redirectTo)
           }
-          // Success or failure, the browser arrived by a top-level navigation
-          // and leaves by one, and no cookie is set: no session exists.
-          return AuthHandlers.redirectTo(outcome.redirectTo)
+          // A browser that arrived by a top-level navigation cannot be
+          // answered with a 202, so the pending token goes in its cookie and
+          // the landing page is told by `?mfa=required`. No session cookie.
+          yield* AuthHandlers.setPendingCookie(config, settled.challenge.token, {
+            maxAge: yield* remainingLifetime(settled.challenge.expiresAt)
+          })
+          return AuthHandlers.redirectTo(AuthHandlers.withMfaRequired(settled.redirectTo))
         })
       )
       .handle("stepUpSend", ({ request }) =>

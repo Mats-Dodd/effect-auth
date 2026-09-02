@@ -35,11 +35,11 @@
  *
  * @since 0.2.0
  */
-import { Context, type DateTime, Effect, Layer, type Option, type Redacted } from "effect"
+import { Context, Data, type DateTime, Effect, Layer, type Option, Predicate, type Redacted, type Types } from "effect"
 import { omitUndefined } from "../internal/records.js"
-import { AuthEvents, oauthMethod, passwordMethod, publishSafely } from "./Events.js"
-import type { PolicyRefused, ProvisionSource } from "./Hooks.js"
-import { hooksOf } from "./Hooks.js"
+import { AuthEvents, oauthMethod, passwordMethod, publishSafely, SignedIn } from "./Events.js"
+import type { PolicyRefused } from "./Hooks.js"
+import { hooksOf, ProvisionSource } from "./Hooks.js"
 import type { Session, UserFields, UserModel, UserOf } from "./Schema.js"
 import { baseUserModel } from "./Schema.js"
 import type { Evidence, Sessions } from "./Sessions.js"
@@ -108,13 +108,7 @@ export interface CompleteOptions<F extends UserFields = {}> {
  * @category models
  * @since 0.2.0
  */
-export interface SignInChallenge {
-  readonly _tag: "Challenge"
-  readonly kind: string
-  readonly available: ReadonlyArray<string>
-  readonly token: Redacted.Redacted
-  readonly expiresAt: DateTime.Utc
-}
+export type SignInChallenge = Data.TaggedEnum.Value<SignInDecision, "Challenge">
 
 /**
  * What the pipeline decided: mint the session, or ask for something first.
@@ -122,7 +116,36 @@ export interface SignInChallenge {
  * @category models
  * @since 0.2.0
  */
-export type SignInDecision = { readonly _tag: "Proceed" } | SignInChallenge
+export type SignInDecision = Data.TaggedEnum<{
+  /** Nothing is owed: mint the session. */
+  Proceed: {}
+  /** Something is owed first — the {@link SignInChallenge} member. */
+  Challenge: {
+    readonly kind: string
+    readonly available: ReadonlyArray<string>
+    readonly token: Redacted.Redacted
+    readonly expiresAt: DateTime.Utc
+  }
+}>
+
+/**
+ * Constructors and matchers for {@link SignInDecision}.
+ *
+ * **Details**
+ *
+ * `SignInDecision.Challenge({ ... })` is what a decider answers with, and
+ * `SignInDecision.$is("Challenge")` is how core reads the answer. `$match`
+ * branches over both exhaustively.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at a decision a
+ * decider returned — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const SignInDecision = Data.taggedEnum<SignInDecision>()
 
 /**
  * The decision that mints a session, as a value — a decider with nothing to say
@@ -131,7 +154,20 @@ export type SignInDecision = { readonly _tag: "Proceed" } | SignInChallenge
  * @category constructors
  * @since 0.2.0
  */
-export const proceed: SignInDecision = { _tag: "Proceed" }
+export const proceed: SignInDecision = SignInDecision.Proceed()
+
+/**
+ * A sign-in that minted a session, for a model parameterized by `F`.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export interface SignInComplete<F extends UserFields = {}> {
+  readonly _tag: "Complete"
+  readonly session: Session
+  readonly user: UserOf<F>
+  readonly token: Redacted.Redacted
+}
 
 /**
  * What a sign-in came to: a session, or a challenge that owes one.
@@ -144,14 +180,49 @@ export const proceed: SignInDecision = { _tag: "Proceed" }
  * @category models
  * @since 0.2.0
  */
-export type SignInResult<F extends UserFields = {}> =
-  | {
-      readonly _tag: "Complete"
-      readonly session: Session
-      readonly user: UserOf<F>
-      readonly token: Redacted.Redacted
+export type SignInResult<F extends UserFields = {}> = SignInComplete<F> | SignInChallenge
+
+/**
+ * Constructors and matchers for {@link SignInResult}.
+ *
+ * **Details**
+ *
+ * The same bundle `Data.taggedEnum` produces, written by hand: `SignInResult`
+ * is generic in the model's fields `F`, and `Data.TaggedEnum.WithGenerics`
+ * leaves its type parameter unconstrained, so `UserOf<F>` cannot be named
+ * inside one. `Challenge` is `SignInDecision.Challenge` — a challenge is one
+ * value, whether it is being decided or reported.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at a result this
+ * library produced — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const SignInResult: {
+  readonly Complete: <F extends UserFields = {}>(args: {
+    readonly session: Session
+    readonly user: UserOf<F>
+    readonly token: Redacted.Redacted
+  }) => SignInComplete<F>
+  readonly Challenge: (args: Data.TaggedEnum.Args<SignInDecision, "Challenge">) => SignInChallenge
+  readonly $is: <const Tag extends Types.Tags<SignInResult>>(tag: Tag) => (u: unknown) => u is { _tag: Tag }
+  readonly $match: <F extends UserFields, Complete, Challenge>(
+    result: SignInResult<F>,
+    cases: {
+      readonly Complete: (result: SignInComplete<F>) => Complete
+      readonly Challenge: (result: SignInChallenge) => Challenge
     }
-  | SignInChallenge
+  ) => Complete | Challenge
+} = {
+  Complete: (args) => ({ _tag: "Complete", ...args }),
+  Challenge: SignInDecision.Challenge,
+  $is: Predicate.isTagged,
+  $match: (result, cases) =>
+    SignInDecision.$is("Challenge")(result) ? cases.Challenge(result) : cases.Complete(result)
+}
 
 // -----------------------------------------------------------------------------
 // Pipeline
@@ -170,7 +241,7 @@ export type SignInResult<F extends UserFields = {}> =
  *
  * **Gotchas**
  *
- * A decider must answer `Proceed` for `source._tag === "EmailPassword"` on a
+ * A decider must answer `Proceed` for a `ProvisionSource.EmailPassword` on a
  * *sign-up*. An account created a millisecond ago holds no second factor, so a
  * challenge there asks for something nobody can answer: `Passwords.signUp`
  * answers `{ user, session: None }` — the shape `autoSignIn: false` already
@@ -250,7 +321,7 @@ export const combine = (first: SignInPipelineService, second: SignInPipelineServ
             Effect.flatMap(
               firstDecide(options),
               (decision): Effect.Effect<SignInDecision, PolicyRefused | PersistenceError> =>
-                decision._tag === "Challenge" ? Effect.succeed(decision) : secondDecide(options)
+                SignInDecision.$is("Challenge")(decision) ? Effect.succeed(decision) : secondDecide(options)
             )
   // Only the member at least one side declared, so that "no decider" stays
   // distinguishable from "a decider that always proceeds".
@@ -339,18 +410,13 @@ export const signInOf = <F extends UserFields>(_model: UserModel<F>): Context.Se
  * @category combinators
  * @since 0.2.0
  */
-export const methodOf = (source: ProvisionSource): string => {
-  switch (source._tag) {
-    case "EmailPassword":
-      return passwordMethod
-    case "OAuth":
-      return oauthMethod(source.providerId)
-    case "MagicLink":
-      return "magic-link"
-    case "Plugin":
-      return source.plugin
-  }
-}
+export const methodOf = (source: ProvisionSource): string =>
+  ProvisionSource.$match(source, {
+    EmailPassword: () => passwordMethod,
+    OAuth: (oauth) => oauthMethod(oauth.providerId),
+    MagicLink: () => "magic-link",
+    Plugin: (plugin) => plugin.plugin
+  })
 
 /**
  * Builds the {@link SignIn} implementation from the session service, the event
@@ -380,7 +446,7 @@ export const make: <F extends UserFields>(
 
     const decide = pipeline.decide
     const decision = decide === undefined ? proceed : yield* decide(options)
-    if (decision._tag === "Challenge") {
+    if (SignInDecision.$is("Challenge")(decision)) {
       // Nothing is minted and nothing is published: as far as every other part
       // of this library is concerned, no sign-in has happened yet — which is
       // exactly why `beforeSessionMint` has not run.
@@ -402,21 +468,22 @@ export const make: <F extends UserFields>(
       rememberMe: options.request.rememberMe,
       methods: options.evidence
     })
-    yield* publishSafely(events, {
-      _tag: "SignedIn",
-      userId: options.user.id,
-      sessionId: created.session.id,
-      method: methodOf(options.source),
-      // The stamped log the row carries, not the caller's unstamped evidence,
-      // so a subscriber and the session agree on what happened and when.
-      methods: created.session.methods
-    })
-    return {
-      _tag: "Complete",
+    yield* publishSafely(
+      events,
+      SignedIn.make({
+        userId: options.user.id,
+        sessionId: created.session.id,
+        method: methodOf(options.source),
+        // The stamped log the row carries, not the caller's unstamped evidence,
+        // so a subscriber and the session agree on what happened and when.
+        methods: created.session.methods
+      })
+    )
+    return SignInResult.Complete<F>({
       session: created.session,
       user: options.user,
       token: created.token
-    } satisfies SignInResult<F>
+    })
   })
 
   return signInOf(model).of({ complete })

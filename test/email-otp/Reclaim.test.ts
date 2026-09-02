@@ -1,5 +1,5 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { Effect, Layer, Redacted } from "effect"
+import { Effect, Layer, Redacted, Result } from "effect"
 import type { AuthenticatorsService } from "../../src/domain/Authenticators.js"
 import { layer as authenticatorsLayer } from "../../src/domain/Authenticators.js"
 import { AccountStore } from "../../src/domain/Stores.js"
@@ -109,7 +109,9 @@ describe.sequential("email-otp/reclaim", () => {
         const token = yield* EmailOtpTest.awaitLinkToken(email)
         const outcome = yield* otp.follow({ token: Redacted.make(token) })
 
-        assert.strictEqual(outcome._tag, "SignedIn")
+        assert.isTrue(Result.isSuccess(outcome))
+        if (!Result.isSuccess(outcome)) return
+        assert.strictEqual(outcome.success._tag, "SignedIn")
         assert.deepStrictEqual(swept, [registered.user.id])
       })
     )

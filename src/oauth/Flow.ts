@@ -50,7 +50,7 @@
  *
  * @since 0.1.0
  */
-import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Schema, String } from "effect"
+import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Result, Schema, String } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -73,6 +73,7 @@ import {
   type SessionWithUser,
   type VerificationStore
 } from "../domain/Stores.js"
+import type { RedirectFailure } from "../http/OriginCheck.js"
 import { redirectFailure, resolveUrl } from "../http/OriginCheck.js"
 import { trimTrailingSlashes } from "../internal/url.js"
 import type { IdTokenClaims, KeyResolver } from "./IdToken.js"
@@ -526,20 +527,7 @@ export type CallbackError =
  * @category models
  * @since 0.1.0
  */
-export type CallbackOutcome =
-  | ({ readonly _tag: "Success" } & CallbackResult)
-  | {
-      readonly _tag: "Failure"
-      readonly error: CallbackError
-      /**
-       * The validated error URL, carrying `?error=<code>` — and, when a
-       * deployment's own hook was what refused, `&code=<the hook's code>` beside
-       * it.
-       */
-      readonly redirectTo: string
-      /** The safe, closed-set error code that was appended. */
-      readonly code: string
-    }
+export type CallbackOutcome = Result.Result<CallbackResult, RedirectFailure<CallbackError>>
 
 /**
  * The codes that do not depend on anything inside the error, as a total map: a
@@ -1098,7 +1086,7 @@ export const make: Effect.Effect<
         if (finished.failure._tag === "PersistenceError") return yield* finished.failure
         return failure(finished.failure, payload.errorURL)
       }
-      return { _tag: "Success", ...finished.success } satisfies CallbackOutcome
+      return Result.succeed(finished.success) satisfies CallbackOutcome
     },
     (effect, options) =>
       Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } })

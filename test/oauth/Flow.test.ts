@@ -1,5 +1,5 @@
 import { assert, describe, it, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Option, Redacted } from "effect"
+import { DateTime, Duration, Effect, Option, Redacted, Result } from "effect"
 import { TestClock } from "effect/testing"
 import { OAuthProviderError, OAuthStateMismatch } from "../../src/domain/Errors.js"
 import { oauthIssuer, User } from "../../src/domain/Schema.js"
@@ -759,9 +759,9 @@ describe.sequential("oauth/Flow", () => {
             code: "code",
             state: Redacted.value(started.state)
           })
-          assert.strictEqual(outcome._tag, "Success")
-          if (outcome._tag !== "Success") return
-          assert.strictEqual(outcome.redirectTo, "https://console.example.com/welcome")
+          assert.isTrue(Result.isSuccess(outcome))
+          if (!Result.isSuccess(outcome)) return
+          assert.strictEqual(outcome.success.redirectTo, "https://console.example.com/welcome")
         })
       )
 
@@ -779,10 +779,10 @@ describe.sequential("oauth/Flow", () => {
             code: "code",
             state: Redacted.value(started.state)
           })
-          assert.strictEqual(outcome._tag, "Failure")
-          if (outcome._tag !== "Failure") return
-          assert.strictEqual(outcome.code, "token_exchange_failed")
-          assert.strictEqual(outcome.redirectTo, `${appOrigin}/sign-in?error=token_exchange_failed`)
+          assert.isTrue(Result.isFailure(outcome))
+          if (!Result.isFailure(outcome)) return
+          assert.strictEqual(outcome.failure.code, "token_exchange_failed")
+          assert.strictEqual(outcome.failure.redirectTo, `${appOrigin}/sign-in?error=token_exchange_failed`)
         })
       )
 
@@ -795,10 +795,10 @@ describe.sequential("oauth/Flow", () => {
             code: "code",
             state: "a-state-nobody-minted"
           })
-          assert.strictEqual(outcome._tag, "Failure")
-          if (outcome._tag !== "Failure") return
-          assert.strictEqual(outcome.code, "state_mismatch")
-          assert.strictEqual(outcome.redirectTo, `${appOrigin}/?error=state_mismatch`)
+          assert.isTrue(Result.isFailure(outcome))
+          if (!Result.isFailure(outcome)) return
+          assert.strictEqual(outcome.failure.code, "state_mismatch")
+          assert.strictEqual(outcome.failure.redirectTo, `${appOrigin}/?error=state_mismatch`)
         })
       )
 
@@ -816,9 +816,9 @@ describe.sequential("oauth/Flow", () => {
             code: "code",
             state: Redacted.value(started.state)
           })
-          assert.strictEqual(outcome._tag, "Failure")
-          if (outcome._tag !== "Failure") return
-          assert.isTrue(outcome.redirectTo.startsWith(appOrigin))
+          assert.isTrue(Result.isFailure(outcome))
+          if (!Result.isFailure(outcome)) return
+          assert.isTrue(outcome.failure.redirectTo.startsWith(appOrigin))
         })
       )
     })
@@ -850,10 +850,10 @@ describe.sequential("oauth/Flow", () => {
             code: "code",
             state: Redacted.value(started.state)
           })
-          assert.strictEqual(outcome._tag, "Failure")
-          if (outcome._tag !== "Failure") return
-          assert.strictEqual(outcome.code, "account_already_linked")
-          assert.strictEqual(outcome.redirectTo, `${appOrigin}/sign-in?error=account_already_linked`)
+          assert.isTrue(Result.isFailure(outcome))
+          if (!Result.isFailure(outcome)) return
+          assert.strictEqual(outcome.failure.code, "account_already_linked")
+          assert.strictEqual(outcome.failure.redirectTo, `${appOrigin}/sign-in?error=account_already_linked`)
         })
       )
 

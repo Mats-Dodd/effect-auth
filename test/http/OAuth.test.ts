@@ -1,5 +1,5 @@
 import { assert, describe, layer } from "@effect/vitest"
-import { Context, DateTime, Effect, Layer, Option, Redacted, Ref } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Redacted, Ref, Result } from "effect"
 import { OAuthStateMismatch } from "../../src/domain/Errors.js"
 import type { Account, User } from "../../src/domain/Schema.js"
 import { Sessions } from "../../src/domain/Sessions.js"
@@ -221,20 +221,21 @@ describe.sequential("http/Handlers OAuth", () => {
         const minted = yield* withSession("callback-roundtrip")
         const stub = yield* StubFlow
         yield* stub.reset
-        yield* stub.setOutcome({
-          _tag: "Success",
-          providerId: "github",
-          user: minted.user,
-          account: minted.account,
-          session: minted.session,
-          token: minted.token,
-          redirectTo: "http://localhost:3000/welcome",
-          userCreated: false,
-          challenge: null,
-          accountCreated: true,
-          linked: false,
-          rememberMe: true
-        })
+        yield* stub.setOutcome(
+          Result.succeed({
+            providerId: "github",
+            user: minted.user,
+            account: minted.account,
+            session: minted.session,
+            token: minted.token,
+            redirectTo: "http://localhost:3000/welcome",
+            userCreated: false,
+            challenge: null,
+            accountCreated: true,
+            linked: false,
+            rememberMe: true
+          })
+        )
 
         // One client, one jar, no injected header: `signInSocial`'s `Set-Cookie`
         // lands in the jar, and the callback on the same client sends it back —
@@ -291,20 +292,21 @@ describe.sequential("http/Handlers OAuth", () => {
         const minted = yield* withSession("callback-cookie")
         const stub = yield* StubFlow
         yield* stub.reset
-        yield* stub.setOutcome({
-          _tag: "Success",
-          providerId: "github",
-          user: minted.user,
-          account: minted.account,
-          session: minted.session,
-          token: minted.token,
-          redirectTo: "http://localhost:3000/welcome",
-          userCreated: false,
-          challenge: null,
-          accountCreated: true,
-          linked: false,
-          rememberMe: true
-        })
+        yield* stub.setOutcome(
+          Result.succeed({
+            providerId: "github",
+            user: minted.user,
+            account: minted.account,
+            session: minted.session,
+            token: minted.token,
+            redirectTo: "http://localhost:3000/welcome",
+            userCreated: false,
+            challenge: null,
+            accountCreated: true,
+            linked: false,
+            rememberMe: true
+          })
+        )
 
         // The browser holds the state-binding cookie the flow set when it
         // started (its value is the raw `state`), so the callback accepts the
@@ -332,20 +334,21 @@ describe.sequential("http/Handlers OAuth", () => {
         yield* stub.reset
         // A link flow carries no session: the person was already signed in, and
         // minting a second session for them would be a silent upgrade.
-        yield* stub.setOutcome({
-          _tag: "Success",
-          providerId: "github",
-          user: minted.user,
-          account: minted.account,
-          session: null,
-          token: null,
-          redirectTo: "http://localhost:3000/settings",
-          userCreated: false,
-          challenge: null,
-          accountCreated: true,
-          linked: true,
-          rememberMe: true
-        })
+        yield* stub.setOutcome(
+          Result.succeed({
+            providerId: "github",
+            user: minted.user,
+            account: minted.account,
+            session: null,
+            token: null,
+            redirectTo: "http://localhost:3000/settings",
+            userCreated: false,
+            challenge: null,
+            accountCreated: true,
+            linked: true,
+            rememberMe: true
+          })
+        )
 
         const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi, stateBinding("nonce"))
         const [, response] = yield* fresh.client.auth.oauthCallback({
@@ -366,20 +369,21 @@ describe.sequential("http/Handlers OAuth", () => {
         const stub = yield* StubFlow
         yield* stub.reset
         // The choice travelled in the state row from `POST /sign-in/social`.
-        yield* stub.setOutcome({
-          _tag: "Success",
-          providerId: "github",
-          user: minted.user,
-          account: minted.account,
-          session: minted.session,
-          token: minted.token,
-          redirectTo: "http://localhost:3000/welcome",
-          userCreated: false,
-          challenge: null,
-          accountCreated: true,
-          linked: false,
-          rememberMe: false
-        })
+        yield* stub.setOutcome(
+          Result.succeed({
+            providerId: "github",
+            user: minted.user,
+            account: minted.account,
+            session: minted.session,
+            token: minted.token,
+            redirectTo: "http://localhost:3000/welcome",
+            userCreated: false,
+            challenge: null,
+            accountCreated: true,
+            linked: false,
+            rememberMe: false
+          })
+        )
 
         const fresh = yield* TestHttpClient.makeClient(AuthTest.TestApi, stateBinding("nonce"))
         const [, response] = yield* fresh.client.auth.oauthCallback({
@@ -399,12 +403,13 @@ describe.sequential("http/Handlers OAuth", () => {
       Effect.gen(function* () {
         const stub = yield* StubFlow
         yield* stub.reset
-        yield* stub.setOutcome({
-          _tag: "Failure",
-          error: OAuthStateMismatch.make(),
-          redirectTo: "http://localhost:3000/oops?error=state_mismatch",
-          code: "state_mismatch"
-        })
+        yield* stub.setOutcome(
+          Result.fail({
+            error: OAuthStateMismatch.make(),
+            redirectTo: "http://localhost:3000/oops?error=state_mismatch",
+            code: "state_mismatch"
+          })
+        )
 
         // The binding passes (this browser holds the state cookie), so the
         // callback reaches `complete`, which resolves the flow's own failure
@@ -429,12 +434,13 @@ describe.sequential("http/Handlers OAuth", () => {
         yield* stub.reset
         // Staged, but it must never be reached: the binding is checked before
         // the state is consumed, and this browser holds no state cookie.
-        yield* stub.setOutcome({
-          _tag: "Failure",
-          error: OAuthStateMismatch.make(),
-          redirectTo: "http://localhost:3000/oops?error=state_mismatch",
-          code: "state_mismatch"
-        })
+        yield* stub.setOutcome(
+          Result.fail({
+            error: OAuthStateMismatch.make(),
+            redirectTo: "http://localhost:3000/oops?error=state_mismatch",
+            code: "state_mismatch"
+          })
+        )
 
         // No `signInSocial` on this client: it is the victim's browser, lured to
         // a callback for a `state` the attacker legitimately obtained.

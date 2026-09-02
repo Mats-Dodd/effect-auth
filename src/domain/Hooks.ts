@@ -52,7 +52,7 @@
  * @since 0.1.0
  */
 import type { Option } from "effect"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Data, Effect, Layer, Schema } from "effect"
 import { omitUndefined } from "../internal/records.js"
 import type { OAuthUserInfo } from "../oauth/Provider.js"
 import type { UserFields, UserInsertOf, UserModel, UserOf } from "./Schema.js"
@@ -76,11 +76,11 @@ import type { SessionWithUser } from "./Stores.js"
  * @category models
  * @since 0.1.0
  */
-export type ProvisionSource =
+export type ProvisionSource = Data.TaggedEnum<{
   /** A sign-up with an e-mail address and a password. */
-  | { readonly _tag: "EmailPassword" }
+  EmailPassword: {}
   /** A first sign-in through an OAuth or OIDC provider. */
-  | { readonly _tag: "OAuth"; readonly providerId: string; readonly info: OAuthUserInfo }
+  OAuth: { readonly providerId: string; readonly info: OAuthUserInfo }
   /**
    * A first sign-in through a mailed magic link.
    *
@@ -90,9 +90,29 @@ export type ProvisionSource =
    * still name itself with it, and because removing a member is a breaking
    * change to every exhaustive match over this union for no gain.
    */
-  | { readonly _tag: "MagicLink" }
+  MagicLink: {}
   /** A plugin that provisions users of its own, naming itself. */
-  | { readonly _tag: "Plugin"; readonly plugin: string }
+  Plugin: { readonly plugin: string }
+}>
+
+/**
+ * Constructors and matchers for {@link ProvisionSource}.
+ *
+ * **Details**
+ *
+ * `ProvisionSource.Plugin({ plugin: "email-otp" })` builds a member,
+ * `ProvisionSource.$match(source, { ... })` branches over all four
+ * exhaustively, and `ProvisionSource.$is("OAuth")` narrows to one.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at values this
+ * library or a plugin constructed — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const ProvisionSource = Data.taggedEnum<ProvisionSource>()
 
 // -----------------------------------------------------------------------------
 // Errors

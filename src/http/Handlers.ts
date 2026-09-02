@@ -31,8 +31,8 @@
  *
  * @since 0.1.0
  */
-import type { Layer, Scope } from "effect"
-import { DateTime, Duration, Effect, Option, Redacted } from "effect"
+import type { Layer, Scope, Types } from "effect"
+import { DateTime, Duration, Effect, Option, Predicate, Redacted, Result } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { HttpServerResponse } from "effect/unstable/http"
 import { RateLimiter } from "effect/unstable/persistence"
@@ -45,10 +45,12 @@ import { type Passwords, passwordsOf } from "../domain/Passwords.js"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import { type Sessions, sessionsOf } from "../domain/Sessions.js"
+import type { SignInChallenge } from "../domain/SignIn.js"
+import { SignInResult } from "../domain/SignIn.js"
 import { type Users, usersOf } from "../domain/Users.js"
 import { OAuthFlow } from "../oauth/Flow.js"
 import type { AuthApiGroupOf } from "./AuthApi.js"
-import { AuthApiGroup } from "./AuthApi.js"
+import { AuthApiGroup, MfaRequired } from "./AuthApi.js"
 import type { Authenticated } from "./Middleware.js"
 import { CurrentSession, currentUserOf } from "./Middleware.js"
 import type { PluginCookie } from "./Cookies.js"
@@ -76,15 +78,20 @@ interface Tagged {
 }
 
 /**
- * Whether an error is one the fault filter turns into a defect, stated as the
- * narrowing the compiler cannot derive from a membership test.
+ * Whether an error is one the fault filter turns into a defect.
+ *
+ * **Details**
+ *
+ * `Effect.catchTag`'s array form is the idiom here, and it is unusable for a
+ * *generic* error channel: its tag parameter is constrained by `Types.Tags<E>`,
+ * which TypeScript leaves unresolved while `E` is a type parameter, so no
+ * concrete tag list satisfies it. `catchIf` with a named refinement is what
+ * `catchTag` itself runs, and it takes the tags this one has.
  */
 const isNamedFault =
-  <E extends Tagged, Tags extends ReadonlyArray<string>>(
-    tags: Tags
-  ): ((error: E) => error is Extract<E, { readonly _tag: Tags[number] }>) =>
-  (error): error is Extract<E, { readonly _tag: Tags[number] }> =>
-    tags.includes(error._tag)
+  <E extends Tagged, Tags extends ReadonlyArray<string>>(tags: Tags) =>
+  (error: E): error is Types.ExtractTag<E, Tags[number]> =>
+    tags.some((tag) => Predicate.isTagged(error, tag))
 
 /**
  * Turns the failures whose tags are named into defects, and takes them out of
@@ -120,15 +127,17 @@ export const dieOn =
   <const Tags extends ReadonlyArray<string>>(tags: Tags) =>
   <A, E extends Tagged, R>(
     effect: Effect.Effect<A, E, R>
-  ): Effect.Effect<A, Exclude<E, Extract<E, { readonly _tag: Tags[number] }>>, R> =>
+  ): Effect.Effect<A, Exclude<E, Types.ExtractTag<E, Tags[number]>>, R> =>
     // `catchIf` rather than `Effect.catch` + `Effect.fail`: on the pass-through
     // branch it re-fails the *original* Cause, keeping its annotations and any
-    // sibling reasons, where a fresh `Effect.fail(error)` would drop them. The
-    // price is the explicit type arguments — inference cannot recover them from
-    // the refinement — and the `Exclude<E, Extract<E, …>>` spelling, which is
-    // what `catchIf` computes and which TS cannot equate with `Exclude<E, …>`
-    // for a generic `E`. For a tagged union they name the same set either way.
-    Effect.catchIf<A, E, R, Extract<E, { readonly _tag: Tags[number] }>, never, never, never>(
+    // sibling reasons, where a fresh `Effect.fail(error)` would drop them. It is
+    // also what `Effect.catchTag` runs underneath — see {@link isNamedFault} for
+    // why the tag-list combinator itself cannot be named here. The price is the
+    // explicit type arguments, which inference cannot recover from a refinement,
+    // and the `Exclude<E, ExtractTag<E, …>>` spelling, which is what `catchIf`
+    // computes and which TS cannot equate with `ExcludeTag<E, …>` for a generic
+    // `E`. For a tagged union they name the same set either way.
+    Effect.catchIf<A, E, R, Types.ExtractTag<E, Tags[number]>, never, never, never>(
       effect,
       isNamedFault<E, Tags>(tags),
       Effect.die
@@ -160,7 +169,7 @@ export const serverFaultTags = ["PasswordHashError", "PersistenceError"] as cons
  */
 export const serverFault: <A, E extends Tagged, R>(
   effect: Effect.Effect<A, E, R>
-) => Effect.Effect<A, Exclude<E, Extract<E, { readonly _tag: "PasswordHashError" | "PersistenceError" }>>, R> =
+) => Effect.Effect<A, Exclude<E, Types.ExtractTag<E, "PasswordHashError" | "PersistenceError">>, R> =
   dieOn(serverFaultTags)
 
 // -----------------------------------------------------------------------------
@@ -319,6 +328,38 @@ export const clearPendingCookie = (
   const cookie = pendingCookie(config, Duration.zero)
   return HttpApiBuilder.securitySetCookie(cookie.security, Redacted.make(""), cookie.expiredOptions)
 }
+
+/**
+ * Answers a sign-in that came back owing a second factor: the pending cookie,
+ * and the `202` that names what is still owed.
+ *
+ * **When to use**
+ *
+ * From every handler whose sign-in can be challenged — this library's own
+ * `signInEmail`, and a plugin's equivalent. It is the whole `Challenge` branch,
+ * so a plugin cannot get half of it right.
+ *
+ * **Gotchas**
+ *
+ * The pending token travels in the cookie and nowhere else, and the response
+ * this returns carries no session cookie — the caller must not write one beside
+ * it. The cookie's lifetime is the challenge's own, clamped at zero, so a
+ * challenge that has already expired sets a cookie that is already expired.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const mfaRequired = (
+  config: AuthConfigService,
+  challenge: SignInChallenge
+): Effect.Effect<MfaRequired, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now
+    yield* setPendingCookie(config, challenge.token, {
+      maxAge: Duration.max(Duration.zero, DateTime.distance(now, challenge.expiresAt))
+    })
+    return MfaRequired.make({ available: challenge.available, expiresAt: challenge.expiresAt })
+  })
 
 /**
  * The query parameter a redirect-shaped sign-in sets when a second factor is
@@ -707,16 +748,12 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               })
               .pipe(serverFault)
 
-            if (result._tag === "Challenge") {
+            if (SignInResult.$is("Challenge")(result)) {
               // The pending token, and only the pending token: no session was
               // minted, so no session cookie may be written here. A response
               // that carried both would be a half-authenticated credential the
               // second factor no longer gates.
-              const now = yield* DateTime.now
-              yield* setPendingCookie(config, result.token, {
-                maxAge: Duration.max(Duration.zero, DateTime.distance(now, result.expiresAt))
-              })
-              return { _tag: "MfaRequired" as const, available: result.available, expiresAt: result.expiresAt }
+              return yield* mfaRequired(config, result)
             }
 
             yield* setSessionCookie(config, result.session, result.token, {
@@ -955,29 +992,34 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
               })
               .pipe(serverFault)
 
-            if (outcome._tag === "Success" && outcome.challenge !== null) {
-              // A challenge and a session cookie are mutually exclusive, and
-              // the flow has already made `session` and `token` null to say so.
-              // The browser leaves by the navigation it arrived on, carrying
-              // the pending token in its own `__Host-` cookie and a marker on
-              // the query string so the landing page knows to ask.
-              const now = yield* DateTime.now
-              yield* setPendingCookie(config, outcome.challenge.token, {
-                maxAge: Duration.max(Duration.zero, DateTime.distance(now, outcome.challenge.expiresAt))
-              })
-              return redirectTo(withMfaRequired(outcome.redirectTo))
+            if (Result.isSuccess(outcome)) {
+              const settled = outcome.success
+              if (settled.challenge !== null) {
+                // A challenge and a session cookie are mutually exclusive, and
+                // the flow has already made `session` and `token` null to say
+                // so. The browser leaves by the navigation it arrived on,
+                // carrying the pending token in its own `__Host-` cookie and a
+                // marker on the query string so the landing page knows to ask.
+                const now = yield* DateTime.now
+                yield* setPendingCookie(config, settled.challenge.token, {
+                  maxAge: Duration.max(Duration.zero, DateTime.distance(now, settled.challenge.expiresAt))
+                })
+                return redirectTo(withMfaRequired(settled.redirectTo))
+              }
+              if (settled.session !== null && settled.token !== null) {
+                // Null for a link flow: the person was already signed in, and a
+                // second session would be a silent session upgrade.
+                // `rememberMe` travelled in the state row, so the choice made
+                // when the flow started decides the cookie's persistence here,
+                // exactly as it does on the password path.
+                yield* setSessionCookie(config, settled.session, settled.token, {
+                  persistent: settled.rememberMe
+                })
+              }
             }
-            if (outcome._tag === "Success" && outcome.session !== null && outcome.token !== null) {
-              // Null for a link flow: the person was already signed in, and a
-              // second session would be a silent session upgrade.
-              // `rememberMe` travelled in the state row, so the choice made
-              // when the flow started decides the cookie's persistence here,
-              // exactly as it does on the password path.
-              yield* setSessionCookie(config, outcome.session, outcome.token, {
-                persistent: outcome.rememberMe
-              })
-            }
-            return redirectTo(outcome.redirectTo)
+            // Success or failure, the browser leaves by a redirect and the flow
+            // has already validated where to.
+            return redirectTo(Result.merge(outcome).redirectTo)
           })
         )
         .handle("listAccounts", () =>

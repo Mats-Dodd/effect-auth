@@ -25,13 +25,21 @@
  *
  * **Example**
  *
- * ```ts
+ * ```ts skip-type-checking
  * import { Effect, Stream } from "effect"
  * import { AuthEvents } from "effect-auth"
  *
  * const audit = Effect.gen(function*() {
- *   const events = yield* AuthEvents
- *   yield* Stream.runForEach(events.stream, (event) => Effect.log(event._tag))
+ *   const events = yield* AuthEvents.AuthEvents
+ *   // `AuthEvent.matchOrElse` names the members it cares about and hands the
+ *   // rest to one fallback; `AuthEvent.match` is the exhaustive form.
+ *   yield* Stream.runForEach(
+ *     events.stream,
+ *     AuthEvents.AuthEvent.matchOrElse(
+ *       { SignedIn: (event) => Effect.log("signed in", event.userId) },
+ *       (event) => Effect.logDebug("auth event", event)
+ *     )
+ *   )
  * })
  * ```
  *
@@ -439,11 +447,11 @@ export type AccountUnlinked = typeof AccountUnlinked.Type
  *
  * **Details**
  *
- * The event union is closed — a subscriber matches on `_tag` exhaustively — so a
- * plugin cannot add a member of its own. This is the door instead: `plugin` names
- * the module (`"email-otp"`, `"two-factor"`), `event` names what happened
- * (`"requested"`, `"verified"`), `userId` is present when the flow knows one, and
- * `data` carries whatever else is worth recording.
+ * The event union is closed — a subscriber matches it exhaustively with
+ * `AuthEvent.match` — so a plugin cannot add a member of its own. This is the
+ * door instead: `plugin` names the module (`"email-otp"`, `"two-factor"`),
+ * `event` names what happened (`"requested"`, `"verified"`), `userId` is present
+ * when the flow knows one, and `data` carries whatever else is worth recording.
  *
  * **Gotchas**
  *
@@ -503,7 +511,7 @@ export const AuthEvent = Schema.Union([
   AccountLinked,
   AccountUnlinked,
   PluginEvent
-])
+]).pipe(Schema.toTaggedUnion("_tag"))
 
 /**
  * The type of an {@link AuthEvent}.
