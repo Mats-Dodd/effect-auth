@@ -3,10 +3,11 @@ import { PgliteClient } from "@effect/sql-pglite"
 import { assert, describe, it as vitestIt, layer } from "@effect/vitest"
 import { Effect, Exit, Stream } from "effect"
 import { Reactivity } from "effect/unstable/reactivity"
-import type { SqlConnection, SqlError } from "effect/unstable/sql"
-import { SqlClient, Statement } from "effect/unstable/sql"
+import type { SqlConnection } from "effect/unstable/sql"
+import { SqlClient, SqlError, Statement } from "effect/unstable/sql"
 import * as Dialect from "../../src/sql/Dialect.js"
 import * as Mutations from "../../src/sql/Mutations.js"
+import * as Database from "../../src/testing/Database.js"
 
 // -----------------------------------------------------------------------------
 // A client that records rather than connects
@@ -80,6 +81,21 @@ const rendered = (
   Effect.gen(function* () {
     const { sql, statements } = yield* recorder(compilers[dialect])
     yield* Effect.orDie(use(sql, dialect))
+    return statements()
+  }).pipe(Effect.provide(Reactivity.layer), Effect.runPromise)
+
+/**
+ * The same, with the caller already inside a transaction — which is where a
+ * store helper is called from most of the time, because the domain wraps its
+ * multi-store workflows in `WithAuthTransaction`.
+ */
+const renderedNested = (
+  dialect: Dialect.Dialect,
+  use: (sql: SqlClient.SqlClient, dialect: Dialect.Dialect) => Effect.Effect<unknown, SqlError.SqlError>
+): Promise<ReadonlyArray<string>> =>
+  Effect.gen(function* () {
+    const { sql, statements } = yield* recorder(compilers[dialect])
+    yield* Effect.orDie(sql.withTransaction(use(sql, dialect)))
     return statements()
   }).pipe(Effect.provide(Reactivity.layer), Effect.runPromise)
 
@@ -183,30 +199,41 @@ describe("sql/Dialect", () => {
     assert.strictEqual(Dialect.columnType("pg", "bigint"), "bigint")
     assert.strictEqual(Dialect.columnType("sqlite", "bigint"), "integer")
 
-    // MySQL: bounded, and never on the server's own collation.
+    // MySQL: bounded, and never on the server's own character set or collation.
     assert.strictEqual(Dialect.columnType("mysql", "id"), "varchar(64) CHARACTER SET ascii COLLATE ascii_bin")
     assert.strictEqual(Dialect.columnType("mysql", "hash"), "varchar(64) CHARACTER SET ascii COLLATE ascii_bin")
-    assert.strictEqual(Dialect.columnType("mysql", "credential"), "varchar(1024) CHARACTER SET ascii COLLATE ascii_bin")
+    // 1023 raw bytes is WebAuthn's maximum credential id, which is 1364
+    // base64url characters — the form this library stores. A bound of 1024
+    // would refuse a long authenticator's key on MySQL and nowhere else.
+    assert.strictEqual(Dialect.columnType("mysql", "credential"), "varchar(1368) CHARACTER SET ascii COLLATE ascii_bin")
     assert.strictEqual(Dialect.columnType("mysql", "timestamp"), "varchar(32) CHARACTER SET ascii COLLATE ascii_bin")
-    assert.strictEqual(Dialect.columnType("mysql", "email"), "varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin")
+    // `utf8mb4_0900_bin`, never `utf8mb4_bin`: the latter is PAD SPACE, so a
+    // trailing space would be invisible to both an equality test and a unique
+    // index on MySQL alone.
+    assert.strictEqual(
+      Dialect.columnType("mysql", "email"),
+      "varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
+    )
     assert.strictEqual(
       Dialect.columnType("mysql", "identity"),
-      "varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+      "varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
     )
     assert.strictEqual(
       Dialect.columnType("mysql", "identifier"),
-      "varchar(400) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+      "varchar(400) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
     )
     assert.strictEqual(Dialect.columnType("mysql", "boolean"), "boolean")
     assert.strictEqual(Dialect.columnType("mysql", "number"), "double")
     assert.strictEqual(Dialect.columnType("mysql", "bigint"), "bigint")
 
     // `text` is unbounded until somebody says otherwise, which is what a custom
-    // string user field does.
-    assert.strictEqual(Dialect.columnType("mysql", "text"), "text")
+    // string user field does — but it still states its character set, because a
+    // bare `text` inherits the database's and a `latin1` database would refuse
+    // an emoji in a display name.
+    assert.strictEqual(Dialect.columnType("mysql", "text"), "text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin")
     assert.strictEqual(
       Dialect.columnType("mysql", "text", { length: 255 }),
-      "varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+      "varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin"
     )
     assert.strictEqual(
       Dialect.columnType("mysql", "id", { length: 36 }),
@@ -370,6 +397,90 @@ describe("sql/Mutations — rendered statements", () => {
     ])
   })
 
+  vitestIt("takes no savepoint inside a transaction MySQL has already opened", async () => {
+    // What `sql.withTransaction` does when it is nested, and what every MySQL
+    // branch used to do: a savepoint, rolled back on the way out.
+    assert.deepStrictEqual(await renderedNested("mysql", (sql) => sql.withTransaction(sql`SELECT 1`)), [
+      "BEGIN",
+      "SAVEPOINT effect_sql_1",
+      "SELECT 1",
+      "COMMIT"
+    ])
+
+    // A savepoint is worse than useless on MySQL: InnoDB answers a deadlock by
+    // rolling back the whole transaction, savepoints and all, so the
+    // `ROLLBACK TO SAVEPOINT` that follows fails — and Effect issues that
+    // rollback with `orDie`, which turns a `DeadlockError` a store would have
+    // reported as a `PersistenceError` into a defect about a savepoint. The
+    // helpers therefore run on the caller's transaction and open nothing.
+    assert.deepStrictEqual(await renderedNested("mysql", insert), [
+      "BEGIN",
+      "INSERT INTO `widgets` (`id`,`owner_id`,`label`) VALUES (?,?,?)",
+      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE `id` = ?',
+      "COMMIT"
+    ])
+    assert.deepStrictEqual(await renderedNested("mysql", consume), [
+      "BEGIN",
+      "SELECT `id` FROM `widgets` WHERE label = ? LIMIT 1",
+      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE (`id` = ? AND (label = ?)) FOR UPDATE',
+      "DELETE FROM `widgets` WHERE `id` = ?",
+      "COMMIT"
+    ])
+
+    // PostgreSQL and SQLite write one statement either way, and where one of
+    // them does open a nested transaction its savepoint is valid: `ROLLBACK TO
+    // SAVEPOINT` after a serialization failure is what PostgreSQL is for.
+    assert.deepStrictEqual(await renderedNested("pg", insert), [
+      "BEGIN",
+      `INSERT INTO "widgets" ("id","owner_id","label") VALUES ($1,$2,$3) RETURNING id, owner_id AS "ownerId", label`,
+      "COMMIT"
+    ])
+  })
+
+  vitestIt.effect("retries an idempotent statement through a deadlock, and only outside a transaction", () =>
+    Effect.gen(function* () {
+      const deadlock = SqlError.SqlError.make({
+        reason: SqlError.DeadlockError.make({ cause: undefined, message: "Deadlock found", operation: "execute" })
+      })
+      assert.isTrue(Mutations.isDeadlock(deadlock))
+      assert.isFalse(Mutations.isDeadlock(new Error("not a driver failure")))
+
+      /** Fails with a deadlock on the first two attempts, then succeeds. */
+      const flaky = () => {
+        let attempts = 0
+        return {
+          attempts: () => attempts,
+          effect: Effect.suspend(() => {
+            attempts += 1
+            return attempts > 2 ? Effect.succeed(attempts) : Effect.fail(deadlock)
+          })
+        }
+      }
+
+      const { sql } = yield* recorder(compilers.mysql)
+
+      // Outermost: the delete runs again, and the caller never sees the
+      // deadlock.
+      const outer = flaky()
+      assert.strictEqual(yield* Mutations.retryDeadlocks(sql, "mysql", outer.effect), 3)
+      assert.strictEqual(outer.attempts(), 3)
+
+      // Inside a transaction: reported once. InnoDB has rolled that transaction
+      // back, so a second attempt would run in autocommit and commit itself.
+      const nested = flaky()
+      const inside = yield* Effect.exit(sql.withTransaction(Mutations.retryDeadlocks(sql, "mysql", nested.effect)))
+      assert.isTrue(Exit.isFailure(inside))
+      assert.strictEqual(nested.attempts(), 1)
+
+      // PostgreSQL and SQLite do not report deadlocks on the statements this
+      // guards, and their nested transactions recover through a savepoint, so
+      // the helper is the identity there.
+      const pg = flaky()
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(Mutations.retryDeadlocks(sql, "pg", pg.effect))))
+      assert.strictEqual(pg.attempts(), 1)
+    }).pipe(Effect.provide(Reactivity.layer))
+  )
+
   vitestIt.effect("refuses a key that would name every row, and one the row does not carry", () =>
     Effect.gen(function* () {
       const { sql } = yield* recorder(compilers.mysql)
@@ -404,18 +515,6 @@ describe("sql/Mutations — rendered statements", () => {
       assert.include(String(absent), "id")
     }).pipe(Effect.provide(Reactivity.layer))
   )
-
-  vitestIt("takes a savepoint rather than a second transaction when it is already in one", async () => {
-    const statements = await Effect.gen(function* () {
-      const { sql, statements } = yield* recorder(compilers.mysql)
-      yield* Effect.orDie(sql.withTransaction(insert(sql, "mysql")))
-      return statements()
-    }).pipe(Effect.provide(Reactivity.layer), Effect.runPromise)
-
-    assert.deepStrictEqual(statements[0], "BEGIN")
-    assert.include(statements[1], "SAVEPOINT")
-    assert.strictEqual(statements.at(-1), "COMMIT")
-  })
 })
 
 // -----------------------------------------------------------------------------
@@ -438,7 +537,18 @@ interface Widget {
   readonly label: string | null
 }
 
-layer(PgliteClient.layer())("sql/Mutations (pg)", (it) => {
+/**
+ * The pg branches, run for real.
+ *
+ * `Database.pglite` rather than `PgliteClient.layer()`: every `layer()` block in
+ * this tree goes through the `Database.Provider` seam, so the block gets a
+ * private schema and a `TestDatabase` beside its client exactly as every other
+ * one does. It is deliberately *not* `Database.fromConfig` — these cases are
+ * about the SQL PostgreSQL and SQLite render, and the MySQL branches are
+ * asserted as text above and exercised against a real server by `Dialect.test.ts`
+ * and the store contracts.
+ */
+layer(Database.pglite)("sql/Mutations (pg)", (it) => {
   const setUp = Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     yield* createWidgets

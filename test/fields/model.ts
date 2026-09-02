@@ -3,7 +3,7 @@
  *
  * **Details**
  *
- * Three fields, one of each kind, chosen so that every rule the kernel enforces
+ * Four fields, one of each kind, chosen so that every rule the kernel enforces
  * is visible somewhere:
  *
  * - `plan` is {@link UserField.withDefault} — a client may state it at sign-up
@@ -14,6 +14,11 @@
  *   of a response body, a generated client and the cookie cache.
  * - `role` is {@link UserField.readOnly} — readable everywhere, never settable
  *   through a payload.
+ * - `order` is a {@link UserField.withDefault} whose *name* is the point: it is
+ *   a reserved word in all three dialects, so every statement the store and the
+ *   migrations build around a deployment's own column has to escape it. An
+ *   unescaped projection — the shape this library shipped before — fails every
+ *   read of every user with a syntax error, on every dialect.
  *
  * `layerDatabase` and `layerStores` are module-level constants for the same
  * reason `AuthTest`'s are: `layer()` memoises by object identity, so every block
@@ -37,7 +42,8 @@ import { AuthTest } from "../../src/testing/index.js"
 export const model = makeUserModel({
   plan: UserField.withDefault(Schema.Literals(["free", "pro"]), () => "free" as const),
   apiSecret: UserField.hidden(Schema.NullOr(Schema.String), () => null),
-  role: UserField.readOnly(Schema.Literals(["user", "admin"]), () => "user" as const)
+  role: UserField.readOnly(Schema.Literals(["user", "admin"]), () => "user" as const),
+  order: UserField.withDefault(Schema.Literals(["asc", "desc"]), () => "asc" as const)
 })
 
 /**

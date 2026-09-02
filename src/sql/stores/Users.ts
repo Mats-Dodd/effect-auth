@@ -44,7 +44,7 @@ export const make: <F extends UserFields>(
   const sql = yield* SqlClient.SqlClient
   const dialect = yield* dialectOf(sql)
   const columns = userColumnsOf(model.selectFields)
-  const userCols = sql.literal(projectionOf(columns))
+  const userCols = projectionOf(sql, columns)
   const boolean = booleanCodec(dialect)
   // A custom field may be a nullable flag, so a stored `null` stays `null`
   // rather than being read as "declined".

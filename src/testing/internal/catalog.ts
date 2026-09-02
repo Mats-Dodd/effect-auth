@@ -2,8 +2,11 @@
  * The three catalogs behind `TestDatabase`.
  *
  * `information_schema`, `pg_catalog`, `PRAGMA` and the three reset dialects
- * live here and nowhere else: a test asks `TestDatabase` for table, column and
- * index names and never learns which database answered.
+ * live here, and this is the only place a *test* reaches one: a test asks
+ * `TestDatabase` for table, column and index names and never learns which
+ * database answered. (`Migrations.forUserFields` introspects on its own account
+ * — it runs in the library, on every boot — and `test/sql/Dialect.test.ts` is
+ * the one file whose subject is a dialect's own facts.)
  *
  * Not part of the public API — `effect-auth/testing` re-exports `Database`, not
  * this module.

@@ -108,8 +108,10 @@ export const dialectOf = (sql: SqlClient.SqlClient): Effect.Effect<Dialect> => {
  * **Gotchas**
  *
  * A *projection* — `token_hash AS "tokenHash", …` — is not an identifier; it is
- * a list of them with aliases, and stays a `sql.literal` fragment built once
- * when the store is constructed.
+ * a list of them with aliases. The ones whose names this library writes out are
+ * a `sql.literal` fragment built once when the store is constructed; the ones
+ * over a deployment's own columns are built from this, in
+ * `src/sql/stores/internal.ts`, because a custom field may be called `order`.
  *
  * @internal
  */
@@ -256,7 +258,35 @@ export type ColumnRole =
 /** A MySQL string column: a bound, or `text`, and the character set it is compared in. */
 interface MysqlString {
   readonly length: number | undefined
-  readonly charset: "ascii" | "utf8mb4"
+  readonly charset: MysqlCharset
+}
+
+/** The two character sets this library declares a column in. */
+type MysqlCharset = "ascii" | "utf8mb4"
+
+/**
+ * The binary collation of each character set — the whole point of naming a
+ * character set at all.
+ *
+ * **Gotchas**
+ *
+ * `utf8mb4_0900_bin` rather than `utf8mb4_bin`, because `utf8mb4_bin` is a *PAD
+ * SPACE* collation: MySQL ignores trailing spaces in every comparison made in
+ * it, so `"sub"` and `"sub "` are one value in an equality test and one row in a
+ * unique index — while PostgreSQL and SQLite compare the bytes and see two. That
+ * reaches `accounts.account_id`, which holds an identity provider's `sub`
+ * verbatim, and every custom string user field. `utf8mb4_0900_bin` is *NO PAD*
+ * and compares exactly, and it has been available since MySQL 8.0.17, inside
+ * this library's 8.0.19 floor.
+ *
+ * `ascii_bin` is PAD SPACE too and has no NO PAD sibling; the roles it carries —
+ * ids, digests, ISO-8601 timestamps, base64url credential ids — have alphabets
+ * this library generates and none of them contains a space, let alone a trailing
+ * one.
+ */
+const collations: Record<MysqlCharset, string> = {
+  ascii: "ascii_bin",
+  utf8mb4: "utf8mb4_0900_bin"
 }
 
 interface RoleType {
@@ -272,7 +302,12 @@ interface RoleType {
 const roleTypes: Record<ColumnRole, RoleType> = {
   id: { pg: "text", sqlite: "text", mysql: { length: 64, charset: "ascii" } },
   hash: { pg: "text", sqlite: "text", mysql: { length: 64, charset: "ascii" } },
-  credential: { pg: "text", sqlite: "text", mysql: { length: 1024, charset: "ascii" } },
+  // WebAuthn allows a raw credential id of up to 1023 bytes, and what this
+  // library stores is its base64url spelling — 1364 characters at that size, not
+  // the 1023 the specification states. The bound is that plus a little, and it
+  // is ascii, so the unique index over it is 1368 bytes and well inside InnoDB's
+  // 3072-byte key limit.
+  credential: { pg: "text", sqlite: "text", mysql: { length: 1368, charset: "ascii" } },
   email: { pg: "text", sqlite: "text", mysql: { length: 320, charset: "utf8mb4" } },
   identity: { pg: "text", sqlite: "text", mysql: { length: 255, charset: "utf8mb4" } },
   identifier: { pg: "text", sqlite: "text", mysql: { length: 400, charset: "utf8mb4" } },
@@ -288,12 +323,19 @@ const roleTypes: Record<ColumnRole, RoleType> = {
  *
  * **Details**
  *
- * On MySQL a string role carries its character set and a binary collation, so
- * that an id, a digest or an OAuth identity compares exactly the way it does on
- * PostgreSQL and SQLite rather than however the server was installed.
- * `ascii_bin` is for the roles whose alphabet this library controls (ids,
- * digests, ISO timestamps, base64url credential ids); `utf8mb4_bin` is for the
- * roles that hold something a person typed.
+ * On MySQL *every* string role carries its character set and a binary
+ * collation — the unbounded `text` role as much as the bounded `varchar` ones —
+ * so that an id, a digest, an OAuth identity or a display name compares exactly
+ * the way it does on PostgreSQL and SQLite rather than however the server was
+ * installed. `ascii_bin` is for the roles whose alphabet this library controls
+ * (ids, digests, ISO timestamps, base64url credential ids);
+ * `utf8mb4_0900_bin` is for the roles that hold something a person typed.
+ *
+ * A bare `text` would inherit the *database's* default character set rather than
+ * the column's role, and a database created `CHARACTER SET latin1` — which a
+ * legacy server's configuration still does — refuses a name with an emoji in it
+ * with error 1366. Stating the character set on the column is what makes this
+ * schema independent of how the database was created.
  *
  * **When to use**
  *
@@ -320,5 +362,6 @@ export const columnType = (
   if (typeof type.mysql === "string") return type.mysql
   const length = options?.length ?? type.mysql.length
   const charset = type.mysql.charset
-  return length === undefined ? "text" : `varchar(${length}) CHARACTER SET ${charset} COLLATE ${charset}_bin`
+  const collated = `CHARACTER SET ${charset} COLLATE ${collations[charset]}`
+  return length === undefined ? `text ${collated}` : `varchar(${length}) ${collated}`
 }

@@ -33,8 +33,7 @@
  *
  * @since 0.2.0
  */
-import { Array, Context, DateTime, Effect, Layer, Option, Predicate, Schema } from "effect"
-import type { SqlError } from "effect/unstable/sql"
+import { Array, Context, DateTime, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import type { UserId } from "../domain/Schema.js"
 import { PersistenceError } from "../domain/Stores.js"
@@ -211,32 +210,6 @@ const persist =
     Effect.mapError(effect, fail(operation))
 
 /**
- * The one MySQL failure this store recovers from rather than reporting.
- *
- * **Details**
- *
- * {@link TwoFactorStoreService.replaceRecoveryCodes} deletes a person's whole
- * set and writes a new one in one transaction. Under InnoDB's default
- * REPEATABLE READ the `DELETE ... WHERE user_id = ?` takes a *gap* lock on
- * `effect_auth_recovery_codes_user_id_idx`, and when it matches nothing — which
- * is exactly what generating a first set looks like — that gap is one two
- * different people's ids can share. Both transactions then need an
- * insert-intention lock inside a gap the other holds, and InnoDB reports
- * `ER_LOCK_DEADLOCK`. Two accounts generating codes at the same moment
- * reproduce it in seconds.
- *
- * No ordering of the two statements removes it without weakening what the
- * operation promises — that the whole previous set goes — so the transaction is
- * retried, which is what MySQL's own message asks for and what the operation
- * makes safe: it *replaces* a set, so running it twice leaves what running it
- * once would have. Three attempts, no delay (a delay would need a real clock,
- * and these tests run on a `TestClock`), and only for this failure.
- *
- * PostgreSQL and SQLite do not take gap locks and never reach here.
- */
-const isDeadlock = (error: SqlError.SqlError): boolean => Predicate.isTagged(error.reason, "DeadlockError")
-
-/**
  * `bigint` reaches this library as a `number` under PGlite and as a `string`
  * under drivers that refuse to narrow it. The column holds a TOTP step, which
  * is well inside `Number.MAX_SAFE_INTEGER` for the next hundred thousand years,
@@ -279,12 +252,6 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
     Effect.mapError(decodeDevice(row), fail(operation))
 
   const iso = DateTime.formatIso
-
-  /** {@link isDeadlock}, applied where it is the only failure worth another go. */
-  const retryDeadlocks = <A, R>(
-    effect: Effect.Effect<A, SqlError.SqlError, R>
-  ): Effect.Effect<A, SqlError.SqlError, R> =>
-    dialect === "mysql" ? Effect.retry(effect, { times: 2, while: isDeadlock }) : effect
 
   return TwoFactorStore.of({
     findTotp: (userId) =>
@@ -369,24 +336,45 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
 
     replaceRecoveryCodes: (userId, codes) =>
       persist("TwoFactorStore.replaceRecoveryCodes")(
-        sql
-          .withTransaction(
-            Effect.gen(function* () {
-              yield* sql`DELETE FROM effect_auth_recovery_codes WHERE user_id = ${userId}`
-              if (codes.length === 0) return
-              const rows = yield* Effect.orDie(Effect.forEach(codes, (code) => encodeCodeInsert(code)))
-              yield* sql`INSERT INTO effect_auth_recovery_codes ${sql.insert(
-                rows.map((row) => ({
-                  id: row.id,
-                  user_id: row.userId,
-                  code_hash: row.codeHash,
-                  used_at: null,
-                  created_at: row.createdAt
-                }))
-              )}`
-            })
-          )
-          .pipe(retryDeadlocks)
+        sql.withTransaction(
+          Effect.gen(function* () {
+            // Which rows to clear is read *plainly* and they are deleted by
+            // their primary keys, the same shape `Mutations.consumeOne` is
+            // built on and for the same reason. `DELETE ... WHERE user_id = ?`
+            // is a range over a non-unique index, and under InnoDB's
+            // REPEATABLE READ such a delete takes next-key locks over the gap
+            // it scanned — including when it matches nothing, which is exactly
+            // what a first set looks like. Every first-time generator then
+            // shares one gap and each needs an insert-intention lock inside
+            // another's, so twelve accounts enrolling at once deadlocked, and
+            // so did one account regenerating twelve times. A consistent read
+            // takes no lock at all and a delete by primary key takes one
+            // record lock per row, so neither storm has a gap to fight over.
+            //
+            // The price is PostgreSQL's, exactly: the rows this clears are the
+            // ones committed when the transaction read, so two replacements
+            // racing for one person can each leave their own set — which is
+            // what PostgreSQL has always done here, its `DELETE` seeing the
+            // snapshot the statement began with. Both sets are that person's
+            // own and every code is single-use.
+            const held = yield* sql<Row>`SELECT ${idCol} FROM effect_auth_recovery_codes WHERE user_id = ${userId}`
+            if (held.length > 0) {
+              const ids = held.map((row) => row["id"])
+              yield* sql`DELETE FROM effect_auth_recovery_codes WHERE ${sql.in("id", ids)}`
+            }
+            if (codes.length === 0) return
+            const rows = yield* Effect.orDie(Effect.forEach(codes, (code) => encodeCodeInsert(code)))
+            yield* sql`INSERT INTO effect_auth_recovery_codes ${sql.insert(
+              rows.map((row) => ({
+                id: row.id,
+                user_id: row.userId,
+                code_hash: row.codeHash,
+                used_at: null,
+                created_at: row.createdAt
+              }))
+            )}`
+          })
+        )
       ),
 
     consumeRecoveryCode: (userId, codeHash, usedAt) =>

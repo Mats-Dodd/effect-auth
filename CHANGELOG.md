@@ -63,8 +63,61 @@ choice. README "Databases" is the user-facing half; SPEC.md Amendment 21 records
   `Dialect.booleanCodec(dialect)` — `encode`, `decode`, `decodeNullable` — which is `@internal`; a
   store reads a flag through it and hands your handler a `boolean`, which is what it always did.
 
+#### Fixed — a MySQL deadlock on a fresh table
+
+- **A burst of first-time claims no longer deadlocks on MySQL.** `UsernameStore.claim`,
+  `PhoneStore.claim` and `TwoFactorStore.replaceRecoveryCodes` each begin by clearing what the
+  caller holds; under InnoDB's `REPEATABLE READ` a `DELETE … WHERE user_id = ?` that matches
+  nothing still takes a next-key lock over the gap it scanned, which every other first-time
+  claimant then needs to insert into. Twelve people signing up at once against an empty table lost
+  several of them to `ER_LOCK_DEADLOCK` — a `PersistenceError` of kind `Unknown`, a 500. All three
+  now read which row to clear with a plain, lock-free `SELECT` and delete it by its primary key, or
+  issue no delete at all, which is the shape `Verifications.consume` already had. PostgreSQL and
+  SQLite were never affected. SPEC 21.8.
+- The three copies of a MySQL deadlock classifier and their three different retry budgets are gone
+  with it. One retry remains, in the kernel rather than in a plugin: `Mutations.retryDeadlocks`,
+  which `VerificationStore`'s two range deletes use — idempotent, MySQL-only, and only when it is the
+  outermost statement.
+- **A MySQL transaction can no longer report a commit it did not make.** InnoDB rolls the *whole*
+  transaction back on a deadlock, so a nested `sql.withTransaction`'s savepoint is gone with it and
+  the connection is silently in autocommit; a body that recovered the failure went on writing and
+  then committed over half of itself. Store helpers now open a nested transaction through
+  `Mutations.atomically`, which opens nothing inside a MySQL transaction, and the outermost
+  `WithAuthTransaction.run` brackets the body with a savepoint of its own — a `RELEASE` that fails is
+  proof the transaction ended, and the run fails with a `PersistenceError` rather than committing.
+  Two extra statements per domain transaction on MySQL; PostgreSQL and SQLite are unchanged.
+  SPEC 21.9.
+- **A custom user field named after a reserved word no longer breaks every read.** The user
+  projections `SqlStores` builds are `Statement.Fragment`s through `Dialect.identifier` rather than
+  raw text, so a deployment field called `order` or `select` is quoted like every other identifier on
+  every dialect. It previously failed at `UserStore.create` with a syntax error.
+- **Trailing spaces are significant on MySQL again.** The utf8mb4 roles are `utf8mb4_0900_bin` (NO
+  PAD) rather than `utf8mb4_bin` (PAD SPACE), so `accounts.account_id` — an identity provider's `sub`
+  verbatim — and custom string fields compare byte-exactly as they do on PostgreSQL and SQLite.
+  Two subjects differing only by a trailing space resolved to one account on MySQL before.
+- **The `credential` role is `varchar(1368)`, not `varchar(1024)`.** WebAuthn's 1023-byte cap is on
+  the *raw* credential id; what is stored is its base64url spelling, 1364 characters at that size.
+  An authenticator with a credential id over 768 raw bytes failed to register on MySQL only.
+  `Passkey.credentialId` now states the same bound in the domain.
+- **The `text` role states its character set on MySQL** (`text CHARACTER SET utf8mb4 COLLATE
+  utf8mb4_0900_bin`). A bare `text` inherited the database's default, so a database created
+  `CHARACTER SET latin1` refused a user name with an emoji in it with error 1366.
+
 #### Changed — no API change
 
+- **Plugin DDL on PostgreSQL and SQLite.** The five plugin tables were written with bounded
+  `varchar` on PostgreSQL; they now use the same unbounded `text` the core tables always used
+  (`username_key`, `username`, `phone_e164`, every plugin `id` and `user_id`, `passkeys.name`), and
+  every inline `REFERENCES` is a table-level `FOREIGN KEY` — MySQL parses the inline form and then
+  ignores it, so the cascade would silently not exist. On SQLite a natural key whose lost race a
+  caller has to classify (`phone_e164`, `credential_id`) is `NOT NULL UNIQUE` rather than a declared
+  `PRIMARY KEY`, because SQLite reports only the unique-index conflict as one this library reads as
+  a lost race. An existing PostgreSQL database keeps the columns it has — every plugin migration is
+  `CREATE TABLE IF NOT EXISTS` and none alters a column — so old and new deployments differ in
+  column type and not in behaviour. The bound on a username and a number was always the domain's
+  (`maxLength` 30, `E164.normalize`) and still is. SPEC 21.4.
+- `TwoFactorStore.replaceRecoveryCodes` runs a `SELECT` of the ids it will clear and a `DELETE` by
+  those keys, on every dialect, where it ran one `DELETE … WHERE user_id = ?` before.
 - Vitest runs with `isolate: false` and `--maxWorkers=4`: the PGlite suite went from 32 s to 20 s,
   and the module-level memos in `src/testing` became per worker rather than per file.
 - `src/sql/SqlStores.ts` is a facade over `src/sql/stores/{Users,Sessions,Accounts,Verifications,

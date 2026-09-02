@@ -41,10 +41,7 @@ export const memory: Provider = Layer.effect(TestDatabase, Effect.map(SqlClient.
   Layer.provideMerge(
     Layer.effect(
       SqlClient.SqlClient,
-      Effect.tap(
-        Effect.provide(SqliteClient.make({ filename: ":memory:" }), Reactivity.layer),
-        (sql) => sql`PRAGMA foreign_keys = ON`
-      )
-    )
+      Effect.tap(SqliteClient.make({ filename: ":memory:" }), (sql) => sql`PRAGMA foreign_keys = ON`)
+    ).pipe(Layer.provide(Reactivity.layer))
   )
 )

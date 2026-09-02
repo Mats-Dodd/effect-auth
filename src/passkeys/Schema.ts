@@ -86,8 +86,14 @@ export type PasskeyId = typeof PasskeyId.Type
 export class Passkey extends Model.Class<Passkey>("effect-auth/passkeys/Passkey")({
   id: Model.UuidV7Insert(PasskeyId),
   userId: UserId,
-  /** The authenticator's own credential id, base64url. Unique across the table. */
-  credentialId: Schema.String,
+  /**
+   * The authenticator's own credential id, base64url. Unique across the table.
+   *
+   * WebAuthn caps a *raw* credential id at 1023 bytes, which is 1364 characters
+   * base64url — the bound the `credential` column role is sized from, stated
+   * here so it is the domain's and not only MySQL's.
+   */
+  credentialId: Schema.String.pipe(Schema.check(Schema.isMaxLength(1364))),
   /** The COSE public key, stored base64url. */
   publicKey: Model.Sensitive(Schema.Uint8ArrayFromBase64Url),
   /** The authenticator's use counter, or `0` for the many that do not keep one. */

@@ -13,9 +13,11 @@
  * @internal
  */
 import { Effect, Predicate, type Schema, SchemaAST } from "effect"
+import type { SqlClient, Statement } from "effect/unstable/sql"
 import { camelToSnake } from "../../internal/records.js"
 import { PersistenceError, persistenceFailureKind } from "../../domain/Stores.js"
 import type { UserRow } from "../../domain/Schema.js"
+import { identifier } from "../Dialect.js"
 
 // -----------------------------------------------------------------------------
 // User columns, derived from the model
@@ -62,20 +64,47 @@ export const userColumnsOf = (fields: { readonly [key: string]: Schema.Top }): R
   }))
 
 /**
- * `id, email_verified AS "emailVerified", …` — the projection of a plain read.
+ * `"id", "email_verified" AS "emailVerified", …` — the projection of a plain
+ * read, as a fragment.
+ *
+ * **Gotchas**
+ *
+ * Every name in it is escaped, column and alias alike, because half of them are
+ * a deployment's: a custom user field may be called `order` or `select`, and an
+ * unescaped projection is the one statement in the store that such a name breaks
+ * — the `INSERT` and the `UPDATE` are `sql.insert`/`sql.update`, which escape
+ * their own keys, and the column is created through `Dialect.identifier`. It is
+ * a fragment rather than a `sql.literal` string for the same reason: escaping is
+ * the dialect's, and only the compiler knows whether that is `"order"` or
+ * `` `order` ``.
  *
  * @internal
  */
-export const projectionOf = (columns: ReadonlyArray<UserColumn>): string =>
-  columns.map(({ column, field }) => (column === field ? column : `${column} AS "${field}"`)).join(", ")
+export const projectionOf = (sql: SqlClient.SqlClient, columns: ReadonlyArray<UserColumn>): Statement.Fragment =>
+  sql.csv(
+    columns.map(({ column, field }) =>
+      column === field ? sql`${identifier(sql, column)}` : sql`${identifier(sql, column)} AS ${identifier(sql, field)}`
+    )
+  )
 
 /**
- * `u.email_verified AS "u_emailVerified", …` — the projection of the joined read.
+ * `"u"."email_verified" AS "u_emailVerified", …` — the projection of the joined
+ * read, escaped exactly as {@link projectionOf} is and for the same reason.
  *
  * @internal
  */
-export const joinedProjectionOf = (columns: ReadonlyArray<UserColumn>, alias: string, prefix: string): string =>
-  columns.map(({ column, field }) => `${alias}.${column} AS "${prefix}${field}"`).join(", ")
+export const joinedProjectionOf = (
+  sql: SqlClient.SqlClient,
+  columns: ReadonlyArray<UserColumn>,
+  alias: string,
+  prefix: string
+): Statement.Fragment =>
+  sql.csv(
+    columns.map(
+      ({ column, field }) =>
+        sql`${identifier(sql, alias)}.${identifier(sql, column)} AS ${identifier(sql, `${prefix}${field}`)}`
+    )
+  )
 
 // -----------------------------------------------------------------------------
 // Raw rows

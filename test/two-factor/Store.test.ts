@@ -222,6 +222,56 @@ layer(testLayer)("two-factor/Store", (it) => {
       })
     )
 
+    it.effect("gives twelve people their first set at once", () =>
+      Effect.gen(function* () {
+        // A first set is the case that used to deadlock on MySQL: the `DELETE`
+        // that clears the previous set matches nothing, and under REPEATABLE
+        // READ a predicate that matches nothing takes a next-key lock over the
+        // gap it scanned — one gap that every new holder shares, and that each
+        // of them then needs an insert-intention lock inside.
+        const store = yield* TwoFactorStore
+        const users = yield* Effect.forEach(
+          Array.from({ length: 12 }, (_, index) => index),
+          (index) => Effect.map(signUpUser(uniqueEmail(`codes-storm-${index}`)), ({ user }) => user.id),
+          { concurrency: "unbounded" }
+        )
+        yield* Effect.forEach(
+          users,
+          (userId) =>
+            Effect.flatMap(
+              codesFor(
+                userId,
+                ["a", "b", "c", "d"].map((letter) => `${letter}-${userId}`)
+              ),
+              (written) => store.replaceRecoveryCodes(userId, written)
+            ),
+          { concurrency: "unbounded" }
+        )
+        const counts = yield* Effect.forEach(users, (userId) => store.countRecoveryCodes(userId))
+        assert.deepStrictEqual(
+          [...counts],
+          users.map(() => 4)
+        )
+      })
+    )
+
+    it.effect("keeps one set when one person regenerates twelve times at once", () =>
+      Effect.gen(function* () {
+        const { store, userId } = yield* registered("codes-regenerate-storm")
+        yield* store.replaceRecoveryCodes(userId, yield* codesFor(userId, ["g0", "g1"]))
+        yield* Effect.forEach(
+          Array.from({ length: 12 }, (_, index) => index),
+          (index) =>
+            Effect.flatMap(codesFor(userId, [`g${index}-x`, `g${index}-y`]), (written) =>
+              store.replaceRecoveryCodes(userId, written)
+            ),
+          { concurrency: "unbounded" }
+        )
+        // Every replacement writes two, and each one clears what it found.
+        assert.isAtLeast(yield* store.countRecoveryCodes(userId), 2)
+      })
+    )
+
     it.effect("is another person's code to nobody", () =>
       Effect.gen(function* () {
         const { store, userId } = yield* registered("codes-owner")

@@ -13,7 +13,10 @@
  * The second is about the schema the migrations leave behind, and shares one
  * already-migrated database. Nothing in either kind reads a catalog directly:
  * table, column and index names come from {@link Database.TestDatabase}, which
- * is where `information_schema`, `pg_catalog` and `PRAGMA` are allowed to live.
+ * is where the `information_schema`, `pg_catalog` and `PRAGMA` behind those
+ * answers live. `test/sql/Dialect.test.ts` — the one file that states a
+ * dialect's own facts — is the sanctioned exception, and `Migrations.forUserFields`
+ * introspects for its own reasons in `src/sql/Migrations.ts`.
  */
 import { assert, describe, layer } from "@effect/vitest"
 import { Duration, Effect, Option } from "effect"

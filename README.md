@@ -213,11 +213,19 @@ This library talks to `SqlClient.SqlClient` and to nothing else, so the database
 layer you provide. Three are supported, and the whole suite — every test, not a contract subset —
 runs against each of them on every commit.
 
-| database | driver | version floor | what CI runs |
+| database | driver | syntactic minimum | what is tested |
 |---|---|---|---|
-| PostgreSQL | `@effect/sql-pg` | 12 | `postgres:alpine` (18.6), pinned by digest |
+| PostgreSQL | `@effect/sql-pg` | 12 | `postgres:alpine` (18.6), pinned by digest, in CI and locally |
 | SQLite | `@effect/sql-sqlite-node` | Node 22 (`node:sqlite`) | the Node the job runs on |
-| MySQL | `@effect/sql-mysql2` | 8.0.19 | `mysql:lts` (9.7), pinned by digest |
+| MySQL | `@effect/sql-mysql2` | 8.0.19 | `mysql:lts` (9.7), pinned by digest, in CI and locally |
+
+**"Minimum" is the syntax, "tested" is the proof, and they are different claims.** The minima are
+the oldest release whose syntax these migrations and statements need — 8.0.19 for MySQL's
+`INSERT … AS new` row alias, 8.0.13 for the parenthesised expression default a `TEXT` column takes,
+12 for PostgreSQL — and nothing older can work. What has actually been run is the newest image of
+each: every suite, on every commit, against those two digests. A deployment on an older release in
+between is expected to work and is not proved to; if you run one, run the suite against it before
+you rely on it.
 
 PGlite (`@effect/sql-pglite`) is the in-process PostgreSQL that `effect-auth/testing` defaults to. It
 is PostgreSQL, not a fourth dialect. MariaDB is **not** supported: the conditional upsert behind the
@@ -279,22 +287,31 @@ domain already enforces:
 |---|---|---|---|
 | id | every primary and foreign key | `varchar(64) CHARACTER SET ascii COLLATE ascii_bin` | ids are UUIDv7, 36 characters |
 | hash | `token_hash`, `value_hash`, `code_hash` | `varchar(64) … ascii_bin` | base64url SHA-256, 43 characters |
-| credential | `credential_id`, passkey `handle` | `varchar(1024) … ascii_bin` | WebAuthn caps a credential id at 1023 bytes |
-| email | `users.email` | `varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin` | RFC 5321: 64-character local part, 255-character domain |
-| identity | `issuer`, `account_id`, `provider_id`, `username`, `username_key`, `aaguid`, `aal` | `varchar(255) … utf8mb4_bin` | the username plugin's `maxLength` (30 by default), a UUID aaguid, `aal0`–`aal2` |
-| identity | `phone_e164` | `varchar(16) … utf8mb4_bin` | E.164: fifteen digits and a leading `+`, and `E164.normalize` is the only thing that writes the column |
-| identifier | `verifications.identifier` | `varchar(400) … utf8mb4_bin` | `<purpose>:<subject>`, where the longest subject is an e-mail address |
+| credential | `credential_id`, passkey `handle` | `varchar(1368) … ascii_bin` | WebAuthn caps a *raw* credential id at 1023 bytes, which is 1364 characters in the base64url spelling this library stores — the bound is that plus headroom |
+| email | `users.email` | `varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin` | RFC 5321: 64-character local part, 255-character domain |
+| identity | `issuer`, `account_id`, `provider_id`, `username`, `username_key`, `aaguid`, `aal` | `varchar(255) … utf8mb4_0900_bin` | `provider_id` is a provider id you configured and `issuer` is `local:oauth:` plus one; `account_id` is the OIDC `sub`, which OIDC Core §2 caps at 255 ASCII characters — a plain OAuth 2.0 provider's account id has no such cap, which is the case the paragraph below covers; `username`/`username_key` by the plugin's `maxLength` (30 by default); `aaguid` is a UUID; `aal` is `aal0`–`aal2` |
+| identity | `phone_e164` | `varchar(16) … utf8mb4_0900_bin` | E.164: fifteen digits and a leading `+`, and `E164.normalize` is the only thing that writes the column |
+| identifier | `verifications.identifier` | `varchar(400) … utf8mb4_0900_bin` | `<purpose>:<subject>`, where the longest subject is an e-mail address |
 | timestamp | every `*_at` column | `varchar(32) … ascii_bin` | ISO-8601 UTC with milliseconds is 24 characters |
 | boolean | every flag | `boolean` | |
 | bigint | `last_used_step` | `bigint` | |
-| text | names, images, user agents, IPs, JSON, ciphertexts, password hashes, public keys | `text` | never indexed |
+| text | names, images, user agents, IPs, JSON, ciphertexts, password hashes, public keys | `text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin` | never indexed — the character set is stated anyway, so the schema does not depend on the database's default |
 
-The collations are the load-bearing half. `ascii_bin` and `utf8mb4_bin` compare byte by byte, which
-is what makes uniqueness on MySQL mean what it means on PostgreSQL and SQLite: under the server
-default `utf8mb4_0900_ai_ci`, `Ada` and `ada` are the same row and so are `a` and `á`, and a token
-digest, an OAuth subject or a username key that collided case-insensitively would be one person's
-credential answering for another's. E-mail is lower-cased by the domain before it is stored, so
-`utf8mb4_bin` is exactly the rule the other two dialects apply.
+The collations are the load-bearing half. `ascii_bin` and `utf8mb4_0900_bin` compare byte by byte,
+which is what makes uniqueness on MySQL mean what it means on PostgreSQL and SQLite: under the
+server default `utf8mb4_0900_ai_ci`, `Ada` and `ada` are the same row and so are `a` and `á`, and a
+token digest, an OAuth subject or a username key that collided case-insensitively would be one
+person's credential answering for another's. E-mail is lower-cased by the domain before it is
+stored, so `utf8mb4_0900_bin` is exactly the rule the other two dialects apply.
+
+`utf8mb4_0900_bin` rather than `utf8mb4_bin`, because `utf8mb4_bin` is a *PAD SPACE* collation:
+MySQL ignores trailing spaces in every comparison made in it, so `"sub"` and `"sub "` are one value
+in an equality test and one row in a unique index, while PostgreSQL and SQLite see two. That reaches
+`accounts.account_id`, which holds an identity provider's `sub` verbatim, and every custom string
+user field. `utf8mb4_0900_bin` is *NO PAD*, and it has been available since MySQL 8.0.17 — inside
+the 8.0.19 floor below. `ascii_bin` is PAD SPACE too and has no NO PAD sibling, but the roles it
+carries are alphabets this library generates — ids, digests, ISO-8601 timestamps, base64url
+credential ids — and none of them contains a space.
 
 A deployment that raises the username plugin's `maxLength` above 255, or that stores an OAuth
 subject longer than 255 characters, is the one case where a bound has to move — and on MySQL it
@@ -323,6 +340,31 @@ a deploy step, not on boot.** `Migrations.layer` is a quickstart convenience. In
 MySQL has no `ADD COLUMN IF NOT EXISTS`, so the migrations use a plain `ADD COLUMN` — safe, because
 a migration runs once. `Migrations.forUserFields(model)`, which is idempotent by design and may run
 on every boot, asks `information_schema.columns` first instead.
+
+### Transactions on MySQL
+
+**A deadlock voids the whole transaction, not the statement and not a savepoint.** InnoDB breaks a
+deadlock by rolling the entire transaction back — as it does for a lock-wait timeout where
+`innodb_rollback_on_timeout` is set, and as any DDL statement does by committing implicitly. A
+savepoint is precisely what does not survive that, so on MySQL a store helper called inside
+`WithAuthTransaction` opens nothing of its own: the caller's transaction is the only one there is.
+PostgreSQL and SQLite are unchanged and keep Effect's nested savepoint, because a failed statement
+there poisons a transaction rather than ending it.
+
+Because the connection is in autocommit afterwards, a body that *recovers* such a failure — a hook
+that logs and continues, a store call wrapped in `Effect.result` — would go on writing outside any
+transaction and then `COMMIT` successfully over half of itself. So the outermost `WithAuthTransaction.run`
+brackets the body with a `SAVEPOINT` of its own and releases it before committing: a `RELEASE` that
+fails is proof the transaction ended underneath, and the run fails with a `PersistenceError` rather
+than reporting a commit that did not happen. Two extra statements per domain transaction, on MySQL
+only.
+
+**Retrying a deadlock belongs at the outermost transaction.** Inside one there is nothing left to
+retry — the transaction is already gone — so the failure is reported. The one place this library
+retries at all is `VerificationStore`'s two range deletes, which are idempotent and are retried only
+when they are the outermost statement (`Mutations.retryDeadlocks`). Everywhere else the answer is
+statement shape rather than a retry; see [What each dialect stores](#what-each-dialect-stores) and
+SPEC 21.8.
 
 ## Endpoints
 
@@ -1412,13 +1454,15 @@ it.effect("signs a person up", () =>
     // The token exists exactly once — in the message that carries it.
     const token = yield* emails.tokenFor("reset")
     yield* passwords.resetPassword({ token, newPassword })
-  }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
+  }).pipe(Effect.provide(AuthTest.layer())))
 ```
 
 `AuthTest.layer()` is a whole deployment: a private, empty database with the migrations applied, a
 fixed secret, a capturing outbox, and scrypt at a cost a suite can afford. Give each test its own
-layer — a `TestClock` shared across a block lets one test move time under another — and pass
-`AuthTest.testTimeout`, because building the database and migrating costs a few hundred milliseconds.
+layer — a `TestClock` shared across a block lets one test move time under another. Building that
+database and migrating it costs a few hundred milliseconds, so raise vitest's `testTimeout` if you
+provide a deployment per test (this repository runs at 10 s), or use `@effect/vitest`'s `layer()`
+blocks, which build once for the block and are what the suite here is written in.
 
 ### Which database a suite runs on
 

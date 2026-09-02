@@ -25,7 +25,8 @@ import { FieldsApi, model } from "./model.js"
 const userJson = {
   ...Stub.userJson,
   plan: "pro",
-  role: "admin"
+  role: "admin",
+  order: "desc"
 }
 
 const registry = Effect.acquireRelease(

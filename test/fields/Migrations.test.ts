@@ -70,6 +70,9 @@ layer(layerDatabase)("fields/Migrations", (it) => {
       assert.include(columns, "plan")
       assert.include(columns, "role")
       assert.include(columns, "api_secret")
+      // A reserved word is a column name like any other, because every name the
+      // migration writes goes through `Dialect.identifier`.
+      assert.include(columns, "order")
 
       const id = yield* insertBaseUser("defaults")
       const stored = yield* sql<{

@@ -74,6 +74,7 @@ eq<
       readonly plan: "free" | "pro"
       readonly apiSecret: string | null
       readonly role: "user" | "admin"
+      readonly order: "asc" | "desc"
     }
   >
 >(true)

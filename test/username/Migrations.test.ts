@@ -5,8 +5,8 @@
  * **Details**
  *
  * Nothing here reads a catalog: table, column and index names come from
- * {@link Database.TestDatabase}, which is where `information_schema`,
- * `pg_catalog` and `PRAGMA` are allowed to live. The assertions that used to
+ * {@link Database.TestDatabase}, which is where the `information_schema`,
+ * `pg_catalog` and `PRAGMA` behind those answers live. The assertions that used to
  * read `is_nullable` and `character_maximum_length` are restated as behaviour —
  * a `NULL` the database refuses, a name too long for a bounded column — because
  * those are the same facts and they are true on all three dialects.

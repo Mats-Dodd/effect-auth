@@ -19,9 +19,9 @@
  * @since 0.2.0
  */
 import type { Option } from "effect"
-import { Context, DateTime, Effect, Layer, Predicate, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { Model } from "effect/unstable/schema"
-import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
+import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import type { UserId } from "../domain/Schema.js"
 import { UserId as UserIdSchema } from "../domain/Schema.js"
 import { persistenceFailureKind, PersistenceError } from "../domain/Stores.js"
@@ -146,45 +146,6 @@ const columns = `phone_e164 AS "phoneE164", user_id AS "userId", verified_at AS 
 /** The number names the row: it is the key on PostgreSQL and MySQL, unique on SQLite. */
 const key: ReadonlyArray<string> = ["phone_e164"]
 
-/**
- * Whether the database rolled the transaction back because two of them wanted
- * each other's locks.
- *
- * **Details**
- *
- * MySQL only, and it is this statement pair that provokes it. A claim is a
- * `DELETE` for whatever the caller held followed by an `INSERT`, and under
- * InnoDB's default REPEATABLE READ a `DELETE` whose predicate matches nothing
- * still takes a next-key lock on the gap the row would have been in. This
- * library's ids are time-ordered, so every new holder's gap is the *same* one —
- * the supremum of the holder index — and two first-time claims therefore both
- * hold a gap lock there and then both ask for the insert-intention lock the
- * other's gap lock refuses. InnoDB picks a victim and rolls it back with
- * ER_LOCK_DEADLOCK, whose message is literally "try restarting transaction".
- *
- * So it is restarted — see {@link deadlockRetries}. The rolled-back transaction
- * wrote nothing and the winner has already committed, so a restart is a fresh
- * attempt against a table that has moved on rather than a repeat of the same
- * collision. PostgreSQL and SQLite never match this predicate: neither takes a
- * gap lock, and SQLite serialises writers outright.
- */
-const isDeadlock = (error: unknown): error is SqlError.SqlError =>
-  SqlError.isSqlError(error) && Predicate.isTagged(error.reason, "DeadlockError")
-
-/**
- * How many restarts a lost lock race is allowed.
- *
- * Immediate, with no back-off: the victim's transaction is already rolled back
- * and the winner has committed, so there is nothing left to wait for — and a
- * `sleep` here would hang under the test clock every `layer()` block installs.
- * Three, rather than one, because contention is between *claimants* and not
- * between two fixed parties: a claim that loses to one neighbour can lose to the
- * next, and a run of three suites against one MySQL server reproduced exactly
- * that. Four attempts is enough for the concurrency a single account's claims
- * can actually reach.
- */
-const deadlockRetries = 3
-
 const fail = (operation: string) => (cause: unknown) =>
   // The shared classifier, not a copy: the plugin acts on exactly one
   // distinction — the number already belongs to somebody — and it has to be the
@@ -243,27 +204,46 @@ export const make: Effect.Effect<PhoneStoreService, never, SqlClient.SqlClient> 
   const deleteByUserId = (userId: UserId) =>
     Mutations.deleteAndCount({ sql, dialect, table: phoneNumbersTable, key, where: sql`user_id = ${userId}` })
 
+  /**
+   * Releases the number the caller holds, so the insert that follows has only
+   * the new number's key left to collide on.
+   *
+   * `consumeOne` rather than a plain `DELETE … WHERE user_id = …`, because a
+   * first-time claim releases *nothing*: on MySQL a predicate that matches
+   * nothing takes a next-key lock over the gap it scanned, every first-time
+   * claimant shares that gap, and each then needs an insert-intention lock
+   * inside another's — a sign-up burst on a new deployment deadlocks, twelve
+   * ways, reproducibly. `consumeOne` reads which row to release with a plain
+   * consistent read that takes no locks, then deletes by the key it found, or
+   * does nothing when there is none. `deleteForUser` keeps the single
+   * unconditional statement: it has no insert after it to deadlock with.
+   */
+  const releaseOwn = (userId: UserId) =>
+    Mutations.consumeOne({
+      sql,
+      dialect,
+      table: phoneNumbersTable,
+      key,
+      where: sql`user_id = ${userId}`,
+      columns: sql`${identifier(sql, "phone_e164")}`
+    })
+
   const claim = (options: ClaimOptions) =>
     persist("PhoneStore.claim")(
-      Effect.retry(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const now = yield* DateTime.now
-            // The caller's previous number goes first, so that the unique
-            // constraint on `user_id` is a statement about the table rather
-            // than something this has to work around.
-            yield* deleteByUserId(options.userId)
-            const row = yield* insertRow(PhoneNumber.insert, {
-              phoneE164: options.phoneE164,
-              userId: options.userId,
-              verifiedAt: now
-            })
-            return yield* insertPhone(row)
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const now = yield* DateTime.now
+          // The caller's previous number goes first, so that the unique
+          // constraint on `user_id` is a statement about the table rather
+          // than something this has to work around.
+          yield* releaseOwn(options.userId)
+          const row = yield* insertRow(PhoneNumber.insert, {
+            phoneE164: options.phoneE164,
+            userId: options.userId,
+            verifiedAt: now
           })
-        ),
-        // A number already held is a `UniqueViolation` and an answer; only a
-        // lost lock race is retried.
-        { while: isDeadlock, times: deadlockRetries }
+          return yield* insertPhone(row)
+        })
       )
     )
 

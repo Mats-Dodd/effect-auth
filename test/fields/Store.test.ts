@@ -151,6 +151,50 @@ layer(layerStores)("fields/Store", (it) => {
     })
   )
 
+  it.effect("reads, writes and joins a column whose name is a reserved word", () =>
+    Effect.gen(function* () {
+      // `order` is reserved on PostgreSQL, SQLite and MySQL alike, so every
+      // statement built around a deployment's own column has to escape it: the
+      // insert, the plain projection, the update, and the projection of the
+      // joined read the hot path uses. An unescaped one is a syntax error on
+      // every dialect, and it fails *every* read of *every* user rather than
+      // only the ones that mention the field.
+      const store = yield* users
+      const sessions = yield* sessionStore
+      const email = uniqueEmail("reserved")
+      const created = yield* store.create(
+        yield* model.makeInsert({
+          name: testName,
+          email,
+          emailVerified: false,
+          image: null,
+          order: "desc"
+        })
+      )
+      assert.strictEqual(created.order, "desc")
+
+      const found = yield* expectSome(yield* store.findByEmail(email), "the user was not found")
+      assert.strictEqual(found.order, "desc")
+
+      const patched = yield* expectSome(yield* store.update(created.id, { order: "asc" }), "the user was not updated")
+      assert.strictEqual(patched.order, "asc")
+
+      const now = yield* DateTime.now
+      const tokenHash = `hash-${(yield* Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER)).toString(36)}`
+      yield* sessions.create(
+        yield* Session.insert.makeEffect({
+          tokenHash,
+          userId: created.id,
+          expiresAt: DateTime.addDuration(now, Duration.days(1)),
+          ipAddress: null,
+          userAgent: null
+        })
+      )
+      const joined = yield* expectSome(yield* sessions.findByTokenHash(tokenHash), "the session was not found")
+      assert.strictEqual(joined.user.order, "asc")
+    })
+  )
+
   it.effect("drops a value a client tries to put in a read-only field", () =>
     Effect.gen(function* () {
       const store = yield* users
@@ -174,12 +218,12 @@ layer(layerStores)("fields/Store", (it) => {
 
 describe("fields/Store (model)", () => {
   it("names its custom columns and nothing else", () => {
-    assert.deepStrictEqual(model.extraKeys, ["plan", "apiSecret", "role"])
+    assert.deepStrictEqual(model.extraKeys, ["plan", "apiSecret", "role", "order"])
   })
 
   it.effect("reports the custom fields' defaults, encoded", () =>
     Effect.map(model.extraDefaults, (defaults) => {
-      assert.deepStrictEqual(defaults, { plan: "free", apiSecret: null, role: "user" })
+      assert.deepStrictEqual(defaults, { plan: "free", apiSecret: null, role: "user", order: "asc" })
     })
   )
 })

@@ -116,7 +116,7 @@ export type Provider = Layer.Layer<SqlClient.SqlClient | TestDatabase, SqlError.
  * @since 0.1.0
  */
 export const pglite: Provider = Layer.effect(TestDatabase, Effect.map(SqlClient.SqlClient, Catalog.postgres)).pipe(
-  Layer.provideMerge(Layer.effect(SqlClient.SqlClient, Effect.provide(PgliteClient.make({}), Reactivity.layer)))
+  Layer.provideMerge(Layer.effect(SqlClient.SqlClient, PgliteClient.make({})).pipe(Layer.provide(Reactivity.layer)))
 )
 
 /**
@@ -141,10 +141,12 @@ const urlFor = (variable: string) => Config.option(Config.string(variable))
  *
  * **Gotchas**
  *
- * The `import()`s below are the only dynamic imports in this tree, and they are
- * the reason `effect-auth/testing` itself has no static dependency on
- * `@effect/sql-pg`, `@effect/sql-sqlite-node` or `@effect/sql-mysql2`. An
- * unknown name dies naming the variable and the four values it takes.
+ * The `import()`s below are the *only* way `effect-auth/testing` reaches its
+ * optional peers — the arrangement `effect-auth/passkeys` has for
+ * `@simplewebauthn/server` — and they are the reason this module has no static
+ * dependency on `@effect/sql-pg`, `@effect/sql-sqlite-node` or
+ * `@effect/sql-mysql2`. An unknown name dies naming the variable and the four
+ * values it takes.
  *
  * @category layers
  * @since 0.1.0

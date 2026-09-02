@@ -19,12 +19,14 @@
  *
  * **Details — how the MySQL branches are built**
  *
- * Every multi-statement branch runs inside `sql.withTransaction`, which reserves
- * one connection, propagates it, commits on success and rolls back on failure or
- * interruption. A caller already inside `WithAuthTransaction` gets a *savepoint*
- * rather than a nested transaction, so a store helper is safe to call from
- * inside a domain workflow's transaction — which is where most of them are
- * called from.
+ * Every multi-statement branch runs inside {@link atomically}, which reserves one
+ * connection, propagates it, commits on success and rolls back on failure or
+ * interruption — and which, for a caller already inside `WithAuthTransaction`,
+ * is the caller's own transaction and nothing else. It deliberately does *not*
+ * open a savepoint there: a MySQL deadlock rolls the whole transaction back, and
+ * a savepoint taken inside it stops existing at that moment, so the
+ * `ROLLBACK TO SAVEPOINT` that would follow is a defect over a statement that
+ * had a perfectly good typed failure of its own. See {@link atomically}.
  *
  * A write that has to be read back never re-runs the caller's predicate. It
  * takes the row's key under `SELECT … FOR UPDATE` first, and then mutates and
@@ -139,9 +141,9 @@
  *
  * @internal
  */
-import { Effect, Schema } from "effect"
-import type { SqlClient, SqlConnection, SqlError, Statement } from "effect/unstable/sql"
-import { SqlSchema } from "effect/unstable/sql"
+import { Effect, Option, Predicate, Schema } from "effect"
+import type { SqlClient, SqlConnection, Statement } from "effect/unstable/sql"
+import { SqlError, SqlSchema } from "effect/unstable/sql"
 import type { Dialect } from "./Dialect.js"
 import { identifier, lockClause } from "./Dialect.js"
 
@@ -169,6 +171,104 @@ interface Keyed extends Target {
    */
   readonly key: ReadonlyArray<string>
 }
+
+/**
+ * One connection, one atomic sequence — and on MySQL, never a savepoint inside a
+ * transaction somebody else opened.
+ *
+ * **Details**
+ *
+ * Outside a transaction this is `sql.withTransaction`: `BEGIN`, the statements,
+ * `COMMIT`, on one reserved connection. That is what makes a MySQL
+ * write-then-read one operation rather than two.
+ *
+ * Inside one — which is where most store calls happen, because the domain wraps
+ * its multi-store workflows in `WithAuthTransaction` — the connection and the
+ * transaction are already the caller's, and on MySQL this adds nothing to them.
+ *
+ * **Gotchas**
+ *
+ * `sql.withTransaction` nested is a *savepoint*, and on MySQL a savepoint does
+ * not survive the thing it would be needed for. InnoDB answers a deadlock by
+ * rolling back the entire transaction, not the statement, and every savepoint in
+ * it goes with it — so the `ROLLBACK TO SAVEPOINT` Effect issues on the way out
+ * fails, and because that rollback is `orDie`, a deadlock a caller could have
+ * seen as a `DeadlockError` arrives as a defect with a second, misleading
+ * message about a savepoint. Not opening one is the fix: the deadlock stays the
+ * typed `SqlError` the store maps to a `PersistenceError`, and the caller's
+ * transaction — which InnoDB has already rolled back — fails on the way out
+ * instead of committing.
+ *
+ * PostgreSQL and SQLite keep the savepoint: `ROLLBACK TO SAVEPOINT` after a
+ * serialization failure is valid on PostgreSQL, and SQLite serialises writers
+ * rather than deadlocking them. Only MySQL's implicit rollback is the problem,
+ * so only MySQL's branch differs.
+ *
+ * @internal
+ */
+export const atomically = <A, E, R>(
+  sql: SqlClient.SqlClient,
+  dialect: Dialect,
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, E | SqlError.SqlError, R> =>
+  dialect === "mysql"
+    ? Effect.flatMap(
+        Effect.serviceOption(sql.transactionService),
+        Option.match({ onNone: () => sql.withTransaction(effect), onSome: () => effect })
+      )
+    : sql.withTransaction(effect)
+
+/**
+ * Whether a driver failure is InnoDB breaking a deadlock.
+ *
+ * The single definition in this library: MySQL is the only supported dialect
+ * that reports one, and every call site that retries reads it from here.
+ *
+ * @internal
+ */
+export const isDeadlock = (error: unknown): boolean =>
+  SqlError.isSqlError(error) && Predicate.isTagged(error.reason, "DeadlockError")
+
+/** Three attempts after the first is enough for a lock cycle to have cleared. */
+const deadlockRetries = 3
+
+/**
+ * Runs an *idempotent* statement again when MySQL breaks a deadlock on it — but
+ * only while it is the outermost transaction.
+ *
+ * **Details**
+ *
+ * A range delete over a hot index is the case: InnoDB takes next-key locks over
+ * the range it scans, so two of them racing an insert into the same range can
+ * form a cycle, and the loser is told to try again. Trying again is exactly
+ * right for a delete, which has the same effect however many times it runs.
+ *
+ * **Gotchas**
+ *
+ * Only outermost. A deadlock rolls back the *whole* MySQL transaction, so a
+ * retry inside one would run in autocommit against a transaction that no longer
+ * exists — it would appear to succeed and commit on its own, which is worse than
+ * the failure it was hiding. Inside a transaction the failure is reported, the
+ * caller's transaction fails with it, and the retry belongs to whoever opened
+ * that transaction. `src/sql/stores/Transaction.ts` proves the transaction is
+ * still there before it commits, so a swallowed one cannot slip through either.
+ *
+ * @internal
+ */
+export const retryDeadlocks = <A, R>(
+  sql: SqlClient.SqlClient,
+  dialect: Dialect,
+  effect: Effect.Effect<A, SqlError.SqlError, R>
+): Effect.Effect<A, SqlError.SqlError, R> =>
+  dialect !== "mysql"
+    ? effect
+    : Effect.flatMap(
+        Effect.serviceOption(sql.transactionService),
+        Option.match({
+          onNone: () => Effect.retry(effect, { while: isDeadlock, times: deadlockRetries }),
+          onSome: () => effect
+        })
+      )
 
 /**
  * A key of no columns is `1=1`, which on the MySQL branches would delete or
@@ -283,7 +383,9 @@ export const insertAndRead = <A extends object = SqlConnection.Row>(
   if (dialect !== "mysql") {
     return sql<A>`INSERT INTO ${table} ${sql.insert(record)} RETURNING ${columns}`
   }
-  return sql.withTransaction(
+  return atomically(
+    sql,
+    dialect,
     Effect.gen(function* () {
       const where = yield* insertedKey(sql, options.key, record)
       yield* sql`INSERT INTO ${table} ${sql.insert(record)}`
@@ -335,7 +437,9 @@ export const updateAndRead = <A extends object = SqlConnection.Row>(
   }
   const lock = lockClause(sql, dialect)
   const empty: ReadonlyArray<A> = []
-  return sql.withTransaction(
+  return atomically(
+    sql,
+    dialect,
     Effect.gen(function* () {
       const locked = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where}${lock}`
       if (locked.length === 0) return empty
@@ -382,7 +486,9 @@ export const deleteAndCount = (options: DeleteAndCount): Effect.Effect<number, S
   if (dialect !== "mysql") {
     return Effect.map(sql`DELETE FROM ${table} WHERE ${where} RETURNING ${keyColumns(sql, key)}`, (rows) => rows.length)
   }
-  return sql.withTransaction(
+  return atomically(
+    sql,
+    dialect,
     Effect.gen(function* () {
       yield* sql`DELETE FROM ${table} WHERE ${where}`
       return yield* rowCount(sql)
@@ -430,7 +536,9 @@ export const deleteAndRead = <A extends object = SqlConnection.Row>(
   }
   const lock = lockClause(sql, dialect)
   const empty: ReadonlyArray<A> = []
-  return sql.withTransaction(
+  return atomically(
+    sql,
+    dialect,
     Effect.gen(function* () {
       const locked = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where}${lock}`
       if (locked.length === 0) return empty
@@ -511,7 +619,9 @@ export const consumeOne = <A extends object = SqlConnection.Row>(
   }
   const lock = lockClause(sql, dialect)
   const empty: ReadonlyArray<A> = []
-  return sql.withTransaction(
+  return atomically(
+    sql,
+    dialect,
     Effect.gen(function* () {
       const candidate = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where} LIMIT 1`
       const first = candidate[0]
@@ -611,7 +721,9 @@ export const upsertAndRead = <A extends object = SqlConnection.Row>(
   const assignments = sql.csv(
     update.map((column) => sql`${identifier(sql, column)} = IF(${guard}, ${incoming(column)}, ${current(column)})`)
   )
-  return sql.withTransaction(
+  return atomically(
+    sql,
+    dialect,
     Effect.gen(function* () {
       yield* sql`INSERT INTO ${table} ${sql.insert(record)} AS new
         ON DUPLICATE KEY UPDATE ${assignments}`

@@ -64,7 +64,7 @@ peer dependency.
 | `src/client/` | The `AtomHttpApi` clients — `AuthClient`, one per plugin, and the `AuthAtoms` wrappers they share |
 | `src/Plugin.ts` | `withDefaults`: the options-section resolver every plugin uses |
 | `src/testing/` | The shipped harness (`AuthTest`, `MockProvider`, `TestHttpClient`, one `*Test` per plugin) and `Database.ts` — the `Provider` seam and `TestDatabase` — public API, treat it as such |
-| `src/testing/{sqlite,postgres,mysql}/` | The three database providers, on subpaths behind optional peer dependencies. `effect-auth/testing` reaches them with the tree's only dynamic `import()`s and never statically |
+| `src/testing/{sqlite,postgres,mysql}/` | The three database providers, on subpaths behind optional peer dependencies. `effect-auth/testing` reaches them only through `Database.fromConfig`'s dynamic `import()`s and never statically, as `effect-auth/passkeys` reaches `@simplewebauthn/server` |
 | `src/internal/` | Not exported; helpers with no opinion |
 
 Layering: `domain` never imports `http`; `http` never touches SQL; `oauth` owns flow policy and
@@ -93,10 +93,14 @@ publishes `SignedIn`. `SessionsService.createUnchecked` is the raw mint and is n
 - **Two entry points, no conditional types** in any exported signature, exactly one `ReturnType`
   (`AuthApiGroupOf`). Value-dependent layer types were removed on purpose; do not reintroduce them.
 - **Tests** are `@effect/vitest` `layer()` blocks over a `Database.Provider`, `AuthTest.freshClock`
-  for anything that moves time, `uniqueEmail` fixtures. The OpenAPI snapshot is byte-compared. A test
-  asks `Database.TestDatabase` for table, column and index names — `information_schema`, `pg_catalog`
-  and `PRAGMA` live in `src/testing/internal/catalog.ts` and nowhere else, which is what lets one
-  assertion be true on all four backends.
+  for anything that moves time, `uniqueEmail` fixtures. The OpenAPI snapshot is byte-compared. **No
+  test asks a catalog for names**: it asks `Database.TestDatabase` for table, column and index names,
+  and `src/testing/internal/catalog.ts` is where the `information_schema`, `pg_catalog` and `PRAGMA`
+  behind that answer live — which is what lets one assertion be true on all four backends. Two
+  sanctioned exceptions, both narrow: `test/sql/Dialect.test.ts` is the one file that states a
+  dialect's own facts and reads a catalog for them, and `Migrations.forUserFields` introspects
+  `pragma_table_info` / `information_schema.columns` in `src/sql/Migrations.ts` because it must —
+  it runs on every boot and has to know which columns exist.
 - `@since` / `@category` on every export. Behaviour changes go in SPEC's Amendments; API changes in
   `CHANGELOG.md`.
 
@@ -128,10 +132,15 @@ pnpm test:mysql  # …on MySQL           ┘ `TESTCONTAINERS_REUSE_ENABLE=true` 
   keyed by configuration, and its scope is deliberately never closed so a reused container survives
   the run. Nothing in `src/` outside `src/testing/` may hold module-level state.
 - **Speed rules**, part of the definition of done for anything that touches tests: isolation stays
-  off; one engine per worker and one schema or database per build (a provider that boots per build is
-  unfinished); no new top-level `layer()` block where a nested `it.effect` would inherit the database
-  — a case that needs an empty table calls `TestDatabase.reset`; service containers in CI, reusable
-  containers locally. Every wave gate records wall time per dialect.
+  off; one engine per worker and one schema or database per build (a provider that boots an engine
+  per build is unfinished) — **except PGlite, which is one instance per build on purpose**: it has a
+  single connection, `sequence.concurrent` overlaps two top-level `layer()` blocks in a file, and a
+  shared instance's `search_path` would move under a running block. SPEC 21.7 records the decision
+  and `test/testing/Isolation.test.ts` is what would go red if somebody "finished" it. Then: no new
+  top-level `layer()` block where a nested `it.effect` would inherit the database — a case that needs
+  an empty table calls `TestDatabase.reset`, in a `describe.sequential` so a sibling is not emptied
+  mid-run; service containers in CI, reusable containers locally. Every wave gate records wall time
+  per dialect.
 - The lint config runs stricter than Effect's `recommended` preset on purpose. Before turning a
   rule off, show the ergonomic damage it does in this tree (SPEC Amendment 18 is the template);
   before turning one on, show what it catches.

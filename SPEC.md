@@ -2404,17 +2404,45 @@ constraints that guarantee them are the table in README "Databases"; the rules b
 - An indexed MySQL column is never `text`.
 - Every bound is guaranteed by something the domain already enforces — a UUIDv7 is 36 characters, a
   base64url SHA-256 is 43, RFC 5321 caps an address at 320, E.164 at 16, a WebAuthn credential id at
-  1023 bytes — and both halves of the widest unique index (`issuer` + `account_id`) fit InnoDB's
-  limit with room.
-- **Opaque identity never inherits the server collation.** `ascii_bin` and `utf8mb4_bin` compare byte
-  by byte. Under MySQL's default `utf8mb4_0900_ai_ci`, `Ada` and `ada` are one row and so are `a` and
-  `á` — which would make a token digest, an OAuth subject or a username key collide across values
-  this library treats as distinct, and would make one person's credential answer for another's.
-  E-mail is lower-cased by the domain before storage, so `utf8mb4_bin` is exactly the rule the other
-  two dialects apply.
+  1023 *raw* bytes, which is 1364 characters in the base64url spelling actually stored (the
+  `credential` role is `varchar(1368)`, and `Passkey.credentialId` states the same bound in the
+  domain) — and both halves of the widest unique index (`issuer` + `account_id`) fit InnoDB's limit
+  with room.
+- **Opaque identity never inherits the server collation.** `ascii_bin` and `utf8mb4_0900_bin` compare
+  byte by byte. Under MySQL's default `utf8mb4_0900_ai_ci`, `Ada` and `ada` are one row and so are
+  `a` and `á` — which would make a token digest, an OAuth subject or a username key collide across
+  values this library treats as distinct, and would make one person's credential answer for
+  another's. E-mail is lower-cased by the domain before storage, so `utf8mb4_0900_bin` is exactly the
+  rule the other two dialects apply.
+- **`utf8mb4_0900_bin`, not `utf8mb4_bin`, because the latter is PAD SPACE.** MySQL ignores trailing
+  spaces in every comparison made in a PAD SPACE collation, so `"sub"` and `"sub "` are one value and
+  one row in a unique index, while PostgreSQL and SQLite see two. That reaches `accounts.account_id`
+  — an identity provider's `sub` verbatim — and every custom string user field. `utf8mb4_0900_bin` is
+  NO PAD and has existed since MySQL 8.0.17, inside the 8.0.19 floor. `ascii_bin` is PAD SPACE too and
+  has no NO PAD sibling, but its roles are alphabets this library generates and none contains a space.
+- **The unbounded `text` role states its character set too** (`text CHARACTER SET utf8mb4 COLLATE
+  utf8mb4_0900_bin`). A bare `text` inherits the *database's* default character set, and a database
+  created `CHARACTER SET latin1` refuses a name with an emoji with error 1366. The schema this
+  library creates does not depend on how the database was created.
 
 Custom string user fields are `varchar(255)` on MySQL. Per-field storage metadata is roadmap work,
 not this wave.
+
+**PostgreSQL and SQLite plugin DDL did move, and this is the record of it.** The four core tables
+were already `text` throughout and did not change. The five plugin tables were not: they had been
+written with bounded `varchar` on PostgreSQL "so the MySQL port stays mechanical", and the roles
+replaced that with the same unbounded `text` the core tables use. So on PostgreSQL
+`effect_auth_usernames.username_key`/`username` (`varchar(64)`),
+`effect_auth_phone_numbers.phone_e164` (`varchar(16)`), every plugin `user_id`/`id` (`varchar(36)`)
+and `effect_auth_passkeys.name` (`varchar(64)`) are now `text`, and every inline `REFERENCES`
+became a table-level `FOREIGN KEY` (§21.5's MySQL reason; PostgreSQL and SQLite read the two forms
+identically). Two consequences, both accepted: an existing PostgreSQL deployment keeps the columns
+it has, because every plugin migration is `CREATE TABLE IF NOT EXISTS` and none of them alters a
+column — a new deployment and an old one differ in column *type*, never in behaviour; and the
+database-level length guard on `username_key` and `phone_e164` is gone on PostgreSQL, leaving the
+domain guards that were always the real ones (`maxLength` 30 on a username, `E164.normalize` on a
+number) and MySQL's `varchar` bound. On SQLite the natural keys moved from `PRIMARY KEY` to
+`NOT NULL UNIQUE`, which is §21.5's rule and is a change to that dialect's DDL as well.
 
 #### 21.5 The migrator on MySQL, and why migrations are a deploy step
 
@@ -2451,8 +2479,10 @@ build a private, empty database and takes it away when the build's scope closes;
 resolves one from `EFFECT_AUTH_TEST_DATABASE`, so the backend is a variable rather than a code change,
 and `AuthTest.Settings.database` overrides it for a suite that must run on one backend whatever the
 variable says. `effect-auth/testing/{sqlite,postgres,mysql}` are subpaths behind optional peer
-dependencies, reached only by a dynamic `import()` — the same arrangement `effect-auth/passkeys` has,
-and the only dynamic imports in the tree.
+dependencies, reached only by a dynamic `import()` — the same arrangement `effect-auth/passkeys` has
+for `@simplewebauthn/server`. That is the invariant: `effect-auth/testing` reaches an optional peer
+through `Database.fromConfig`'s `import()`s and never statically. It is not a claim about the tree's
+`import()` count, which is five.
 
 `Database.TestDatabase` is what a test may ask the database beyond SQL: `dialect`, `reset`, and
 `tableNames` / `columnNames` / `indexNames`. Keeping `information_schema`, `pg_catalog` and `PRAGMA`
@@ -2482,3 +2512,68 @@ be made correct: `sequence.concurrent` overlaps two top-level `layer()` blocks i
 one connection, and a second build's `search_path` moves under the first block's running tests. So
 PGlite is one instance per build — today's behaviour, behind the new `Provider` — while `pg` and
 `mysql` do keep one server per worker, which concurrent connections make safe.
+
+#### 21.8 InnoDB takes a lock on the rows a predicate did *not* match
+
+The one MySQL fact that changed a store's statements rather than its spelling. Under InnoDB's
+default `REPEATABLE READ`, a `DELETE … WHERE <column> = ?` takes a next-key lock over the *gap* it
+scanned — and when the predicate matches nothing, that gap is a single one every other writer with
+a new key also wants to insert into. Three plugin operations begin by clearing what the caller
+holds, so on a table that has never held a row every one of them matched nothing:
+`UsernameStore.claim`, `PhoneStore.claim` and `TwoFactorStore.replaceRecoveryCodes`. Twelve people
+signing up at once on a fresh MySQL deadlocked several of them — `ER_LOCK_DEADLOCK`, surfaced as a
+`PersistenceError` of kind `Unknown`, a 500 on a sign-up burst.
+
+**The answer is the statement shape, not a retry.** It is the one `Mutations.consumeOne` already
+uses for the exactly-once claim (§21.3): read *plainly* which row to remove — a consistent read
+takes no lock at all — and then delete by the primary key it found, or issue no delete when there
+is none. `UsernameStore.claim` and `PhoneStore.claim` release through `consumeOne`;
+`replaceRecoveryCodes` reads its set's ids and deletes them by key, because it clears many rows
+rather than one. The three copies of a MySQL `DeadlockError` classifier and their three different
+retry budgets are deleted with the hazard, and PostgreSQL never had one here.
+
+One retry survives the wave, in the kernel rather than in a plugin: `Mutations.retryDeadlocks`, which
+`VerificationStore`'s two range deletes use. A range delete over an identifier cannot be shaped out
+of a gap the way a single-row claim can, it is idempotent, and the retry fires only on MySQL and only
+when it is the outermost statement — inside a transaction InnoDB has already rolled back there is
+nothing to retry, so the failure is reported (§21.9).
+
+The price is stated where `consumeOne` states it: what a transaction clears is what was committed
+when it read, so two replacements racing for one person can each leave their own set of recovery
+codes — which is exactly what PostgreSQL has always done, its `DELETE` seeing the snapshot its
+statement began with. Every code is that person's own and single-use. `test/username/Store.test.ts`,
+`test/phone/Store.test.ts` and `test/two-factor/Store.test.ts` each carry a twelve-way first-claim
+storm; each of them fails on the old statement shape on MySQL and passes on all four backends now.
+
+#### 21.9 A MySQL deadlock ends the transaction, so the outermost one proves it survived
+
+InnoDB answers a deadlock by rolling the *whole* transaction back — not the statement, and not to a
+savepoint. A lock-wait timeout does the same where `innodb_rollback_on_timeout` is set, and any DDL
+statement commits implicitly. Afterwards the connection is in autocommit and nothing in this process
+was told.
+
+Two consequences, and this wave answers both.
+
+**Nested transactions on MySQL open nothing.** A savepoint taken inside a MySQL transaction is
+exactly what a deadlock destroys, so Effect's `ROLLBACK TO SAVEPOINT` then fails with "SAVEPOINT …
+does not exist" — a defect where the stores promise a `PersistenceError`. `Mutations.atomically` is
+therefore the one way a store helper opens a transaction: on MySQL it opens nothing when a
+transaction is already in flight, and `WithAuthTransaction.run` does the same for a nested run. On
+PostgreSQL a failed statement poisons a transaction rather than ending it and `COMMIT` on a poisoned
+transaction rolls back and says so; SQLite serialises writers instead of deadlocking them. Both keep
+Effect's savepoint, and decision 10 holds for them.
+
+**The outermost transaction asks the database whether there is still a transaction to commit.** A
+body that *recovers* the failure — a hook that logs and continues, a store call wrapped in
+`Effect.result` — would otherwise write in autocommit and then `COMMIT` successfully over half of
+itself, which is the worst answer this seam can give. So on MySQL the outermost
+`WithAuthTransaction.run` issues `SAVEPOINT effect_auth_transaction` after `BEGIN` and `RELEASE
+SAVEPOINT effect_auth_transaction` before `COMMIT`: a savepoint does not survive an implicit
+rollback, so a failing `RELEASE` is proof the transaction is gone and the run fails with a
+`PersistenceError` instead. One fixed name is safe because only the outermost run takes one. Cost:
+two statements per domain transaction, on MySQL only. `test/sql/Dialect.test.ts` pins it with two
+fibers cross-locking two users.
+
+**A deadlock is retried only where a retry can mean anything** — outermost, and on an idempotent
+statement. That is `Mutations.retryDeadlocks`, and `VerificationStore`'s two range deletes are its
+only callers (§21.8 for why nothing else needs one).

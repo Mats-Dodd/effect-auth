@@ -23,8 +23,9 @@
  * @since 0.2.0
  */
 import type { Option } from "effect"
-import { Context, DateTime, Effect, Layer, Predicate, Schema } from "effect"
-import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
+import { Context, DateTime, Effect, Layer, Schema } from "effect"
+import type { SqlError } from "effect/unstable/sql"
+import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { UserId } from "../domain/Schema.js"
 import type { PersistenceError as PersistenceErrorType } from "../domain/Stores.js"
 import { PersistenceError, persistenceFailureKind } from "../domain/Stores.js"
@@ -113,45 +114,6 @@ const usernames = "effect_auth_usernames"
 /** The key a claim re-addresses its row by, and what a release counts. */
 const key: ReadonlyArray<string> = ["username_key"]
 
-/**
- * Whether the database rolled the transaction back because two of them wanted
- * each other's locks.
- *
- * **Details**
- *
- * MySQL only, and it is this statement pair that provokes it. A claim is a
- * `DELETE` for whatever the caller held followed by an `INSERT`, and under
- * InnoDB's default REPEATABLE READ a `DELETE` whose predicate matches nothing
- * still takes a next-key lock on the gap the row would have been in. This
- * library's ids are time-ordered, so every new holder's gap is the *same* one —
- * the supremum of the holder index — and two first-time claims therefore both
- * hold a gap lock there and then both ask for the insert-intention lock the
- * other's gap lock refuses. InnoDB picks a victim and rolls it back with
- * ER_LOCK_DEADLOCK, whose message is literally "try restarting transaction".
- *
- * So it is restarted — see {@link deadlockRetries}. The rolled-back transaction
- * wrote nothing and the winner has already committed, so a restart is a fresh
- * attempt against a table that has moved on rather than a repeat of the same
- * collision. PostgreSQL and SQLite never match this predicate: neither takes a
- * gap lock, and SQLite serialises writers outright.
- */
-const isDeadlock = (error: unknown): error is SqlError.SqlError =>
-  SqlError.isSqlError(error) && Predicate.isTagged(error.reason, "DeadlockError")
-
-/**
- * How many restarts a lost lock race is allowed.
- *
- * Immediate, with no back-off: the victim's transaction is already rolled back
- * and the winner has committed, so there is nothing left to wait for — and a
- * `sleep` here would hang under the test clock every `layer()` block installs.
- * Three, rather than one, because contention is between *claimants* and not
- * between two fixed parties: a claim that loses to one neighbour can lose to the
- * next, and a run of three suites against one MySQL server reproduced exactly
- * that. Four attempts is enough for the concurrency a single account's claims
- * can actually reach.
- */
-const deadlockRetries = 3
-
 const ClaimRequest = Schema.Struct({
   usernameKey: Schema.String,
   username: Schema.String,
@@ -200,14 +162,27 @@ export const makeUsernameStore: Effect.Effect<UsernameStoreService, never, SqlCl
      * key the insert collides with, and this table is unique on `user_id` as
      * well as on `username_key`. With the caller's other row already gone the
      * only key left to collide on is the name.
+     *
+     * `consumeOne` rather than a plain `DELETE … WHERE user_id = …`, because a
+     * first-time claim releases *nothing* and on MySQL a predicate that matches
+     * nothing is exactly the one that takes a next-key lock over the gap it
+     * scanned. Every first-time claimant shares that gap and every one of them
+     * then needs an insert-intention lock inside it, so a burst of sign-ups on
+     * a new deployment deadlocks — reproduced twelve ways on `mysql:lts` before
+     * this was written. `consumeOne` reads which row to release *plainly*
+     * first — a consistent read takes no locks at all — and deletes by the
+     * primary key it found, or does nothing when there is none. That is the
+     * same shape `VerificationStore.consume` is built on, and it is why this
+     * store has no deadlock retry.
      */
     const releaseOther = (userId: string, usernameKey: string) =>
-      Mutations.deleteAndCount({
+      Mutations.consumeOne({
         sql,
         dialect,
         table: usernames,
         key,
-        where: sql`user_id = ${userId} AND username_key <> ${usernameKey}`
+        where: sql`user_id = ${userId} AND username_key <> ${usernameKey}`,
+        columns: sql`${identifier(sql, "username_key")}`
       })
 
     /**
@@ -251,9 +226,10 @@ export const makeUsernameStore: Effect.Effect<UsernameStoreService, never, SqlCl
       readonly userId: UserId
     }) {
       const createdAt = yield* DateTime.now
-      type Attempt = Effect.Effect<UsernameRecord, UsernameTaken | SqlError.SqlError | Schema.SchemaError>
+      // Annotated because `Effect.catchTag` reads its tags off this channel.
+      type Claim = Effect.Effect<UsernameRecord, UsernameTaken | SqlError.SqlError | Schema.SchemaError>
 
-      const attempt: Attempt = sql.withTransaction(
+      const claiming: Claim = sql.withTransaction(
         Effect.gen(function* () {
           yield* releaseOther(record.userId, record.usernameKey)
           const rows = yield* takeName({ ...record, createdAt })
@@ -265,13 +241,8 @@ export const makeUsernameStore: Effect.Effect<UsernameStoreService, never, SqlCl
         })
       )
 
-      // Annotated because `Effect.catchTag` reads its tags off this channel and
-      // `Effect.retry` answers with a conditional type it cannot see into. A
-      // refusal is not retried: `UsernameTaken` is an answer, not a lost race.
-      const guarded: Attempt = Effect.retry(attempt, { while: isDeadlock, times: deadlockRetries })
-
       const claimed = yield* Effect.catchTag(
-        guarded,
+        claiming,
         // The plugin's own refusal is re-failed as itself; everything the
         // driver or the decoder can raise takes the `orElse` branch and becomes
         // the persistence failure every other store reports. Data-first,

@@ -42,6 +42,17 @@ later decision and it was taken with measurements the design doc did not have.
     helpers but must be semantically identical; the existing suite on PGlite is the proof and must
     stay green throughout.
 
+    *Amended after the build (2026-09-02).* This held for the four core stores and their
+    migrations — every statement they render on pg and sqlite is the one they rendered before. It
+    did **not** hold for the plugin tables' DDL, and the exceptions are deliberate, recorded in SPEC
+    21.4 and `CHANGELOG.md`: on PostgreSQL every plugin `varchar(n)` became `text` (the `id`,
+    `identity` and `hash` roles are unbounded there, as the core tables' always were), and every
+    inline `REFERENCES` became a table-level `FOREIGN KEY` so that MySQL's cascade is real; on
+    SQLite a natural key whose lost race a caller classifies is `NOT NULL UNIQUE` rather than a
+    declared `PRIMARY KEY` (SPEC 21.5). One statement changed too:
+    `TwoFactorStore.replaceRecoveryCodes` reads the ids it is about to clear and deletes them by
+    primary key on every dialect, which is what keeps MySQL off a gap lock.
+
 ## Pinned interfaces
 
 Wave A builders work in parallel and cannot see each other's code. These are the names and shapes
@@ -141,17 +152,21 @@ Every provider follows one shape, and a provider that boots an engine per build 
 
 | dialect | per worker (module-level memo, legitimate now that `isolate: false`) | per build | teardown |
 |---|---|---|---|
-| pglite | one `PGlite` instance | `CREATE SCHEMA effect_auth_test_<n>`, and a `SqlClient` whose connection has `search_path` set to it | `DROP SCHEMA … CASCADE` |
+| pglite | ~~one `PGlite` instance~~ — **not built; see below** | one `PGlite` instance per build | scope close |
 | sqlite | nothing | `SqliteClient.layer({ filename: ":memory:" })` then `PRAGMA foreign_keys = ON` | scope close |
 | pg | one container (Testcontainers, reuse enabled) or the URL | `CREATE DATABASE effect_auth_test_<id>`, `PgClient.layer` pointed at it | terminate its connections, `DROP DATABASE` |
 | mysql | one container or the URL | `CREATE DATABASE effect_auth_test_<id>`, `MysqlClient.layer` pointed at it | `DROP DATABASE` |
 
-`<n>` is a per-worker counter; `<id>` is unique across workers (a counter plus something
-worker-specific, or `effect/Crypto` — never `Math.random`). The isolation claim for the shared
-PGlite instance rests on `@effect/vitest`'s `layer()` blocks being sequential within a file; A2
-adds a test in `test/testing/` that two top-level blocks in one file never observe each other's
-rows and never overlap in time, and falls back to one PGlite per build (today's behaviour, behind
-the same `Provider`) if that test cannot be made to pass.
+`<id>` is unique across workers (a counter plus something worker-specific, or `effect/Crypto` —
+never `Math.random`).
+
+**The PGlite row is the fallback, and it is what shipped.** The per-worker design rested on
+`@effect/vitest`'s `layer()` blocks being sequential within a file; they are not —
+`sequence.concurrent` overlaps two top-level blocks, PGlite has one connection, and the second
+build's `search_path` lands under the first block's running tests. `test/testing/Isolation.test.ts`
+is the test A2 was told to write and it is what holds the line: one PGlite per build, one schema,
+no `search_path`. SPEC 21.7 records the decision. `pg` and `mysql` do keep one server per worker,
+which concurrent connections make safe.
 
 ### `src/sql/Dialect.ts` and `src/sql/Mutations.ts` (A1) — names and semantics
 
@@ -192,7 +207,9 @@ Wave B reads the real code; these are the names and the guarantees.
 - All helpers are `@internal`, unexported from the package, and `sql.withTransaction` is the only
   transaction primitive they use — a caller already inside `WithAuthTransaction` gets a savepoint.
 - Every statement the helpers produce on pg and sqlite is byte-identical to what the store wrote
-  before, apart from whitespace. That is what keeps decision 10 true.
+  before, apart from whitespace. That is what keeps decision 10 true *of the helpers*. Which helper
+  a store calls is the store's own decision, and three of them changed after the review — see
+  decision 10's amendment.
 
 ### `src/sql/stores/` (A4) — file names Wave B owns
 
@@ -207,20 +224,30 @@ change: the `.d.ts` of `effect-auth` is diffed against a build of `main` and mus
 |---|---|---|---|---|
 | `id` | primary keys and foreign keys | `text` | `text` | `varchar(64) CHARACTER SET ascii COLLATE ascii_bin` |
 | `hash` | `token_hash`, `value_hash`, `code_hash`, `username_key`'s digest if any | `text` | `text` | `varchar(64) … ascii_bin` |
-| `credential` | WebAuthn `credential_id`, passkey user handles | `text` | `text` | `varchar(1024) … ascii_bin` |
-| `email` | `users.email` | `text` | `text` | `varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin` |
-| `identity` | `issuer`, `account_id`, `provider_id`, `username`, `username_key`, `phone_e164`, `aaguid`, `aal` | `text` | `text` | `varchar(255) … utf8mb4_bin` |
-| `identifier` | `verifications.identifier` (`<purpose>:<subject>`, subject may be an address) | `text` | `text` | `varchar(400) … utf8mb4_bin` |
+| `credential` | WebAuthn `credential_id`, passkey user handles | `text` | `text` | `varchar(1368) … ascii_bin` |
+| `email` | `users.email` | `text` | `text` | `varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin` |
+| `identity` | `issuer`, `account_id`, `provider_id`, `username`, `username_key`, `phone_e164`, `aaguid`, `aal` | `text` | `text` | `varchar(255) … utf8mb4_0900_bin` |
+| `identifier` | `verifications.identifier` (`<purpose>:<subject>`, subject may be an address) | `text` | `text` | `varchar(400) … utf8mb4_0900_bin` |
 | `timestamp` | every `*_at` column, ISO-8601 UTC | `text` | `text` | `varchar(32) … ascii_bin` |
 | `boolean` | every flag | `boolean` | `integer` | `boolean` |
 | `number` | custom number fields | `double precision` | `real` | `double` |
 | `bigint` | `last_used_step` | `bigint` | `integer` | `bigint` |
-| `text` | names, image URLs, user agents, IPs, JSON (`methods`, `payload`, `transports`), ciphertexts, password hashes, public keys, custom string fields' *values* — and custom string *columns* | `text` | `text` | `text`, except custom string fields: `varchar(255) … utf8mb4_bin` |
+| `text` | names, image URLs, user agents, IPs, JSON (`methods`, `payload`, `transports`), ciphertexts, password hashes, public keys, custom string fields' *values* — and custom string *columns* | `text` | `text` | `text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin`, except custom string fields: `varchar(255) … utf8mb4_0900_bin` |
 
 Rules: an indexed MySQL column is never `text`; every unique index's byte width stays under
-InnoDB's 3072 (`issuer` + `account_id` = 2040; `credential_id` = 1024); opaque identity never
+InnoDB's 3072 (`issuer` + `account_id` = 2040; `credential_id` = 1368); opaque identity never
 inherits the server collation; e-mail is stored normalised (lower-cased) by the domain already, so
-`utf8mb4_bin` matches pg and sqlite semantics exactly. MySQL has no `ADD COLUMN IF NOT EXISTS`:
+`utf8mb4_0900_bin` matches pg and sqlite semantics exactly.
+
+*Amended after the fix pass (2026-09-02).* Three values in the table above are not what shipped, and
+the table has been corrected to what did. `credential` is `varchar(1368)`, not `varchar(1024)`:
+WebAuthn's 1023-byte cap is on the raw credential id and what is stored is its base64url spelling,
+1364 characters. The utf8mb4 roles are `utf8mb4_0900_bin`, not `utf8mb4_bin`, because `utf8mb4_bin`
+is PAD SPACE and would make `"sub"` and `"sub "` one row in a unique index where pg and sqlite see
+two; `utf8mb4_0900_bin` is NO PAD and needs MySQL 8.0.17, inside the 8.0.19 floor. The `text` role
+states its character set rather than inheriting the database's, which a database created
+`CHARACTER SET latin1` would otherwise make refuse an emoji. SPEC 21.4 and README "Databases" carry
+the same three values. MySQL has no `ADD COLUMN IF NOT EXISTS`:
 migrations run once, so mysql branches use plain `ADD COLUMN`; `forUserFields` — which runs on
 every boot — checks `information_schema.columns WHERE table_schema = DATABASE()` first. Every
 bounded column has its bound stated in the README beside the domain constraint that guarantees it.
@@ -242,12 +269,12 @@ assignments actually made, and they are the whole of `users`, `sessions`, `accou
 | `accounts` | `id`, `user_id` | — | — | `issuer`, `account_id`, `provider_id` | — | `access_token_expires_at`, `refresh_token_expires_at`, `created_at`, `updated_at` | — | `access_token`, `refresh_token`, `id_token`, `scope`, `password_hash` |
 | `verifications` | `id` | `value_hash` | — | — | `identifier` | `expires_at`, `created_at`, `updated_at` | — | `payload` |
 
-`sessions.aal` is `identity` (`varchar(255) … utf8mb4_bin`) rather than `text`: it holds the
+`sessions.aal` is `identity` (`varchar(255) … utf8mb4_0900_bin`) rather than `text`: it holds the
 literal `aal0`/`aal1`/`aal2` and a deployment may well want to index it. `sessions.methods` is
 `text`, because it is a JSON array whose length is not bounded by anything the domain enforces.
 
 **Lengths decided beyond the table.** One: custom string user fields are
-`columnType(dialect, "text", { length: 255 })` — the plan's `varchar(255) … utf8mb4_bin` — expressed
+`columnType(dialect, "text", { length: 255 })` — the plan's `varchar(255) … utf8mb4_0900_bin` — expressed
 as the `text` role with a length override rather than as a role of its own, so that there is one
 role for "a string whose contents this library does not constrain" and the override is the single
 place the 255 lives. No new role was needed; no built-in column needed a length the table did not
@@ -305,7 +332,8 @@ Written into every builder's definition of done.
 
 1. `isolate: false` stays. A change that needs isolation back has to say what state it leaks.
 2. One engine per worker, one schema or database per build. A provider that boots per build is
-   unfinished.
+   unfinished — **except PGlite**, which is one instance per build on purpose: see "The database
+   providers" above, SPEC 21.7 and `test/testing/Isolation.test.ts`.
 3. No new top-level `layer()` block where a nested `it.layer` would inherit the database. A test
    that needs an empty database uses `TestDatabase.reset`, not a new block.
 4. Service containers in CI, reusable containers locally (`withReuse()` and
@@ -332,7 +360,7 @@ All in ordinary `test/**/*.test.ts` files, dialect-neutral, inspecting schema on
   backfills, every required index present (by name, through `indexNames`), cascades work, custom
   columns get the right nullability and default, `forUserFields` is idempotent.
 - **Dialect facts** (`test/sql/Dialect.test.ts`): sqlite stores `0`/`1` and has foreign keys on;
-  mysql identity columns carry `utf8mb4_bin` or `ascii_bin`; mysql write-then-read returns the
+  mysql identity columns carry `utf8mb4_0900_bin` or `ascii_bin`; mysql write-then-read returns the
   row just written; mysql `ROW_COUNT()` counts correctly; pg and mysql `FOR UPDATE` blocks a second
   reader; sqlite serialises writers.
 
@@ -357,19 +385,19 @@ Commit.
 
 | builder | owns | delivers |
 |---|---|---|
-| B1 Core migrations | `src/sql/Migrations.ts`, a draft of SPEC Amendment 20's column table in `db-expansion-plan.md` § "Column roles" (append, do not rewrite) | six migrations through `columnType`, mysql DDL, `forUserFields` over `information_schema`, `identifier()` for every dynamic name, no `sql.unsafe` left in the file |
+| B1 Core migrations | `src/sql/Migrations.ts`, a draft of SPEC Amendment 21's column table in `db-expansion-plan.md` § "Column roles" (append, do not rewrite) | six migrations through `columnType`, mysql DDL, `forUserFields` over `information_schema`, `identifier()` for every dynamic name, no `sql.unsafe` left in the file |
 | B2 Users and Sessions | `src/sql/stores/Users.ts`, `Sessions.ts` | every mutation through the helpers; the joined read; `elevate`'s single locked write |
 | B3 Accounts, Verifications, Transaction | `src/sql/stores/Accounts.ts`, `Verifications.ts`, `Transaction.ts`, `internal.ts` | same, plus `consumeOne` for `VerificationStore.consume`. Runs `test/sql/Concurrency.test.ts` on mysql before reporting |
 | B4 Plugins, simple | `src/username/{Store,Migrations}.ts`, `src/anonymous/{Store,Migrations}.ts`, `src/phone/{Store,Migrations}.ts` | ports; `upsertAndRead` for the username claim; `identifier()` for the phone table name |
 | B5 Plugins, hard | `src/passkeys/{Store,Migrations}.ts`, `src/two-factor/{Store,Migrations}.ts` | ports; deletes the passkey boolean codec copy; `upsertAndRead` for the TOTP enrolment with a test proving an abandoned-then-restarted enrolment behaves identically on all dialects; the `credential` and `bigint` roles |
-| B6 Plugin contracts and docs | `test/{username,anonymous,phone,passkeys,two-factor}/{Store,Migrations}.test.ts`, `README.md`, `CHANGELOG.md`, `SPEC.md` (Amendment 20), `AGENTS.md`, `db-expansion.md` (status line only) | dialect-neutral plugin contracts; README "Databases" (drivers, versions, the SQLite pragma, MySQL lengths and collations, the migrator's MySQL caveats: DDL auto-commits, no cross-process lock) and "Testing" (the `database` option, the variable, the four scripts, Docker and reuse); AGENTS.md: why isolation is off, why a module-level memo in `src/testing` is legitimate, the speed rules |
+| B6 Plugin contracts and docs | `test/{username,anonymous,phone,passkeys,two-factor}/{Store,Migrations}.test.ts`, `README.md`, `CHANGELOG.md`, `SPEC.md` (Amendment 21), `AGENTS.md`, `db-expansion.md` (status line only) | dialect-neutral plugin contracts; README "Databases" (drivers, versions, the SQLite pragma, MySQL lengths and collations, the migrator's MySQL caveats: DDL auto-commits, no cross-process lock) and "Testing" (the `database` option, the variable, the four scripts, Docker and reuse); AGENTS.md: why isolation is off, why a module-level memo in `src/testing` is legitimate, the speed rules |
 
 Gate B: all five commands green on all four dialects, wall time per dialect recorded. Commit.
 
 ### Review, fix, gate
 
 - **Reviewer 1 (Fable), adversarial on correctness.** Can any dialect break exactly-once
-  consumption, the reclaim lock, uniqueness under `utf8mb4_bin`/`ascii_bin`, or rollback? Can a
+  consumption, the reclaim lock, uniqueness under `utf8mb4_0900_bin`/`ascii_bin`, or rollback? Can a
   MySQL write-then-read return a row another connection changed between the two statements? Do
   InnoDB gap locks deadlock the concurrent-consume test? Does any dialect's timing differ in a way
   that touches the no-enumeration guarantee? Is decision 10 actually true — read the pg SQL before
@@ -386,6 +414,7 @@ Gate B: all five commands green on all four dialects, wall time per dialect reco
 ## Definition of done for the wave
 
 `REFACTOR.md` §6 for every change, plus: all four suites green locally and in CI; the `.d.ts` of
-`effect-auth` unchanged by A4 and changed only by the testing types afterwards; `CHANGELOG.md` and
-SPEC Amendment 20 written; the support definition in `db-expansion.md` met for PostgreSQL, SQLite
-and MySQL; the pglite CI job under two minutes.
+`effect-auth` unchanged by A4, and afterwards changed only by the testing types and by A1's one
+deliberate removal — `SqlStores.decodeSqliteBoolean`, deleted with the codec copies it belonged to
+(SPEC 21.2, `CHANGELOG.md`); `CHANGELOG.md` and SPEC Amendment 21 written; the support definition in
+`db-expansion.md` met for PostgreSQL, SQLite and MySQL; the pglite CI job under two minutes.

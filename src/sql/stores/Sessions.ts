@@ -13,7 +13,8 @@
  * Every write goes through `src/sql/Mutations.ts`. `elevate` is the one that is
  * more than a write: it reads the stored row under a lock, lets the caller's
  * `append` decide the new log, and writes the result — so it holds the
- * transaction and the lock itself and hands only the write to the helper, which
+ * transaction and the lock itself, through `Mutations.atomically` like every
+ * other multi-statement sequence, and hands only the write to the helper, which
  * on MySQL re-takes the same row's lock inside the same transaction and is
  * therefore the same single guarded write it is on PostgreSQL.
  *
@@ -29,7 +30,7 @@ import { AuthenticationMethodsJson } from "../../domain/Assurance.js"
 import type { UserFields, UserModel, UserRow } from "../../domain/Schema.js"
 import { Session } from "../../domain/Schema.js"
 import { booleanCodec, dialectOf, lockClause } from "../Dialect.js"
-import { deleteAndCount, insertAndRead, updateAndRead } from "../Mutations.js"
+import { atomically, deleteAndCount, insertAndRead, updateAndRead } from "../Mutations.js"
 import { joinedProjectionOf, persist, userColumnsOf, userReaderOf } from "./internal.js"
 
 // -----------------------------------------------------------------------------
@@ -56,7 +57,7 @@ export const make: <F extends UserFields>(
   const dialect = yield* dialectOf(sql)
   const sessionCols = sql.literal(sessionColumns)
   const columns = userColumnsOf(model.selectFields)
-  const sessionWithUserCols = sql.literal(`${sessionJoinColumns}, ${joinedProjectionOf(columns, "u", "u_")}`)
+  const sessionWithUserCols = sql.csv([sql.literal(sessionJoinColumns), joinedProjectionOf(sql, columns, "u", "u_")])
   const boolean = booleanCodec(dialect)
   // The joined user half may carry a deployment's own nullable flag, so an
   // absent value stays absent there; `sessions.remember_me` is `NOT NULL` on
@@ -205,7 +206,9 @@ export const make: <F extends UserFields>(
     // the session had already proved.
     elevate: (id, patch) =>
       persist("SessionStore.elevate")(
-        sql.withTransaction(
+        atomically(
+          sql,
+          dialect,
           Effect.gen(function* () {
             const now = yield* DateTime.now
             const locked = yield* sql<UserRow>`SELECT ${sessionCols} FROM sessions WHERE id = ${id}${lock}`

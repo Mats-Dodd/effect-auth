@@ -70,8 +70,16 @@ const admins = new Map<string, Effect.Effect<SqlClient.SqlClient, SqlError.SqlEr
 const adminFor = (url: string): Effect.Effect<SqlClient.SqlClient, SqlError.SqlError> => {
   const existing = admins.get(url)
   if (existing !== undefined) return existing
+  // `provideServiceEffect` rather than a layer: this pool is acquired in the
+  // never-closed worker scope, which is the one lifetime a `Layer` in the build
+  // graph cannot express. Every client that *is* in the graph takes
+  // `Reactivity` through `Layer.provide` below.
   const created = perWorker(
-    Effect.provide(MysqlClient.make({ url: Redacted.make(url), maxConnections: 2 }), Reactivity.layer)
+    Effect.provideServiceEffect(
+      MysqlClient.make({ url: Redacted.make(url), maxConnections: 2 }),
+      Reactivity.Reactivity,
+      Reactivity.make
+    )
   )
   admins.set(url, created)
   return created
@@ -89,14 +97,13 @@ const database = (serverUrl: Effect.Effect<string>) =>
     yield* Effect.acquireRelease(admin`CREATE DATABASE ${admin(name)}`, () =>
       Effect.orDie(admin`DROP DATABASE ${admin(name)}`)
     )
-    return yield* Effect.provide(
-      MysqlClient.make({ url: Redacted.make(withDatabase(url, name)), maxConnections: 4 }),
-      Reactivity.layer
-    )
+    return yield* MysqlClient.make({ url: Redacted.make(withDatabase(url, name)), maxConnections: 4 })
   })
 
 const provider = (serverUrl: Effect.Effect<string>): Provider => {
-  const client = Layer.effect(SqlClient.SqlClient, database(serverUrl))
+  // `Reactivity` is provided once, here, for the whole provider — the client
+  // effect above states the requirement rather than satisfying it.
+  const client = Layer.effect(SqlClient.SqlClient, database(serverUrl)).pipe(Layer.provide(Reactivity.layer))
   return Layer.effect(TestDatabase, Effect.map(SqlClient.SqlClient, Catalog.mysql)).pipe(Layer.provideMerge(client))
 }
 

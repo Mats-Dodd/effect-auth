@@ -215,6 +215,37 @@ describe.sequential("phone/Store", () => {
         })
       )
     })
+
+    // Last in the block, because it empties the table the cases above filled.
+    // The block is `describe.sequential`, so "last" means what it says.
+    describe("a burst of first claims", () => {
+      it.effect("lets twelve people claim twelve numbers at once on a table that has never held one", () =>
+        Effect.gen(function* () {
+          const database = yield* Database.TestDatabase
+          const store = yield* PhoneStore
+          // The empty table is the case: a first claim releases nothing, and on
+          // MySQL a predicate that matches nothing takes the gap lock every
+          // other claimant then needs to insert into.
+          yield* database.reset
+          const users = yield* Effect.forEach(
+            Array.from({ length: 12 }, (_, index) => index),
+            (index) => createUser(`store-storm-${index}`),
+            { concurrency: "unbounded" }
+          )
+          const numbers = users.map(() => uniqueNumber())
+          const claimed = yield* Effect.forEach(
+            users,
+            (user, index) => store.claim({ phoneE164: numbers[index]!, userId: user.id }),
+            { concurrency: "unbounded" }
+          )
+          assert.deepStrictEqual(claimed.map((row) => row.phoneE164).sort(), [...numbers].sort())
+          for (const [index, user] of users.entries()) {
+            const held = yield* store.findByUserId(user.id)
+            assert.strictEqual(Option.getOrNull(held)?.phoneE164, numbers[index])
+          }
+        })
+      )
+    })
   })
 
   // The barrel is the plugin's public surface, and a consumer reaches every one
