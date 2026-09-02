@@ -2,7 +2,7 @@ import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Layer, Option, Redacted, Result } from "effect"
 import { TestClock } from "effect/testing"
 import * as Totp from "../../src/crypto/Totp.js"
-import type { ProvisionSource } from "../../src/domain/Hooks.js"
+import { ProvisionSource } from "../../src/domain/Hooks.js"
 import type { User } from "../../src/domain/Schema.js"
 import type { Evidence } from "../../src/domain/Sessions.js"
 import { meetsAssurance, Sessions } from "../../src/domain/Sessions.js"
@@ -13,7 +13,7 @@ import { decode as decodeBase32 } from "../../src/internal/base32.js"
 import * as AuthTest from "../../src/testing/TestLayer.js"
 import * as TwoFactorTest from "../../src/testing/TwoFactorTest.js"
 import { layer as storeLayer, TwoFactorStore } from "../../src/two-factor/Store.js"
-import { TwoFactor } from "../../src/two-factor/TwoFactor.js"
+import { ChallengeSubject, Factor, TwoFactor } from "../../src/two-factor/TwoFactor.js"
 import { signUpUser, uniqueEmail } from "../fixtures.js"
 
 const testLayer = storeLayer.pipe(Layer.provideMerge(TwoFactorTest.layer()))
@@ -68,7 +68,7 @@ layer(testLayer)("two-factor/pipeline", (it) => {
       const signIn = yield* SignIn
       return yield* signIn.complete({
         user,
-        source: options?.source ?? { _tag: "EmailPassword" },
+        source: options?.source ?? ProvisionSource.EmailPassword(),
         evidence: options?.evidence ?? [passwordEvidence],
         current: Option.none(),
         request: { rememberMe: options?.rememberMe, ipAddress: null, userAgent: null }
@@ -156,13 +156,12 @@ layer(testLayer)("two-factor/pipeline", (it) => {
         // prior art this is modelled on gated three named sign-in paths and let
         // a TOTP user in through the fourth with no second factor at all.
         const sources: ReadonlyArray<ProvisionSource> = [
-          { _tag: "MagicLink" },
-          { _tag: "Plugin", plugin: "email-otp" },
-          {
-            _tag: "OAuth",
+          ProvisionSource.MagicLink(),
+          ProvisionSource.Plugin({ plugin: "email-otp" }),
+          ProvisionSource.OAuth({
             providerId: "github",
             info: { id: "1", email: "provider@example.com", emailVerified: true }
-          }
+          })
         ]
         for (const source of sources) {
           const result = yield* signInAs(user, { evidence: [mailboxEvidence], source })
@@ -213,8 +212,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
         const { twoFactor, user, secret, token } = yield* challenged("pending-complete")
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: "203.0.113.9",
           userAgent: "a browser"
         })
@@ -238,8 +237,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
         const { twoFactor, secret, token } = yield* challenged("pending-remember", { rememberMe: false })
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -253,16 +252,16 @@ layer(testLayer)("two-factor/pipeline", (it) => {
       Effect.gen(function* () {
         const { twoFactor, secret, token } = yield* challenged("pending-once")
         yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
 
         const error = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "Totp", code: yield* codeAt(secret, 2) },
-            subject: { _tag: "PendingAuth", token },
+            factor: Factor.Totp({ code: yield* codeAt(secret, 2) }),
+            subject: ChallengeSubject.PendingAuth({ token }),
             ipAddress: null,
             userAgent: null
           })
@@ -284,8 +283,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
 
         const error = yield* Effect.flip(
           attacker.twoFactor.verify({
-            factor: { _tag: "Totp", code: yield* codeAt(attacker.secret, 1) },
-            subject: { _tag: "PendingAuth", token: forged },
+            factor: Factor.Totp({ code: yield* codeAt(attacker.secret, 1) }),
+            subject: ChallengeSubject.PendingAuth({ token: forged }),
             ipAddress: null,
             userAgent: null
           })
@@ -306,8 +305,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
             yield* TestClock.adjust(Duration.minutes(11))
             return yield* Effect.flip(
               account.twoFactor.verify({
-                factor: { _tag: "Totp", code: yield* codeAt(account.secret, 1) },
-                subject: { _tag: "PendingAuth", token: result.token },
+                factor: Factor.Totp({ code: yield* codeAt(account.secret, 1) }),
+                subject: ChallengeSubject.PendingAuth({ token: result.token }),
                 ipAddress: null,
                 userAgent: null
               })
@@ -325,8 +324,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
 
         const wrong = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "Totp", code: Redacted.make("000000") },
-            subject: { _tag: "PendingAuth", token },
+            factor: Factor.Totp({ code: Redacted.make("000000") }),
+            subject: ChallengeSubject.PendingAuth({ token }),
             ipAddress: null,
             userAgent: null
           })
@@ -336,8 +335,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
         // The row went back under the *same* handle, so the cookie the browser
         // is holding still names it.
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -358,8 +357,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
             yield* TestClock.adjust(Duration.minutes(6))
             yield* Effect.flip(
               account.twoFactor.verify({
-                factor: { _tag: "Totp", code: Redacted.make("000000") },
-                subject: { _tag: "PendingAuth", token: result.token },
+                factor: Factor.Totp({ code: Redacted.make("000000") }),
+                subject: ChallengeSubject.PendingAuth({ token: result.token }),
                 ipAddress: null,
                 userAgent: null
               })
@@ -367,8 +366,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
             yield* TestClock.adjust(Duration.minutes(5))
             return yield* Effect.flip(
               account.twoFactor.verify({
-                factor: { _tag: "Totp", code: yield* codeAt(account.secret, 1) },
-                subject: { _tag: "PendingAuth", token: result.token },
+                factor: Factor.Totp({ code: yield* codeAt(account.secret, 1) }),
+                subject: ChallengeSubject.PendingAuth({ token: result.token }),
                 ipAddress: null,
                 userAgent: null
               })
@@ -388,8 +387,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
         const before = (yield* sessions.list(user.id)).length
         const code = yield* codeAt(secret, 1)
         const attempt = twoFactor.verify({
-          factor: { _tag: "Totp", code },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -409,8 +408,8 @@ layer(testLayer)("two-factor/pipeline", (it) => {
 
         const recorded = yield* AuthTest.recordingEvents(
           twoFactor.verify({
-            factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-            subject: { _tag: "PendingAuth", token },
+            factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+            subject: ChallengeSubject.PendingAuth({ token }),
             ipAddress: null,
             userAgent: null
           })
@@ -444,14 +443,15 @@ layer(testLayer)("two-factor/pipeline", (it) => {
 
     it.effect("completes a mailed-code sign-in, and lands at aal1", () =>
       Effect.gen(function* () {
-        const { twoFactor, user, secret, token } = yield* challengedBy("possession-mail", [mailboxEvidence], {
-          _tag: "Plugin",
-          plugin: "email-otp"
-        })
+        const { twoFactor, user, secret, token } = yield* challengedBy(
+          "possession-mail",
+          [mailboxEvidence],
+          ProvisionSource.Plugin({ plugin: "email-otp" })
+        )
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -473,15 +473,18 @@ layer(testLayer)("two-factor/pipeline", (it) => {
     it.effect("completes an OAuth sign-in", () =>
       Effect.gen(function* () {
         const oauthEvidence = { ...mailboxEvidence, method: "oauth:github" } as const
-        const { twoFactor, user, secret, token } = yield* challengedBy("possession-oauth", [oauthEvidence], {
-          _tag: "OAuth",
-          providerId: "github",
-          info: { id: "1", email: "provider@example.com", emailVerified: true }
-        })
+        const { twoFactor, user, secret, token } = yield* challengedBy(
+          "possession-oauth",
+          [oauthEvidence],
+          ProvisionSource.OAuth({
+            providerId: "github",
+            info: { id: "1", email: "provider@example.com", emailVerified: true }
+          })
+        )
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -497,14 +500,15 @@ layer(testLayer)("two-factor/pipeline", (it) => {
     it.effect("completes a passkey sign-in the authenticator did not verify a person for", () =>
       Effect.gen(function* () {
         const unverified = { ...passkeyEvidence, userVerified: false } as const
-        const { twoFactor, user, secret, token } = yield* challengedBy("possession-passkey", [unverified], {
-          _tag: "Plugin",
-          plugin: "passkeys"
-        })
+        const { twoFactor, user, secret, token } = yield* challengedBy(
+          "possession-passkey",
+          [unverified],
+          ProvisionSource.Plugin({ plugin: "passkeys" })
+        )
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -520,15 +524,18 @@ layer(testLayer)("two-factor/pipeline", (it) => {
     it.effect("can still manage its enrolment afterwards, which `aal2` would have made impossible", () =>
       Effect.gen(function* () {
         const oauthEvidence = { ...mailboxEvidence, method: "oauth:github" } as const
-        const { twoFactor, secret, token } = yield* challengedBy("possession-manage", [oauthEvidence], {
-          _tag: "OAuth",
-          providerId: "github",
-          info: { id: "1", email: "provider@example.com", emailVerified: true }
-        })
+        const { twoFactor, secret, token } = yield* challengedBy(
+          "possession-manage",
+          [oauthEvidence],
+          ProvisionSource.OAuth({
+            providerId: "github",
+            info: { id: "1", email: "provider@example.com", emailVerified: true }
+          })
+        )
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })
@@ -547,14 +554,15 @@ layer(testLayer)("two-factor/pipeline", (it) => {
 
     it.effect("completes with a recovery code too", () =>
       Effect.gen(function* () {
-        const { twoFactor, user, codes, token } = yield* challengedBy("possession-recovery", [mailboxEvidence], {
-          _tag: "Plugin",
-          plugin: "email-otp"
-        })
+        const { twoFactor, user, codes, token } = yield* challengedBy(
+          "possession-recovery",
+          [mailboxEvidence],
+          ProvisionSource.Plugin({ plugin: "email-otp" })
+        )
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "RecoveryCode", code: codes[0]! },
-          subject: { _tag: "PendingAuth", token },
+          factor: Factor.RecoveryCode({ code: codes[0]! }),
+          subject: ChallengeSubject.PendingAuth({ token }),
           ipAddress: null,
           userAgent: null
         })

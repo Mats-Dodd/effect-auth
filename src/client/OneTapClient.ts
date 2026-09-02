@@ -32,7 +32,7 @@
  * @since 0.2.0
  */
 import type { Layer } from "effect"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Option, Result, Schema } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import { type Atom, AtomHttpApi } from "effect/unstable/reactivity"
 import type { AccountAlreadyLinked, OAuthProviderError, RateLimited, UserNotFound } from "../domain/Errors.js"
@@ -192,7 +192,7 @@ const host = (): Option.Option<Host> => {
  * @since 0.2.0
  */
 export const loadScript: Effect.Effect<void, OneTapUnavailable> = Effect.flatMap(Effect.result(identity), (found) =>
-  found._tag === "Success"
+  Result.isSuccess(found)
     ? Effect.void
     : Effect.suspend(() =>
         Option.match(host(), {
@@ -416,7 +416,7 @@ export const make = (options?: Options): OneTapClient => {
 
   const preventSilentAccess = Effect.gen(function* () {
     const google = yield* Effect.result(identity)
-    if (google._tag === "Success") google.success.disableAutoSelect()
+    if (Result.isSuccess(google)) google.success.disableAutoSelect()
     const navigator: unknown = Reflect.get(globalThis, "navigator")
     const credentials = isRecord(navigator) ? navigator.credentials : undefined
     const prevent = isRecord(credentials) ? credentials.preventSilentAccess : undefined

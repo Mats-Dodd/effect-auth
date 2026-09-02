@@ -30,10 +30,9 @@
  * @since 0.2.0
  */
 import { Array, Context, DateTime, Effect, Layer, Option, Schema } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
+import { SqlClient } from "effect/unstable/sql"
 import { UserId } from "../domain/Schema.js"
-import type { PersistenceFailureKind } from "../domain/Stores.js"
-import { PersistenceError } from "../domain/Stores.js"
+import { persistenceFailureKind, PersistenceError } from "../domain/Stores.js"
 import { decodeSqliteBoolean } from "../sql/SqlStores.js"
 import type { PasskeyId } from "./Schema.js"
 import { Passkey } from "./Schema.js"
@@ -151,13 +150,10 @@ interface Row {
   readonly [column: string]: unknown
 }
 
-const kindOf = (cause: unknown): PersistenceFailureKind =>
-  SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
-
 const persist =
   (operation: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, PersistenceError, R> =>
-    Effect.mapError(effect, (cause) => PersistenceError.make({ operation, kind: kindOf(cause), cause }))
+    Effect.mapError(effect, (cause) => PersistenceError.make({ operation, kind: persistenceFailureKind(cause), cause }))
 
 const noRow = (operation: string) =>
   Effect.fail(PersistenceError.make({ operation, cause: "the statement returned no row" }))

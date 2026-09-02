@@ -35,7 +35,21 @@
  *
  * @since 0.2.0
  */
-import { Context, Crypto, DateTime, Duration, Effect, Encoding, Layer, Option, Redacted, Schema, Stream } from "effect"
+import {
+  Context,
+  Crypto,
+  Data,
+  DateTime,
+  Duration,
+  Effect,
+  Encoding,
+  Layer,
+  Option,
+  Redacted,
+  Result,
+  Schema,
+  Stream
+} from "effect"
 import type { Scope } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -55,15 +69,22 @@ import type { AuthenticatorsService, AuthenticatorSummary } from "../domain/Auth
 import { Authenticators, combine as combineAuthenticators } from "../domain/Authenticators.js"
 import type { EmailDeliveryError, RateLimited } from "../domain/Errors.js"
 import { InvalidCode, InvalidToken } from "../domain/Errors.js"
-import type { AuthEvent } from "../domain/Events.js"
-import { AuthEvents, publishSafely } from "../domain/Events.js"
-import { PolicyRefused } from "../domain/Hooks.js"
+import { AuthEvent, AuthEvents, PluginEvent, publishSafely } from "../domain/Events.js"
+import { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
 import type { Session, User } from "../domain/Schema.js"
 import { UserId } from "../domain/Schema.js"
 import type { Evidence } from "../domain/Sessions.js"
 import { recoveryCodeMethod, Sessions, stampEvidence } from "../domain/Sessions.js"
-import type { CompleteOptions, SignInDecision, SignInPipelineService } from "../domain/SignIn.js"
-import { combine as combinePipelines, methodOf, proceed, SignIn, SignInPipeline } from "../domain/SignIn.js"
+import type { CompleteOptions, SignInPipelineService } from "../domain/SignIn.js"
+import {
+  combine as combinePipelines,
+  methodOf,
+  proceed,
+  SignIn,
+  SignInDecision,
+  SignInPipeline,
+  SignInResult
+} from "../domain/SignIn.js"
 import type { PersistenceError } from "../domain/Stores.js"
 import { UserStore } from "../domain/Stores.js"
 import type { TokenPurpose } from "../domain/Verifications.js"
@@ -446,10 +467,17 @@ export interface Config {
    * or removed:
    *
    * ```ts skip-type-checking
-   * alsoSweepOn: (event) =>
-   *   event._tag === "PluginEvent" &&
-   *   event.plugin === Passkeys.passkeysPlugin &&
-   *   (event.event === Passkeys.registeredEvent || event.event === Passkeys.removedEvent)
+   * import { AuthEvents } from "effect-auth"
+   * import * as Passkeys from "effect-auth/passkeys"
+   *
+   * alsoSweepOn: AuthEvents.AuthEvent.matchOrElse(
+   *   {
+   *     PluginEvent: (event) =>
+   *       event.plugin === Passkeys.passkeysPlugin &&
+   *       (event.event === Passkeys.registeredEvent || event.event === Passkeys.removedEvent)
+   *   },
+   *   () => false
+   * )
    * ```
    *
    * Defaults to a predicate that is never true.
@@ -642,9 +670,30 @@ export interface StartedEnrolment {
  * @category models
  * @since 0.2.0
  */
-export type Factor =
-  | { readonly _tag: "Totp"; readonly code: Redacted.Redacted }
-  | { readonly _tag: "RecoveryCode"; readonly code: Redacted.Redacted }
+export type Factor = Data.TaggedEnum<{
+  /** A code from the enrolled authenticator app. */
+  Totp: { readonly code: Redacted.Redacted }
+  /** One of the codes handed out when the enrolment was confirmed. */
+  RecoveryCode: { readonly code: Redacted.Redacted }
+}>
+
+/**
+ * Constructors and matchers for {@link Factor}.
+ *
+ * **Details**
+ *
+ * `Factor.Totp({ code })` is what an HTTP handler builds from its payload, and
+ * `Factor.$is("RecoveryCode")` is how the service tells the two apart.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at a factor a caller
+ * of this library constructed — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const Factor = Data.taggedEnum<Factor>()
 
 /**
  * Who is answering it: a sign-in that was interrupted, or a live session being
@@ -660,9 +709,31 @@ export type Factor =
  * @category models
  * @since 0.2.0
  */
-export type ChallengeSubject =
-  | { readonly _tag: "PendingAuth"; readonly token: Redacted.Redacted }
-  | { readonly _tag: "Session"; readonly session: Session; readonly user: User }
+export type ChallengeSubject = Data.TaggedEnum<{
+  /** A sign-in that stopped at this plugin, named by its pending token. */
+  PendingAuth: { readonly token: Redacted.Redacted }
+  /** A live session being raised, with the person holding it. */
+  Session: { readonly session: Session; readonly user: User }
+}>
+
+/**
+ * Constructors and matchers for {@link ChallengeSubject}.
+ *
+ * **Details**
+ *
+ * `ChallengeSubject.PendingAuth({ token })` and
+ * `ChallengeSubject.Session({ session, user })` are what an HTTP handler
+ * resolves a request into; `$is` is how the service and the handler branch.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at a subject this
+ * library resolved — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const ChallengeSubject = Data.taggedEnum<ChallengeSubject>()
 
 /**
  * What {@link TwoFactorService.verify} takes.
@@ -1070,7 +1141,7 @@ export const make: (
       consumeKeyed({ config, limiter, bucket: settings.lockout, key: userId, always: true })
 
     const publish = (event: string, userId: UserId, data: Record<string, unknown>) =>
-      publishSafely(events, { _tag: "PluginEvent", plugin: twoFactorPlugin, event, userId, data })
+      publishSafely(events, PluginEvent.make({ plugin: twoFactorPlugin, event, userId, data }))
 
     const secretOf = (enrolment: TotpEnrolment): Effect.Effect<Uint8Array> =>
       // A ciphertext this deployment cannot read is an operational fault — a
@@ -1198,7 +1269,7 @@ export const make: (
      * recovery code that was spent or never existed.
      */
     const checkFactor = Effect.fnUntraced(function* (userId: UserId, factor: Factor) {
-      if (factor._tag === "RecoveryCode") {
+      if (Factor.$is("RecoveryCode")(factor)) {
         const normalised = RecoveryCodes.normalise(Redacted.value(factor.code))
         const codeHash = yield* hashRecoveryCode(normalised)
         const now = yield* DateTime.now
@@ -1271,12 +1342,12 @@ export const make: (
       })
 
     const verify = Effect.fnUntraced(function* (options: VerifyOptions) {
-      if (options.subject._tag === "Session") {
+      if (ChallengeSubject.$is("Session")(options.subject)) {
         const { session, user } = options.subject
         yield* spendAttempt(user.id)
         const evidence = yield* checkFactor(user.id, options.factor)
         const elevated = yield* sessions.elevate(session, evidence)
-        if (options.factor._tag === "RecoveryCode") yield* afterRecovery(user)
+        if (Factor.$is("RecoveryCode")(options.factor)) yield* afterRecovery(user)
         return {
           session: elevated.session,
           user,
@@ -1304,7 +1375,7 @@ export const make: (
           return yield* checkFactor(userId, options.factor)
         })
       )
-      if (attempt._tag === "Failure") {
+      if (Result.isFailure(attempt)) {
         // A wrong code costs an attempt, not the sign-in: the row goes back
         // under the *same* handle, so the cookie the browser is holding still
         // names it, and with the *original* expiry, so guessing cannot extend
@@ -1325,7 +1396,7 @@ export const make: (
         // seen its real source and allowed it; this half names the plugin that
         // finished it, carrying the original method so the `SignedIn` event
         // reads the same as an uninterrupted one.
-        source: { _tag: "Plugin", plugin: payload.method },
+        source: ProvisionSource.Plugin({ plugin: payload.method }),
         evidence: [...payload.evidence, attempt.success],
         current: Option.none(),
         request: {
@@ -1334,14 +1405,14 @@ export const make: (
           userAgent: options.userAgent
         }
       })
-      if (result._tag === "Challenge") {
+      if (SignInResult.$is("Challenge")(result)) {
         // Another factor plugin owes something as well. This endpoint has no
         // way to answer a second challenge, so it fails closed rather than
         // leaving a half-authenticated caller holding two pending rows.
         return yield* PolicyRefused.make({ code: mfaRequiredCode })
       }
 
-      if (options.factor._tag === "RecoveryCode") yield* afterRecovery(user)
+      if (Factor.$is("RecoveryCode")(options.factor)) yield* afterRecovery(user)
       return {
         session: result.session,
         user,
@@ -1414,9 +1485,8 @@ export const make: (
 
     const sweepOn = (event: AuthEvent): Effect.Effect<void, PersistenceError> => {
       const shouldSweep =
-        event._tag === "PasswordChanged" ||
-        event._tag === "EmailChanged" ||
-        (event._tag === "SessionRevoked" && event.scope === "all") ||
+        AuthEvent.isAnyOf(["PasswordChanged", "EmailChanged"])(event) ||
+        (AuthEvent.isAnyOf(["SessionRevoked"])(event) && event.scope === "all") ||
         settings.alsoSweepOn(event)
       // An event that names nobody sweeps nobody: a `PluginEvent` may carry a
       // null `userId`, and this is not a rule that gets to guess whose
@@ -1601,13 +1671,12 @@ export const makeSeams: (
             method: methodOf(options.source)
           }
         })
-        return {
-          _tag: "Challenge",
+        return SignInDecision.Challenge({
           kind: challengeKind,
           available,
           token: issued.token,
           expiresAt: issued.expiresAt
-        }
+        })
       })
 
     return {

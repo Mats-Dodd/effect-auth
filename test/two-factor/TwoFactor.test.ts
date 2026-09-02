@@ -2,14 +2,14 @@ import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Layer, Option, Redacted, Result } from "effect"
 import { TestClock } from "effect/testing"
 import * as Totp from "../../src/crypto/Totp.js"
-import { AuthEvents } from "../../src/domain/Events.js"
+import { AuthEvents, EmailChanged, PasswordChanged, SessionRevoked } from "../../src/domain/Events.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { decode as decodeBase32 } from "../../src/internal/base32.js"
 import { TestEmails } from "../../src/testing/TestEmails.js"
 import * as AuthTest from "../../src/testing/TestLayer.js"
 import * as TwoFactorTest from "../../src/testing/TwoFactorTest.js"
 import { layer as storeLayer, TwoFactorStore } from "../../src/two-factor/Store.js"
-import { TwoFactor } from "../../src/two-factor/TwoFactor.js"
+import { ChallengeSubject, Factor, TwoFactor } from "../../src/two-factor/TwoFactor.js"
 import { signUpUser, uniqueEmail } from "../fixtures.js"
 
 /** The raw bytes behind the base32 secret an enrolment answers with. */
@@ -90,8 +90,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         // has proved: refused, and indistinguishably from a wrong one.
         const error = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "Totp", code: yield* codeAt(started.secret, 0) },
-            subject: { _tag: "Session", session, user },
+            factor: Factor.Totp({ code: yield* codeAt(started.secret, 0) }),
+            subject: ChallengeSubject.Session({ session, user }),
             ipAddress: null,
             userAgent: null
           })
@@ -176,8 +176,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         // statement that made it active.
         const replayed = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "Totp", code: yield* codeAt(secret, 0) },
-            subject: { _tag: "Session", session, user },
+            factor: Factor.Totp({ code: yield* codeAt(secret, 0) }),
+            subject: ChallengeSubject.Session({ session, user }),
             ipAddress: null,
             userAgent: null
           })
@@ -210,8 +210,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         const sessions = yield* Sessions
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code: yield* codeAt(secret, 1) },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.Totp({ code: yield* codeAt(secret, 1) }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
@@ -235,15 +235,15 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         const code = yield* codeAt(secret, 1)
 
         const first = yield* twoFactor.verify({
-          factor: { _tag: "Totp", code },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.Totp({ code }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
         const error = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "Totp", code },
-            subject: { _tag: "Session", session: first.session, user },
+            factor: Factor.Totp({ code }),
+            subject: ChallengeSubject.Session({ session: first.session, user }),
             ipAddress: null,
             userAgent: null
           })
@@ -258,8 +258,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         const { twoFactor, user, session, secret } = yield* enrolled("raise-race")
         const code = yield* codeAt(secret, 1)
         const attempt = twoFactor.verify({
-          factor: { _tag: "Totp", code },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.Totp({ code }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
@@ -279,8 +279,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
 
         const error = yield* Effect.flip(
           mine.twoFactor.verify({
-            factor: { _tag: "Totp", code: yield* codeAt(theirs.secret, 1) },
-            subject: { _tag: "Session", session: mine.session, user: mine.user },
+            factor: Factor.Totp({ code: yield* codeAt(theirs.secret, 1) }),
+            subject: ChallengeSubject.Session({ session: mine.session, user: mine.user }),
             ipAddress: null,
             userAgent: null
           })
@@ -298,8 +298,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         const emails = yield* TestEmails
 
         const result = yield* twoFactor.verify({
-          factor: { _tag: "RecoveryCode", code: codes[0]! },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.RecoveryCode({ code: codes[0]! }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
@@ -322,16 +322,16 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
 
         const result = yield* twoFactor.verify({
           // Lower case, no dashes, and a stray space: the same code.
-          factor: { _tag: "RecoveryCode", code: Redacted.make(` ${printed.toLowerCase().replaceAll("-", "")} `) },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.RecoveryCode({ code: Redacted.make(` ${printed.toLowerCase().replaceAll("-", "")} `) }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
 
         const again = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "RecoveryCode", code: codes[0]! },
-            subject: { _tag: "Session", session: result.session, user },
+            factor: Factor.RecoveryCode({ code: codes[0]! }),
+            subject: ChallengeSubject.Session({ session: result.session, user }),
             ipAddress: null,
             userAgent: null
           })
@@ -354,8 +354,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         )
         const error = yield* Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "RecoveryCode", code: codes[0]! },
-            subject: { _tag: "Session", session, user },
+            factor: Factor.RecoveryCode({ code: codes[0]! }),
+            subject: ChallengeSubject.Session({ session, user }),
             ipAddress: null,
             userAgent: null
           })
@@ -467,8 +467,8 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         yield* twoFactor.trustDevice({ userId: user.id, ipAddress: null, userAgent: null })
 
         yield* twoFactor.verify({
-          factor: { _tag: "RecoveryCode", code: codes[0]! },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.RecoveryCode({ code: codes[0]! }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
@@ -488,26 +488,20 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
             return (yield* twoFactor.listDevices(user.id, Option.none())).length
           })
 
-        assert.strictEqual(yield* swept({ _tag: "PasswordChanged", userId: user.id, viaReset: false }), 0)
-        assert.strictEqual(yield* swept({ _tag: "PasswordChanged", userId: user.id, viaReset: true }), 0)
+        assert.strictEqual(yield* swept(PasswordChanged.make({ userId: user.id, viaReset: false })), 0)
+        assert.strictEqual(yield* swept(PasswordChanged.make({ userId: user.id, viaReset: true })), 0)
         assert.strictEqual(
-          yield* swept({ _tag: "EmailChanged", userId: user.id, previousEmail: "a@b.c", email: user.email }),
+          yield* swept(EmailChanged.make({ userId: user.id, previousEmail: "a@b.c", email: user.email })),
           0
         )
         assert.strictEqual(
-          yield* swept({ _tag: "SessionRevoked", userId: user.id, sessionId: null, scope: "all", count: 2 }),
+          yield* swept(SessionRevoked.make({ userId: user.id, sessionId: null, scope: "all", count: 2 })),
           0
         )
         // And nothing else sweeps: signing in on one device must not sign the
         // others' trust away.
         assert.strictEqual(
-          yield* swept({
-            _tag: "SessionRevoked",
-            userId: user.id,
-            sessionId: null,
-            scope: "others",
-            count: 1
-          }),
+          yield* swept(SessionRevoked.make({ userId: user.id, sessionId: null, scope: "others", count: 1 })),
           1
         )
         yield* twoFactor.revokeDevices(user.id)
@@ -526,7 +520,7 @@ layer(testLayer)("two-factor/TwoFactor", (it) => {
         // control rather than a five-line recipe every deployment has to
         // remember — and forgetting it left a phished, remembered browser
         // working for thirty days after the password was reset.
-        yield* events.publish({ _tag: "PasswordChanged", userId: user.id, viaReset: true })
+        yield* events.publish(PasswordChanged.make({ userId: user.id, viaReset: true }))
 
         // The reaction is a forked fiber, so yield to the scheduler until it
         // has run rather than sleeping on a clock a test may be holding.
@@ -573,8 +567,8 @@ layer(lockedDown)("two-factor/TwoFactor lockout", (it) => {
       const attempt = (code: string) =>
         Effect.flip(
           twoFactor.verify({
-            factor: { _tag: "Totp", code: Redacted.make(code) },
-            subject: { _tag: "Session", session, user },
+            factor: Factor.Totp({ code: Redacted.make(code) }),
+            subject: ChallengeSubject.Session({ session, user }),
             ipAddress: null,
             userAgent: null
           })
@@ -594,8 +588,8 @@ layer(lockedDown)("two-factor/TwoFactor lockout", (it) => {
       // is how the prior art's per-challenge cap was escaped.
       const viaRecovery = yield* Effect.flip(
         twoFactor.verify({
-          factor: { _tag: "RecoveryCode", code: codes[0]! },
-          subject: { _tag: "Session", session, user },
+          factor: Factor.RecoveryCode({ code: codes[0]! }),
+          subject: ChallengeSubject.Session({ session, user }),
           ipAddress: null,
           userAgent: null
         })
@@ -612,8 +606,8 @@ layer(lockedDown)("two-factor/TwoFactor lockout", (it) => {
       for (let index = 0; index < 12; index++) {
         yield* Effect.flip(
           victim.twoFactor.verify({
-            factor: { _tag: "Totp", code: Redacted.make("000000") },
-            subject: { _tag: "Session", session: victim.session, user: victim.user },
+            factor: Factor.Totp({ code: Redacted.make("000000") }),
+            subject: ChallengeSubject.Session({ session: victim.session, user: victim.user }),
             ipAddress: null,
             userAgent: null
           })
@@ -623,8 +617,8 @@ layer(lockedDown)("two-factor/TwoFactor lockout", (it) => {
       // The other account's budget is untouched: its code is still checked, and
       // still works.
       const result = yield* other.twoFactor.verify({
-        factor: { _tag: "Totp", code: yield* codeAt(other.secret, 1) },
-        subject: { _tag: "Session", session: other.session, user: other.user },
+        factor: Factor.Totp({ code: yield* codeAt(other.secret, 1) }),
+        subject: ChallengeSubject.Session({ session: other.session, user: other.user }),
         ipAddress: null,
         userAgent: null
       })

@@ -3,8 +3,9 @@ import { DateTime, Duration, Effect, Option, Redacted, Ref } from "effect"
 import { TestClock } from "effect/testing"
 import { Cookies } from "effect/unstable/http"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
+import { ProvisionSource } from "../../src/domain/Hooks.js"
 import type { SignInPipelineService } from "../../src/domain/SignIn.js"
-import { proceed } from "../../src/domain/SignIn.js"
+import { proceed, SignInDecision } from "../../src/domain/SignIn.js"
 import { pluginCookieFor } from "../../src/http/Cookies.js"
 import { ceremonyCookieBaseName } from "../../src/passkeys/Handlers.js"
 import { PasskeyId } from "../../src/passkeys/Schema.js"
@@ -274,15 +275,16 @@ const pendingToken = "pending-token-for-the-test"
  */
 const challenging: SignInPipelineService = {
   decide: (options) =>
-    options.source._tag !== "Plugin"
-      ? Effect.succeed(proceed)
-      : Effect.map(DateTime.now, (now) => ({
-          _tag: "Challenge" as const,
-          kind: "mfa",
-          available: ["totp"],
-          token: Redacted.make(pendingToken),
-          expiresAt: DateTime.addDuration(now, challengeTtl)
-        }))
+    ProvisionSource.$is("Plugin")(options.source)
+      ? Effect.map(DateTime.now, (now) =>
+          SignInDecision.Challenge({
+            kind: "mfa",
+            available: ["totp"],
+            token: Redacted.make(pendingToken),
+            expiresAt: DateTime.addDuration(now, challengeTtl)
+          })
+        )
+      : Effect.succeed(proceed)
 }
 
 describe.sequential("passkeys/Handlers with a second factor owed", () => {

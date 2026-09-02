@@ -100,7 +100,8 @@ export type ChangeEmail = EmailOtpChangeEmailPayload
  * What {@link EmailOtpClient.verify} answers: what the code meant, or the news
  * that a second factor is owed.
  *
- * Branch on `_tag`.
+ * Every member is tagged, so `Match.type<VerifyResult>().pipe(Match.tagsExhaustive({ … }))`
+ * branches over all four and stops compiling when a member is added.
  *
  * @category models
  * @since 0.2.0
