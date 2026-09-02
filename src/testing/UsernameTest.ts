@@ -24,7 +24,6 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Layer } from "effect"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -38,6 +37,7 @@ import type { UsernameStore } from "../username/Store.js"
 import { layerUsernameStore } from "../username/Store.js"
 import type { Options as UsernameOptions, Requirements, Username } from "../username/Username.js"
 import { layer as usernameLayer } from "../username/Username.js"
+import type * as Database from "./Database.js"
 import type { TestEmails } from "./TestEmails.js"
 import * as AuthTest from "./TestLayer.js"
 
@@ -90,7 +90,7 @@ export const layerUsername = (
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  Username | Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Username | Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > => layerUsername(options?.username).pipe(Layer.provideMerge(AuthTest.layer(options)))
 

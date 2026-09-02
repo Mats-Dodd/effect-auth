@@ -30,13 +30,13 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Encoding, Layer, Result } from "effect"
 import { TestClock } from "effect/testing"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
 import type { Migrator, SqlError } from "effect/unstable/sql"
 import type { Services } from "../config/Auth.js"
+import { baseUserModel } from "../domain/Schema.js"
 import { AuthApi } from "../http/AuthApi.js"
 import { PasskeysApiGroup } from "../passkeys/Api.js"
 import { handlers as passkeyHandlers } from "../passkeys/Handlers.js"
@@ -53,6 +53,8 @@ import type {
   RegistrationOptions,
   RegistrationResponse
 } from "../passkeys/Wire.js"
+import type * as Database from "./Database.js"
+import { memoise } from "./internal/memo.js"
 import * as AuthTest from "./TestLayer.js"
 
 // -----------------------------------------------------------------------------
@@ -102,23 +104,40 @@ const passkeyOptions = (options?: Partial<PasskeyOptions>): PasskeyOptions => ({
 // Layers
 // -----------------------------------------------------------------------------
 
+/** The plugin's table on one provider's database, memoised on the provider. */
+const stores = memoise((provider: Database.Provider) =>
+  Layer.orDie(
+    storeLayer.pipe(
+      Layer.provideMerge(migrationsLayer),
+      Layer.provide(AuthTest.layerDatabaseFor(baseUserModel, provider))
+    )
+  )
+)
+
 /**
  * The plugin's table over the harness's own database, with its migrations
  * applied.
  *
  * **Gotchas**
  *
- * It composes `AuthTest.layerDatabase`, the memoised module constant, so it
- * shares the one PGlite the rest of the deployment uses rather than booting a
- * second, empty one. `Layer.orDie` because a test harness is an entry point: a
- * migration that will not apply is a broken test run, not an outcome to thread
- * through every signature.
+ * It composes `AuthTest.layerDatabaseFor` on the base model, the memoised value
+ * the rest of the deployment uses, so the plugin's table lands in the same
+ * database rather than in a second, empty one. `Layer.orDie` because a test
+ * harness is an entry point: a migration that will not apply is a broken test
+ * run, not an outcome to thread through every signature.
+ *
+ * This is the `Database.fromConfig` build; a deployment that overrides
+ * `AuthTest.Settings.database` is built over that provider instead, and
+ * {@link layer} composes the right one.
  *
  * @category layers
  * @since 0.2.0
  */
-export const layerStore: Layer.Layer<PasskeyStoreService> = Layer.orDie(
-  storeLayer.pipe(Layer.provideMerge(migrationsLayer), Layer.provide(AuthTest.layerDatabase))
+export const layerStore: Layer.Layer<PasskeyStoreService> = stores(AuthTest.providerOf())
+
+/** The seam contribution on one provider's database, memoised on the provider. */
+const authenticators = memoise((provider: Database.Provider) =>
+  passkeyAuthenticators.pipe(Layer.provide(stores(provider)))
 )
 
 /**
@@ -128,12 +147,13 @@ export const layerStore: Layer.Layer<PasskeyStoreService> = Layer.orDie(
  * **When to use**
  *
  * Underneath a deployment, which is where a reference has to be installed. Both
- * {@link layer} and {@link layerHttp} already do it.
+ * {@link layer} and {@link layerHttp} already do it, over whichever provider the
+ * deployment's own settings named.
  *
  * @category layers
  * @since 0.2.0
  */
-export const layerAuthenticators: Layer.Layer<never> = passkeyAuthenticators.pipe(Layer.provide(layerStore))
+export const layerAuthenticators: Layer.Layer<never> = authenticators(AuthTest.providerOf())
 
 /**
  * The plugin's own services over a test deployment's.
@@ -142,9 +162,13 @@ export const layerAuthenticators: Layer.Layer<never> = passkeyAuthenticators.pip
  * @since 0.2.0
  */
 export const layerPasskeys = (
-  options?: Partial<PasskeyOptions>
+  options?: Partial<PasskeyOptions>,
+  settings?: AuthTest.Settings
 ): Layer.Layer<PasskeysService | PasskeyStoreService, never, Services> =>
-  passkeysLayer(passkeyOptions(options)).pipe(Layer.provide(Layer.orDie(layerSimple)), Layer.provideMerge(layerStore))
+  passkeysLayer(passkeyOptions(options)).pipe(
+    Layer.provide(Layer.orDie(layerSimple)),
+    Layer.provideMerge(stores(AuthTest.providerOf(settings)))
+  )
 
 /**
  * A whole test deployment with the passkeys plugin on top of it.
@@ -163,8 +187,8 @@ export const layer = (
   PasskeysService | PasskeyStoreService | Services | AuthTest.DeploymentServices,
   Migrator.MigrationError | SqlError.SqlError
 > =>
-  layerPasskeys(options?.passkeys).pipe(
-    Layer.provideMerge(AuthTest.layer(options).pipe(Layer.provide(layerAuthenticators)))
+  layerPasskeys(options?.passkeys, options).pipe(
+    Layer.provideMerge(AuthTest.layer(options).pipe(Layer.provide(authenticators(AuthTest.providerOf(options)))))
   )
 
 /**
@@ -200,8 +224,8 @@ export const layerHttp = (
   AuthTest.layerHttpApi(
     TestApi,
     options,
-    passkeyHandlers(TestApi).pipe(Layer.provideMerge(layerPasskeys(options?.passkeys)))
-  ).pipe(Layer.provide(layerAuthenticators))
+    passkeyHandlers(TestApi).pipe(Layer.provideMerge(layerPasskeys(options?.passkeys, options)))
+  ).pipe(Layer.provide(authenticators(AuthTest.providerOf(options))))
 
 /**
  * {@link layerHttp} on a `TestClock` of its own, which a test in the block may
@@ -555,6 +579,3 @@ export const makeAuthenticator = (options?: AuthenticatorOptions): Effect.Effect
         })
     }
   })
-
-/** Re-exported so a test can name the type the harness's database layer carries. */
-export type { PgliteClient }

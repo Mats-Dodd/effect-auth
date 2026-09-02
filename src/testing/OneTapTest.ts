@@ -34,7 +34,6 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Layer, Redacted } from "effect"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -50,6 +49,7 @@ import { layer as oneTapLayer } from "../one-tap/OneTap.js"
 import * as Google from "../oauth/providers/Google.js"
 import { OAuthProviders } from "../oauth/Provider.js"
 import { IdTokenSigner } from "./MockProvider.js"
+import type * as Database from "./Database.js"
 import type { TestEmails } from "./TestEmails.js"
 import * as AuthTest from "./TestLayer.js"
 
@@ -151,7 +151,7 @@ export const layerOneTap = (
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  OneTap | OAuthProviders | IdTokenSigner | Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  OneTap | OAuthProviders | IdTokenSigner | Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   layerOneTap(options).pipe(

@@ -31,12 +31,12 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Layer, Option, Redacted } from "effect"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
 import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
 import type { Services } from "../config/Auth.js"
+import { baseUserModel } from "../domain/Schema.js"
 import { layer as authenticatorsLayer } from "../domain/Authenticators.js"
 import { AuthApi } from "../http/AuthApi.js"
 import { PhoneApiGroup } from "../phone/Api.js"
@@ -51,6 +51,7 @@ import {
 } from "../phone/Phone.js"
 import type { PhoneStore } from "../phone/Store.js"
 import { layer as phoneStoreLayer } from "../phone/Store.js"
+import type * as Database from "./Database.js"
 import { smsKind, sms as smsRecord, TestEmails } from "./TestEmails.js"
 import * as AuthTest from "./TestLayer.js"
 
@@ -146,6 +147,12 @@ export const layerPhone = (
 /**
  * The plugin's `Authenticators` contribution, on the deployment's own database.
  *
+ * **Details**
+ *
+ * `settings` is the deployment's own — the whole of `AuthTest.Settings`, not
+ * just the plugin's section — because the contribution has to be built over the
+ * *same* database the deployment is, and `Settings.database` is what names it.
+ *
  * **When to use**
  *
  * Provided *underneath* `AuthTest.layer`, which is what {@link layer} does.
@@ -157,9 +164,13 @@ export const layerPhone = (
  * @since 0.2.0
  */
 export const layerAuthenticators = (
-  options?: PhoneOptions
+  options?: PhoneOptions,
+  settings?: AuthTest.Settings
 ): Layer.Layer<never, Migrator.MigrationError | SqlError.SqlError> =>
-  phoneAuthenticators(options).pipe(Layer.provide(layerStore), Layer.provide(AuthTest.layerDatabase))
+  phoneAuthenticators(options).pipe(
+    Layer.provide(layerStore),
+    Layer.provide(AuthTest.layerDatabaseFor(baseUserModel, AuthTest.providerOf(settings)))
+  )
 
 /**
  * What `AuthTest.Settings.authenticators` installs, for the plugin itself.
@@ -186,12 +197,12 @@ const seamFor = (options?: Options): Layer.Layer<never> =>
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  Phone | PhoneStore | Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Phone | PhoneStore | Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   layerPhone(options?.phone).pipe(
     Layer.provide(seamFor(options)),
-    Layer.provideMerge(AuthTest.layer(options).pipe(Layer.provide(layerAuthenticators(options?.phone))))
+    Layer.provideMerge(AuthTest.layer(options).pipe(Layer.provide(layerAuthenticators(options?.phone, options))))
   )
 
 /**

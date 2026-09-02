@@ -10,44 +10,169 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Node 22 is the floor: `@effect/sql-sqlite-node` is `node:sqlite`, which
+# arrived in 22. `engines.node` says the same thing.
+env:
+  NODE_VERSION: 22
+
 jobs:
-  ci:
+  # Lint, typecheck, declaration emit and format. `pnpm check` runs
+  # `oxlint --type-aware --type-check` and then `tsc -b tsconfig.build.json`;
+  # the second is not redundant, because oxlint's type-check does not emit
+  # declarations and so misses the TS4025/TS2742 diagnostics that break a
+  # published .d.ts.
+  check:
+    name: check
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [20, 22]
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      # `prepare` runs `effect-tsgo patch --oxlint`, which patches the TypeScript and
-      # oxlint binaries so the Effect rules are available to the linter below.
+      # `prepare` runs `effect-tsgo patch --oxlint`, which patches the TypeScript
+      # and oxlint binaries so the Effect rules are available to the linter.
       - name: Install
         run: pnpm install --frozen-lockfile
-
-      # Two passes over one program: oxlint --type-aware --type-check runs the Effect
-      # and type-aware lint rules plus the checker diagnostics, and `pnpm check` then
-      # runs `tsc -b tsconfig.build.json`. The second is not redundant — oxlint's
-      # type-check does not emit declarations, so the declaration-emit diagnostics
-      # (TS4025, TS2742) that break a published .d.ts only surface from the build.
-      # This step therefore covers the Build step as well.
       - name: Check (lint + typecheck + build)
         run: pnpm check
-
       - name: Format
         run: pnpm format:check
 
-      # --maxWorkers=2 is set in the `test` script: the PGlite-backed suites time out
-      # against the 10s tripwire when vitest runs at full concurrency.
+  # The four suites. One test suite, four backends: every file reads its
+  # database from `TestDatabase`, so these are the same 1440 tests four times
+  # rather than four suites. They run in parallel and none of them shards.
+  test-pglite:
+    name: test (pglite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
       - name: Test
-        run: pnpm test
+        run: |
+          start=$SECONDS
+          set +e
+          pnpm test
+          status=$?
+          set -e
+          echo "**pglite**: $((SECONDS - start))s" >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+  test-sqlite:
+    name: test (sqlite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Test
+        run: |
+          start=$SECONDS
+          set +e
+          pnpm test:sqlite
+          status=$?
+          set -e
+          echo "**sqlite**: $((SECONDS - start))s" >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+  test-pg:
+    name: test (pg)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A service container rather than Testcontainers: the runner already has a
+    # server on localhost, so the suite pays a `CREATE DATABASE` per `layer()`
+    # block and no container start at all. Pinned to the digest
+    # `postgres:alpine` resolved to on 2026-09-02 — the same digest
+    # `src/testing/postgres/index.ts` starts locally.
+    services:
+      postgres:
+        image: postgres@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Test
+        env:
+          # Present, so `Database.fromConfig` takes the URL branch instead of
+          # starting a container. The role must be allowed to CREATE DATABASE.
+          EFFECT_AUTH_TEST_POSTGRES_URL: postgres://test:test@localhost:5432/test
+        run: |
+          start=$SECONDS
+          set +e
+          pnpm test:pg
+          status=$?
+          set -e
+          echo "**pg**: $((SECONDS - start))s" >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+  test-mysql:
+    name: test (mysql)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Pinned to the digest `mysql:lts` resolved to on 2026-09-02 — the same
+    # digest `src/testing/mysql/index.ts` starts locally.
+    services:
+      mysql:
+        image: mysql@sha256:257388edf9c84dbc04c763625446d5f3fa6ed60d1b0873bc552c614ba0a7ab4e
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping --protocol TCP --host 127.0.0.1 --user root --password=test --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Test
+        env:
+          # `root`, because a build creates and drops a database of its own.
+          EFFECT_AUTH_TEST_MYSQL_URL: mysql://root:test@localhost:3306/test
+        run: |
+          start=$SECONDS
+          set +e
+          pnpm test:mysql
+          status=$?
+          set -e
+          echo "**mysql**: $((SECONDS - start))s" >> "$GITHUB_STEP_SUMMARY"
+          exit $status

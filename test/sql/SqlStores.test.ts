@@ -1,95 +1,31 @@
-import { assert, describe, it, layer } from "@effect/vitest"
-import { DateTime, Duration, Effect, Option, Schema } from "effect"
-import { SqlClient, SqlError } from "effect/unstable/sql"
-import type { AuthenticationMethod } from "../../src/domain/Assurance.js"
+/**
+ * The four stores, on whichever database `EFFECT_AUTH_TEST_DATABASE` names.
+ *
+ * **Details**
+ *
+ * Nothing in this file knows which dialect it is running on: every row is
+ * written and read through a store, so a value that a dialect spells
+ * differently — a boolean, a timestamp — is decoded before an assertion ever
+ * sees it. The facts that are deliberately different live in `Dialect.test.ts`;
+ * the failures the stores classify live in `Errors.test.ts`; the races live in
+ * `Concurrency.test.ts`.
+ */
+import { assert, describe, layer } from "@effect/vitest"
+import { DateTime, Duration, Effect, Option } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import { deriveAal } from "../../src/domain/Assurance.js"
-import { Account, CredentialIssuer, oauthIssuer, Session, User, UserId, Verification } from "../../src/domain/Schema.js"
+import { Account, CredentialIssuer, oauthIssuer, Session, UserId } from "../../src/domain/Schema.js"
 import {
   AccountStore,
-  isUniqueViolation,
-  PersistenceError,
   SessionStore,
   UserStore,
   VerificationStore,
   WithAuthTransaction
 } from "../../src/domain/Stores.js"
-import { decodeSqliteBoolean } from "../../src/sql/SqlStores.js"
+import * as Database from "../../src/testing/Database.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, testName, uniqueEmail } from "../fixtures.js"
-
-/**
- * A value no other test in the block will write.
- *
- * The block shares one database, so a fixed `"hash-1"` in two tests is one row
- * that both of them find.
- *
- * A counter rather than a random suffix: the file is one process, so a counter
- * is a stronger guarantee than randomness — and it keeps the fixture off the
- * global `crypto` this library's own code is not allowed to reach for.
- */
-let uniqueCounter = 0
-const unique = (label: string): string => {
-  uniqueCounter += 1
-  return `${label}-${uniqueCounter}`
-}
-
-const createUser = Effect.fnUntraced(function* (email: string, emailVerified = false) {
-  const users = yield* UserStore
-  const row = yield* User.insert.makeEffect({
-    name: testName,
-    email,
-    emailVerified,
-    image: null
-  })
-  return yield* users.create(row)
-})
-
-const createSession = Effect.fnUntraced(function* (
-  userId: UserId,
-  tokenHash: string,
-  ttl: Duration.Duration,
-  rememberMe = true,
-  methods: ReadonlyArray<AuthenticationMethod> = []
-) {
-  const sessions = yield* SessionStore
-  const now = yield* DateTime.now
-  const row = yield* Session.insert.makeEffect({
-    tokenHash,
-    userId,
-    expiresAt: DateTime.addDuration(now, ttl),
-    ipAddress: "203.0.113.7",
-    userAgent: "vitest",
-    rememberMe,
-    methods,
-    aal: deriveAal(methods)
-  })
-  return yield* sessions.create(row)
-})
-
-/** One entry of an authentication log, as a plugin states it. */
-const evidence = (
-  name: string,
-  factor: AuthenticationMethod["factor"],
-  completedAt: DateTime.Utc
-): AuthenticationMethod => ({
-  method: name,
-  completedAt,
-  factor,
-  phishingResistant: false,
-  restricted: false
-})
-
-const createVerification = Effect.fnUntraced(function* (identifier: string, valueHash: string, ttl: Duration.Duration) {
-  const verifications = yield* VerificationStore
-  const now = yield* DateTime.now
-  const row = yield* Verification.insert.makeEffect({
-    identifier,
-    valueHash,
-    payload: null,
-    expiresAt: DateTime.addDuration(now, ttl)
-  })
-  return yield* verifications.create(row)
-})
+import { expectSome, uniqueEmail } from "../fixtures.js"
+import { createSession, createUser, createVerification, evidence, unique } from "./helpers.js"
 
 layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
   // ---------------------------------------------------------------------------
@@ -151,26 +87,6 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
             yield* users.lockUserRow(UserId.make("missing"))
           })
         )
-      })
-    )
-
-    it.effect("reports a duplicate e-mail as a PersistenceError", () =>
-      Effect.gen(function* () {
-        const email = uniqueEmail("duplicate")
-        yield* createUser(email)
-        const failure = yield* Effect.flip(createUser(email))
-
-        if (!Schema.is(PersistenceError)(failure)) {
-          assert.fail(`expected a PersistenceError, got ${failure._tag}`)
-        }
-        assert.strictEqual(failure.operation, "UserStore.create")
-        // the driver failure survives in `cause` for logs, and is classified into
-        // `kind` so the domain can tell a lost race from any other storage failure
-        // without importing the SQL driver's error type
-        assert.strictEqual(SqlError.isSqlError(failure.cause), true)
-        assert.strictEqual(SqlError.isSqlError(failure.cause) ? failure.cause.reason._tag : "", "UniqueViolation")
-        assert.strictEqual(failure.kind, "UniqueViolation")
-        assert.isTrue(isUniqueViolation(failure))
       })
     )
   })
@@ -725,22 +641,6 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
       })
     )
 
-    it.effect("hands the row to exactly one of two concurrent consumers", () =>
-      Effect.gen(function* () {
-        const verifications = yield* VerificationStore
-        const identifier = unique("password-reset")
-        yield* createVerification(identifier, "race-hash", Duration.hours(1))
-
-        const results = yield* Effect.all(
-          [verifications.consume(identifier, "race-hash"), verifications.consume(identifier, "race-hash")],
-          { concurrency: 2 }
-        )
-
-        assert.strictEqual(results.filter(Option.isSome).length, 1)
-        assert.strictEqual(results.filter(Option.isNone).length, 1)
-      })
-    )
-
     it.effect("deletes every row under one identifier, expired or not", () =>
       Effect.gen(function* () {
         const verifications = yield* VerificationStore
@@ -786,108 +686,62 @@ layer(AuthTest.layerStores)("sql/SqlStores", (it) => {
 })
 
 // -----------------------------------------------------------------------------
-// The one dialect divergence
-// -----------------------------------------------------------------------------
-
-describe("sql/SqlStores (sqlite booleans)", () => {
-  it("reads the integer flag back, and leaves an absent value absent", () => {
-    // The suite runs on PGlite, so this adapter is never exercised by a store
-    // test — and it is applied to every boolean-flagged column, including the
-    // nullable one a deployment declares with `NullOr(Schema.Boolean)`.
-    assert.strictEqual(decodeSqliteBoolean(1), true)
-    assert.strictEqual(decodeSqliteBoolean(0), false)
-    assert.strictEqual(decodeSqliteBoolean(true), true)
-    assert.strictEqual(decodeSqliteBoolean(false), false)
-
-    // "Not asked yet" is not "declined": a null that decoded as `false` would
-    // pass `NullOr(Schema.Boolean)` and be a silent rewrite on every read.
-    assert.strictEqual(decodeSqliteBoolean(null), null)
-    assert.strictEqual(decodeSqliteBoolean(undefined), undefined)
-  })
-})
-
-// -----------------------------------------------------------------------------
-// The table-wide operations, each on a database of its own
+// The table-wide operations, on a database of their own
 // -----------------------------------------------------------------------------
 
 /**
- * These three cannot share a deployment.
+ * These two sweep whole tables.
  *
- * `deleteExpired` sweeps a whole table, so its count is an assertion about
- * every row any sibling happens to have written; and a rollback discards a
- * sibling's uncommitted writes too, because PGlite serves the block from one
- * connection.
+ * `deleteExpired` counts every row any sibling happens to have written, so each
+ * case starts from an empty database — `TestDatabase.reset`, which empties the
+ * tables and leaves the migration bookkeeping alone, rather than a `layer()`
+ * block per case booting a database of its own.
  *
- * Hence one `layer()` block per test rather than one holding all three:
- * `@effect/vitest` builds a block's layer once, and a sibling block gets a memo
- * map — and therefore a PGlite — of its own.
+ * `describe.sequential` is what makes that safe: tests in a block otherwise run
+ * concurrently, and one case's reset would empty the table another was counting.
  */
 layer(AuthTest.layerStores)("sql/SqlStores (whole-table)", (it) => {
-  it.effect("lists, revokes and expires sessions", () =>
-    Effect.gen(function* () {
-      const sessions = yield* SessionStore
-      const user = yield* createUser(uniqueEmail("many"))
-      const first = yield* createSession(user.id, "hash-1", Duration.days(7))
-      yield* createSession(user.id, "hash-2", Duration.days(7))
-      yield* createSession(user.id, "hash-3", Duration.minutes(-1))
+  describe.sequential("whole-table", () => {
+    it.effect("lists, revokes and expires sessions", () =>
+      Effect.gen(function* () {
+        yield* Effect.flatMap(Database.TestDatabase, (database) => database.reset)
+        const sessions = yield* SessionStore
+        const user = yield* createUser(uniqueEmail("many"))
+        const first = yield* createSession(user.id, "hash-1", Duration.days(7))
+        yield* createSession(user.id, "hash-2", Duration.days(7))
+        yield* createSession(user.id, "hash-3", Duration.minutes(-1))
 
-      const live = yield* sessions.listByUserId(user.id)
-      assert.deepStrictEqual(live.map((session) => session.tokenHash).sort(), ["hash-1", "hash-2"])
+        const live = yield* sessions.listByUserId(user.id)
+        assert.deepStrictEqual(live.map((session) => session.tokenHash).sort(), ["hash-1", "hash-2"])
 
-      assert.strictEqual(yield* sessions.deleteExpired, 1)
+        assert.strictEqual(yield* sessions.deleteExpired, 1)
 
-      assert.strictEqual(yield* sessions.deleteByUserIdExcept(user.id, first.id), 1)
-      assert.deepStrictEqual(
-        (yield* sessions.listByUserId(user.id)).map((session) => session.tokenHash),
-        ["hash-1"]
-      )
-
-      assert.strictEqual(yield* sessions.deleteByUserId(user.id), 1)
-      assert.deepStrictEqual(yield* sessions.listByUserId(user.id), [])
-    })
-  )
-})
-
-layer(AuthTest.layerStores)("sql/SqlStores (whole-table)", (it) => {
-  it.effect("refuses an expired row and a wrong value hash", () =>
-    Effect.gen(function* () {
-      const verifications = yield* VerificationStore
-      yield* createVerification("oauth-state:expired", "expired-hash", Duration.minutes(-1))
-      yield* createVerification("oauth-state:live", "live-hash", Duration.minutes(10))
-
-      assert.strictEqual(Option.isNone(yield* verifications.consume("oauth-state:expired", "expired-hash")), true)
-      assert.strictEqual(Option.isNone(yield* verifications.consume("oauth-state:live", "wrong-hash")), true)
-      assert.strictEqual(Option.isSome(yield* verifications.consume("oauth-state:live", "live-hash")), true)
-
-      // the expired row is still there until it is swept
-      assert.strictEqual(yield* verifications.deleteExpired, 1)
-      assert.strictEqual(yield* verifications.deleteExpired, 0)
-    })
-  )
-})
-
-layer(AuthTest.layerStores)("sql/SqlStores (whole-table)", (it) => {
-  it.effect("rolls every write back when the effect fails", () =>
-    Effect.gen(function* () {
-      const transaction = yield* WithAuthTransaction
-      const users = yield* UserStore
-      const sessions = yield* SessionStore
-      const email = uniqueEmail("tx-bad")
-      const hash = unique("hash-rollback")
-
-      const failure = yield* Effect.flip(
-        transaction.run(
-          Effect.gen(function* () {
-            const user = yield* createUser(email)
-            yield* createSession(user.id, hash, Duration.days(1))
-            return yield* Effect.fail("boom" as const)
-          })
+        assert.strictEqual(yield* sessions.deleteByUserIdExcept(user.id, first.id), 1)
+        assert.deepStrictEqual(
+          (yield* sessions.listByUserId(user.id)).map((session) => session.tokenHash),
+          ["hash-1"]
         )
-      )
 
-      assert.strictEqual(failure, "boom")
-      assert.strictEqual(Option.isNone(yield* users.findByEmail(email)), true)
-      assert.strictEqual(Option.isNone(yield* sessions.findByTokenHash(hash)), true)
-    })
-  )
+        assert.strictEqual(yield* sessions.deleteByUserId(user.id), 1)
+        assert.deepStrictEqual(yield* sessions.listByUserId(user.id), [])
+      })
+    )
+
+    it.effect("refuses an expired row and a wrong value hash", () =>
+      Effect.gen(function* () {
+        yield* Effect.flatMap(Database.TestDatabase, (database) => database.reset)
+        const verifications = yield* VerificationStore
+        yield* createVerification("oauth-state:expired", "expired-hash", Duration.minutes(-1))
+        yield* createVerification("oauth-state:live", "live-hash", Duration.minutes(10))
+
+        assert.strictEqual(Option.isNone(yield* verifications.consume("oauth-state:expired", "expired-hash")), true)
+        assert.strictEqual(Option.isNone(yield* verifications.consume("oauth-state:live", "wrong-hash")), true)
+        assert.strictEqual(Option.isSome(yield* verifications.consume("oauth-state:live", "live-hash")), true)
+
+        // the expired row is still there until it is swept
+        assert.strictEqual(yield* verifications.deleteExpired, 1)
+        assert.strictEqual(yield* verifications.deleteExpired, 0)
+      })
+    )
+  })
 })

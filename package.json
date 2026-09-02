@@ -17,7 +17,10 @@
     ".": "./src/index.ts",
     "./passkeys": "./src/passkeys/index.ts",
     "./client": "./src/client/index.ts",
-    "./testing": "./src/testing/index.ts"
+    "./testing": "./src/testing/index.ts",
+    "./testing/sqlite": "./src/testing/sqlite/index.ts",
+    "./testing/postgres": "./src/testing/postgres/index.ts",
+    "./testing/mysql": "./src/testing/mysql/index.ts"
   },
   "publishConfig": {
     "exports": {
@@ -37,6 +40,18 @@
       "./testing": {
         "types": "./dist/testing/index.d.ts",
         "default": "./dist/testing/index.js"
+      },
+      "./testing/sqlite": {
+        "types": "./dist/testing/sqlite/index.d.ts",
+        "default": "./dist/testing/sqlite/index.js"
+      },
+      "./testing/postgres": {
+        "types": "./dist/testing/postgres/index.d.ts",
+        "default": "./dist/testing/postgres/index.js"
+      },
+      "./testing/mysql": {
+        "types": "./dist/testing/mysql/index.d.ts",
+        "default": "./dist/testing/mysql/index.js"
       }
     },
     "access": "public"
@@ -50,7 +65,10 @@
     "lint:fix": "oxlint --type-aware --fix",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "test": "vitest run --maxWorkers=2",
+    "test": "vitest run --maxWorkers=4",
+    "test:sqlite": "EFFECT_AUTH_TEST_DATABASE=sqlite vitest run --maxWorkers=4",
+    "test:pg": "EFFECT_AUTH_TEST_DATABASE=pg vitest run --maxWorkers=4",
+    "test:mysql": "EFFECT_AUTH_TEST_DATABASE=mysql vitest run --maxWorkers=4",
     "prepack": "pnpm build",
     "prepublishOnly": "node scripts/prepublish-guard.mjs"
   },
@@ -58,10 +76,15 @@
     "jose": "^6.2.10"
   },
   "devDependencies": {
+    "@effect/sql-mysql2": "4.0.0-rc.112",
+    "@effect/sql-pg": "4.0.0-rc.112",
     "@effect/sql-pglite": "4.0.0-rc.112",
+    "@effect/sql-sqlite-node": "4.0.0-rc.112",
     "@effect/tsgo": "0.38.0",
     "@effect/vitest": "4.0.0-rc.112",
     "@simplewebauthn/server": "13.3.3",
+    "@testcontainers/mysql": "^12.1.0",
+    "@testcontainers/postgresql": "^12.1.0",
     "@types/node": "^22.10.2",
     "effect": "4.0.0-rc.112",
     "lefthook": "2.1.12",
@@ -72,20 +95,40 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
+    "@effect/sql-mysql2": "4.0.0-rc.112",
+    "@effect/sql-pg": "4.0.0-rc.112",
     "@effect/sql-pglite": "4.0.0-rc.112",
+    "@effect/sql-sqlite-node": "4.0.0-rc.112",
     "@simplewebauthn/server": "^13.0.0",
+    "@testcontainers/mysql": "^12.1.0",
+    "@testcontainers/postgresql": "^12.1.0",
     "effect": "4.0.0-rc.112"
   },
   "peerDependenciesMeta": {
+    "@effect/sql-mysql2": {
+      "optional": true
+    },
+    "@effect/sql-pg": {
+      "optional": true
+    },
     "@effect/sql-pglite": {
+      "optional": true
+    },
+    "@effect/sql-sqlite-node": {
       "optional": true
     },
     "@simplewebauthn/server": {
       "optional": true
+    },
+    "@testcontainers/mysql": {
+      "optional": true
+    },
+    "@testcontainers/postgresql": {
+      "optional": true
     }
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@9.12.3"
 }

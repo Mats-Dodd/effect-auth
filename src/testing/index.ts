@@ -8,14 +8,21 @@
  * captured outbox, `TestHttpClient` drives the real request pipeline through a
  * generated client, and `MockProvider` stands in for an OAuth provider.
  *
+ * `Database` is which database it all runs on: PGlite by default, and SQLite,
+ * PostgreSQL or MySQL through `EFFECT_AUTH_TEST_DATABASE` or
+ * `AuthTest.Settings.database`.
+ *
  * **Gotchas**
  *
  * This entry point imports `@effect/sql-pglite`. Install it as a dev
  * dependency; nothing under `effect-auth` or `effect-auth/client` depends on
- * it, so a production bundle never sees it.
+ * it, so a production bundle never sees it. The other three drivers live behind
+ * `effect-auth/testing/{sqlite,postgres,mysql}` and are loaded only when asked
+ * for.
  *
  * @since 0.1.0
  */
+export * as Database from "./Database.js"
 export * as AnonymousTest from "./AnonymousTest.js"
 export * as EmailOtpTest from "./EmailOtpTest.js"
 export * as OneTapTest from "./OneTapTest.js"

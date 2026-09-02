@@ -23,7 +23,6 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Layer, type Redacted } from "effect"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -39,6 +38,7 @@ import {
   type Requirements
 } from "../email-otp/EmailOtp.js"
 import { AuthApi } from "../http/AuthApi.js"
+import type * as Database from "./Database.js"
 import { type EmailKind, type SentEmail, TestEmails } from "./TestEmails.js"
 import { tokenOf } from "./TestHttpClient.js"
 import * as AuthTest from "./TestLayer.js"
@@ -135,7 +135,7 @@ export const layerEmailOtp = (
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  EmailOtp | Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  EmailOtp | Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > => layerEmailOtp(options?.emailOtp).pipe(Layer.provideMerge(AuthTest.layer(options)))
 

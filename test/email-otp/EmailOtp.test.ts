@@ -25,7 +25,7 @@ const codeFor = Effect.fnUntraced(function* (
 const rowsAt = Effect.fnUntraced(function* (identifier: string) {
   const sql = yield* SqlClient.SqlClient
   const rows = yield* sql<{ readonly count: number | string }>`
-    select count(*)::int as count from verifications where identifier = ${identifier}`
+    select count(*) as count from verifications where identifier = ${identifier}`
   return Number(rows[0]?.count ?? 0)
 })
 

@@ -76,8 +76,14 @@ const createPhoneNumbers = Effect.gen(function* () {
         created_at text NOT NULL
       )`,
     sqlite: () =>
+      // SQLite reports a conflict on a declared PRIMARY KEY as
+      // SQLITE_CONSTRAINT_PRIMARYKEY (1555) and only a conflict on a UNIQUE
+      // index as SQLITE_CONSTRAINT_UNIQUE (2067), which is the only one
+      // `persistenceFailureKind` classifies as a lost race — so the number is a
+      // NOT NULL UNIQUE column here rather than the primary key it is on the
+      // other dialects. The constraint is the same; the reported error is not.
       sql`CREATE TABLE IF NOT EXISTS effect_auth_phone_numbers (
-        phone_e164 text PRIMARY KEY,
+        phone_e164 text NOT NULL UNIQUE,
         user_id text NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
         verified_at text,
         created_at text NOT NULL

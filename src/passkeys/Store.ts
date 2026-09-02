@@ -199,6 +199,15 @@ const booleanCodec = (sql: SqlClient.SqlClient) => ({
 })
 
 /**
+ * `bigint` reaches this library as a `number` under PGlite and SQLite and as a
+ * `string` under drivers that refuse to narrow it — PostgreSQL's among them.
+ * `sign_count` holds a WebAuthn signature counter, a uint32, so the conversion
+ * is lossless. The same normalisation lives on `last_used_step` in
+ * `two-factor/Store.ts`.
+ */
+const readSignCount = (value: unknown): unknown => (typeof value === "string" ? Number(value) : value)
+
+/**
  * Builds the SQL implementation over the ambient `SqlClient`.
  *
  * @category constructors
@@ -212,10 +221,11 @@ export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient
   const decodePasskey = Schema.decodeUnknownEffect(Passkey)
   const encodeInsert = Schema.encodeUnknownEffect(Passkey.insert)
 
-  /** The dialect's stored flags brought back to booleans before the model sees them. */
+  /** The driver's stored flags and counter brought back before the model sees them. */
   const readPasskey = (row: Row) =>
     decodePasskey({
       ...row,
+      signCount: readSignCount(row["signCount"]),
       backupEligible: boolean.decode(row["backupEligible"]),
       backedUp: boolean.decode(row["backedUp"]),
       uvInitialised: boolean.decode(row["uvInitialised"])

@@ -22,7 +22,6 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Layer } from "effect"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -35,7 +34,9 @@ import * as AnonymousMigrations from "../anonymous/Migrations.js"
 import type { AnonymousStore } from "../anonymous/Store.js"
 import { layerAnonymousStore } from "../anonymous/Store.js"
 import type { Services } from "../config/Auth.js"
+import { baseUserModel } from "../domain/Schema.js"
 import { AuthApi } from "../http/AuthApi.js"
+import type * as Database from "./Database.js"
 import type { TestEmails } from "./TestEmails.js"
 import * as AuthTest from "./TestLayer.js"
 
@@ -82,11 +83,11 @@ export const layerAnonymous = (
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  Anonymous | Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Anonymous | Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   layerAnonymous(options?.anonymous).pipe(
-    Layer.provideMerge(AuthTest.layer(options).pipe(Layer.provide(hooks(options?.anonymous))))
+    Layer.provideMerge(AuthTest.layer(options).pipe(Layer.provide(hooks(options))))
   )
 
 /**
@@ -94,16 +95,21 @@ export const layer = (
  *
  * **Gotchas**
  *
- * `AuthTest.layerDatabase` rather than a database of its own, and that is
- * load-bearing: it is memoised on the base user model, so the hook reads the
- * *same* rows `AuthTest.layer` writes. A second, equivalent database layer
- * built here would be a second, empty database.
+ * `AuthTest.layerDatabaseFor` on the base model and the deployment's own
+ * provider rather than a database of its own, and that is load-bearing: the
+ * pair is memoised, so the hook reads the *same* rows `AuthTest.layer` writes.
+ * A second, equivalent database layer built here would be a second, empty
+ * database.
  *
  * `Layer.fresh` covers the hook alone, so a nested `it.layer` variant with a
  * different `onMerge` gets its own build while the database stays shared.
  */
-const hooks = (options?: AnonymousOptions): Layer.Layer<never> =>
-  Layer.orDie(Layer.fresh(layerHooks(options)).pipe(Layer.provide(AuthTest.layerDatabase)))
+const hooks = (options?: Options): Layer.Layer<never> =>
+  Layer.orDie(
+    Layer.fresh(layerHooks(options?.anonymous)).pipe(
+      Layer.provide(AuthTest.layerDatabaseFor(baseUserModel, AuthTest.providerOf(options)))
+    )
+  )
 
 /**
  * An application API that embeds this library's group *and* the plugin's.
@@ -139,4 +145,4 @@ export const layerHttp = (
     // from a plugin's server code, not from a route, so there is no request a
     // test could make instead.
     anonymousHandlers(TestApi).pipe(Layer.provideMerge(layerAnonymous(options?.anonymous)))
-  ).pipe(Layer.provide(hooks(options?.anonymous)))
+  ).pipe(Layer.provide(hooks(options)))

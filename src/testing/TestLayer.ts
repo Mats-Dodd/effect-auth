@@ -1,8 +1,8 @@
 /**
- * A complete `effect-auth` deployment for a test suite: an in-memory PGlite
- * database with the migrations already applied, a fixed secret, a mailer that
- * captures what it was asked to deliver instead of sending it, and password
- * hashing at a cost a suite can afford.
+ * A complete `effect-auth` deployment for a test suite: an empty database with
+ * the migrations already applied, a fixed secret, a mailer that captures what it
+ * was asked to deliver instead of sending it, and password hashing at a cost a
+ * suite can afford.
  *
  * Everything runs under `it.effect` and `TestClock`, so session expiry, the
  * rolling refresh and token TTLs are all reachable by moving virtual time.
@@ -13,17 +13,21 @@
  * purpose. `@effect/vitest`'s `layer()` memoises a parent block's layers **by
  * object identity** when a nested `it.layer` forks the memo map, so a sub-block
  * that varies the configuration reuses the database the parent already booted —
- * one PGlite per file instead of one per test. Building them inside a function
+ * one database per file instead of one per test. Building them inside a function
  * would defeat that.
+ *
+ * Which kind of database is `Database.fromConfig`'s answer:
+ * `EFFECT_AUTH_TEST_DATABASE`, and PGlite when it is unset. One suite can
+ * override it with {@link Settings.database}.
  *
  * A deployment with custom user fields needs a database with its columns, and
  * therefore one per model rather than one for the library. {@link layerDatabaseFor}
- * keeps the same guarantee by memoising on the model itself, so a fixture's model
- * is what ties a file's blocks to one PGlite.
+ * keeps the same guarantee by memoising on the model *and* the
+ * {@link Database.Provider}, so a fixture's model is what ties a file's blocks
+ * to one database and `EFFECT_AUTH_TEST_DATABASE` decides which kind it is.
  *
  * @since 0.1.0
  */
-import { PgliteClient } from "@effect/sql-pglite"
 import type { Crypto, Scope } from "effect"
 import { Effect, FileSystem, Layer, Path, PubSub, Redacted } from "effect"
 import { TestClock } from "effect/testing"
@@ -67,6 +71,7 @@ import * as AuthHandlers from "../http/Handlers.js"
 import { webCrypto } from "../internal/crypto.js"
 import * as Migrations from "../sql/Migrations.js"
 import * as SqlStores from "../sql/SqlStores.js"
+import * as Database from "./Database.js"
 import { type EmailDelivery, layerEmails, type TestEmails } from "./TestEmails.js"
 
 /**
@@ -140,6 +145,17 @@ export const testScryptOptions: ScryptOptions = { N: 1024, r: 8, p: 1 }
  * @since 0.1.0
  */
 export interface Settings {
+  /**
+   * The database the deployment runs on. Absent is `Database.fromConfig` —
+   * `EFFECT_AUTH_TEST_DATABASE`, and PGlite when that is unset — which is what
+   * every test in this library uses.
+   *
+   * **When to use**
+   *
+   * When one suite must run on one backend whatever the variable says: a
+   * dialect-specific test, or a reproduction of a bug that only MySQL has.
+   */
+  readonly database?: Database.Provider | undefined
   readonly baseUrl?: string | undefined
   readonly secret?: Redacted.Redacted | undefined
   readonly basePath?: string | undefined
@@ -373,42 +389,63 @@ const composed = <F extends UserFields>(options: Settings | undefined, model: Us
 // -----------------------------------------------------------------------------
 
 /**
- * One PGlite per model, keyed by the model itself.
+ * The database of one model on one provider, keyed by the pair.
  *
  * `layer()` memoises by object identity, so handing the same layer *value* to
- * every block in a file is what keeps them sharing one database. A model is the
- * natural key: a file that declares custom fields has exactly one, and asking
- * twice has to answer with the same layer or the second block boots a second,
- * empty database.
+ * every block in a file is what keeps them sharing one database. The pair is the
+ * natural key: a file that declares custom fields has exactly one model, a run
+ * has exactly one provider unless a suite overrode it, and asking twice has to
+ * answer with the same layer or the second block builds a second, empty
+ * database.
  */
-const databases = new WeakMap<
-  object,
-  Layer.Layer<SqlClient.SqlClient | PgliteClient.PgliteClient, Migrator.MigrationError | SqlError.SqlError>
->()
+type DatabaseLayer = Layer.Layer<
+  SqlClient.SqlClient | Database.TestDatabase,
+  Migrator.MigrationError | SqlError.SqlError
+>
+
+const databases = new WeakMap<object, WeakMap<Database.Provider, DatabaseLayer>>()
 
 /**
- * A fresh in-memory PGlite database with `effect-auth`'s migrations applied and
- * `model`'s own user columns added.
+ * A fresh, empty database from `provider` with `effect-auth`'s migrations
+ * applied and `model`'s own user columns added.
  *
  * **Gotchas**
  *
- * Memoised on the model, so calling it twice with the same model hands back the
- * same layer and therefore the same database — which is what a nested
- * `it.layer` needs in order to inherit its parent block's rows. Building an
- * equivalent layer yourself gets you a second, empty one.
+ * Memoised on the pair, so calling it twice with the same model and the same
+ * provider hands back the same layer and therefore the same database — which is
+ * what a nested `it.layer` needs in order to inherit its parent block's rows.
+ * Building an equivalent layer yourself gets you a second, empty one, and so
+ * does passing a provider built on the spot: pass the module-level constant.
  *
  * @category layers
  * @since 0.1.0
  */
 export const layerDatabaseFor = <F extends UserFields>(
-  model: UserModel<F>
-): Layer.Layer<SqlClient.SqlClient | PgliteClient.PgliteClient, Migrator.MigrationError | SqlError.SqlError> => {
-  const existing = databases.get(model)
+  model: UserModel<F>,
+  provider: Database.Provider = Database.fromConfig
+): DatabaseLayer => {
+  const byProvider = databases.get(model) ?? new WeakMap<Database.Provider, DatabaseLayer>()
+  databases.set(model, byProvider)
+  const existing = byProvider.get(provider)
   if (existing !== undefined) return existing
-  const created = Migrations.layerFor(model).pipe(Layer.provideMerge(PgliteClient.layer()))
-  databases.set(model, created)
+  const created = Migrations.layerFor(model).pipe(Layer.provideMerge(provider))
+  byProvider.set(provider, created)
   return created
 }
+
+/**
+ * The provider `options` names, or `Database.fromConfig` when it names none.
+ *
+ * **When to use**
+ *
+ * In a plugin's own `*Test` module, wherever it composes a database of its own
+ * for the plugin's tables — so that `Settings.database` reaches the plugin's
+ * schema as well as the library's, and both land in one database.
+ *
+ * @category constructors
+ * @since 0.1.0
+ */
+export const providerOf = (options?: Settings): Database.Provider => options?.database ?? Database.fromConfig
 
 /**
  * The four stores of `model` over {@link layerDatabaseFor} — the whole
@@ -418,18 +455,17 @@ export const layerDatabaseFor = <F extends UserFields>(
  * @since 0.1.0
  */
 export const layerStoresFor = <F extends UserFields>(
-  model: UserModel<F>
-): Layer.Layer<
-  AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
-  Migrator.MigrationError | SqlError.SqlError
-> =>
+  model: UserModel<F>,
+  provider: Database.Provider = Database.fromConfig
+): Layer.Layer<AuthStores | SqlClient.SqlClient | Database.TestDatabase, Migrator.MigrationError | SqlError.SqlError> =>
   SqlStores.layerFor(model).pipe(
     Layer.provide(authConfigLayer(testConfig())),
-    Layer.provideMerge(layerDatabaseFor(model))
+    Layer.provideMerge(layerDatabaseFor(model, provider))
   )
 
 /**
- * A fresh in-memory PGlite database with `effect-auth`'s migrations applied.
+ * A fresh, empty database from `Database.fromConfig` with `effect-auth`'s
+ * migrations applied — PGlite unless `EFFECT_AUTH_TEST_DATABASE` says otherwise.
  *
  * **Gotchas**
  *
@@ -441,10 +477,7 @@ export const layerStoresFor = <F extends UserFields>(
  * @category layers
  * @since 0.1.0
  */
-export const layerDatabase: Layer.Layer<
-  SqlClient.SqlClient | PgliteClient.PgliteClient,
-  Migrator.MigrationError | SqlError.SqlError
-> = layerDatabaseFor(baseUserModel)
+export const layerDatabase: DatabaseLayer = layerDatabaseFor(baseUserModel, Database.fromConfig)
 
 /**
  * The four stores over {@link layerDatabase} — the whole persistence tier, with
@@ -459,7 +492,7 @@ export const layerDatabase: Layer.Layer<
  * @since 0.1.0
  */
 export const layerStores: Layer.Layer<
-  AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
+  AuthStores | SqlClient.SqlClient | Database.TestDatabase,
   Migrator.MigrationError | SqlError.SqlError
 > = layerStoresFor(baseUserModel)
 
@@ -505,7 +538,7 @@ export const layerStores: Layer.Layer<
  *
  * `options.user.model` builds the deployment for a model with custom fields —
  * over that model's own database, which {@link layerDatabaseFor} memoises, so a
- * fixture's model is what ties a file's blocks to one PGlite.
+ * fixture's model is what ties a file's blocks to one database.
  *
  * @category layers
  * @since 0.1.0
@@ -513,7 +546,7 @@ export const layerStores: Layer.Layer<
 export const layer = <F extends UserFields = {}>(
   options?: Options<F>
 ): Layer.Layer<
-  Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > => (options?.user?.model === undefined ? deployment(options, baseUserModel) : deployment(options, options.user.model))
 
@@ -522,9 +555,9 @@ const deployment = <F extends UserFields>(
   options: Settings | undefined,
   model: UserModel<F>
 ): Layer.Layer<
-  Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
-> => composed(options, model).pipe(Layer.provideMerge(layerDatabaseFor(model)))
+> => composed(options, model).pipe(Layer.provideMerge(layerDatabaseFor(model, providerOf(options))))
 
 /**
  * A transport backed by a `fetch` a test controls — `MockProvider.mockServer`'s,
@@ -574,7 +607,7 @@ export interface FlowOptions<F extends UserFields = {}> extends Options<F>, Flow
 export const layerFlow = <F extends UserFields = {}>(
   options: FlowOptions<F>
 ): Layer.Layer<
-  OAuthServices | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  OAuthServices | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   options.user?.model === undefined
@@ -586,7 +619,7 @@ const flowDeployment = <F extends UserFields>(
   options: FlowSettings,
   model: UserModel<F>
 ): Layer.Layer<
-  OAuthServices | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  OAuthServices | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   Layer.fresh(
@@ -601,7 +634,7 @@ const flowDeployment = <F extends UserFields>(
       Layer.provide(layerFetch(options.fetch)),
       Layer.provide(seams(options))
     )
-  ).pipe(Layer.provideMerge(layerDatabaseFor(model)))
+  ).pipe(Layer.provideMerge(layerDatabaseFor(model, providerOf(options))))
 
 /**
  * The platform services an `HttpApi` needs in order to encode a response.
@@ -699,7 +732,7 @@ export function layerHttpApi<ApiId extends string, Groups extends HttpApiGroup.C
  * @category models
  * @since 0.1.0
  */
-export type DeploymentServices = Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails
+export type DeploymentServices = Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails
 
 /**
  * What {@link layerHttpApi} builds: the deployment, the handlers of the API's

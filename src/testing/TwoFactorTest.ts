@@ -29,7 +29,6 @@
  *
  * @since 0.2.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Effect, Layer, Redacted } from "effect"
 import { TestClock } from "effect/testing"
 import type { HttpApiGroup } from "effect/unstable/httpapi"
@@ -37,12 +36,15 @@ import { HttpApi } from "effect/unstable/httpapi"
 import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
 import type { Services } from "../config/Auth.js"
 import { layer as authConfigLayer } from "../config/AuthConfig.js"
+import { baseUserModel } from "../domain/Schema.js"
 import { AuthApi } from "../http/AuthApi.js"
 import { TwoFactorApiGroup } from "../two-factor/Api.js"
 import { handlers as twoFactorHandlers } from "../two-factor/Handlers.js"
 import * as TwoFactorMigrations from "../two-factor/Migrations.js"
 import type { Options as TwoFactorOptions, Requirements, TwoFactor } from "../two-factor/TwoFactor.js"
 import { layer as twoFactorLayer, makeSeams, seamServices, TwoFactorEmails } from "../two-factor/TwoFactor.js"
+import type * as Database from "./Database.js"
+import { memoise } from "./internal/memo.js"
 import { type EmailKind, TestEmails } from "./TestEmails.js"
 import * as AuthTest from "./TestLayer.js"
 
@@ -93,24 +95,33 @@ export interface Options extends AuthTest.Settings {
   readonly twoFactor?: TwoFactorOptions | undefined
 }
 
+/** One database per provider, memoised so that every block on it shares one. */
+const databases = memoise((provider: Database.Provider) =>
+  TwoFactorMigrations.layer.pipe(Layer.provideMerge(AuthTest.layerDatabaseFor(baseUserModel, provider)))
+)
+
 /**
  * The test database with this plugin's tables in it.
  *
  * **Gotchas**
  *
  * A module-level constant, and that is load-bearing twice over: `layer()`
- * memoises by object identity, so every block in a file shares one PGlite, and
- * it is composed over `AuthTest.layerDatabase` — the same memoised value the
- * deployment itself uses — so the plugin's tables and the library's are in the
- * same database rather than in two.
+ * memoises by object identity, so every block in a file shares one database,
+ * and it is composed over `AuthTest.layerDatabaseFor` — the same memoised value
+ * the deployment itself uses — so the plugin's tables and the library's are in
+ * the same database rather than in two.
+ *
+ * This is the `Database.fromConfig` build. A deployment that overrides
+ * `AuthTest.Settings.database` gets the same layer for *its* provider, and
+ * {@link layer} composes that one.
  *
  * @category layers
  * @since 0.2.0
  */
 export const database: Layer.Layer<
-  SqlClient.SqlClient | PgliteClient.PgliteClient,
+  SqlClient.SqlClient | Database.TestDatabase,
   Migrator.MigrationError | SqlError.SqlError
-> = TwoFactorMigrations.layer.pipe(Layer.provideMerge(AuthTest.layerDatabase))
+> = databases(AuthTest.providerOf())
 
 /**
  * The four services the seams are built from, over the test configuration and
@@ -121,7 +132,11 @@ export const database: Layer.Layer<
  * never becomes part of what a block publishes.
  */
 const seamTier = (options?: Options) =>
-  seamServices.pipe(Layer.provideMerge(Layer.merge(authConfigLayer(AuthTest.testConfig(options)), database)))
+  seamServices.pipe(
+    Layer.provideMerge(
+      Layer.merge(authConfigLayer(AuthTest.testConfig(options)), databases(AuthTest.providerOf(options)))
+    )
+  )
 
 /**
  * A whole test deployment with this plugin's two `Context.Reference` seams
@@ -139,7 +154,7 @@ const seamTier = (options?: Options) =>
 export const layerDeployment = (
   options?: Options
 ): Layer.Layer<
-  Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > =>
   Layer.unwrap(
@@ -178,7 +193,7 @@ export const layerTwoFactor = (
 export const layer = (
   options?: Options
 ): Layer.Layer<
-  TwoFactor | Services | SqlClient.SqlClient | PgliteClient.PgliteClient | TestEmails,
+  TwoFactor | Services | SqlClient.SqlClient | Database.TestDatabase | TestEmails,
   Migrator.MigrationError | SqlError.SqlError
 > => layerTwoFactor(options?.twoFactor).pipe(Layer.provideMerge(layerDeployment(options)))
 

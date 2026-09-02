@@ -17,11 +17,10 @@
  *
  * `layerDatabase` and `layerStores` are module-level constants for the same
  * reason `AuthTest`'s are: `layer()` memoises by object identity, so every block
- * in this directory shares one PGlite rather than booting its own.
+ * in this directory shares one database rather than booting its own.
  *
  * @since 0.1.0
  */
-import type { PgliteClient } from "@effect/sql-pglite"
 import { Schema } from "effect"
 import type { Layer } from "effect"
 import { HttpApi } from "effect/unstable/httpapi"
@@ -29,6 +28,7 @@ import type { Migrator, SqlClient, SqlError } from "effect/unstable/sql"
 import { makeUserModel, UserField } from "../../src/domain/Schema.js"
 import type { AuthStores } from "../../src/domain/Stores.js"
 import { makeAuthApi } from "../../src/http/AuthApi.js"
+import * as Database from "../../src/testing/Database.js"
 import { AuthTest } from "../../src/testing/index.js"
 
 /**
@@ -53,20 +53,21 @@ export type Fields = typeof model.fields
 export const FieldsApi = HttpApi.make("fields-app").addHttpApi(makeAuthApi(model))
 
 /**
- * A fresh in-memory PGlite with the base tables *and* {@link model}'s columns.
+ * A fresh database — whichever `EFFECT_AUTH_TEST_DATABASE` names — with the
+ * base tables *and* {@link model}'s columns.
  *
  * Memoised on the model by `AuthTest`, so every block in this directory shares
  * one database — including the ones that reach it through `AuthTest.layer`.
  */
 export const layerDatabase: Layer.Layer<
-  SqlClient.SqlClient | PgliteClient.PgliteClient,
+  SqlClient.SqlClient | Database.TestDatabase,
   Migrator.MigrationError | SqlError.SqlError
-> = AuthTest.layerDatabaseFor(model)
+> = AuthTest.layerDatabaseFor(model, Database.fromConfig)
 
 /**
  * The whole persistence tier of {@link model} over {@link layerDatabase}.
  */
 export const layerStores: Layer.Layer<
-  AuthStores | SqlClient.SqlClient | PgliteClient.PgliteClient,
+  AuthStores | SqlClient.SqlClient | Database.TestDatabase,
   Migrator.MigrationError | SqlError.SqlError
 > = AuthTest.layerStoresFor(model)
