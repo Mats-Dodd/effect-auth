@@ -37,6 +37,7 @@ import { RateLimiter } from "effect/unstable/persistence"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { InvalidCode } from "../domain/Errors.js"
+import { SignInResult } from "../domain/SignIn.js"
 import { SessionCache } from "../http/SessionCache.js"
 import type { PluginCookie } from "../http/Cookies.js"
 import { pluginCookieFor } from "../http/Cookies.js"
@@ -228,13 +229,10 @@ export const handlers = AuthHandlers.forGroup(PhoneApiGroup, (handlers) =>
             .pipe(AuthHandlers.serverFault)
           yield* clearHandle(signInCookieBaseName)
 
-          if (result._tag === "Challenge") {
-            // The pending token, and only the pending token: no session was
-            // minted, so no session cookie may be written here.
-            const maxAge = yield* remaining(result.expiresAt)
-            yield* AuthHandlers.setPendingCookie(config, result.token, { maxAge })
-            return { _tag: "MfaRequired" as const, available: result.available, expiresAt: result.expiresAt }
-          }
+          // The pending token, and only the pending token: no session was
+          // minted, so no session cookie may be written here. The shared helper
+          // is the whole branch, cookie and `202` together.
+          if (SignInResult.$is("Challenge")(result)) return yield* AuthHandlers.mfaRequired(config, result)
 
           yield* setSessionCookie(config, result.session, result.token, {
             persistent: result.session.rememberMe

@@ -3,7 +3,8 @@ import { DateTime, Duration, Effect, Option, Redacted } from "effect"
 import { Cookies } from "effect/unstable/http"
 import { insecureSessionCookieName } from "../../src/http/Cookies.js"
 import { pendingCookieBaseName } from "../../src/http/Handlers.js"
-import { proceed } from "../../src/domain/SignIn.js"
+import { ProvisionSource } from "../../src/domain/Hooks.js"
+import { proceed, SignInDecision } from "../../src/domain/SignIn.js"
 import { verifyCookieBaseName, signInCookieBaseName, stepUpCookieBaseName } from "../../src/phone/index.js"
 import * as PhoneTest from "../../src/testing/PhoneTest.js"
 import * as TestHttpClient from "../../src/testing/TestHttpClient.js"
@@ -256,15 +257,16 @@ describe.sequential("phone/Handlers", () => {
       // session — a decider that challenged everything would challenge that too.
       signInPipeline: {
         decide: (options) =>
-          options.source._tag !== "Plugin" || options.source.plugin !== "phone"
+          !ProvisionSource.$is("Plugin")(options.source) || options.source.plugin !== "phone"
             ? Effect.succeed(proceed)
-            : Effect.map(DateTime.now, (now) => ({
-                _tag: "Challenge" as const,
-                kind: "totp",
-                available: ["totp"],
-                token: Redacted.make("pending-token-for-the-test"),
-                expiresAt: DateTime.addDuration(now, Duration.minutes(10))
-              }))
+            : Effect.map(DateTime.now, (now) =>
+                SignInDecision.Challenge({
+                  kind: "totp",
+                  available: ["totp"],
+                  token: Redacted.make("pending-token-for-the-test"),
+                  expiresAt: DateTime.addDuration(now, Duration.minutes(10))
+                })
+              )
       }
     })
   )("when a second factor is owed", (it) => {
