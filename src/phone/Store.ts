@@ -21,11 +21,10 @@
 import type { Option } from "effect"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { Model } from "effect/unstable/schema"
-import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
+import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import type { UserId } from "../domain/Schema.js"
 import { UserId as UserIdSchema } from "../domain/Schema.js"
-import type { PersistenceFailureKind } from "../domain/Stores.js"
-import { PersistenceError } from "../domain/Stores.js"
+import { persistenceFailureKind, PersistenceError } from "../domain/Stores.js"
 import { insertRow } from "../internal/effects.js"
 import { phoneNumbersTable } from "./Migrations.js"
 
@@ -142,16 +141,12 @@ export class PhoneStore extends Context.Service<PhoneStore, PhoneStoreService>()
 
 const columns = `phone_e164 AS "phoneE164", user_id AS "userId", verified_at AS "verifiedAt", created_at AS "createdAt"`
 
-/**
- * Classifies a driver failure for the plugin, which acts on exactly one
- * distinction: the number already belongs to somebody. Identical to
- * `SqlStores`' own `kindOf`, and for the same reason — it is the only failure
- * a caller can do anything about.
- */
-const kindOf = (cause: unknown): PersistenceFailureKind =>
-  SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
-
-const fail = (operation: string) => (cause: unknown) => PersistenceError.make({ operation, kind: kindOf(cause), cause })
+const fail = (operation: string) => (cause: unknown) =>
+  // The shared classifier, not a copy: the plugin acts on exactly one
+  // distinction — the number already belongs to somebody — and it has to be the
+  // same distinction the core stores draw, or `isUniqueViolation` answers
+  // differently either side of the seam.
+  PersistenceError.make({ operation, kind: persistenceFailureKind(cause), cause })
 
 const persist =
   (operation: string) =>

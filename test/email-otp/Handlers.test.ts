@@ -2,8 +2,9 @@ import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Option, Redacted } from "effect"
 import { Cookies } from "effect/unstable/http"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
+import { ProvisionSource } from "../../src/domain/Hooks.js"
 import type { SignInPipelineService } from "../../src/domain/SignIn.js"
-import { proceed } from "../../src/domain/SignIn.js"
+import { proceed, SignInDecision } from "../../src/domain/SignIn.js"
 import { handleCookie } from "../../src/email-otp/Handlers.js"
 import * as AuthHandlers from "../../src/http/Handlers.js"
 import * as EmailOtpTest from "../../src/testing/EmailOtpTest.js"
@@ -393,14 +394,15 @@ const pendingToken = "pending-authentication-token-for-the-test"
 
 const pipeline: SignInPipelineService = {
   decide: (options) =>
-    options.source._tag === "Plugin"
-      ? Effect.map(DateTime.now, (now) => ({
-          _tag: "Challenge" as const,
-          kind: "mfa",
-          available: ["totp"],
-          token: Redacted.make(pendingToken),
-          expiresAt: DateTime.addDuration(now, challengeTtl)
-        }))
+    ProvisionSource.$is("Plugin")(options.source)
+      ? Effect.map(DateTime.now, (now) =>
+          SignInDecision.Challenge({
+            kind: "mfa",
+            available: ["totp"],
+            token: Redacted.make(pendingToken),
+            expiresAt: DateTime.addDuration(now, challengeTtl)
+          })
+        )
       : Effect.succeed(proceed)
 }
 

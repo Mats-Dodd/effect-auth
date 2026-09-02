@@ -46,23 +46,54 @@
  *
  * @since 0.2.0
  */
-import { Context, type DateTime, Duration, Effect, Layer, Option, Redacted, Result, Schema, type Scope } from "effect"
+import {
+  Context,
+  Data,
+  type DateTime,
+  Duration,
+  Effect,
+  Layer,
+  Match,
+  Option,
+  Redacted,
+  Result,
+  Schema,
+  type Scope
+} from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { tokenUrl } from "../config/AuthEmails.js"
 import { Authenticators, revokeAll as revokeAllAuthenticators } from "../domain/Authenticators.js"
 import type { EmailDeliveryError } from "../domain/Errors.js"
 import { EmailUnchanged, InvalidCode, UserAlreadyExists } from "../domain/Errors.js"
-import { AuthEvents, publishSafely } from "../domain/Events.js"
-import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import {
+  AccountUnlinked,
+  AuthEvents,
+  EmailChanged,
+  EmailVerified,
+  PasswordResetRequested,
+  PluginEvent,
+  publishSafely,
+  SessionRevoked,
+  UserCreated
+} from "../domain/Events.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import { ProvisionSource } from "../domain/Hooks.js"
 import type { Session, User } from "../domain/Schema.js"
 import { normalizeEmail, User as UserModel } from "../domain/Schema.js"
 import { Challenges } from "../domain/Challenges.js"
 import type { ElevatedSession, Evidence } from "../domain/Sessions.js"
 import { Sessions } from "../domain/Sessions.js"
 import type { SignInChallenge } from "../domain/SignIn.js"
-import { SignIn } from "../domain/SignIn.js"
+import { SignIn, SignInResult } from "../domain/SignIn.js"
 import type { PersistenceError, SessionWithUser } from "../domain/Stores.js"
-import { AccountStore, isUniqueViolation, SessionStore, UserStore, WithAuthTransaction } from "../domain/Stores.js"
+import {
+  AccountStore,
+  isUniqueViolation,
+  isUniqueViolationFailure,
+  SessionStore,
+  UserStore,
+  WithAuthTransaction
+} from "../domain/Stores.js"
 import { Users } from "../domain/Users.js"
 import type { TokenPurpose } from "../domain/Verifications.js"
 import { passwordResetPurpose, purpose, retireUserSubjectTokens, Verifications } from "../domain/Verifications.js"
@@ -121,7 +152,7 @@ export const emailOtpEvidence: Evidence = {
  * @category constructors
  * @since 0.2.0
  */
-export const emailOtpSource: ProvisionSource = { _tag: "Plugin", plugin: emailOtpPlugin }
+export const emailOtpSource: ProvisionSource = ProvisionSource.Plugin({ plugin: emailOtpPlugin })
 
 // -----------------------------------------------------------------------------
 // Purposes
@@ -588,27 +619,84 @@ export interface VerifyOptions {
 }
 
 /**
+ * What answering a code can mean.
+ *
+ * **Details**
+ *
+ * The in-memory answer, which is not the wire answer: {@link EmailOtpResult} in
+ * `Api.ts` is the schema the endpoint encodes, it carries the public views of a
+ * user and a session rather than the rows, and it has no `Challenge` member at
+ * all — a challenge leaves the HTTP boundary as a `202 MfaRequired` with the
+ * pending token in a cookie. Two declarations, because they are two different
+ * shapes, and each is built from the primitive for what it is: this one from
+ * `Data.taggedEnum`, the wire one from `Schema.TaggedStruct`.
+ *
+ * @category models
+ * @since 0.2.0
+ */
+export type VerifyResult = Data.TaggedEnum<{
+  /** A session this plugin established. */
+  SignedIn: {
+    readonly user: User
+    readonly session: Session
+    /**
+     * The session's raw token — the only copy that will ever exist. Put it in a
+     * `Set-Cookie` and drop it.
+     */
+    readonly token: Redacted.Redacted
+    /** What the request asked for, carried through the challenge's payload. */
+    readonly rememberMe: boolean
+    /** `true` when spending this credential is what created the account. */
+    readonly userCreated: boolean
+    /** The validated URL a browser is to be sent to. */
+    readonly redirectTo: string
+  }
+  /**
+   * A credential that was accepted, where a factor plugin owes a second factor
+   * before a session exists.
+   */
+  Challenge: {
+    readonly challenge: SignInChallenge
+    /** The validated URL a browser is to be sent to, once it has answered. */
+    readonly redirectTo: string
+  }
+  /** A code that proved control of an address and established nothing. */
+  Verified: { readonly user: User }
+  /** A reset code's continuation. */
+  PasswordReset: {
+    /** Spend it at `Passwords.resetPassword` — `POST /auth/reset-password`. */
+    readonly token: Redacted.Redacted
+    readonly expiresAt: DateTime.Utc
+  }
+}>
+
+/**
+ * Constructors and matchers for {@link VerifyResult}.
+ *
+ * **Details**
+ *
+ * `VerifyResult.SignedIn({ ... })` builds a member, `VerifyResult.$match`
+ * branches over all four exhaustively — a fifth member is a compile error at
+ * every call site rather than a silent fall-through — and
+ * `VerifyResult.$is("Challenge")` narrows to one.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at a result this
+ * plugin produced — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const VerifyResult = Data.taggedEnum<VerifyResult>()
+
+/**
  * A session this plugin established.
  *
  * @category models
  * @since 0.2.0
  */
-export interface SignedIn {
-  readonly _tag: "SignedIn"
-  readonly user: User
-  readonly session: Session
-  /**
-   * The session's raw token — the only copy that will ever exist. Put it in a
-   * `Set-Cookie` and drop it.
-   */
-  readonly token: Redacted.Redacted
-  /** What the request asked for, carried through the challenge's payload. */
-  readonly rememberMe: boolean
-  /** `true` when spending this credential is what created the account. */
-  readonly userCreated: boolean
-  /** The validated URL a browser is to be sent to. */
-  readonly redirectTo: string
-}
+export type SignedIn = Data.TaggedEnum.Value<VerifyResult, "SignedIn">
 
 /**
  * A credential that was accepted, where a factor plugin owes a second factor
@@ -617,12 +705,7 @@ export interface SignedIn {
  * @category models
  * @since 0.2.0
  */
-export interface Challenged {
-  readonly _tag: "Challenge"
-  readonly challenge: SignInChallenge
-  /** The validated URL a browser is to be sent to, once it has answered. */
-  readonly redirectTo: string
-}
+export type Challenged = Data.TaggedEnum.Value<VerifyResult, "Challenge">
 
 /**
  * A code that proved control of an address and established nothing.
@@ -630,10 +713,7 @@ export interface Challenged {
  * @category models
  * @since 0.2.0
  */
-export interface Verified {
-  readonly _tag: "Verified"
-  readonly user: User
-}
+export type Verified = Data.TaggedEnum.Value<VerifyResult, "Verified">
 
 /**
  * A reset code's continuation.
@@ -641,20 +721,7 @@ export interface Verified {
  * @category models
  * @since 0.2.0
  */
-export interface PasswordReset {
-  readonly _tag: "PasswordReset"
-  /** Spend it at `Passwords.resetPassword` — `POST /auth/reset-password`. */
-  readonly token: Redacted.Redacted
-  readonly expiresAt: DateTime.Utc
-}
-
-/**
- * What answering a code can mean.
- *
- * @category models
- * @since 0.2.0
- */
-export type VerifyResult = SignedIn | Challenged | Verified | PasswordReset
+export type PasswordReset = Data.TaggedEnum.Value<VerifyResult, "PasswordReset">
 
 /**
  * Everything spending a code or a link can fail with that this plugin
@@ -675,15 +742,17 @@ export type VerifyError = InvalidCode | SignUpDisabled | PolicyRefused
 export type LinkOutcome = Result.Result<SignedIn | Challenged, RedirectFailure<VerifyError>>
 
 /**
- * The codes themselves, keyed by tag. The mapped type is what keeps the set
- * closed: a new member of {@link VerifyError} is a compile error here rather
- * than a silent fall-through to somebody else's code.
+ * The tags of {@link VerifyError}: everything a failed link answers with a
+ * redirect rather than an error body.
+ *
+ * **Gotchas**
+ *
+ * The complement of `PersistenceError` in what {@link EmailOtpService.follow}'s
+ * body can fail with. A new member of `VerifyError` left off this list does not
+ * fall through silently — it stays in the error channel, and `follow` no longer
+ * satisfies its declared `PersistenceError`-only signature.
  */
-const errorCodes: { readonly [Tag in VerifyError["_tag"]]: string } = {
-  SignUpDisabled: "sign_up_disabled",
-  PolicyRefused: "policy_refused",
-  InvalidCode: "invalid_token"
-}
+const verifyErrorTags = ["InvalidCode", "SignUpDisabled", "PolicyRefused"] as const
 
 /**
  * The safe error code a failed link reports in the redirect's query string.
@@ -696,10 +765,20 @@ const errorCodes: { readonly [Tag in VerifyError["_tag"]]: string } = {
  * that expired alike — and it is spelled the way magic link spelled it, because
  * a landing page that already handles it should go on working.
  *
+ * The match is exhaustive, which is what keeps the set closed: a new member of
+ * {@link VerifyError} is a compile error here rather than a silent
+ * fall-through to somebody else's code.
+ *
  * @category combinators
  * @since 0.2.0
  */
-export const errorCode = (error: VerifyError): string => errorCodes[error._tag]
+export const errorCode: (error: VerifyError) => string = Match.type<VerifyError>().pipe(
+  Match.tagsExhaustive({
+    SignUpDisabled: () => "sign_up_disabled",
+    PolicyRefused: () => "policy_refused",
+    InvalidCode: () => "invalid_token"
+  })
+)
 
 // -----------------------------------------------------------------------------
 // Service
@@ -1015,13 +1094,15 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
         image: null
       })
       const user = yield* transaction.run(domain.provision({ candidate, source: emailOtpSource }))
-      yield* publishSafely(events, {
-        _tag: "UserCreated",
-        userId: user.id,
-        email: user.email,
-        emailVerified: user.emailVerified,
-        method: emailOtpMethod
-      })
+      yield* publishSafely(
+        events,
+        UserCreated.make({
+          userId: user.id,
+          email: user.email,
+          emailVerified: user.emailVerified,
+          method: emailOtpMethod
+        })
+      )
       return user
     })
 
@@ -1061,28 +1142,29 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
       )
 
       for (const account of outcome.linked) {
-        yield* publishSafely(events, {
-          _tag: "AccountUnlinked",
-          userId: user.id,
-          accountId: account.id,
-          providerId: account.providerId,
-          issuer: account.issuer
-        })
+        yield* publishSafely(
+          events,
+          AccountUnlinked.make({
+            userId: user.id,
+            accountId: account.id,
+            providerId: account.providerId,
+            issuer: account.issuer
+          })
+        )
       }
-      yield* publishSafely(events, {
-        _tag: "SessionRevoked",
-        userId: user.id,
-        sessionId: null,
-        scope: "all",
-        count: outcome.revoked
-      })
-      yield* publishSafely(events, {
-        _tag: "PluginEvent",
-        plugin: emailOtpPlugin,
-        event: "UnprovenAccountRevoked",
-        userId: user.id,
-        data: { accounts: outcome.linked.length, authenticators: outcome.factors, sessions: outcome.revoked }
-      })
+      yield* publishSafely(
+        events,
+        SessionRevoked.make({ userId: user.id, sessionId: null, scope: "all", count: outcome.revoked })
+      )
+      yield* publishSafely(
+        events,
+        PluginEvent.make({
+          plugin: emailOtpPlugin,
+          event: "UnprovenAccountRevoked",
+          userId: user.id,
+          data: { accounts: outcome.linked.length, authenticators: outcome.factors, sessions: outcome.revoked }
+        })
+      )
       return outcome.updated
     })
 
@@ -1097,11 +1179,7 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
         ? yield* reclaim(user)
         : yield* users.update(user.id, { emailVerified: true })
       if (Option.isNone(updated)) return Option.none<User>()
-      yield* publishSafely(events, {
-        _tag: "EmailVerified",
-        userId: updated.value.id,
-        email: updated.value.email
-      })
+      yield* publishSafely(events, EmailVerified.make({ userId: updated.value.id, email: updated.value.email }))
       return Option.some(updated.value)
     })
 
@@ -1155,22 +1233,21 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
         userCreated ? (payload.newUserCallbackURL ?? payload.callbackURL) : payload.callbackURL
       )
 
-      if (completed._tag === "Challenge") {
+      if (SignInResult.$is("Challenge")(completed)) {
         // No session, no session cookie: the caller is handed the challenge and
         // the endpoint decides how to say so — a 202 for the JSON path, a
         // `?mfa=required` redirect for the browser one.
-        return { _tag: "Challenge", challenge: completed, redirectTo } satisfies Challenged
+        return VerifyResult.Challenge({ challenge: completed, redirectTo })
       }
 
-      return {
-        _tag: "SignedIn",
+      return VerifyResult.SignedIn({
         user,
         session: completed.session,
         token: completed.token,
         rememberMe: payload.rememberMe,
         userCreated,
         redirectTo
-      } satisfies SignedIn
+      })
     })
 
     /** One retry, in one place: every entry point must resolve the race identically. */
@@ -1182,11 +1259,7 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
         readonly userAgent?: string | null | undefined
         readonly current?: SessionWithUser | undefined
       }
-    ) =>
-      Effect.retry(finish(email, payload, meta), {
-        while: (error) => error._tag === "PersistenceError" && isUniqueViolation(error),
-        times: 1
-      })
+    ) => Effect.retry(finish(email, payload, meta), { while: isUniqueViolationFailure, times: 1 })
 
     /**
      * Marks an address verified, and takes nothing away.
@@ -1218,15 +1291,11 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
     const markVerified = Effect.fnUntraced(function* (email: string) {
       const found = yield* users.findByEmail(email)
       if (Option.isNone(found)) return yield* InvalidCode.make()
-      if (found.value.emailVerified) return { _tag: "Verified", user: found.value } satisfies Verified
+      if (found.value.emailVerified) return VerifyResult.Verified({ user: found.value })
       const updated = yield* users.update(found.value.id, { emailVerified: true })
       if (Option.isNone(updated)) return yield* InvalidCode.make()
-      yield* publishSafely(events, {
-        _tag: "EmailVerified",
-        userId: updated.value.id,
-        email: updated.value.email
-      })
-      return { _tag: "Verified", user: updated.value } satisfies Verified
+      yield* publishSafely(events, EmailVerified.make({ userId: updated.value.id, email: updated.value.email }))
+      return VerifyResult.Verified({ user: updated.value })
     })
 
     /** Hands back a continuation the caller spends at `Passwords.resetPassword`. */
@@ -1245,8 +1314,8 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
         ttl: settings.resetTtl,
         payload: null
       })
-      yield* publishSafely(events, { _tag: "PasswordResetRequested", userId: settled.value.id })
-      return { _tag: "PasswordReset", token: issued.token, expiresAt: issued.expiresAt } satisfies PasswordReset
+      yield* publishSafely(events, PasswordResetRequested.make({ userId: settled.value.id }))
+      return VerifyResult.PasswordReset({ token: issued.token, expiresAt: issued.expiresAt })
     })
 
     /**
@@ -1290,41 +1359,36 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
 
     const failure = redirectFailure(config, errorCode)
 
-    const follow = Effect.fnUntraced(
-      function* (options: {
-        readonly token: Redacted.Redacted
-        readonly ipAddress?: string | null | undefined
-        readonly userAgent?: string | null | undefined
-        readonly current?: SessionWithUser | undefined
-      }) {
-        const claimed = yield* Effect.result(
-          Effect.flatMap(verifications.claim(signInPurpose, options.token), (claimed) =>
-            // The link row is already consumed by the claim; the code minted
-            // beside it dies with it, in its own namespace.
-            Effect.as(challenges.retire(signInPurpose, claimed.subject), claimed)
+    // Every failure that is not a fault becomes a redirect, and `PersistenceError`
+    // is deliberately left in the channel throughout: a fault is a `500`, not a
+    // place to send somebody. Nothing is materialised into a `Result` to be
+    // taken apart again — each `catchTag` handles exactly the tags it names and
+    // leaves the rest alone.
+    const follow = (options: {
+      readonly token: Redacted.Redacted
+      readonly ipAddress?: string | null | undefined
+      readonly userAgent?: string | null | undefined
+      readonly current?: SessionWithUser | undefined
+    }): Effect.Effect<LinkOutcome, PersistenceError> =>
+      verifications.claim(signInPurpose, options.token).pipe(
+        // The link row is already consumed by the claim; the code minted beside
+        // it dies with it, in its own namespace.
+        Effect.flatMap((claimed) => Effect.as(challenges.retire(signInPurpose, claimed.subject), claimed)),
+        Effect.flatMap((claimed) =>
+          spend(normalizeEmail(claimed.subject), claimed.payload, options).pipe(
+            Effect.map((settled): LinkOutcome => Result.succeed(settled)),
+            Effect.catchTag(verifyErrorTags, (error) =>
+              Effect.succeed(failure(error, claimed.payload.errorCallbackURL))
+            )
           )
-        )
-        if (claimed._tag === "Failure") {
-          if (claimed.failure._tag === "PersistenceError") return yield* claimed.failure
+        ),
+        Effect.catchTag("InvalidToken", () =>
           // No payload was ever read, so there is no error URL to honour: the
           // token is not one this deployment minted.
-          return failure(InvalidCode.make(), null)
-        }
-        const finished = yield* Effect.result(
-          spend(normalizeEmail(claimed.success.subject), claimed.success.payload, options)
-        )
-        if (finished._tag === "Failure") {
-          // A fault is the one failure this endpoint cannot answer with a
-          // redirect: it is a `500`, not a place to send somebody.
-          if (finished.failure._tag === "PersistenceError") {
-            return yield* finished.failure
-          }
-          return failure(finished.failure, claimed.success.payload.errorCallbackURL)
-        }
-        return Result.succeed(finished.success) satisfies LinkOutcome
-      },
-      (effect) => Effect.withSpan(effect, "EmailOtp.follow")
-    )
+          Effect.succeed(failure(InvalidCode.make(), null))
+        ),
+        Effect.withSpan("EmailOtp.follow")
+      )
 
     const requestStepUp = Effect.fnUntraced(
       function* (user: User) {
@@ -1405,17 +1469,11 @@ export const make: (options?: Options) => Effect.Effect<EmailOtpService, never, 
         )
         if (Option.isNone(updated)) return yield* InvalidCode.make()
 
-        yield* publishSafely(events, {
-          _tag: "EmailChanged",
-          userId: updated.value.id,
-          previousEmail,
-          email: updated.value.email
-        })
-        yield* publishSafely(events, {
-          _tag: "EmailVerified",
-          userId: updated.value.id,
-          email: updated.value.email
-        })
+        yield* publishSafely(
+          events,
+          EmailChanged.make({ userId: updated.value.id, previousEmail, email: updated.value.email })
+        )
+        yield* publishSafely(events, EmailVerified.make({ userId: updated.value.id, email: updated.value.email }))
         return updated.value
       },
       (effect) => Effect.withSpan(effect, "EmailOtp.verifyEmailChange")

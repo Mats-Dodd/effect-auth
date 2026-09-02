@@ -219,8 +219,7 @@ export type EmailOtpChangeEmailPayload = typeof EmailOtpChangeEmailPayload.Type
  * @category models
  * @since 0.2.0
  */
-export const EmailOtpSignedIn = Schema.Struct({
-  _tag: Schema.tag("SignedIn"),
+export const EmailOtpSignedIn = Schema.TaggedStruct("SignedIn", {
   user: UserPublic,
   session: SessionPublic
 })
@@ -240,9 +239,7 @@ export type EmailOtpSignedIn = typeof EmailOtpSignedIn.Type
  * @category models
  * @since 0.2.0
  */
-export const EmailOtpVerified = Schema.Struct({
-  _tag: Schema.tag("Verified")
-})
+export const EmailOtpVerified = Schema.TaggedStruct("Verified", {})
 
 /**
  * The type of an {@link EmailOtpVerified}.
@@ -267,8 +264,7 @@ export type EmailOtpVerified = typeof EmailOtpVerified.Type
  * @category models
  * @since 0.2.0
  */
-export const EmailOtpPasswordReset = Schema.Struct({
-  _tag: Schema.tag("PasswordReset"),
+export const EmailOtpPasswordReset = Schema.TaggedStruct("PasswordReset", {
   /** The continuation token. Spend it at `POST /auth/reset-password`. */
   token: Secret,
   /** When it stops being accepted. */
@@ -289,15 +285,18 @@ export type EmailOtpPasswordReset = typeof EmailOtpPasswordReset.Type
  * **Details**
  *
  * One tagged union rather than three endpoints, because the caller of `verify`
- * does not choose the purpose — the cookie the send endpoint set does. Branch on
- * `_tag`.
+ * does not choose the purpose — the cookie the send endpoint set does.
+ * `EmailOtpResult.match` branches over all three exhaustively,
+ * `EmailOtpResult.matchOrElse` over some of them with a fallback, and
+ * `EmailOtpResult.guards.SignedIn` is the structural check for one.
  *
  * @category models
  * @since 0.2.0
  */
-export const EmailOtpResult: Schema.Union<
-  [typeof EmailOtpSignedIn, typeof EmailOtpVerified, typeof EmailOtpPasswordReset]
-> = Schema.Union([EmailOtpSignedIn, EmailOtpVerified, EmailOtpPasswordReset])
+export const EmailOtpResult: Schema.toTaggedUnion<
+  "_tag",
+  readonly [typeof EmailOtpSignedIn, typeof EmailOtpVerified, typeof EmailOtpPasswordReset]
+> = Schema.Union([EmailOtpSignedIn, EmailOtpVerified, EmailOtpPasswordReset]).pipe(Schema.toTaggedUnion("_tag"))
 
 /**
  * The type of an {@link EmailOtpResult}.

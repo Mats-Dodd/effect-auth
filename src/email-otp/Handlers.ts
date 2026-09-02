@@ -45,8 +45,8 @@ import { Sessions } from "../domain/Sessions.js"
 import { requireTrustedIfPresent } from "../http/OriginCheck.js"
 import type { Bucket } from "../http/RateLimits.js"
 import { consumeKeyed, consumeWith, credentials, email as emailBucket } from "../http/RateLimits.js"
-import { EmailOtpApiGroup } from "./Api.js"
-import { EmailOtp, handleCookieBaseName, type Issued } from "./EmailOtp.js"
+import { EmailOtpApiGroup, EmailOtpPasswordReset, EmailOtpSignedIn, EmailOtpVerified } from "./Api.js"
+import { EmailOtp, handleCookieBaseName, type Issued, VerifyResult } from "./EmailOtp.js"
 
 /**
  * The bucket a resend cooldown is counted in: one code per window, per subject.
@@ -222,28 +222,20 @@ export const handlers = AuthHandlers.forGroup(EmailOtpApiGroup, (handlers) =>
           // Spent or refused, the handle does not ride a second request.
           yield* clearHandleCookie
 
-          switch (result._tag) {
-            case "SignedIn": {
-              yield* setSessionCookie(config, result.session, result.token, { persistent: result.rememberMe })
-              return { _tag: "SignedIn" as const, user: result.user, session: result.session }
-            }
-            case "Challenge": {
-              // No session cookie on this branch, by construction: there is no
-              // session. The pending-authentication token is the only thing set.
-              yield* AuthHandlers.setPendingCookie(config, result.challenge.token, {
-                maxAge: yield* remainingLifetime(result.challenge.expiresAt)
-              })
-              return {
-                _tag: "MfaRequired" as const,
-                available: result.challenge.available,
-                expiresAt: result.challenge.expiresAt
-              }
-            }
-            case "Verified":
-              return { _tag: "Verified" as const }
-            case "PasswordReset":
-              return { _tag: "PasswordReset" as const, token: result.token, expiresAt: result.expiresAt }
-          }
+          return yield* VerifyResult.$match(result, {
+            SignedIn: (signedIn) =>
+              Effect.as(
+                setSessionCookie(config, signedIn.session, signedIn.token, { persistent: signedIn.rememberMe }),
+                EmailOtpSignedIn.make({ user: signedIn.user, session: signedIn.session })
+              ),
+            // No session cookie on that branch, by construction: there is no
+            // session. The shared helper sets the pending-authentication token
+            // and nothing else.
+            Challenge: (challenged) => AuthHandlers.mfaRequired(config, challenged.challenge),
+            Verified: () => Effect.succeed(EmailOtpVerified.make({})),
+            PasswordReset: (reset) =>
+              Effect.succeed(EmailOtpPasswordReset.make({ token: reset.token, expiresAt: reset.expiresAt }))
+          })
         })
       )
       .handle("link", ({ query, request }) =>
@@ -269,7 +261,7 @@ export const handlers = AuthHandlers.forGroup(EmailOtpApiGroup, (handlers) =>
             return AuthHandlers.redirectTo(outcome.failure.redirectTo)
           }
           const settled = outcome.success
-          if (settled._tag === "SignedIn") {
+          if (VerifyResult.$is("SignedIn")(settled)) {
             yield* setSessionCookie(config, settled.session, settled.token, { persistent: settled.rememberMe })
             return AuthHandlers.redirectTo(settled.redirectTo)
           }

@@ -44,8 +44,9 @@ import { append as appendAuthenticators, Authenticators, list as listAuthenticat
 import { Challenges } from "../domain/Challenges.js"
 import type { RateLimited } from "../domain/Errors.js"
 import { InvalidCode } from "../domain/Errors.js"
-import { AuthEvents, publishSafely } from "../domain/Events.js"
-import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import { AuthEvents, PluginEvent, publishSafely } from "../domain/Events.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import { ProvisionSource } from "../domain/Hooks.js"
 import type { Session, User, UserId } from "../domain/Schema.js"
 import type { ElevatedSession, Evidence } from "../domain/Sessions.js"
 import { Sessions } from "../domain/Sessions.js"
@@ -152,7 +153,7 @@ export const smsEvidence: Evidence = {
  * this library shipped in 0.1.0 and nothing else, and a new tag there is a
  * breaking change to every deployment's hooks for no gain.
  */
-const phoneSource: ProvisionSource = { _tag: "Plugin", plugin: phonePlugin }
+const phoneSource: ProvisionSource = ProvisionSource.Plugin({ plugin: phonePlugin })
 
 // -----------------------------------------------------------------------------
 // Cookies
@@ -987,15 +988,17 @@ export const make: (options?: Options) => Effect.Effect<PhoneService, never, Req
           user: options.user
         })
       }
-      yield* publishSafely(events, {
-        _tag: "PluginEvent",
-        plugin: phonePlugin,
-        event: otpIssuedEvent,
-        userId: options.userId,
-        // No number, no code, no handle: a subscriber watching the send/verify
-        // conversion needs the purpose and the country and nothing else.
-        data: { purpose: options.tokenPurpose.name, delivered: options.send }
-      })
+      yield* publishSafely(
+        events,
+        PluginEvent.make({
+          plugin: phonePlugin,
+          event: otpIssuedEvent,
+          userId: options.userId,
+          // No number, no code, no handle: a subscriber watching the send/verify
+          // conversion needs the purpose and the country and nothing else.
+          data: { purpose: options.tokenPurpose.name, delivered: options.send }
+        })
+      )
       return { handle: issued.handle, expiresAt: issued.expiresAt } satisfies IssuedChallenge
     })
 
@@ -1025,13 +1028,15 @@ export const make: (options?: Options) => Effect.Effect<PhoneService, never, Req
         handle: options.handle,
         code: options.code
       })
-      yield* publishSafely(events, {
-        _tag: "PluginEvent",
-        plugin: phonePlugin,
-        event: otpVerifiedEvent,
-        userId: options.userId,
-        data: { purpose: options.tokenPurpose.name }
-      })
+      yield* publishSafely(
+        events,
+        PluginEvent.make({
+          plugin: phonePlugin,
+          event: otpVerifiedEvent,
+          userId: options.userId,
+          data: { purpose: options.tokenPurpose.name }
+        })
+      )
       return claimed
     })
 
