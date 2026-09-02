@@ -46,7 +46,9 @@ Amendment 20 records the design decisions and the three places rc.112's types fo
   `Data.TaggedEnum`s**, each with a value of the same name beside the type (constructors, `$is`,
   `$match`). Member shapes and tag values are unchanged, so an existing literal still typechecks.
 - **`AuthClient.withStepUp`'s `onStepUp` parameter is `Types.ExtractTag<E, "StepUpRequired">`**
-  rather than a hand-written `Extract<…>`. Same type; the emitted `.d.ts` text changes.
+  rather than a hand-written `Extract<…>`. The same type for every literal-tagged union (and every
+  union in this tree is one); `ExtractTag` additionally matches a member whose `_tag` is `string`.
+  The emitted `.d.ts` text changes.
 - **`AuthTest.tagsOf` is generic in its element type**
   (`<E extends { readonly _tag: string }>(values: ReadonlyArray<E>) => ReadonlyArray<string>`).
   Every existing call compiles; the answer is still `ReadonlyArray<string>`.
@@ -64,11 +66,13 @@ Amendment 20 records the design decisions and the three places rc.112's types fo
   rather than `Data.taggedEnum`, because the enum cannot carry a constrained generic (Amendment 20.2).
 - `AuthEvents.AuthEvent` is a `Schema.toTaggedUnion("_tag")` union: `.cases`, `.guards`,
   `.isAnyOf`, `.discriminants`, `.match`, `.matchOrElse`. Decoding and encoding unchanged.
-- `AuthApi.MfaRequired` is a `Schema.TaggedStruct`; `MfaRequired.make({ available, expiresAt })`
-  builds one. Identical encoding.
-- `AuthHandlers.mfaRequired(config, challenge)` sets the pending-authentication cookie for a
-  `SignInChallenge` and returns the `202` body. It replaces the copy-pasted `Challenge` branch in
-  all seven sign-in handlers, so the pending-cookie lifetime is computed in one place.
+- `MfaRequired.make({ available, expiresAt })` is how a `202` body is built; its declaration is
+  unchanged (a `Schema.Struct` with a `Schema.tag`, so the field docs survive into the `.d.ts`).
+- `AuthHandlers.setPendingCookieFor(config, challenge)` writes the pending-authentication cookie
+  for a `SignInChallenge` for as long as the challenge lives, and
+  `AuthHandlers.mfaRequired(config, challenge)` does that and returns the `202` body. Together they
+  replace the copy-pasted `Challenge` branch in six sign-in handlers and the two redirect-shaped
+  ones (OAuth callback, e-mail link), so the pending-cookie lifetime is computed in one place.
 - `Stores.persistenceFailureKind(cause)`, the single classifier of a driver failure into
   `PersistenceFailureKind` (replacing five identical private copies), and
   `Stores.isUniqueViolationFailure(error)`, a refinement for a retry `while:`.
@@ -76,7 +80,8 @@ Amendment 20 records the design decisions and the three places rc.112's types fo
 #### Changed — no API change
 
 - `AuthHandlers.dieOn` / `serverFault` signatures use `Types.ExtractTag`; the computed error
-  channel is the same set. Their test is built from `Predicate.isTagged`.
+  channel is the same set for every literal-tagged union. Their test is built from
+  `Predicate.isTagged`.
 - `OAuthFlow.errorCode` and `EmailOtp.errorCode` are built with `Match.tagsExhaustive`; the
   private mapped types over `E["_tag"]` are gone. A new union member is still a compile error.
 - `OAuthFlow.complete`, `EmailOtp.follow`, `Passwords.signUp` and the passkeys session lookup no

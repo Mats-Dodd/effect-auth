@@ -330,6 +330,35 @@ export const clearPendingCookie = (
 }
 
 /**
+ * Writes the pending-authentication cookie for a challenge, for as long as the
+ * challenge itself lives.
+ *
+ * **When to use**
+ *
+ * Wherever a challenge leaves this process: {@link mfaRequired} for a `202`,
+ * and the redirect-shaped branches (an OAuth callback, an e-mail link) that
+ * answer with a `Location` instead. Every pending cookie a challenge produces
+ * is written here, so its lifetime is computed once.
+ *
+ * **Gotchas**
+ *
+ * The lifetime is the challenge's own, clamped at zero, so a challenge that
+ * has already expired sets a cookie that is already expired.
+ *
+ * @category combinators
+ * @since 0.2.0
+ */
+export const setPendingCookieFor = (
+  config: AuthConfigService,
+  challenge: SignInChallenge
+): Effect.Effect<void, never, HttpServerRequest.HttpServerRequest> =>
+  Effect.flatMap(DateTime.now, (now) =>
+    setPendingCookie(config, challenge.token, {
+      maxAge: Duration.max(Duration.zero, DateTime.distance(now, challenge.expiresAt))
+    })
+  )
+
+/**
  * Answers a sign-in that came back owing a second factor: the pending cookie,
  * and the `202` that names what is still owed.
  *
@@ -343,8 +372,7 @@ export const clearPendingCookie = (
  *
  * The pending token travels in the cookie and nowhere else, and the response
  * this returns carries no session cookie — the caller must not write one beside
- * it. The cookie's lifetime is the challenge's own, clamped at zero, so a
- * challenge that has already expired sets a cookie that is already expired.
+ * it. The cookie is {@link setPendingCookieFor}'s.
  *
  * @category combinators
  * @since 0.2.0
@@ -353,13 +381,10 @@ export const mfaRequired = (
   config: AuthConfigService,
   challenge: SignInChallenge
 ): Effect.Effect<MfaRequired, never, HttpServerRequest.HttpServerRequest> =>
-  Effect.gen(function* () {
-    const now = yield* DateTime.now
-    yield* setPendingCookie(config, challenge.token, {
-      maxAge: Duration.max(Duration.zero, DateTime.distance(now, challenge.expiresAt))
-    })
-    return MfaRequired.make({ available: challenge.available, expiresAt: challenge.expiresAt })
-  })
+  Effect.as(
+    setPendingCookieFor(config, challenge),
+    MfaRequired.make({ available: challenge.available, expiresAt: challenge.expiresAt })
+  )
 
 /**
  * The query parameter a redirect-shaped sign-in sets when a second factor is
@@ -1000,10 +1025,7 @@ const build = <ApiId extends string, Groups extends HttpApiGroup.Constraint, F e
                 // so. The browser leaves by the navigation it arrived on,
                 // carrying the pending token in its own `__Host-` cookie and a
                 // marker on the query string so the landing page knows to ask.
-                const now = yield* DateTime.now
-                yield* setPendingCookie(config, settled.challenge.token, {
-                  maxAge: Duration.max(Duration.zero, DateTime.distance(now, settled.challenge.expiresAt))
-                })
+                yield* setPendingCookieFor(config, settled.challenge)
                 return redirectTo(withMfaRequired(settled.redirectTo))
               }
               if (settled.session !== null && settled.token !== null) {

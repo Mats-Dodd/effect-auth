@@ -151,7 +151,8 @@ export type OAuthRedirect = typeof OAuthRedirect.Type
  * @category models
  * @since 0.2.0
  */
-export const MfaRequired = Schema.TaggedStruct("MfaRequired", {
+export const MfaRequired = Schema.Struct({
+  _tag: Schema.tag("MfaRequired"),
   /** The kinds of second factor this person can answer with. */
   available: Schema.Array(Schema.String),
   /** When the pending-authentication token stops being accepted. */

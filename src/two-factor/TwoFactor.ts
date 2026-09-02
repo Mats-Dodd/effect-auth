@@ -1093,6 +1093,12 @@ export type Requirements =
   | SqlClient.SqlClient
   | RateLimiter.RateLimiter
 
+/** The events that end every trusted device a person has, whatever the scope. */
+const isCredentialChange = AuthEvent.isAnyOf(["PasswordChanged", "EmailChanged"])
+
+/** A revocation; only one with `scope: "all"` sweeps trusted devices. */
+const isRevocation = AuthEvent.isAnyOf(["SessionRevoked"])
+
 /**
  * Builds the {@link TwoFactor} implementation.
  *
@@ -1485,9 +1491,7 @@ export const make: (
 
     const sweepOn = (event: AuthEvent): Effect.Effect<void, PersistenceError> => {
       const shouldSweep =
-        AuthEvent.isAnyOf(["PasswordChanged", "EmailChanged"])(event) ||
-        (AuthEvent.isAnyOf(["SessionRevoked"])(event) && event.scope === "all") ||
-        settings.alsoSweepOn(event)
+        isCredentialChange(event) || (isRevocation(event) && event.scope === "all") || settings.alsoSweepOn(event)
       // An event that names nobody sweeps nobody: a `PluginEvent` may carry a
       // null `userId`, and this is not a rule that gets to guess whose
       // browsers it meant.

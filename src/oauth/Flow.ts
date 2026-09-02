@@ -62,7 +62,8 @@ import {
   Redacted,
   Result,
   Schema,
-  String
+  String,
+  type Types
 } from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
@@ -562,7 +563,7 @@ const callbackErrorTags = [
   "AccountAlreadyLinked",
   "PolicyRefused",
   "UserNotFound"
-] as const
+] as const satisfies ReadonlyArray<Types.Tags<CallbackError>>
 
 /**
  * The safe error code a failed callback reports in the redirect's query string.

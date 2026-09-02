@@ -58,7 +58,8 @@ import {
   Redacted,
   Result,
   Schema,
-  type Scope
+  type Scope,
+  type Types
 } from "effect"
 import { AuthConfig } from "../config/AuthConfig.js"
 import { tokenUrl } from "../config/AuthEmails.js"
@@ -752,7 +753,9 @@ export type LinkOutcome = Result.Result<SignedIn | Challenged, RedirectFailure<V
  * fall through silently — it stays in the error channel, and `follow` no longer
  * satisfies its declared `PersistenceError`-only signature.
  */
-const verifyErrorTags = ["InvalidCode", "SignUpDisabled", "PolicyRefused"] as const
+const verifyErrorTags = ["InvalidCode", "SignUpDisabled", "PolicyRefused"] as const satisfies ReadonlyArray<
+  Types.Tags<VerifyError>
+>
 
 /**
  * The safe error code a failed link reports in the redirect's query string.

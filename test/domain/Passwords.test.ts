@@ -4,30 +4,14 @@ import { TestClock } from "effect/testing"
 import { SqlClient } from "effect/unstable/sql"
 import { AuthConfig } from "../../src/config/AuthConfig.js"
 import { passwordEvidence, Passwords } from "../../src/domain/Passwords.js"
-import type { AccountId, UserFields, UserId } from "../../src/domain/Schema.js"
+import type { AccountId, UserId } from "../../src/domain/Schema.js"
 import { CredentialIssuer } from "../../src/domain/Schema.js"
-import type { SignInComplete, SignInResult } from "../../src/domain/SignIn.js"
-import { SignInResult as SignInResultEnum } from "../../src/domain/SignIn.js"
 import { Sessions } from "../../src/domain/Sessions.js"
 import { AccountStore, UserStore } from "../../src/domain/Stores.js"
 import { changeEmailVerifyPurpose } from "../../src/domain/Users.js"
 import { decodeSubjectToken, Verifications } from "../../src/domain/Verifications.js"
 import { AuthTest } from "../../src/testing/index.js"
-import { expectSome, forUser, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
-
-/**
- * A sign-in that really did produce a session.
- *
- * `signIn`'s success is a union now: a deployment with a factor plugin installed
- * can answer with a challenge instead. Every test here runs without one, so a
- * challenge is a failure of the test rather than a case it handles.
- */
-const completed = <F extends UserFields>(result: SignInResult<F>): SignInComplete<F> => {
-  if (SignInResultEnum.$is("Challenge")(result)) {
-    return assert.fail(`expected a completed sign-in, got a ${result.kind} challenge`)
-  }
-  return result
-}
+import { completed, expectSome, forUser, newPassword, testName, testPassword, uniqueEmail } from "../fixtures.js"
 
 /**
  * Registers a user.

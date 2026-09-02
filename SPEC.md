@@ -2238,8 +2238,11 @@ for the client unions whose other arm carries no tag.
   with the same shape as before, so an existing literal still typechecks. `$is` checks only the
   tag; every site that uses it is on a value this process built, never one decoded from a request.
 - **Crosses the wire** → `Schema.TaggedStruct` per member, `Schema.toTaggedUnion("_tag")` over the
-  union: `AuthEvent`, `EmailOtpResult`, `MfaRequired`. Encoding is identical to `Schema.Struct`
-  with a `Schema.tag` field, which the snapshot proves. `.guards` are full structural checks.
+  union: `AuthEvent`, `EmailOtpResult`. Encoding is identical to `Schema.Struct` with a
+  `Schema.tag` field, which the snapshot proves. `.guards` are full structural checks.
+  `MfaRequired` stays a `Schema.Struct` with a `Schema.tag`: piped through
+  `HttpApiSchema.status(202)`, a `TaggedStruct` emits the same declaration but drops the field
+  docs from the `.d.ts`, and `.make` fills `_tag` either way.
 - **A success or a failure** → `Result`. `CallbackOutcome` and `LinkOutcome` were both
   `{ _tag: "Success" } & S | { _tag: "Failure"; error; redirectTo; code }`, which is
   `Result.Result<S, RedirectFailure<E>>` with the failure fields hoisted. `RedirectFailure<E>` loses
@@ -2307,6 +2310,10 @@ PersistenceError> = never` and erase an error the runtime can still raise.
   classified there rather than silently becoming a defect.
 - `test/domain/Events.test.ts`'s coverage assertion compares sorted tag sets from
   `AuthEvent.discriminants` rather than counts, so a member added without a sample is named.
+- Every wire-schema constructor (`X.make`) validates its fields at construction and throws on a
+  failing check; the literals it replaced ran nothing. Every input is a typed value this library
+  built, so no site can fail in practice; it is recorded because it is a new defect path and a
+  validation per published event.
 
 Test assertions of the form `assert.strictEqual(x._tag, "…")` were left as they are: they assert a
 wire value, which this amendment fixes as unchanged, and a guard would assert less.

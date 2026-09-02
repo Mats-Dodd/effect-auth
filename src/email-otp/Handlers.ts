@@ -268,9 +268,7 @@ export const handlers = AuthHandlers.forGroup(EmailOtpApiGroup, (handlers) =>
           // A browser that arrived by a top-level navigation cannot be
           // answered with a 202, so the pending token goes in its cookie and
           // the landing page is told by `?mfa=required`. No session cookie.
-          yield* AuthHandlers.setPendingCookie(config, settled.challenge.token, {
-            maxAge: yield* remainingLifetime(settled.challenge.expiresAt)
-          })
+          yield* AuthHandlers.setPendingCookieFor(config, settled.challenge)
           return AuthHandlers.redirectTo(AuthHandlers.withMfaRequired(settled.redirectTo))
         })
       )
