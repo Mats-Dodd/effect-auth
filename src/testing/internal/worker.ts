@@ -37,6 +37,45 @@ const workerScope = Scope.makeUnsafe()
 export const perWorker = <A, E>(resource: Effect.Effect<A, E, Scope.Scope>): Effect.Effect<A, E> =>
   Effect.runSync(Effect.cached(Scope.provide(resource, workerScope)))
 
+/**
+ * A free-list of resources, each booted at most once per worker, handed out
+ * exclusively and put back — recycled — when the scope that borrowed one
+ * closes.
+ *
+ * **Details**
+ *
+ * This is what a single-connection engine needs to be shared: it cannot keep
+ * two builds apart on one connection, so instead each concurrent build borrows
+ * an engine of its own and a sequential build inherits a wiped one. The list
+ * grows to the number of builds that ever overlap in one worker — a handful —
+ * and the engines it holds live in the never-closed worker scope. `recycle`
+ * must leave the resource exactly as a fresh boot would; a recycle that fails
+ * is a defect, because the next borrower would read a stale one.
+ *
+ * @internal
+ */
+export const pooled = <A, E, E2>(
+  boot: Effect.Effect<A, E, Scope.Scope>,
+  recycle: (resource: A) => Effect.Effect<void, E2>
+): Effect.Effect<A, E, Scope.Scope> => {
+  const idle: Array<A> = []
+  return Effect.acquireRelease(
+    Effect.suspend(() => {
+      const next = idle.pop()
+      return next === undefined ? Scope.provide(boot, workerScope) : Effect.succeed(next)
+    }),
+    (resource) =>
+      Effect.orDie(
+        Effect.andThen(
+          recycle(resource),
+          Effect.sync(() => {
+            idle.push(resource)
+          })
+        )
+      )
+  )
+}
+
 /** Reads better than a bare digest in a `\\dn` listing while a suite is stuck. */
 let builds = 0
 

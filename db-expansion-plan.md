@@ -152,7 +152,7 @@ Every provider follows one shape, and a provider that boots an engine per build 
 
 | dialect | per worker (module-level memo, legitimate now that `isolate: false`) | per build | teardown |
 |---|---|---|---|
-| pglite | ~~one `PGlite` instance~~ — **not built; see below** | one `PGlite` instance per build | scope close |
+| pglite | a pool of `PGlite` engines, grown to the number of builds that overlap | one engine borrowed from the pool, or booted when none is idle | `DROP SCHEMA public CASCADE; CREATE SCHEMA public`, then back to the pool |
 | sqlite | nothing | `SqliteClient.layer({ filename: ":memory:" })` then `PRAGMA foreign_keys = ON` | scope close |
 | pg | one container (Testcontainers, reuse enabled) or the URL | `CREATE DATABASE effect_auth_test_<id>`, `PgClient.layer` pointed at it | terminate its connections, `DROP DATABASE` |
 | mysql | one container or the URL | `CREATE DATABASE effect_auth_test_<id>`, `MysqlClient.layer` pointed at it | `DROP DATABASE` |
@@ -160,13 +160,14 @@ Every provider follows one shape, and a provider that boots an engine per build 
 `<id>` is unique across workers (a counter plus something worker-specific, or `effect/Crypto` —
 never `Math.random`).
 
-**The PGlite row is the fallback, and it is what shipped.** The per-worker design rested on
+**The PGlite row is a pool, not a schema per build.** The per-worker design rested on
 `@effect/vitest`'s `layer()` blocks being sequential within a file; they are not —
 `sequence.concurrent` overlaps two top-level blocks, PGlite has one connection, and the second
-build's `search_path` lands under the first block's running tests. `test/testing/Isolation.test.ts`
-is the test A2 was told to write and it is what holds the line: one PGlite per build, one schema,
-no `search_path`. SPEC 21.7 records the decision. `pg` and `mysql` do keep one server per worker,
-which concurrent connections make safe.
+build's `search_path` would land under the first block's running tests. The wave first shipped one
+engine per build; the first CI run put that job at 146 s with two hook timeouts, so it became a pool
+of whole engines per worker (`src/testing/internal/worker.ts` `pooled`), borrowed exclusively and
+wiped on return. `test/testing/Isolation.test.ts` holds the line either way. SPEC 21.7 records the
+decision. `pg` and `mysql` keep one server per worker, which concurrent connections make safe.
 
 ### `src/sql/Dialect.ts` and `src/sql/Mutations.ts` (A1) — names and semantics
 
@@ -332,8 +333,8 @@ Written into every builder's definition of done.
 
 1. `isolate: false` stays. A change that needs isolation back has to say what state it leaks.
 2. One engine per worker, one schema or database per build. A provider that boots per build is
-   unfinished — **except PGlite**, which is one instance per build on purpose: see "The database
-   providers" above, SPEC 21.7 and `test/testing/Isolation.test.ts`.
+   unfinished. PGlite, with its single connection, meets the rule as a pool of whole engines per
+   worker: see "The database providers" above, SPEC 21.7 and `test/testing/Isolation.test.ts`.
 3. No new top-level `layer()` block where a nested `it.layer` would inherit the database. A test
    that needs an empty database uses `TestDatabase.reset`, not a new block.
 4. Service containers in CI, reusable containers locally (`withReuse()` and

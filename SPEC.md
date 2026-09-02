@@ -2516,11 +2516,17 @@ calls `reset` rather than opening another top-level `layer()` block. `isolate: f
 the per-worker memos in `src/testing` per worker rather than per file — the PGlite suite went from
 32 s to 20 s at four workers — and a change that needs isolation back has to say what state it leaks.
 
-**One plan decision did not survive the build.** Per-worker PGlite with a schema per build could not
+**One plan decision changed shape in the build.** Per-worker PGlite with a schema per build could not
 be made correct: `sequence.concurrent` overlaps two top-level `layer()` blocks in a file, PGlite has
-one connection, and a second build's `search_path` moves under the first block's running tests. So
-PGlite is one instance per build — today's behaviour, behind the new `Provider` — while `pg` and
-`mysql` do keep one server per worker, which concurrent connections make safe.
+one connection, and a second build's `search_path` moves under the first block's running tests. The
+wave first shipped one instance per build, and the first CI run showed why that is not good enough:
+a PGlite boot that costs a second on a laptop costs several on a shared runner core, two blocks hit
+the 15-second hook timeout, and the PGlite job was the slowest of the five at 146 s. So PGlite is a
+**pool of engines per worker**: a build borrows a whole engine — the previous block's, wiped with
+`DROP SCHEMA public CASCADE`, or a freshly booted one when every engine is busy — and returns it when
+its scope closes. The pool grows to the number of blocks that overlap in one worker, a handful, so a
+suite of a hundred-odd blocks boots a handful of engines instead of a hundred-odd. `pg` and `mysql`
+keep one server per worker and a database per build, which concurrent connections make safe.
 
 #### 21.8 InnoDB takes a lock on the rows a predicate did *not* match
 

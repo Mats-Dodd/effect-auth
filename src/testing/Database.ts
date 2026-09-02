@@ -28,6 +28,7 @@ import { Config, Context, Effect, Layer, Option } from "effect"
 import { Reactivity } from "effect/unstable/reactivity"
 import { SqlClient, type SqlError } from "effect/unstable/sql"
 import * as Catalog from "./internal/catalog.js"
+import { pooled } from "./internal/worker.js"
 
 /**
  * The three dialects this library supports. Never `"mssql"`, never
@@ -94,29 +95,53 @@ export class TestDatabase extends Context.Service<TestDatabase, TestDatabaseServ
 export type Provider = Layer.Layer<SqlClient.SqlClient | TestDatabase, SqlError.SqlError>
 
 /**
- * PGlite: one embedded instance per build, always available — it is what
- * `effect-auth`'s own suite runs on when nothing says otherwise.
+ * Boots one PGlite for the pool below. `Reactivity` is provided here, once per
+ * engine, rather than by a layer in the build graph: the engine outlives every
+ * build that borrows it, in the never-closed worker scope, which is the one
+ * lifetime a `Layer` cannot express — the same reasoning as the admin pools in
+ * `effect-auth/testing/postgres` and `effect-auth/testing/mysql`.
+ */
+const bootPglite = Effect.provideServiceEffect(PgliteClient.make({}), Reactivity.Reactivity, Reactivity.make)
+
+/**
+ * What a returned engine is put through before the next build may borrow it:
+ * every table, sequence and type this library or a test created lives in
+ * `public`, and dropping the schema is how a fresh boot and a recycled engine
+ * become indistinguishable.
+ */
+const wipePglite = (sql: PgliteClient.PgliteClient): Effect.Effect<void, SqlError.SqlError> =>
+  Effect.asVoid(Effect.andThen(sql`DROP SCHEMA public CASCADE`, sql`CREATE SCHEMA public`))
+
+/**
+ * PGlite, always available — it is what `effect-auth`'s own suite runs on when
+ * nothing says otherwise.
+ *
+ * **Details**
+ *
+ * A pool of engines per worker, one borrowed per build. A PGlite boot is the
+ * costly part of a `layer()` block — a WebAssembly instance plus a migration
+ * run, about a second on a laptop and several on a shared CI core — and a suite
+ * of a hundred-odd blocks was paying it every time. Now a block that starts
+ * while no other is running inherits the previous block's engine, wiped, and
+ * only blocks that genuinely overlap boot another. `test/testing/Isolation.test.ts`
+ * is the standing proof that a block never sees another block's rows, whichever
+ * way it got its engine.
  *
  * **Gotchas**
  *
- * One instance *per build*, not per worker, and that is deliberate. PGlite has
- * a single connection, so a shared instance would have to keep its builds apart
- * with a schema each and a `search_path` on that one connection — and
- * `sequence.concurrent` means two top-level `layer()` blocks in one file
- * overlap in time, so the second build's `search_path` would land under the
- * first block's running tests. `test/testing/Isolation.test.ts` is the standing
- * proof that a block never sees another block's rows; it is what would go red
- * if this were ever made to share.
- *
- * The engines that *can* be shared are shared: `effect-auth/testing/postgres`
- * and `effect-auth/testing/mysql` keep one server per worker and give each
- * build a database of its own on it, which concurrent connections make safe.
+ * PGlite has one connection, which is why this is a pool of whole engines
+ * rather than one engine with a schema per build: `sequence.concurrent`
+ * overlaps two top-level `layer()` blocks in a file, and a `search_path`
+ * carried by that one connection would move under the first block's running
+ * tests. `effect-auth/testing/postgres` and `effect-auth/testing/mysql` do keep
+ * one server per worker, because every build there is a database of its own on
+ * a server that takes concurrent connections.
  *
  * @category layers
  * @since 0.1.0
  */
 export const pglite: Provider = Layer.effect(TestDatabase, Effect.map(SqlClient.SqlClient, Catalog.postgres)).pipe(
-  Layer.provideMerge(Layer.effect(SqlClient.SqlClient, PgliteClient.make({})).pipe(Layer.provide(Reactivity.layer)))
+  Layer.provideMerge(Layer.effect(SqlClient.SqlClient, pooled(bootPglite, wipePglite)))
 )
 
 /**

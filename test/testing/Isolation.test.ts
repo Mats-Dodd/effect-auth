@@ -19,9 +19,12 @@
  * "b1-start"]`). That rules out one PGlite per worker with a schema per build,
  * because the isolation would rest on a `search_path` carried by PGlite's one
  * connection and the second build would set it under the first block's running
- * tests. So `Database.pglite` is one instance per build, and only `postgres`
- * and `mysql` — where a build is a database on a shared server and every
- * connection is its own — keep one engine per worker.
+ * tests. So `Database.pglite` is a pool of whole engines per worker: two blocks
+ * that overlap hold two engines, and a block that starts after another finished
+ * inherits that engine wiped — which is the case the second block below is most
+ * likely to be exercising, and the one this file exists to keep honest. Only
+ * `postgres` and `mysql` — where a build is a database on a shared server and
+ * every connection is its own — keep a single engine per worker.
  */
 import { assert, layer } from "@effect/vitest"
 import { Effect } from "effect"

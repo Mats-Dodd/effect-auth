@@ -125,7 +125,8 @@ pnpm test:mysql  # …on MySQL           ┘ `TESTCONTAINERS_REUSE_ENABLE=true` 
 - `oxfmt` must keep ignoring `**/__snapshots__/**`.
 - **Module isolation is off** (`isolate: false` in `vitest.config.ts`). Every file in a worker shares
   one module registry: measured on this tree, 1482 tests on PGlite went 32.3 s isolated → 20.2 s, at
-  four workers. A change that needs isolation back has to say what state it leaks.
+  four workers, and the per-worker PGlite pool then took 1506 tests to 4.9 s. A change that needs
+  isolation back has to say what state it leaks.
 - **A module-level memo in `src/testing/` is legitimate, and only there.** With isolation off it is
   per worker rather than per file, which is exactly the lifetime a Testcontainers server and its
   admin pool want — one engine per worker, one database per build. It is test infrastructure, it is
@@ -133,10 +134,12 @@ pnpm test:mysql  # …on MySQL           ┘ `TESTCONTAINERS_REUSE_ENABLE=true` 
   the run. Nothing in `src/` outside `src/testing/` may hold module-level state.
 - **Speed rules**, part of the definition of done for anything that touches tests: isolation stays
   off; one engine per worker and one schema or database per build (a provider that boots an engine
-  per build is unfinished) — **except PGlite, which is one instance per build on purpose**: it has a
-  single connection, `sequence.concurrent` overlaps two top-level `layer()` blocks in a file, and a
-  shared instance's `search_path` would move under a running block. SPEC 21.7 records the decision
-  and `test/testing/Isolation.test.ts` is what would go red if somebody "finished" it. Then: no new
+  per build is unfinished) — and PGlite, which has a single connection, is a **pool of engines per
+  worker**, one borrowed per build and wiped (`DROP SCHEMA public CASCADE`) on return, rather than
+  one engine with a schema per build: `sequence.concurrent` overlaps two top-level `layer()` blocks
+  in a file, and a `search_path` on that one connection would move under a running block. SPEC 21.7
+  records the decision and `test/testing/Isolation.test.ts` is what would go red if a recycled
+  engine ever carried a row over. Then: no new
   top-level `layer()` block where a nested `it.effect` would inherit the database — a case that needs
   an empty table calls `TestDatabase.reset`, in a `describe.sequential` so a sibling is not emptied
   mid-run; service containers in CI, reusable containers locally. Every wave gate records wall time

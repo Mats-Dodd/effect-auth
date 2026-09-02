@@ -120,6 +120,11 @@ choice. README "Databases" is the user-facing half; SPEC.md Amendment 21 records
   those keys, on every dialect, where it ran one `DELETE … WHERE user_id = ?` before.
 - Vitest runs with `isolate: false` and `--maxWorkers=4`: the PGlite suite went from 32 s to 20 s,
   and the module-level memos in `src/testing` became per worker rather than per file.
+- `Database.pglite` is a pool of engines per worker rather than a boot per `layer()` block: a
+  build borrows an engine, or boots one only while every engine is busy, and returns it wiped
+  (`DROP SCHEMA public CASCADE`). The PGlite suite went from 20 s to 5 s at four workers, and the
+  CI job that had been the slowest of the five — and had hit the hook timeout on a shared runner —
+  became the cheapest. SPEC 21.7.
 - `src/sql/SqlStores.ts` is a facade over `src/sql/stores/{Users,Sessions,Accounts,Verifications,
   Transaction,internal}.ts`. Its exports, their types and their documentation are unchanged.
 

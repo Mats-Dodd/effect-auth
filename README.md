@@ -1649,7 +1649,8 @@ pnpm test    # vitest run --maxWorkers=4, on PGlite
 backends; CI runs all four in parallel with `check`. Vitest runs with `isolate: false` — every file
 in a worker shares one module registry, which is what makes the container and engine memos in
 `src/testing` per worker rather than per file, and what took the PGlite suite from 32 s to 20 s at
-four workers. A change that needs isolation back has to say what state it leaks.
+four workers; pooling the PGlite engines per worker rather than booting one per block took it on to
+5 s. A change that needs isolation back has to say what state it leaks.
 
 Everything else — the ethos, the architecture map, the conventions, the pinned toolchain and why
 `check` builds — is in [`AGENTS.md`](./AGENTS.md).
