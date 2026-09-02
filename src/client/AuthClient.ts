@@ -23,6 +23,7 @@
  * (something went wrong that the contract never promised):
  *
  * ```ts
+ * import { Predicate } from "effect"
  * import { AsyncResult } from "effect/unstable/reactivity"
  * import { AuthClient } from "effect-auth/client"
  *
@@ -32,15 +33,15 @@
  * const render = AsyncResult.matchWithError(registry.get(client.session), {
  *   onInitial: () => "loading…",
  *   onSuccess: (_) => `signed in as ${_.value.user.email}`,
- *   onError: (error) => error._tag === "Unauthorized" ? "signed out" : "unavailable",
+ *   onError: (error) => Predicate.isTagged(error, "Unauthorized") ? "signed out" : "unavailable",
  *   onDefect: () => "something went wrong"
  * })
  * ```
  *
  * @since 0.1.0
  */
-import type { Redacted } from "effect"
-import { Effect, Layer } from "effect"
+import type { Redacted, Types } from "effect"
+import { Effect, Layer, Predicate } from "effect"
 import type { HttpClient } from "effect/unstable/http"
 import { HttpClientRequest } from "effect/unstable/http"
 import type { HttpApi, HttpApiGroup } from "effect/unstable/httpapi"
@@ -863,15 +864,19 @@ export const run = <Arg, A, E>(
  */
 export const withStepUp = <A, E extends { readonly _tag: string }, R, E2, R2>(
   effect: Effect.Effect<A, E, R>,
-  onStepUp: (error: Extract<E, { readonly _tag: "StepUpRequired" }>) => Effect.Effect<unknown, E2, R2>
+  onStepUp: (error: Types.ExtractTag<E, "StepUpRequired">) => Effect.Effect<unknown, E2, R2>
 ): Effect.Effect<A, E | E2, R | R2> =>
-  // `catchIf` with an explicit refinement rather than `catchTag`: the retry
-  // re-runs `effect`, so the refusal is back in the error channel and the
-  // result is `E | E2` however the first attempt failed. That union is what
-  // `catchTag`'s `Exclude` cannot state for a generic `E`.
+  // `catchIf` with a named refinement rather than `catchTag`: `catchTag`'s tag
+  // parameter is constrained by `Types.Tags<E>`, which TypeScript leaves
+  // unresolved while `E` is a type parameter, so no literal satisfies it. The
+  // refinement is built from `Predicate.isTagged` — the same test `catchTag`
+  // runs underneath — and widened to the member of `E` that carries the tag, so
+  // the handler still sees the refusal's own `current` field. The retry re-runs
+  // `effect`, so the refusal is back in the error channel and the result is
+  // `E | E2` however the first attempt failed.
   Effect.catchIf(
     effect,
-    (error): error is Extract<E, { readonly _tag: "StepUpRequired" }> => error._tag === "StepUpRequired",
+    (error: E): error is Types.ExtractTag<E, "StepUpRequired"> => Predicate.isTagged(error, "StepUpRequired"),
     (error) => Effect.flatMap(onStepUp(error), () => effect)
   )
 

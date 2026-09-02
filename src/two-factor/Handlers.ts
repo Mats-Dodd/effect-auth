@@ -42,8 +42,14 @@ import type { Bucket } from "../http/RateLimits.js"
 import { consumeWith, credentials } from "../http/RateLimits.js"
 import { SessionCache } from "../http/SessionCache.js"
 import { TwoFactorApiGroup } from "./Api.js"
-import type { ChallengeSubject } from "./TwoFactor.js"
-import { clearTrustedDeviceCookie, readTrustedDeviceCookie, setTrustedDeviceCookie, TwoFactor } from "./TwoFactor.js"
+import {
+  ChallengeSubject,
+  clearTrustedDeviceCookie,
+  Factor,
+  readTrustedDeviceCookie,
+  setTrustedDeviceCookie,
+  TwoFactor
+} from "./TwoFactor.js"
 
 /**
  * The services the two-factor handlers need.
@@ -157,7 +163,7 @@ export const handlers = AuthHandlers.forGroup(TwoFactorApiGroup, (handlers) =>
     const subjectOf = Effect.fnUntraced(function* (request: HttpServerRequest.HttpServerRequest) {
       const pending = pendingCredential(config, request)
       if (Option.isSome(pending)) {
-        return { _tag: "PendingAuth", token: pending.value } satisfies ChallengeSubject
+        return ChallengeSubject.PendingAuth({ token: pending.value })
       }
       const credential = sessionCredential(config, request)
       if (Option.isNone(credential)) return yield* Unauthorized.make()
@@ -167,11 +173,7 @@ export const handlers = AuthHandlers.forGroup(TwoFactorApiGroup, (handlers) =>
         // here, exactly as they are to the middleware's bearer transport.
         Effect.catchTag("SessionExpired", () => Unauthorized.make())
       )
-      return {
-        _tag: "Session",
-        session: verified.session,
-        user: verified.user
-      } satisfies ChallengeSubject
+      return ChallengeSubject.Session({ session: verified.session, user: verified.user })
     })
 
     /**
@@ -192,13 +194,13 @@ export const handlers = AuthHandlers.forGroup(TwoFactorApiGroup, (handlers) =>
       readonly label: string | undefined
     }) {
       const { request, result, subject } = options
-      if (subject._tag === "PendingAuth") {
+      if (ChallengeSubject.$is("PendingAuth")(subject)) {
         // Spent, whichever way this went: a single-use value never rides a
         // second request.
         yield* AuthHandlers.clearPendingCookie(config)
       }
       yield* setSessionCookie(config, result.session, result.token, { persistent: result.rememberMe })
-      if (subject._tag === "Session") {
+      if (ChallengeSubject.$is("Session")(subject)) {
         // The snapshot beside the cookie names the old token and the old
         // level; rewriting it is what keeps the very next request a hit.
         // `write` is a no-op unless this request presented the cache cookie.
@@ -242,7 +244,7 @@ export const handlers = AuthHandlers.forGroup(TwoFactorApiGroup, (handlers) =>
           const subject = yield* subjectOf(request)
           const result = yield* twoFactor
             .verify({
-              factor: { _tag: "Totp", code: payload.code },
+              factor: Factor.Totp({ code: payload.code }),
               subject,
               ...AuthHandlers.clientMeta(config, request)
             })
@@ -272,7 +274,7 @@ export const handlers = AuthHandlers.forGroup(TwoFactorApiGroup, (handlers) =>
           const subject = yield* subjectOf(request)
           const result = yield* twoFactor
             .verify({
-              factor: { _tag: "RecoveryCode", code: payload.code },
+              factor: Factor.RecoveryCode({ code: payload.code }),
               subject,
               ...AuthHandlers.clientMeta(config, request)
             })

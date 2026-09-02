@@ -48,9 +48,10 @@ import type { Bucket } from "../http/RateLimits.js"
 import { consumeWith } from "../http/RateLimits.js"
 import { SessionCache } from "../http/SessionCache.js"
 import { Sessions } from "../domain/Sessions.js"
+import { SignInResult } from "../domain/SignIn.js"
 import { PasskeysApiGroup, type PasskeySummary } from "./Api.js"
 import { ChallengeExpired } from "./Errors.js"
-import { Passkeys } from "./Passkeys.js"
+import { PasskeyAuthentication, Passkeys } from "./Passkeys.js"
 import type { Passkey } from "./Schema.js"
 
 // -----------------------------------------------------------------------------
@@ -252,12 +253,15 @@ export const handlers = AuthHandlers.forGroup(PasskeysApiGroup, (handlers) =>
         if (presented === undefined || presented.length === 0) {
           return Option.none<{ readonly session: Session; readonly user: User }>()
         }
-        const verified = yield* Effect.result(sessions.verify(Redacted.make(presented)))
-        if (verified._tag === "Failure") {
-          if (verified.failure._tag === "PersistenceError") return yield* verified.failure
-          return Option.none<{ readonly session: Session; readonly user: User }>()
-        }
-        return Option.some({ session: verified.success.session, user: verified.success.user })
+        // `catchTag` rather than an unwrapped `Effect.result`: naming the two
+        // credential failures leaves `PersistenceError` in the channel, so the
+        // fault re-raises itself and no branch has to remember to re-fail it.
+        return yield* sessions.verify(Redacted.make(presented)).pipe(
+          Effect.map((verified) => Option.some({ session: verified.session, user: verified.user })),
+          Effect.catchTag(["Unauthorized", "SessionExpired"], () =>
+            Effect.succeed(Option.none<{ readonly session: Session; readonly user: User }>())
+          )
+        )
       })
 
     return handlers
@@ -334,7 +338,7 @@ export const handlers = AuthHandlers.forGroup(PasskeysApiGroup, (handlers) =>
             })
             .pipe(AuthHandlers.serverFault)
 
-          if (outcome._tag === "Elevated") {
+          if (PasskeyAuthentication.$is("Elevated")(outcome)) {
             // The token rotated, so the cookie has to carry the new one — the
             // old one stops resolving the instant this returns. The snapshot
             // beside it names the old token and the old level, so it is
@@ -346,18 +350,10 @@ export const handlers = AuthHandlers.forGroup(PasskeysApiGroup, (handlers) =>
             return { user: outcome.verified.user, session: outcome.session }
           }
 
-          if (outcome.result._tag === "Challenge") {
+          if (SignInResult.$is("Challenge")(outcome.result)) {
             // The pending token, and only the pending token: no session was
             // minted, so no session cookie may be written here.
-            const now = yield* DateTime.now
-            yield* AuthHandlers.setPendingCookie(config, outcome.result.token, {
-              maxAge: Duration.max(Duration.zero, DateTime.distance(now, outcome.result.expiresAt))
-            })
-            return {
-              _tag: "MfaRequired" as const,
-              available: outcome.result.available,
-              expiresAt: outcome.result.expiresAt
-            }
+            return yield* AuthHandlers.mfaRequired(config, outcome.result)
           }
 
           yield* setSessionCookie(config, outcome.result.session, outcome.result.token, {

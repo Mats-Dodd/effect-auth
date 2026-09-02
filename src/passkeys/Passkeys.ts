@@ -44,13 +44,14 @@
  *
  * @since 0.2.0
  */
-import { Context, DateTime, Duration, Effect, Encoding, Layer, Option, Redacted, Schema } from "effect"
+import { Context, Data, DateTime, Duration, Effect, Encoding, Layer, Option, Redacted, Result, Schema } from "effect"
 import { Token } from "../crypto/Token.js"
 import { Hmac } from "../crypto/Hmac.js"
 import type { AuthenticatorsService, AuthenticatorSummary } from "../domain/Authenticators.js"
 import { Authenticators, combine, list as listAuthenticators } from "../domain/Authenticators.js"
-import { AuthEvents, publishSafely } from "../domain/Events.js"
-import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import { AuthEvents, PluginEvent, publishSafely } from "../domain/Events.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import { ProvisionSource } from "../domain/Hooks.js"
 import type { Session, User, UserId } from "../domain/Schema.js"
 import { CredentialIssuer, normalizeEmail, UserId as UserIdSchema } from "../domain/Schema.js"
 import type { ElevatedSession, Evidence } from "../domain/Sessions.js"
@@ -191,7 +192,7 @@ export const passkeyEvidence = (userVerified: boolean): Evidence => ({
  * What every user this plugin signs in came from. One value rather than a
  * literal per call site.
  */
-const passkeySource: ProvisionSource = { _tag: "Plugin", plugin: passkeysPlugin }
+const passkeySource: ProvisionSource = ProvisionSource.Plugin({ plugin: passkeysPlugin })
 
 // -----------------------------------------------------------------------------
 // Challenges
@@ -510,9 +511,30 @@ export interface VerifiedPasskey {
  * @category models
  * @since 0.2.0
  */
-export type PasskeyAuthentication =
-  | ({ readonly _tag: "SignedIn" } & { readonly result: SignInResult; readonly verified: VerifiedPasskey })
-  | ({ readonly _tag: "Elevated" } & ElevatedSession & { readonly verified: VerifiedPasskey })
+export type PasskeyAuthentication = Data.TaggedEnum<{
+  /** The ceremony minted a session through the one sign-in door. */
+  SignedIn: { readonly result: SignInResult; readonly verified: VerifiedPasskey }
+  /** The ceremony raised the caller's own live session in place. */
+  Elevated: ElevatedSession & { readonly verified: VerifiedPasskey }
+}>
+
+/**
+ * Constructors and matchers for {@link PasskeyAuthentication}.
+ *
+ * **Details**
+ *
+ * `PasskeyAuthentication.$is("Elevated")` is how the HTTP layer tells the two
+ * apart, and `$match` branches over both exhaustively.
+ *
+ * **Gotchas**
+ *
+ * `$is` checks the tag and nothing else, so point it only at a value this
+ * plugin produced — never at something decoded from a request.
+ *
+ * @category constructors
+ * @since 0.2.0
+ */
+export const PasskeyAuthentication = Data.taggedEnum<PasskeyAuthentication>()
 
 // -----------------------------------------------------------------------------
 // Service
@@ -719,7 +741,7 @@ export const make: (options: Options) => Effect.Effect<PasskeysService, never, R
     const timeoutMillis = Duration.toMillis(config.timeout)
 
     const publish = (event: string, userId: UserId | null, data: Record<string, unknown>) =>
-      publishSafely(events, { _tag: "PluginEvent", plugin: passkeysPlugin, event, userId, data })
+      publishSafely(events, PluginEvent.make({ plugin: passkeysPlugin, event, userId, data }))
 
     /**
      * 32 bytes of `effect/Crypto` randomness, base64url. `Token.generateToken`
@@ -743,7 +765,7 @@ export const make: (options: Options) => Effect.Effect<PasskeysService, never, R
       if (Option.isSome(existing)) return existing.value
       const handle = yield* randomValue
       const created = yield* Effect.result(store.createHandle(userId, handle))
-      if (created._tag === "Success") return created.success
+      if (Result.isSuccess(created)) return created.success
       if (!isUniqueViolation(created.failure)) return yield* created.failure
       const settled = yield* store.findHandle(userId)
       // The winner's row is there by construction: the only way to lose this
@@ -799,10 +821,8 @@ export const make: (options: Options) => Effect.Effect<PasskeysService, never, R
       handle: Redacted.Redacted,
       ceremony: PasskeyChallengePayload["ceremony"]
     ) {
-      const claimed = yield* Effect.mapError(
-        verifications.claim(passkeyChallengePurpose, handle),
-        (error): ChallengeExpired | PersistenceError =>
-          error._tag === "InvalidToken" ? ChallengeExpired.make() : error
+      const claimed = yield* Effect.catchTag(verifications.claim(passkeyChallengePurpose, handle), "InvalidToken", () =>
+        ChallengeExpired.make()
       )
       // The tag better-auth did not check (`baeaa00bc`): a registration
       // challenge must not complete an authentication, or the other way round.
@@ -880,7 +900,7 @@ export const make: (options: Options) => Effect.Effect<PasskeysService, never, R
           lastUsedAt: null
         })
         const created = yield* Effect.result(store.create(row))
-        if (created._tag === "Failure") {
+        if (Result.isFailure(created)) {
           // The unique index refused it: this credential is already registered,
           // here or to somebody else. One answer for both — see the header.
           if (isUniqueViolation(created.failure)) return yield* PasskeyVerificationFailed.make()
@@ -1041,7 +1061,7 @@ export const make: (options: Options) => Effect.Effect<PasskeysService, never, R
           // The caller's own live session: raise it in place rather than mint a
           // second one. The id survives, the token rotates.
           const elevated = yield* sessions.elevate(current.value, verified.evidence)
-          return { _tag: "Elevated", ...elevated, verified } satisfies PasskeyAuthentication
+          return PasskeyAuthentication.Elevated({ ...elevated, verified })
         }
         const result = yield* signIn.complete({
           user: verified.user,
@@ -1053,7 +1073,7 @@ export const make: (options: Options) => Effect.Effect<PasskeysService, never, R
           current: Option.none(),
           request: options.request
         })
-        return { _tag: "SignedIn", result, verified } satisfies PasskeyAuthentication
+        return PasskeyAuthentication.SignedIn({ result, verified })
       },
       (effect) => Effect.withSpan(effect, "Passkeys.authenticate")
     )
