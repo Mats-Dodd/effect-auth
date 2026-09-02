@@ -20,10 +20,10 @@
  */
 import type { Option } from "effect"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
-import { SqlClient, SqlError, SqlSchema } from "effect/unstable/sql"
+import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { UserId } from "../domain/Schema.js"
 import type { PersistenceError as PersistenceErrorType } from "../domain/Stores.js"
-import { PersistenceError } from "../domain/Stores.js"
+import { PersistenceError, persistenceFailureKind } from "../domain/Stores.js"
 import { UsernameTaken } from "./Api.js"
 
 // -----------------------------------------------------------------------------
@@ -101,9 +101,6 @@ export class UsernameStore extends Context.Service<UsernameStore, UsernameStoreS
 
 const columns = `username_key AS "usernameKey", username, user_id AS "userId", created_at AS "createdAt"`
 
-const kindOf = (cause: unknown) =>
-  SqlError.isSqlError(cause) && cause.reason._tag === "UniqueViolation" ? "UniqueViolation" : "Unknown"
-
 const ClaimRequest = Schema.Struct({
   usernameKey: Schema.String,
   username: Schema.String,
@@ -123,7 +120,7 @@ export const makeUsernameStore: Effect.Effect<UsernameStoreService, never, SqlCl
     const cols = sql.literal(columns)
 
     const fail = (operation: string) => (cause: unknown) =>
-      PersistenceError.make({ operation, kind: kindOf(cause), cause })
+      PersistenceError.make({ operation, kind: persistenceFailureKind(cause), cause })
 
     const mapErrors =
       (operation: string) =>
@@ -183,8 +180,8 @@ export const makeUsernameStore: Effect.Effect<UsernameStoreService, never, SqlCl
       readonly userId: UserId
     }) {
       const createdAt = yield* DateTime.now
-      const claimed = yield* sql
-        .withTransaction(
+      const claimed = yield* Effect.catchTag(
+        sql.withTransaction(
           Effect.gen(function* () {
             yield* releaseOther({ userId: record.userId, usernameKey: record.usernameKey })
             const rows = yield* takeName({ ...record, createdAt })
@@ -194,13 +191,16 @@ export const makeUsernameStore: Effect.Effect<UsernameStoreService, never, SqlCl
             if (row === undefined) return yield* UsernameTaken.make()
             return row
           })
-        )
-        .pipe(
-          // The plugin's own refusal passes through; everything the driver or the
-          // decoder can raise becomes the persistence failure every other store
-          // reports.
-          Effect.mapError((error) => (error._tag === "UsernameTaken" ? error : fail("UsernameStore.claim")(error)))
-        )
+        ),
+        // The plugin's own refusal is re-failed as itself; everything the
+        // driver or the decoder can raise takes the `orElse` branch and becomes
+        // the persistence failure every other store reports. Data-first,
+        // because the tag list cannot be checked against an error channel the
+        // pipe has not produced yet.
+        ["UsernameTaken"],
+        (taken) => taken,
+        (cause) => fail("UsernameStore.claim")(cause)
+      )
       return claimed
     })
 

@@ -23,6 +23,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { RateLimiter } from "effect/unstable/persistence"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
+import { SignInResult } from "../domain/SignIn.js"
 import type { PluginCookie } from "../http/Cookies.js"
 import { pluginCookieFor } from "../http/Cookies.js"
 import * as AuthHandlers from "../http/Handlers.js"
@@ -134,14 +135,10 @@ export const handlers = AuthHandlers.forGroup(OneTapApiGroup, (handlers) =>
               )
             )
 
-          if (result._tag === "Challenge") {
+          if (SignInResult.$is("Challenge")(result)) {
             // The pending token, and only the pending token: no session was
             // minted, so no session cookie may be written here.
-            const now = yield* DateTime.now
-            yield* AuthHandlers.setPendingCookie(config, result.token, {
-              maxAge: Duration.max(Duration.zero, DateTime.distance(now, result.expiresAt))
-            })
-            return { _tag: "MfaRequired" as const, available: result.available, expiresAt: result.expiresAt }
+            return yield* AuthHandlers.mfaRequired(config, result)
           }
 
           yield* setSessionCookie(config, result.session, result.token, {

@@ -50,7 +50,20 @@
  *
  * @since 0.1.0
  */
-import { Array, Context, DateTime, Duration, Effect, Layer, Option, Redacted, Result, Schema, String } from "effect"
+import {
+  Array,
+  Context,
+  DateTime,
+  Duration,
+  Effect,
+  Layer,
+  Match,
+  Option,
+  Redacted,
+  Result,
+  Schema,
+  String
+} from "effect"
 import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import type { AuthConfigService } from "../config/AuthConfig.js"
 import { AuthConfig } from "../config/AuthConfig.js"
@@ -59,12 +72,13 @@ import type { OAuthIdentity } from "../domain/Accounts.js"
 import { Accounts } from "../domain/Accounts.js"
 import type { AccountAlreadyLinked, OAuthProviderError, UserNotFound } from "../domain/Errors.js"
 import { NotFound, OAuthStateMismatch, TokenRefreshFailed } from "../domain/Errors.js"
-import { AuthEvents, oauthMethod, publishSafely } from "../domain/Events.js"
-import type { PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
+import { AuthEvents, oauthMethod, publishSafely, TokensRefreshed } from "../domain/Events.js"
+import type { PolicyRefused } from "../domain/Hooks.js"
+import { ProvisionSource } from "../domain/Hooks.js"
 import type { Account, AccountId, Session, User, UserId } from "../domain/Schema.js"
 import { scopesOf } from "../domain/Schema.js"
 import type { SignInChallenge } from "../domain/SignIn.js"
-import { SignIn } from "../domain/SignIn.js"
+import { SignIn, SignInResult } from "../domain/SignIn.js"
 import type { Evidence } from "../domain/Sessions.js"
 import {
   AccountStore,
@@ -530,34 +544,54 @@ export type CallbackError =
 export type CallbackOutcome = Result.Result<CallbackResult, RedirectFailure<CallbackError>>
 
 /**
- * The codes that do not depend on anything inside the error, as a total map: a
- * member added to {@link CallbackError} fails to typecheck here rather than
- * falling through to an `undefined` code.
+ * The tags {@link errorCode} answers for, as the list a redirect-shaped
+ * completion catches.
+ *
+ * **Details**
+ *
+ * Every member of {@link CallbackError} and nothing else. `PersistenceError` is
+ * deliberately absent: a failed write is this deployment's fault, not the
+ * browser's, and it stays in the error channel rather than becoming a redirect
+ * the person cannot tell from a refusal. A member added to `CallbackError` and
+ * forgotten here fails to typecheck at `complete`, whose declared outcome no
+ * longer covers the residual channel.
  */
-const fixedErrorCodes: { readonly [Tag in Exclude<CallbackError["_tag"], "OAuthProviderError">]: string } = {
-  OAuthStateMismatch: "state_mismatch",
-  AccountAlreadyLinked: "account_already_linked",
-  // A deployment's own hook declining the provisioning, the link or the
-  // session. The hook's own `code` names which rule it was; this is only the
-  // classification, and it is this library's, exactly as the others are.
-  PolicyRefused: "policy_refused",
-  UserNotFound: "user_not_found"
-}
+const callbackErrorTags = [
+  "OAuthStateMismatch",
+  "OAuthProviderError",
+  "AccountAlreadyLinked",
+  "PolicyRefused",
+  "UserNotFound"
+] as const
 
 /**
  * The safe error code a failed callback reports in the redirect's query string.
  *
  * **Details**
  *
- * A closed set. A provider's own error text is never echoed: it routinely
- * contains the authorization code, and describing precisely which check failed
- * only helps somebody probing the callback.
+ * A closed set, kept closed by `Match.tagsExhaustive`: a member added to
+ * {@link CallbackError} fails to typecheck here rather than falling through to
+ * an `undefined` code. A provider's own error text is never echoed: it
+ * routinely contains the authorization code, and describing precisely which
+ * check failed only helps somebody probing the callback.
  *
  * @category combinators
  * @since 0.1.0
  */
-export const errorCode = (error: CallbackError): string =>
-  error._tag === "OAuthProviderError" ? String.snakeCase(error.reason) : fixedErrorCodes[error._tag]
+export const errorCode: (error: CallbackError) => string = Match.type<CallbackError>().pipe(
+  Match.tagsExhaustive({
+    // The provider's own reason, which is this library's closed enumeration of
+    // what went wrong over there — never the provider's message.
+    OAuthProviderError: (error) => String.snakeCase(error.reason),
+    OAuthStateMismatch: () => "state_mismatch",
+    AccountAlreadyLinked: () => "account_already_linked",
+    // A deployment's own hook declining the provisioning, the link or the
+    // session. The hook's own `code` names which rule it was; this is only the
+    // classification, and it is this library's, exactly as the others are.
+    PolicyRefused: () => "policy_refused",
+    UserNotFound: () => "user_not_found"
+  })
+)
 
 // -----------------------------------------------------------------------------
 // Service
@@ -1023,7 +1057,7 @@ export const make: Effect.Effect<
     // here tells whoever provoked it nothing the exchange had not established
     // already. It travels out as the callback's redirect outcome, exactly as a
     // failed exchange does, rather than as a page the browser cannot leave.
-    const source: ProvisionSource = { _tag: "OAuth", providerId: provider.id, info }
+    const source: ProvisionSource = ProvisionSource.OAuth({ providerId: provider.id, info })
     const completed = yield* completeSignIn({
       user: link.user,
       source,
@@ -1052,7 +1086,7 @@ export const make: Effect.Effect<
     // deployment's own second-factor page — because only the HTTP layer can
     // write a cookie, and this module reads no configuration it does not
     // already need.
-    return completed._tag === "Challenge"
+    return SignInResult.$is("Challenge")(completed)
       ? ({ ...settled, session: null, token: null, challenge: completed } satisfies CallbackResult)
       : ({
           ...settled,
@@ -1073,20 +1107,32 @@ export const make: Effect.Effect<
 
   const failure = redirectFailure(config, errorCode)
 
+  /**
+   * Turns the refusals of one phase into the redirect it leaves by, and leaves
+   * everything else — `PersistenceError` — in the error channel, which is the
+   * whole reason the tags are named rather than the failures inspected.
+   */
+  const redirecting = <R>(
+    effect: Effect.Effect<CallbackOutcome, CallbackError | PersistenceError, R>,
+    errorURL: string | null | undefined
+  ): Effect.Effect<CallbackOutcome, PersistenceError, R> =>
+    Effect.catchTag(effect, callbackErrorTags, (error) => Effect.succeed(failure(error, errorURL)))
+
   const complete = Effect.fnUntraced(
+    // Each phase answers with the error URL it knows: none before the state row
+    // has been read, and the payload's own after — which is why the two phases
+    // are wrapped separately rather than the whole thing once.
     function* (options: CallbackOptions) {
-      const begun = yield* Effect.result(begin(options))
-      if (begun._tag === "Failure") {
-        if (begun.failure._tag === "PersistenceError") return yield* begun.failure
-        return failure(begun.failure, null)
-      }
-      const { payload, provider } = begun.success
-      const finished = yield* Effect.result(finish(provider, payload, options))
-      if (finished._tag === "Failure") {
-        if (finished.failure._tag === "PersistenceError") return yield* finished.failure
-        return failure(finished.failure, payload.errorURL)
-      }
-      return Result.succeed(finished.success) satisfies CallbackOutcome
+      return yield* redirecting(
+        Effect.gen(function* () {
+          const { payload, provider } = yield* begin(options)
+          return yield* redirecting(
+            Effect.map(finish(provider, payload, options), (result): CallbackOutcome => Result.succeed(result)),
+            payload.errorURL
+          )
+        }),
+        null
+      )
     },
     (effect, options) =>
       Effect.withSpan(effect, "OAuthFlow.complete", { attributes: { providerId: options.providerId } })
@@ -1181,12 +1227,10 @@ export const make: Effect.Effect<
     // to answer with, and what was just minted belongs to nobody.
     const row = yield* Effect.fromOption(yield* accountStore.updateTokens(account.id, patch), () => NotFound.make())
 
-    yield* publishSafely(events, {
-      _tag: "TokensRefreshed",
-      userId: row.userId,
-      accountId: row.id,
-      providerId: row.providerId
-    })
+    yield* publishSafely(
+      events,
+      TokensRefreshed.make({ userId: row.userId, accountId: row.id, providerId: row.providerId })
+    )
 
     const stored = yield* storedTokens(row)
     // Unreachable: the row either kept its refresh token or was given a new one.

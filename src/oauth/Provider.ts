@@ -23,7 +23,7 @@
  * @since 0.1.0
  */
 import type { Cause, DateTime } from "effect"
-import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect"
+import { Context, Duration, Effect, Filter, Layer, Option, Redacted, Result, Schedule } from "effect"
 import type { HttpClientError } from "effect/unstable/http"
 import { HttpBody, HttpClient, HttpClientRequest as Request } from "effect/unstable/http"
 import type { OAuthProviderError } from "../domain/Errors.js"
@@ -733,6 +733,20 @@ export const exchangeDeadline: Duration.Duration = Duration.seconds(30)
 export const providerRetryCount = 2
 
 /**
+ * Whether a request failed in the transport rather than being answered.
+ *
+ * `Filter.reason` is the primitive for the nested shape this needs — the outer
+ * `HttpClientError` and the `TransportError` it carries — and
+ * `Filter.toPredicate` is what turns it into the boolean a retry's `while:`
+ * takes. A predicate rather than a refinement on purpose: {@link resilient}
+ * keeps both failures in its channel either way, because a retried request can
+ * still time out.
+ */
+const isTransportFailure: (error: HttpClientError.HttpClientError | Cause.TimeoutError) => boolean = Filter.toPredicate(
+  Filter.reason<HttpClientError.HttpClientError | Cause.TimeoutError>()("HttpClientError", "TransportError")
+)
+
+/**
  * Gives an outbound provider request a deadline and a couple of retries.
  *
  * **Details**
@@ -770,7 +784,7 @@ export const resilient = <A, R>(
     Effect.timeout(providerRequestTimeout),
     Effect.retry({
       schedule: Schedule.exponential(Duration.millis(100)),
-      while: (error) => error._tag === "HttpClientError" && error.reason._tag === "TransportError",
+      while: isTransportFailure,
       times: providerRetryCount
     })
   )
@@ -834,7 +848,7 @@ export const fetchJson = (options: {
     )
     if (response.status >= 400) return { status: response.status, body: null }
     const body = yield* Effect.result(jsonWithin(response, providerRequestTimeout))
-    return { status: response.status, body: body._tag === "Success" ? body.success : null }
+    return { status: response.status, body: Result.getOrElse(body, () => null) }
   })
 
 /**
@@ -938,5 +952,5 @@ const send = (
     )
     if (response.status >= 400) return { status: response.status, body: null }
     const body = yield* Effect.result(jsonWithin(response, providerRequestTimeout))
-    return { status: response.status, body: body._tag === "Success" ? body.success : null }
+    return { status: response.status, body: Result.getOrElse(body, () => null) }
   })

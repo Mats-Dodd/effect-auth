@@ -44,14 +44,19 @@ import { Context, DateTime, Duration, Effect, Layer, Option } from "effect"
 import type { AssurancePolicy } from "../domain/Assurance.js"
 import { Authenticators, list as listAuthenticators } from "../domain/Authenticators.js"
 import type { StepUpRequired } from "../domain/Errors.js"
-import { AuthEvents, publishSafely } from "../domain/Events.js"
-import type { AuthHooksService, PolicyRefused, ProvisionSource } from "../domain/Hooks.js"
-import { AuthHooks, combine as combineHooks, PolicyRefused as PolicyRefusedError } from "../domain/Hooks.js"
+import { AuthEvents, PluginEvent, publishSafely } from "../domain/Events.js"
+import type { AuthHooksService, PolicyRefused } from "../domain/Hooks.js"
+import {
+  AuthHooks,
+  combine as combineHooks,
+  PolicyRefused as PolicyRefusedError,
+  ProvisionSource
+} from "../domain/Hooks.js"
 import { credentialProviderId } from "../domain/Passwords.js"
 import type { Session, User, UserId } from "../domain/Schema.js"
 import { CredentialIssuer, normalizeEmail, User as UserModel } from "../domain/Schema.js"
 import { requireAssuranceFor } from "../domain/Sessions.js"
-import { SignIn } from "../domain/SignIn.js"
+import { SignIn, SignInResult } from "../domain/SignIn.js"
 import type { PersistenceError } from "../domain/Stores.js"
 import { AccountStore, UserStore, WithAuthTransaction } from "../domain/Stores.js"
 import { Users } from "../domain/Users.js"
@@ -81,7 +86,7 @@ export const anonymousPlugin = "anonymous"
  * @category constructors
  * @since 0.2.0
  */
-export const anonymousSource: ProvisionSource = { _tag: "Plugin", plugin: anonymousPlugin }
+export const anonymousSource: ProvisionSource = ProvisionSource.Plugin({ plugin: anonymousPlugin })
 
 /**
  * The domain synthetic addresses are minted in.
@@ -559,7 +564,7 @@ export const make: (options?: Options) => Effect.Effect<AnonymousService, never,
               }
             })
 
-            if (completed._tag === "Challenge") {
+            if (SignInResult.$is("Challenge")(completed)) {
               // Nothing was minted, and nothing here can answer a challenge: a
               // visitor invented a millisecond ago holds no second factor, so a
               // challenge is a refusal rather than something to defer. Failing
@@ -649,15 +654,17 @@ export const make: (options?: Options) => Effect.Effect<AnonymousService, never,
         })
       )
 
-      yield* publishSafely(events, {
-        _tag: "PluginEvent",
-        plugin: anonymousPlugin,
-        event: "AnonymousAdopted",
-        userId: request.userId,
-        // The address is not a secret and is what a subscriber needs to know
-        // the account moved; nothing else about the person is recorded.
-        data: email === undefined ? {} : { email }
-      })
+      yield* publishSafely(
+        events,
+        PluginEvent.make({
+          plugin: anonymousPlugin,
+          event: "AnonymousAdopted",
+          userId: request.userId,
+          // The address is not a secret and is what a subscriber needs to know
+          // the account moved; nothing else about the person is recorded.
+          data: email === undefined ? {} : { email }
+        })
+      )
       return "Adopted" satisfies AdoptOutcome
     })
 
@@ -848,10 +855,9 @@ const mergeHooks = (sql: SqlClient.SqlClient, store: AnonymousStoreService, sett
     }).pipe(
       // A hook may fail `PolicyRefused` and nothing else; a storage failure
       // here is a broken deployment, and a defect aborts the mint exactly as a
-      // refusal does. Fail closed either way.
-      Effect.catchIf(
-        (error): error is Exclude<typeof error, PolicyRefused> => error._tag !== "PolicyRefused",
-        (error) => Effect.die(error)
-      )
+      // refusal does. Fail closed either way. The tags are named rather than
+      // the refusal excluded, so that a failure this hook grows later has to be
+      // classified here instead of silently becoming a defect.
+      Effect.catchTag(["PersistenceError", "SqlError"], Effect.die)
     )
 })
