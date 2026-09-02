@@ -812,11 +812,13 @@ const mergeHooks = (sql: SqlClient.SqlClient, store: AnonymousStoreService, sett
           // otherwise both read the marker, both run `onMerge`, and copy
           // somebody's data across twice; `onMerge` is a deployment's own
           // callback and carries no idempotency contract. Only the request
-          // whose `DELETE` returned a row goes on.
-          const claimed = yield* sql<{
-            readonly user_id: string
-          }>`DELETE FROM effect_auth_anonymous WHERE user_id = ${visitor.id} RETURNING user_id`
-          if (claimed.length === 0) return
+          // whose delete removed a row goes on.
+          //
+          // Through the store rather than as a statement here, because the
+          // delete has to answer *how many rows it removed* and `RETURNING` is
+          // not a thing MySQL has; `AnonymousStore.clear` is that delete
+          // through `Mutations.deleteAndCount`, which every dialect can spell.
+          if (!(yield* store.clear(visitor.id))) return
 
           // The marker says "arrived as a visitor", not "is disposable". A
           // visitor who has since set a password, linked a provider or proved a

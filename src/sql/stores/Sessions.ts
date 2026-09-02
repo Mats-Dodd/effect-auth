@@ -5,9 +5,17 @@
  *
  * `findByTokenHash` resolves a presented token to its session **and** its user
  * in a single joined read, so the hot path of every authenticated request is
- * one round trip. The user half of that row is the model's, so its projection
- * is derived from the model's field map exactly as the user store's is; the
- * session half is fixed and spelled out.
+ * one round trip — one statement on every dialect, because nothing about a
+ * `SELECT` needs a dialect's opinion. The user half of that row is the model's,
+ * so its projection is derived from the model's field map exactly as the user
+ * store's is; the session half is fixed and spelled out.
+ *
+ * Every write goes through `src/sql/Mutations.ts`. `elevate` is the one that is
+ * more than a write: it reads the stored row under a lock, lets the caller's
+ * `append` decide the new log, and writes the result — so it holds the
+ * transaction and the lock itself and hands only the write to the helper, which
+ * on MySQL re-takes the same row's lock inside the same transaction and is
+ * therefore the same single guarded write it is on PostgreSQL.
  *
  * Not exported from the package: `SqlStores.layerFor` is the public door.
  *
@@ -20,7 +28,9 @@ import { PersistenceError, sessionStoreOf } from "../../domain/Stores.js"
 import { AuthenticationMethodsJson } from "../../domain/Assurance.js"
 import type { UserFields, UserModel, UserRow } from "../../domain/Schema.js"
 import { Session } from "../../domain/Schema.js"
-import { booleanCodec, joinedProjectionOf, persist, type RawIdRow, userColumnsOf, userReaderOf } from "./internal.js"
+import { booleanCodec, dialectOf, lockClause } from "../Dialect.js"
+import { deleteAndCount, insertAndRead, updateAndRead } from "../Mutations.js"
+import { joinedProjectionOf, persist, userColumnsOf, userReaderOf } from "./internal.js"
 
 // -----------------------------------------------------------------------------
 // Column projections
@@ -30,6 +40,12 @@ const sessionColumns = `id, token_hash AS "tokenHash", user_id AS "userId", expi
 
 const sessionJoinColumns = `s.id AS "s_id", s.token_hash AS "s_tokenHash", s.user_id AS "s_userId", s.expires_at AS "s_expiresAt", s.ip_address AS "s_ipAddress", s.user_agent AS "s_userAgent", s.authenticated_at AS "s_authenticatedAt", s.aal AS "s_aal", s.methods AS "s_methods", s.remember_me AS "s_rememberMe", s.created_at AS "s_createdAt", s.updated_at AS "s_updatedAt"`
 
+/** The table this store owns. */
+const table = "sessions"
+
+/** The unique key a mutation re-addresses a row by where the dialect needs one. */
+const key = ["id"]
+
 /** @internal */
 export const make: <F extends UserFields>(
   model: UserModel<F>
@@ -37,12 +53,15 @@ export const make: <F extends UserFields>(
   F extends UserFields
 >(model: UserModel<F>) {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
   const sessionCols = sql.literal(sessionColumns)
   const columns = userColumnsOf(model.selectFields)
   const sessionWithUserCols = sql.literal(`${sessionJoinColumns}, ${joinedProjectionOf(columns, "u", "u_")}`)
-  const boolean = booleanCodec(sql)
-  const decodeBoolean = boolean.decode
-  const readUser = userReaderOf(columns, decodeBoolean)
+  const boolean = booleanCodec(dialect)
+  // The joined user half may carry a deployment's own nullable flag, so an
+  // absent value stays absent there; `sessions.remember_me` is `NOT NULL` on
+  // every dialect and is read as the flag it is.
+  const readUser = userReaderOf(columns, boolean.decodeNullable)
 
   const decodeSession = Schema.decodeUnknownEffect(Session)
   const encodeInsert = Schema.encodeUnknownEffect(Session.insert)
@@ -52,19 +71,13 @@ export const make: <F extends UserFields>(
    * `sessions.remember_me` is the one boolean the session table stores, so —
    * exactly as the user store does for its own flags — the dialect's stored
    * form is brought back to a `boolean` before the row is decoded, rather than
-   * letting SQLite's integer reach a `Schema.Boolean`.
+   * letting SQLite's or MySQL's integer reach a `Schema.Boolean`.
    */
   const readSession = (row: UserRow): Effect.Effect<Session, Schema.SchemaError> =>
-    decodeSession({ ...row, rememberMe: decodeBoolean(row["rememberMe"]) })
+    decodeSession({ ...row, rememberMe: boolean.decode(row["rememberMe"]) })
 
-  /**
-   * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
-   * already, so the plain read is the same guarantee there.
-   */
-  const sessionLock = sql.onDialectOrElse({
-    orElse: () => sql.literal(" FOR UPDATE"),
-    sqlite: () => sql.literal("")
-  })
+  /** `elevate`'s own row lock: the read it takes before it decides what to write. */
+  const lock = lockClause(sql, dialect)
 
   const firstSession = (rows: ReadonlyArray<UserRow>): Effect.Effect<Option.Option<Session>, Schema.SchemaError> =>
     Option.match(Array.head(rows), {
@@ -82,7 +95,7 @@ export const make: <F extends UserFields>(
     authenticatedAt: row["s_authenticatedAt"],
     aal: row["s_aal"],
     methods: row["s_methods"],
-    rememberMe: decodeBoolean(row["s_rememberMe"]),
+    rememberMe: boolean.decode(row["s_rememberMe"]),
     createdAt: row["s_createdAt"],
     updatedAt: row["s_updatedAt"]
   })
@@ -108,12 +121,27 @@ export const make: <F extends UserFields>(
         // Encoding a well-formed insert row is the model's own doing, so a
         // failure here is a defect rather than something a caller can act on.
         const row = yield* Effect.orDie(encodeInsert(session))
-        const rows =
-          yield* sql<UserRow>`INSERT INTO sessions (id, token_hash, user_id, expires_at, ip_address, user_agent, authenticated_at, aal, methods, remember_me, created_at, updated_at)
-        VALUES (${row.id}, ${row.tokenHash}, ${row.userId}, ${row.expiresAt}, ${row.ipAddress}, ${row.userAgent}, ${row.authenticatedAt}, ${row.aal}, ${row.methods}, ${boolean.encode(
-          row.rememberMe
-        )}, ${row.createdAt}, ${row.updatedAt})
-        RETURNING ${sessionCols}`
+        const rows = yield* insertAndRead<UserRow>({
+          sql,
+          dialect,
+          table,
+          key,
+          record: {
+            id: row.id,
+            token_hash: row.tokenHash,
+            user_id: row.userId,
+            expires_at: row.expiresAt,
+            ip_address: row.ipAddress,
+            user_agent: row.userAgent,
+            authenticated_at: row.authenticatedAt,
+            aal: row.aal,
+            methods: row.methods,
+            remember_me: boolean.encode(row.rememberMe),
+            created_at: row.createdAt,
+            updated_at: row.updatedAt
+          },
+          columns: sessionCols
+        })
         return yield* Option.match(Array.head(rows), {
           onNone: () =>
             Effect.fail(
@@ -153,10 +181,15 @@ export const make: <F extends UserFields>(
       persist("SessionStore.touch")(
         Effect.gen(function* () {
           const now = yield* DateTime.now
-          const rows = yield* sql<UserRow>`UPDATE sessions
-          SET expires_at = ${DateTime.formatIso(expiresAt)}, updated_at = ${DateTime.formatIso(now)}
-          WHERE id = ${id}
-          RETURNING ${sessionCols}`
+          const rows = yield* updateAndRead<UserRow>({
+            sql,
+            dialect,
+            table,
+            key,
+            set: { expires_at: DateTime.formatIso(expiresAt), updated_at: DateTime.formatIso(now) },
+            where: sql`id = ${id}`,
+            columns: sessionCols
+          })
           return yield* firstSession(rows)
         })
       ),
@@ -175,7 +208,7 @@ export const make: <F extends UserFields>(
         sql.withTransaction(
           Effect.gen(function* () {
             const now = yield* DateTime.now
-            const locked = yield* sql<UserRow>`SELECT ${sessionCols} FROM sessions WHERE id = ${id}${sessionLock}`
+            const locked = yield* sql<UserRow>`SELECT ${sessionCols} FROM sessions WHERE id = ${id}${lock}`
             const current = Array.head(locked)
             // Concurrently revoked. `None` rather than a failure, exactly as
             // `touch` answers for the same situation.
@@ -187,14 +220,21 @@ export const make: <F extends UserFields>(
             // to encode it is this library's bug rather than something a caller
             // can act on.
             const methods = yield* Effect.orDie(encodeMethods(next.methods))
-            const rows = yield* sql<UserRow>`UPDATE sessions
-          SET methods = ${methods},
-              aal = ${next.aal},
-              authenticated_at = ${DateTime.formatIso(patch.authenticatedAt)},
-              token_hash = ${patch.tokenHash},
-              updated_at = ${DateTime.formatIso(now)}
-          WHERE id = ${id}
-          RETURNING ${sessionCols}`
+            const rows = yield* updateAndRead<UserRow>({
+              sql,
+              dialect,
+              table,
+              key,
+              set: {
+                methods,
+                aal: next.aal,
+                authenticated_at: DateTime.formatIso(patch.authenticatedAt),
+                token_hash: patch.tokenHash,
+                updated_at: DateTime.formatIso(now)
+              },
+              where: sql`id = ${id}`,
+              columns: sessionCols
+            })
             return yield* firstSession(rows)
           })
         )
@@ -203,22 +243,19 @@ export const make: <F extends UserFields>(
     deleteById: (id, userId) =>
       persist("SessionStore.deleteById")(
         Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-          (rows) => rows.length > 0
+          deleteAndCount({ sql, dialect, table, key, where: sql`id = ${id} AND user_id = ${userId}` }),
+          (count) => count > 0
         )
       ),
 
     deleteByUserId: (userId) =>
       persist("SessionStore.deleteByUserId")(
-        Effect.map(sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} RETURNING id`, (rows) => rows.length)
+        deleteAndCount({ sql, dialect, table, key, where: sql`user_id = ${userId}` })
       ),
 
     deleteByUserIdExcept: (userId, sessionId) =>
       persist("SessionStore.deleteByUserIdExcept")(
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE user_id = ${userId} AND id <> ${sessionId} RETURNING id`,
-          (rows) => rows.length
-        )
+        deleteAndCount({ sql, dialect, table, key, where: sql`user_id = ${userId} AND id <> ${sessionId}` })
       ),
 
     listByUserId: (userId) =>
@@ -234,10 +271,7 @@ export const make: <F extends UserFields>(
 
     deleteExpired: persist("SessionStore.deleteExpired")(
       Effect.flatMap(DateTime.now, (now) =>
-        Effect.map(
-          sql<RawIdRow>`DELETE FROM sessions WHERE expires_at <= ${DateTime.formatIso(now)} RETURNING id`,
-          (rows) => rows.length
-        )
+        deleteAndCount({ sql, dialect, table, key, where: sql`expires_at <= ${DateTime.formatIso(now)}` })
       )
     )
   })

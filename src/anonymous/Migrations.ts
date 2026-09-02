@@ -14,6 +14,10 @@
  * `last_seen_at` is what the sweep measures idleness by. It starts equal to
  * `created_at`; `Anonymous.touch` moves it.
  *
+ * The three columns are declared through `Dialect.columnType` — `id` for the
+ * holder, `timestamp` for the two clocks — so each supported database gets the
+ * type its indexes need without the statement being written three times.
+ *
  * **Gotchas**
  *
  * Register this nowhere: the consumer composes it, sequenced after this
@@ -22,41 +26,41 @@
  * @since 0.2.0
  */
 import { Effect } from "effect"
-import { Migrator, SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/unstable/sql"
+import type { ColumnRole } from "../sql/Dialect.js"
+import { columnType, dialectOf, identifier } from "../sql/Dialect.js"
 import * as Migrations from "../sql/Migrations.js"
 
-const unsupportedDialect = Effect.fail(
-  new Migrator.MigrationError({
-    kind: "Failed",
-    message: `effect-auth anonymous migrations only support the "pg" and "sqlite" dialects`
-  })
-)
+/** The marker table. */
+const anonymous = "effect_auth_anonymous"
+
+/** What the sweep scans by. */
+const lastSeenIndex = "effect_auth_anonymous_last_seen_at_idx"
 
 const createAnonymous = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
+  const type = (role: ColumnRole) => sql.literal(columnType(dialect, role))
+  const anonymousTable = identifier(sql, anonymous)
 
-  // The statement is the same on both dialects, and the branch is still here:
-  // it is what turns an unsupported dialect into a stated refusal rather than
-  // into whatever that driver makes of `varchar`.
-  yield* sql.onDialectOrElse({
-    pg: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_anonymous (
-        user_id varchar(36) PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-        created_at text NOT NULL,
-        last_seen_at text NOT NULL
-      )`,
-    sqlite: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_anonymous (
-        user_id varchar(36) PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-        created_at text NOT NULL,
-        last_seen_at text NOT NULL
-      )`,
-    orElse: () => unsupportedDialect
-  })
+  // The foreign key is a table constraint rather than a column one because
+  // MySQL parses an inline `REFERENCES` clause and then ignores it — the
+  // cascade, which is the whole of what "the marker goes with the person"
+  // means, would silently not exist. PostgreSQL and SQLite read the two forms
+  // identically. The holder is the primary key, so InnoDB has an index for the
+  // foreign key already and adds none of its own.
+  yield* sql`CREATE TABLE IF NOT EXISTS ${anonymousTable} (
+    user_id ${type("id")} PRIMARY KEY,
+    created_at ${type("timestamp")} NOT NULL,
+    last_seen_at ${type("timestamp")} NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  )`
 
   // The sweep's predicate. Timestamps are fixed-width ISO-8601, so the index is
-  // usable for the range scan.
-  yield* sql`CREATE INDEX IF NOT EXISTS effect_auth_anonymous_last_seen_at_idx ON effect_auth_anonymous (last_seen_at)`
+  // usable for the range scan. MySQL has no `IF NOT EXISTS` on `CREATE INDEX`
+  // and needs none: a migration runs exactly once.
+  const ifNotExists = sql.literal(dialect === "mysql" ? "" : "IF NOT EXISTS ")
+  yield* sql`CREATE INDEX ${ifNotExists}${identifier(sql, lastSeenIndex)} ON ${anonymousTable} (last_seen_at)`
 })
 
 /**

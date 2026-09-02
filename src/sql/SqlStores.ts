@@ -52,28 +52,10 @@ import { AccountStore, sessionStoreOf, userStoreOf, VerificationStore, WithAuthT
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { baseUserModel } from "../domain/Schema.js"
 import * as Accounts from "./stores/Accounts.js"
-import * as internal from "./stores/internal.js"
 import * as Sessions from "./stores/Sessions.js"
 import * as Transaction from "./stores/Transaction.js"
 import * as Users from "./stores/Users.js"
 import * as Verifications from "./stores/Verifications.js"
-
-/**
- * Reads SQLite's integer flag back as a boolean, leaving an absent value
- * absent.
- *
- * **Gotchas**
- *
- * `null` and `undefined` pass through untouched. A custom field may be
- * `NullOr(Schema.Boolean)` — a nullable flag whose column is nullable on both
- * dialects — and turning its `null` into `false` would be a silent rewrite of
- * "not asked yet" into "declined" on every read, which the model would accept
- * because `false` decodes just as well.
- *
- * @category combinators
- * @since 0.1.0
- */
-export const decodeSqliteBoolean: (value: unknown) => unknown = internal.decodeSqliteBoolean
 
 /**
  * Implements the whole persistence seam — `UserStore`, `SessionStore`,

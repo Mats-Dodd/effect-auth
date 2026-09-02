@@ -1,3 +1,16 @@
+/**
+ * The two-factor plugin's three tables, on whichever database
+ * `EFFECT_AUTH_TEST_DATABASE` names.
+ *
+ * **Details**
+ *
+ * Nothing here writes SQL or reads a catalog: every case goes through the store,
+ * so the same assertions are true on all three dialects and the conditional
+ * upsert behind the TOTP enrolment is proven wherever it runs — the pg and
+ * sqlite `ON CONFLICT … DO UPDATE … WHERE` and the MySQL
+ * `ON DUPLICATE KEY UPDATE … IF(…)` have to agree, and this is the file that
+ * says so.
+ */
 import { assert, describe, layer } from "@effect/vitest"
 import { DateTime, Duration, Effect, Layer, Option } from "effect"
 import type { UserId } from "../../src/domain/Schema.js"
@@ -69,6 +82,28 @@ layer(testLayer)("two-factor/Store", (it) => {
         const found = yield* store.findTotp(userId)
         assert.strictEqual(Option.getOrThrow(found).secretCiphertext, "v1.proved")
         assert.strictEqual(Option.getOrThrow(found).lastUsedStep, 100)
+      })
+    )
+
+    it.effect("lets an abandoned enrolment be restarted, and confirms the replacement", () =>
+      Effect.gen(function* () {
+        const { store, userId } = yield* registered("totp-restart")
+        // The whole enrolment cycle in one case, because it is the one the
+        // conditional upsert is written for: while `verified_at` is NULL a
+        // second enrolment wins, and the moment it is not, none does.
+        yield* store.upsertPendingTotp(yield* pending(userId, "v1.abandoned"))
+        const restarted = yield* store.upsertPendingTotp(yield* pending(userId, "v1.restarted"))
+        assert.isTrue(Option.isSome(restarted))
+
+        const now = yield* DateTime.now
+        const confirmed = yield* store.confirmTotp(userId, now, 42)
+
+        assert.isTrue(Option.isSome(confirmed))
+        const found = Option.getOrThrow(yield* store.findTotp(userId))
+        assert.strictEqual(found.secretCiphertext, "v1.restarted", "the abandoned secret must not be the live one")
+        assert.isNotNull(found.verifiedAt)
+        assert.strictEqual(found.lastUsedStep, 42)
+        assert.isTrue(yield* store.consumeTotpStep(userId, 43), "the restarted enrolment is a working credential")
       })
     )
 

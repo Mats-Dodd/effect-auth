@@ -23,9 +23,12 @@
  * check and the act are one statement. That is the shape the IDOR in
  * better-auth's passkey plugin (`bd9bd58f8`) did not have.
  *
- * SQLite has no boolean type, so the three flags are integers there and real
- * booleans on PostgreSQL. That difference is confined to {@link layer}, exactly
- * as `users.email_verified`'s is confined to `SqlStores`.
+ * SQLite and MySQL have no boolean type, so the three flags are stored as
+ * `1`/`0` there and as real booleans on PostgreSQL. That difference is
+ * `Dialect.booleanCodec`'s and nothing else's, exactly as
+ * `users.email_verified`'s is. Every mutation that has to answer with the row
+ * it wrote goes through `Mutations`, which is where MySQL's missing `RETURNING`
+ * is dealt with — once, rather than per statement.
  *
  * @since 0.2.0
  */
@@ -33,7 +36,8 @@ import { Array, Context, DateTime, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient } from "effect/unstable/sql"
 import { UserId } from "../domain/Schema.js"
 import { persistenceFailureKind, PersistenceError } from "../domain/Stores.js"
-import { decodeSqliteBoolean } from "../sql/SqlStores.js"
+import { booleanCodec, dialectOf } from "../sql/Dialect.js"
+import * as Mutations from "../sql/Mutations.js"
 import type { PasskeyId } from "./Schema.js"
 import { Passkey } from "./Schema.js"
 
@@ -174,29 +178,14 @@ const passkeyColumns = [
   `last_used_at AS "lastUsedAt"`
 ].join(", ")
 
-/**
- * The dialect's two ways of storing a flag. The only place this plugin's SQL
- * cares which database it is talking to.
- */
-const booleanCodec = (sql: SqlClient.SqlClient) => ({
-  encode: sql.onDialectOrElse({
-    orElse:
-      () =>
-      (value: boolean): boolean | number =>
-        value,
-    sqlite:
-      () =>
-      (value: boolean): boolean | number =>
-        value ? 1 : 0
-  }),
-  decode: sql.onDialectOrElse({
-    orElse:
-      () =>
-      (value: unknown): unknown =>
-        value,
-    sqlite: () => decodeSqliteBoolean
-  })
-})
+/** The one table a credential lives in. */
+const passkeys = "effect_auth_passkeys"
+
+/** The one table a WebAuthn user handle lives in. */
+const passkeyUsers = "effect_auth_passkey_users"
+
+/** What names a credential row again after it has been written. */
+const passkeyKey = ["id"]
 
 /**
  * `bigint` reaches this library as a `number` under PGlite and SQLite and as a
@@ -215,8 +204,9 @@ const readSignCount = (value: unknown): unknown => (typeof value === "string" ? 
  */
 export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient> = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
   const cols = sql.literal(passkeyColumns)
-  const boolean = booleanCodec(sql)
+  const boolean = booleanCodec(dialect)
 
   const decodePasskey = Schema.decodeUnknownEffect(Passkey)
   const encodeInsert = Schema.encodeUnknownEffect(Passkey.insert)
@@ -246,15 +236,28 @@ export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient
         // a defect, not something a caller can act on.
         const row = yield* Effect.orDie(encodeInsert(passkey))
         const rows = yield* persist("PasskeyStore.create")(
-          sql<Row>`INSERT INTO effect_auth_passkeys (
-            id, user_id, credential_id, public_key, sign_count, transports, aaguid,
-            backup_eligible, backed_up, uv_initialised, name, created_at, last_used_at
-          ) VALUES (
-            ${row.id}, ${row.userId}, ${row.credentialId}, ${row.publicKey}, ${row.signCount},
-            ${row.transports}, ${row.aaguid}, ${boolean.encode(row.backupEligible)},
-            ${boolean.encode(row.backedUp)}, ${boolean.encode(row.uvInitialised)},
-            ${row.name}, ${row.createdAt}, ${row.lastUsedAt}
-          ) RETURNING ${cols}`
+          Mutations.insertAndRead<Row>({
+            sql,
+            dialect,
+            table: passkeys,
+            key: passkeyKey,
+            record: {
+              id: row.id,
+              user_id: row.userId,
+              credential_id: row.credentialId,
+              public_key: row.publicKey,
+              sign_count: row.signCount,
+              transports: row.transports,
+              aaguid: row.aaguid,
+              backup_eligible: boolean.encode(row.backupEligible),
+              backed_up: boolean.encode(row.backedUp),
+              uv_initialised: boolean.encode(row.uvInitialised),
+              name: row.name,
+              created_at: row.createdAt,
+              last_used_at: row.lastUsedAt
+            },
+            columns: cols
+          })
         )
         return yield* Option.match(Array.head(rows), {
           onNone: () => noRow("PasskeyStore.create"),
@@ -288,19 +291,27 @@ export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient
         all("PasskeyStore.listByUserId")
       ),
 
-    // One statement: the counter, the backup state, the user-verification
+    // One statement on PostgreSQL and SQLite, one locked read-modify-read on
+    // MySQL: either way the counter, the backup state, the user-verification
     // history and the stamp move together, so a reader never sees a row whose
     // counter has advanced past a ceremony it does not record.
     recordUse: (id, use) =>
       Effect.flatMap(
         persist("PasskeyStore.recordUse")(
-          sql<Row>`UPDATE effect_auth_passkeys
-            SET sign_count = ${use.signCount},
-                backed_up = ${boolean.encode(use.backedUp)},
-                uv_initialised = ${boolean.encode(use.uvInitialised)},
-                last_used_at = ${DateTime.formatIso(use.lastUsedAt)}
-            WHERE id = ${id}
-            RETURNING ${cols}`
+          Mutations.updateAndRead<Row>({
+            sql,
+            dialect,
+            table: passkeys,
+            key: passkeyKey,
+            set: {
+              sign_count: use.signCount,
+              backed_up: boolean.encode(use.backedUp),
+              uv_initialised: boolean.encode(use.uvInitialised),
+              last_used_at: DateTime.formatIso(use.lastUsedAt)
+            },
+            where: sql`id = ${id}`,
+            columns: cols
+          })
         ),
         first("PasskeyStore.recordUse")
       ),
@@ -308,10 +319,15 @@ export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient
     rename: (id, userId, name) =>
       Effect.flatMap(
         persist("PasskeyStore.rename")(
-          sql<Row>`UPDATE effect_auth_passkeys
-            SET name = ${name}
-            WHERE id = ${id} AND user_id = ${userId}
-            RETURNING ${cols}`
+          Mutations.updateAndRead<Row>({
+            sql,
+            dialect,
+            table: passkeys,
+            key: passkeyKey,
+            set: { name },
+            where: sql`id = ${id} AND user_id = ${userId}`,
+            columns: cols
+          })
         ),
         first("PasskeyStore.rename")
       ),
@@ -319,17 +335,26 @@ export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient
     remove: (id, userId) =>
       persist("PasskeyStore.remove")(
         Effect.map(
-          sql<Row>`DELETE FROM effect_auth_passkeys WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-          (rows) => rows.length > 0
+          Mutations.deleteAndCount({
+            sql,
+            dialect,
+            table: passkeys,
+            key: passkeyKey,
+            where: sql`id = ${id} AND user_id = ${userId}`
+          }),
+          (count) => count > 0
         )
       ),
 
     removeByUserId: (userId) =>
       persist("PasskeyStore.removeByUserId")(
-        Effect.map(
-          sql<Row>`DELETE FROM effect_auth_passkeys WHERE user_id = ${userId} RETURNING id`,
-          (rows) => rows.length
-        )
+        Mutations.deleteAndCount({
+          sql,
+          dialect,
+          table: passkeys,
+          key: passkeyKey,
+          where: sql`user_id = ${userId}`
+        })
       ),
 
     findHandle: (userId) =>
@@ -342,8 +367,14 @@ export const make: Effect.Effect<PasskeyStoreService, never, SqlClient.SqlClient
     createHandle: (userId, handle) =>
       Effect.flatMap(
         persist("PasskeyStore.createHandle")(
-          sql<Row>`INSERT INTO effect_auth_passkey_users (user_id, handle)
-            VALUES (${userId}, ${handle}) RETURNING handle`
+          Mutations.insertAndRead<Row>({
+            sql,
+            dialect,
+            table: passkeyUsers,
+            key: ["user_id"],
+            record: { user_id: userId, handle },
+            columns: sql.literal("handle")
+          })
         ),
         (rows) =>
           Option.match(Array.head(rows), {

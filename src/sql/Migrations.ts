@@ -2,20 +2,28 @@
  * The database schema of `effect-auth`, as a `Migrator`-compatible record.
  *
  * Four tables — `users`, `sessions`, `accounts`, `verifications` — plus the
- * indexes the stores rely on. Every statement is written for both PostgreSQL and
- * SQLite; the single place the two dialects genuinely differ is the boolean
- * column `users.email_verified`, which is a real `boolean` on PostgreSQL and an
- * `integer` flag on SQLite. {@link SqlStores.layer} adapts to that difference on
- * the way in and out, so the models see a `boolean` either way.
+ * indexes the stores rely on, written once and rendered for PostgreSQL, SQLite
+ * and MySQL. Every column is declared by its *role* rather than by a type:
+ * `Dialect.columnType` turns a role into `text` on PostgreSQL and SQLite and
+ * into a bounded, binary-collated `varchar` on MySQL, which is the only database
+ * of the three that cannot index unbounded text or compare an opaque identity
+ * without being told which collation to use. The role table is
+ * `db-expansion-plan.md` §"Column roles and MySQL lengths".
  *
  * **Details**
  *
- * All timestamps are `text` columns holding ISO-8601 UTC strings
+ * All timestamps are text columns holding ISO-8601 UTC strings
  * (`2024-01-01T00:00:00.000Z`). That is the encoded form of the domain models'
- * `DateTime` fields, it behaves identically on both dialects, and — because the
- * format is fixed width — it orders and compares lexicographically, which is
+ * `DateTime` fields, it behaves identically on all three dialects, and — because
+ * the format is fixed width — it orders and compares lexicographically, which is
  * what the expiry predicates in `SessionStore` and `VerificationStore` depend
  * on.
+ *
+ * Flags are the one column shape the dialects genuinely disagree about: a real
+ * `boolean` on PostgreSQL and MySQL, an `integer` on SQLite. {@link SqlStores}
+ * adapts on the way in and out through `Dialect.booleanCodec`, so the models see
+ * a `boolean` either way, and a `DEFAULT` here is written with
+ * `Dialect.booleanLiteral` for the same reason.
  *
  * A deployment that added user fields of its own needs a column for each of
  * them. {@link forUserFields} derives those statements from the model — the
@@ -27,133 +35,209 @@
  * The `ON DELETE CASCADE` foreign keys are only enforced by SQLite when the
  * connection has `PRAGMA foreign_keys = ON`.
  *
+ * On MySQL every statement here is DDL, and DDL commits implicitly: the
+ * transaction `Migrator` opens around a run is closed by the first
+ * `CREATE TABLE`, so a run that fails half-way leaves the statements that
+ * already succeeded in place. `CREATE TABLE IF NOT EXISTS` and the recorded
+ * migration ids are what make the retry safe.
+ *
  * @since 0.1.0
  */
 import { Effect, Layer, Option, Predicate, SchemaAST } from "effect"
 import type { Schema } from "effect"
-import { Migrator, SqlClient, type SqlError } from "effect/unstable/sql"
+import { Migrator, SqlClient, type SqlError, type Statement } from "effect/unstable/sql"
 import type { UserFields, UserModel } from "../domain/Schema.js"
 import { camelToSnake } from "../internal/records.js"
+import type { ColumnRole, Dialect } from "./Dialect.js"
+import { booleanLiteral, columnType, identifier } from "./Dialect.js"
 
 // -----------------------------------------------------------------------------
-// Migrations
+// The dialect a migration is written for
 // -----------------------------------------------------------------------------
 
 const migrationError = (message: string) => new Migrator.MigrationError({ kind: "Failed", message })
 
 const unsupportedDialect = Effect.fail(
-  migrationError(`effect-auth migrations only support the "pg" and "sqlite" dialects`)
+  migrationError(`effect-auth migrations only support the "pg", "sqlite" and "mysql" dialects`)
 )
 
-const createUsers = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
-
-  yield* sql.onDialectOrElse({
-    pg: () =>
-      sql`CREATE TABLE IF NOT EXISTS users (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        email text NOT NULL,
-        email_verified boolean NOT NULL DEFAULT false,
-        image text,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      )`,
-    sqlite: () =>
-      sql`CREATE TABLE IF NOT EXISTS users (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        email text NOT NULL,
-        email_verified integer NOT NULL DEFAULT 0,
-        image text,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      )`,
-    orElse: () => unsupportedDialect
+/**
+ * The dialect these migrations are written for, or the failure that says there
+ * is none.
+ *
+ * Deliberately not `Dialect.dialectOf`, which *dies*. A migration's failures
+ * belong to the migrator: `Migrator` wraps one in a `MigrationError` naming the
+ * migration that raised it, and {@link forUserFields} declares the same error in
+ * its own channel. `dialectOf` is for a store, where an unsupported database is
+ * a layer that must not build at all.
+ */
+const dialectFor = (sql: SqlClient.SqlClient): Effect.Effect<Dialect, Migrator.MigrationError> =>
+  sql.onDialectOrElse({
+    orElse: () => unsupportedDialect,
+    pg: () => Effect.succeed<Dialect>("pg"),
+    sqlite: () => Effect.succeed<Dialect>("sqlite"),
+    mysql: () => Effect.succeed<Dialect>("mysql")
   })
 
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (email)`
+/**
+ * Everything about this library's DDL that one of the three dialects spells
+ * differently, as fragments a statement interpolates.
+ *
+ * There is one of these per migration and it is the only place a migration
+ * branches: the statements themselves are written once.
+ */
+interface Ddl {
+  readonly sql: SqlClient.SqlClient
+  readonly dialect: Dialect
+  /** The DDL type of a column role — `text` here, a bounded `varchar` on MySQL. */
+  readonly type: (role: ColumnRole, options?: { readonly length?: number | undefined }) => Statement.Fragment
+  /** A flag as a `DEFAULT` literal: `true`/`false` on PostgreSQL, `1`/`0` elsewhere. */
+  readonly flag: (value: boolean) => Statement.Fragment
+  /**
+   * A `DEFAULT` for a column of the `text` role.
+   *
+   * MySQL refuses a literal default on a `TEXT` column outright (error 1101) and
+   * takes an *expression* default instead — parenthesised, as it has since
+   * 8.0.13. PostgreSQL and SQLite take the bare literal, which is what they were
+   * given before this file knew about MySQL.
+   */
+  readonly textDefault: (value: string) => Statement.Fragment
+  /**
+   * `IF NOT EXISTS `, for `CREATE INDEX`.
+   *
+   * PostgreSQL and SQLite need it: `CREATE TABLE IF NOT EXISTS` may have found a
+   * table an older release of this library created, in which case its indexes
+   * are there too. MySQL has no such clause on `CREATE INDEX` and needs none —
+   * this library has never created a MySQL table, so there is no older schema
+   * for one of these statements to arrive late at.
+   */
+  readonly ifNotExists: Statement.Fragment
+  /** `ADD COLUMN`, with the idempotence PostgreSQL is the only one to offer. */
+  readonly addColumn: Statement.Fragment
+  /**
+   * The cascade to `users`, as part of the column definition.
+   *
+   * Empty on MySQL: InnoDB parses an inline `REFERENCES` and then ignores it, so
+   * a foreign key that was declared that way would never cascade. There the
+   * constraint is {@link Ddl.usersForeignKey} instead.
+   */
+  readonly referencesUsers: Statement.Fragment
+  /** The cascade to `users` as a table-level constraint, which is MySQL's only working form. */
+  readonly usersForeignKey: Statement.Fragment
+}
+
+/** The DDL vocabulary of the ambient client's dialect. */
+const ddl: Effect.Effect<Ddl, Migrator.MigrationError, SqlClient.SqlClient> = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectFor(sql)
+  const mysql = dialect === "mysql"
+  return {
+    sql,
+    dialect,
+    type: (role, options) => sql.literal(columnType(dialect, role, options)),
+    flag: (value) => sql.literal(booleanLiteral(dialect, value)),
+    textDefault: (value) => sql.literal(mysql ? `('${value}')` : `'${value}'`),
+    ifNotExists: sql.literal(mysql ? "" : "IF NOT EXISTS "),
+    addColumn: sql.literal(dialect === "pg" ? "ADD COLUMN IF NOT EXISTS" : "ADD COLUMN"),
+    referencesUsers: sql.literal(mysql ? "" : " REFERENCES users (id) ON DELETE CASCADE"),
+    usersForeignKey: sql.literal(mysql ? ",\n    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE" : "")
+  }
+})
+
+// -----------------------------------------------------------------------------
+// Migrations
+// -----------------------------------------------------------------------------
+
+const createUsers = Effect.gen(function* () {
+  const { flag, ifNotExists, sql, type } = yield* ddl
+
+  yield* sql`CREATE TABLE IF NOT EXISTS users (
+    id ${type("id")} PRIMARY KEY,
+    name ${type("text")} NOT NULL,
+    email ${type("email")} NOT NULL,
+    email_verified ${type("boolean")} NOT NULL DEFAULT ${flag(false)},
+    image ${type("text")},
+    created_at ${type("timestamp")} NOT NULL,
+    updated_at ${type("timestamp")} NOT NULL
+  )`
+
+  yield* sql`CREATE UNIQUE INDEX ${ifNotExists}users_email_unique ON users (email)`
 })
 
 const createSessions = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+  const { ifNotExists, referencesUsers, sql, type, usersForeignKey } = yield* ddl
 
   yield* sql`CREATE TABLE IF NOT EXISTS sessions (
-    id text PRIMARY KEY,
-    token_hash text NOT NULL,
-    user_id text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    expires_at text NOT NULL,
-    ip_address text,
-    user_agent text,
-    created_at text NOT NULL,
-    updated_at text NOT NULL
+    id ${type("id")} PRIMARY KEY,
+    token_hash ${type("hash")} NOT NULL,
+    user_id ${type("id")} NOT NULL${referencesUsers},
+    expires_at ${type("timestamp")} NOT NULL,
+    ip_address ${type("text")},
+    user_agent ${type("text")},
+    created_at ${type("timestamp")} NOT NULL,
+    updated_at ${type("timestamp")} NOT NULL${usersForeignKey}
   )`
 
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS sessions_token_hash_unique ON sessions (token_hash)`
-  yield* sql`CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions (user_id)`
+  yield* sql`CREATE UNIQUE INDEX ${ifNotExists}sessions_token_hash_unique ON sessions (token_hash)`
+  yield* sql`CREATE INDEX ${ifNotExists}sessions_user_id_idx ON sessions (user_id)`
 })
 
 const createAccounts = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+  const { ifNotExists, referencesUsers, sql, type, usersForeignKey } = yield* ddl
 
   yield* sql`CREATE TABLE IF NOT EXISTS accounts (
-    id text PRIMARY KEY,
-    issuer text NOT NULL,
-    account_id text NOT NULL,
-    provider_id text NOT NULL,
-    user_id text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-    access_token text,
-    refresh_token text,
-    id_token text,
-    access_token_expires_at text,
-    refresh_token_expires_at text,
-    scope text,
-    password_hash text,
-    created_at text NOT NULL,
-    updated_at text NOT NULL
+    id ${type("id")} PRIMARY KEY,
+    issuer ${type("identity")} NOT NULL,
+    account_id ${type("identity")} NOT NULL,
+    provider_id ${type("identity")} NOT NULL,
+    user_id ${type("id")} NOT NULL${referencesUsers},
+    access_token ${type("text")},
+    refresh_token ${type("text")},
+    id_token ${type("text")},
+    access_token_expires_at ${type("timestamp")},
+    refresh_token_expires_at ${type("timestamp")},
+    scope ${type("text")},
+    password_hash ${type("text")},
+    created_at ${type("timestamp")} NOT NULL,
+    updated_at ${type("timestamp")} NOT NULL${usersForeignKey}
   )`
 
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS accounts_issuer_account_id_unique ON accounts (issuer, account_id)`
-  yield* sql`CREATE INDEX IF NOT EXISTS accounts_user_id_idx ON accounts (user_id)`
+  yield* sql`CREATE UNIQUE INDEX ${ifNotExists}accounts_issuer_account_id_unique ON accounts (issuer, account_id)`
+  yield* sql`CREATE INDEX ${ifNotExists}accounts_user_id_idx ON accounts (user_id)`
 })
 
 const createVerifications = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+  const { ifNotExists, sql, type } = yield* ddl
 
   yield* sql`CREATE TABLE IF NOT EXISTS verifications (
-    id text PRIMARY KEY,
-    identifier text NOT NULL,
-    value_hash text NOT NULL,
-    payload text,
-    expires_at text NOT NULL,
-    created_at text NOT NULL,
-    updated_at text NOT NULL
+    id ${type("id")} PRIMARY KEY,
+    identifier ${type("identifier")} NOT NULL,
+    value_hash ${type("hash")} NOT NULL,
+    payload ${type("text")},
+    expires_at ${type("timestamp")} NOT NULL,
+    created_at ${type("timestamp")} NOT NULL,
+    updated_at ${type("timestamp")} NOT NULL
   )`
 
-  yield* sql`CREATE INDEX IF NOT EXISTS verifications_identifier_idx ON verifications (identifier)`
+  yield* sql`CREATE INDEX ${ifNotExists}verifications_identifier_idx ON verifications (identifier)`
 })
 
 const addSessionRememberMe = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+  const { addColumn, flag, sql, type } = yield* ddl
 
-  // A boolean on PostgreSQL, an integer flag on SQLite — the same divergence as
-  // `users.email_verified`. `NOT NULL DEFAULT true`/`1` reflects the behaviour
-  // sessions had before the column existed (a full-length "remembered" session)
-  // and backfills any row already in the table.
-  yield* sql.onDialectOrElse({
-    pg: () => sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remember_me boolean NOT NULL DEFAULT true`,
-    sqlite: () => sql`ALTER TABLE sessions ADD COLUMN remember_me integer NOT NULL DEFAULT 1`,
-    orElse: () => unsupportedDialect
-  })
+  // A `boolean` on PostgreSQL and MySQL, an integer flag on SQLite — the same
+  // divergence as `users.email_verified`. `NOT NULL DEFAULT true`/`1` reflects
+  // the behaviour sessions had before the column existed (a full-length
+  // "remembered" session) and backfills any row already in the table.
+  yield* sql`ALTER TABLE sessions ${addColumn} remember_me ${type("boolean")} NOT NULL DEFAULT ${flag(true)}`
 })
 
 const addSessionAssurance = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient
+  const { addColumn, dialect, sql, textDefault, type } = yield* ddl
 
-  // Three `text` columns on both dialects — the levels are literal strings and
-  // the log is a JSON array in a text column, so nothing here diverges the way
-  // a boolean would. They are added separately because SQLite has no
-  // multi-column `ADD COLUMN`.
+  // Three text columns on every dialect — the levels are literal strings and the
+  // log is a JSON array, so nothing here diverges the way a boolean would. They
+  // are added separately because SQLite has no multi-column `ADD COLUMN`.
   //
   // `authenticated_at` is backfilled from `created_at`: before step-up existed,
   // a session's creation *was* the moment its owner authenticated, so that is
@@ -163,28 +247,22 @@ const addSessionAssurance = Effect.gen(function* () {
   // It has no `DEFAULT`, because only the writer knows when a person actually
   // authenticated and any constant here would be a lie. That is also why it is
   // added nullable and backfilled before the constraint goes on: a `NOT NULL`
-  // column with no default cannot be added to a table that has rows. SQLite
-  // cannot tighten a column afterwards, so there the `NOT NULL` is the model's
-  // to enforce — the backfill still leaves no NULL behind, and `Session.insert`
-  // always states the value.
-  yield* sql.onDialectOrElse({
-    pg: () =>
-      Effect.gen(function* () {
-        yield* sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS authenticated_at text`
-        yield* sql`UPDATE sessions SET authenticated_at = created_at WHERE authenticated_at IS NULL`
-        yield* sql`ALTER TABLE sessions ALTER COLUMN authenticated_at SET NOT NULL`
-        yield* sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS aal text NOT NULL DEFAULT 'aal1'`
-        yield* sql`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS methods text NOT NULL DEFAULT '[]'`
-      }),
-    sqlite: () =>
-      Effect.gen(function* () {
-        yield* sql`ALTER TABLE sessions ADD COLUMN authenticated_at text`
-        yield* sql`UPDATE sessions SET authenticated_at = created_at`
-        yield* sql`ALTER TABLE sessions ADD COLUMN aal text NOT NULL DEFAULT 'aal1'`
-        yield* sql`ALTER TABLE sessions ADD COLUMN methods text NOT NULL DEFAULT '[]'`
-      }),
-    orElse: () => unsupportedDialect
-  })
+  // column with no default cannot be added to a table that has rows.
+  yield* sql`ALTER TABLE sessions ${addColumn} authenticated_at ${type("timestamp")}`
+  yield* sql`UPDATE sessions SET authenticated_at = created_at WHERE authenticated_at IS NULL`
+
+  // SQLite cannot tighten a column afterwards, so there the `NOT NULL` is the
+  // model's to enforce — the backfill still leaves no NULL behind, and
+  // `Session.insert` always states the value. The other two can, and do, each in
+  // its own spelling.
+  if (dialect === "pg") {
+    yield* sql`ALTER TABLE sessions ALTER COLUMN authenticated_at SET NOT NULL`
+  } else if (dialect === "mysql") {
+    yield* sql`ALTER TABLE sessions MODIFY COLUMN authenticated_at ${type("timestamp")} NOT NULL`
+  }
+
+  yield* sql`ALTER TABLE sessions ${addColumn} aal ${type("identity")} NOT NULL DEFAULT 'aal1'`
+  yield* sql`ALTER TABLE sessions ${addColumn} methods ${type("text")} NOT NULL DEFAULT ${textDefault("[]")}`
 })
 
 // -----------------------------------------------------------------------------
@@ -192,25 +270,70 @@ const addSessionAssurance = Effect.gen(function* () {
 // -----------------------------------------------------------------------------
 
 /**
- * The shape of a column, as far as either dialect is concerned.
+ * The shape of a column, as far as any of the three dialects is concerned.
+ *
+ * Each of these is also a {@link ColumnRole}, so a kind is the role its column
+ * is declared with.
  */
-type ColumnKind = "text" | "boolean" | "number"
+type ColumnKind = Extract<ColumnRole, "text" | "boolean" | "number">
 
-/** The SQL type and the boolean literals each dialect spells differently. */
-interface Dialect {
-  readonly type: (kind: ColumnKind) => string
-  readonly boolean: (value: boolean) => string
-  readonly addColumn: (table: string, definition: string) => string
-  readonly existingColumns: Effect.Effect<ReadonlySet<string>, SqlError.SqlError, SqlClient.SqlClient>
-}
+/**
+ * The bound a custom string field's column gets on MySQL.
+ *
+ * MySQL cannot index unbounded text, and a deployment may well want an index on
+ * a field of its own, so a custom string column is a `varchar` rather than a
+ * `text`. Per-field storage metadata — a length, a collation, a large-text
+ * intent — is roadmap work; until it exists this is the one bound, and it is
+ * documented in the README beside the field API. PostgreSQL and SQLite ignore
+ * it: they index `text` happily.
+ */
+const customStringLength = 255
 
 /**
  * Only names this library derives from a model's own field names are ever
- * interpolated into a statement, but a table name comes from a caller, and the
- * two go into the same string. Anything that is not a plain identifier is
- * refused rather than escaped.
+ * interpolated into a statement, but a table name comes from a caller. Both go
+ * through {@link identifier} and are therefore escaped; anything that is not a
+ * plain identifier is refused as well, because a name that needs escaping to be
+ * safe is a mistake worth naming rather than a name worth quoting.
  */
-const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/
+const plainIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/** A one-column catalog answer; the three drivers disagree on the JavaScript type. */
+interface NameRow {
+  readonly name: unknown
+}
+
+const toNames = (rows: ReadonlyArray<NameRow>): ReadonlySet<string> =>
+  new Set(rows.map((row) => row.name).filter(Predicate.isString))
+
+/**
+ * The columns a table already has, on the dialects that have to be asked.
+ *
+ * PostgreSQL is not asked at all: it has `ADD COLUMN IF NOT EXISTS`, so the
+ * idempotence is the statement's. SQLite is read through `pragma_table_info`,
+ * the table-valued form of `PRAGMA table_info`, so that the table name is a
+ * bound parameter rather than something interpolated. MySQL has neither, and is
+ * read through `information_schema`, scoped to the database the connection is
+ * actually pointed at.
+ */
+const existingColumns = (
+  sql: SqlClient.SqlClient,
+  dialect: Dialect,
+  table: string
+): Effect.Effect<ReadonlySet<string>, SqlError.SqlError> => {
+  switch (dialect) {
+    case "pg":
+      return Effect.succeed(new Set<string>())
+    case "sqlite":
+      return Effect.map(sql<NameRow>`SELECT name FROM pragma_table_info(${table})`, toNames)
+    case "mysql":
+      return Effect.map(
+        sql<NameRow>`SELECT column_name AS name FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = ${table}`,
+        toNames
+      )
+  }
+}
 
 /**
  * The column kind a field is stored as, read off its *encoded* schema.
@@ -256,42 +379,15 @@ const isNullable = (ast: SchemaAST.AST): boolean => {
 /** A default value, as the literal a `DEFAULT` clause takes. */
 const defaultLiteral = (value: unknown, dialect: Dialect): Option.Option<string> => {
   if (Predicate.isString(value)) return Option.some(`'${value.replace(/'/g, "''")}'`)
-  if (Predicate.isBoolean(value)) return Option.some(dialect.boolean(value))
+  if (Predicate.isBoolean(value)) return Option.some(booleanLiteral(dialect, value))
   if (Predicate.isNumber(value) && Number.isFinite(value)) return Option.some(String(value))
   return Option.none()
 }
 
-const dialectOf = (sql: SqlClient.SqlClient, table: string): Option.Option<Dialect> =>
-  sql.onDialectOrElse({
-    orElse: (): Option.Option<Dialect> => Option.none(),
-    pg: () =>
-      Option.some({
-        type: (kind) => (kind === "text" ? "text" : kind === "boolean" ? "boolean" : "double precision"),
-        boolean: (value) => (value ? "true" : "false"),
-        // PostgreSQL has the idempotence built in; SQLite has to be asked.
-        addColumn: (table, definition) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${definition}`,
-        existingColumns: Effect.succeed(new Set<string>())
-      }),
-    sqlite: () =>
-      Option.some({
-        type: (kind) => (kind === "text" ? "text" : kind === "boolean" ? "integer" : "real"),
-        boolean: (value) => (value ? "1" : "0"),
-        addColumn: (table, definition) => `ALTER TABLE ${table} ADD COLUMN ${definition}`,
-        existingColumns: Effect.map(
-          sql.unsafe<{ readonly name: unknown }>(`PRAGMA table_info(${table})`),
-          (rows) => new Set(rows.map((row) => row.name).filter(Predicate.isString))
-        )
-      })
-  })
-
-/** The dialect's spelling of the DDL, or the failure that says there is none. */
-const dialectFor = (sql: SqlClient.SqlClient, table: string): Effect.Effect<Dialect, Migrator.MigrationError> =>
-  Option.match(dialectOf(sql, table), { onNone: () => unsupportedDialect, onSome: Effect.succeed })
-
 /** A field's column name, refused rather than escaped when it is not an identifier. */
 const columnFor = (field: string): Effect.Effect<string, Migrator.MigrationError> => {
   const column = camelToSnake(field)
-  return identifier.test(column)
+  return plainIdentifier.test(column)
     ? Effect.succeed(column)
     : Effect.fail(migrationError(`effect-auth: the user field ${field} is not a valid column name`))
 }
@@ -316,13 +412,14 @@ const columnKindFor = (field: string, ast: SchemaAST.AST): Effect.Effect<ColumnK
  * The column name is the field name in `snake_case`, its type comes from the
  * field's encoded schema, and its `DEFAULT` is the field's own declared default,
  * encoded — which is what lets the statement run against a table that already
- * has rows in it. A field whose schema stores as something neither dialect has a
- * column for fails with a `MigrationError` naming it, at migration time rather
- * than at the first insert.
+ * has rows in it. A field whose schema stores as something no column can hold
+ * fails with a `MigrationError` naming it, at migration time rather than at the
+ * first insert.
  *
- * It is idempotent on both dialects: PostgreSQL is asked for
- * `ADD COLUMN IF NOT EXISTS`, and SQLite — which has no such clause — is read
- * with `PRAGMA table_info` first.
+ * It is idempotent on all three dialects: PostgreSQL is asked for
+ * `ADD COLUMN IF NOT EXISTS`, and SQLite and MySQL — which have no such clause —
+ * are read first, through `pragma_table_info` and `information_schema.columns`
+ * respectively.
  *
  * **When to use**
  *
@@ -343,6 +440,10 @@ const columnKindFor = (field: string, ast: SchemaAST.AST): Effect.Effect<ColumnK
  * the whole of what adding a field costs. {@link layerFor} sidesteps this by
  * running it outside the migrator on every boot.
  *
+ * A custom string field is `text` on PostgreSQL and SQLite and `varchar(255)` on
+ * MySQL, because MySQL cannot index unbounded text. A field that needs more room
+ * than that on MySQL wants a column added by hand.
+ *
  * @category constructors
  * @since 0.1.0
  */
@@ -355,14 +456,15 @@ export const forUserFields = <F extends UserFields>(
   if (model.extraKeys.length === 0) return Effect.void
 
   const table = options?.table ?? "users"
-  if (!identifier.test(table)) return Effect.fail(migrationError(`effect-auth: ${table} is not a valid table name`))
+  if (!plainIdentifier.test(table)) {
+    return Effect.fail(migrationError(`effect-auth: ${table} is not a valid table name`))
+  }
 
   return Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient
-    const dialect = yield* dialectFor(sql, table)
+    const { addColumn, dialect, sql, type } = yield* ddl
 
     const defaults = yield* model.extraDefaults
-    const existing = yield* dialect.existingColumns
+    const existing = yield* existingColumns(sql, dialect, table)
 
     for (const field of model.extraKeys) {
       const schema: Schema.Top | undefined = model.selectFields[field]
@@ -375,10 +477,11 @@ export const forUserFields = <F extends UserFields>(
 
       const value = defaultLiteral(defaults[field], dialect)
       const nullable = isNullable(schema.ast)
-      const definition = `${column} ${dialect.type(kind)}${nullable ? "" : " NOT NULL"}${
-        Option.isSome(value) ? ` DEFAULT ${value.value}` : ""
-      }`
-      yield* sql.unsafe(dialect.addColumn(table, definition))
+      const constraints = `${nullable ? "" : " NOT NULL"}${Option.isSome(value) ? ` DEFAULT ${value.value}` : ""}`
+
+      yield* sql`ALTER TABLE ${identifier(sql, table)} ${addColumn} ${identifier(sql, column)} ${type(kind, {
+        length: customStringLength
+      })}${sql.literal(constraints)}`
     }
   })
 }
@@ -431,7 +534,7 @@ export interface MigrationSet {
  *
  * const createInvites = Effect.flatMap(
  *   SqlClient.SqlClient,
- *   (sql) => sql`CREATE TABLE IF NOT EXISTS invites (id text PRIMARY KEY)`
+ *   (sql) => sql`CREATE TABLE IF NOT EXISTS invites (id varchar(64) NOT NULL PRIMARY KEY)`
  * )
  *
  * export const Migrations$ = Migrations.make({
@@ -445,6 +548,10 @@ export interface MigrationSet {
  * Sequence the layers where one set's tables reference another's:
  * `Plugin.Migrations.layer.pipe(Layer.provide(Migrations.layer))`. Two sets built
  * over the same `SqlClient` with no ordering between them run concurrently.
+ *
+ * Write the DDL for all three supported dialects, as this library's own does: a
+ * key is a bounded `varchar` rather than a `text`, because MySQL cannot index
+ * unbounded text at all.
  *
  * @category constructors
  * @since 0.1.0

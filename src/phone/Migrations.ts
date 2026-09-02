@@ -17,17 +17,20 @@
  *
  * **Gotchas**
  *
- * Bounded `varchar` for the number and the user id, so the `db-expansion.md`
- * MySQL port stays mechanical — MySQL cannot index an unbounded `text` column.
- * `phone_e164` is 16 characters because E.164 caps a number at fifteen digits
- * and the `+` makes sixteen; anything longer is not a number this plugin can
- * have stored, since `E164.normalize` is the only thing that writes here.
+ * Every column is declared through `Dialect.columnType` — `identity` for the
+ * number, `id` for the holder, `timestamp` for the two clocks — so PostgreSQL
+ * and SQLite get `text` and MySQL, which cannot index an unbounded `text`
+ * column, gets a bounded `varchar` in a binary collation. The number takes a
+ * bound of its own, sixteen: E.164 caps a number at fifteen digits and the `+`
+ * makes sixteen, and `E164.normalize` is the only thing that writes here.
  *
  * @since 0.2.0
  */
 import type { Layer } from "effect"
 import { Effect } from "effect"
-import { Migrator, SqlClient, type SqlError } from "effect/unstable/sql"
+import { type Migrator, SqlClient, type SqlError } from "effect/unstable/sql"
+import type { ColumnRole } from "../sql/Dialect.js"
+import { columnType, dialectOf, identifier } from "../sql/Dialect.js"
 import { make as makeMigrations, type MigrationSet } from "../sql/Migrations.js"
 
 /**
@@ -46,50 +49,54 @@ export const phoneNumbersTable = "effect_auth_phone_numbers"
  */
 export const table = "effect_auth_phone_migrations"
 
-const unsupportedDialect = Effect.fail(
-  new Migrator.MigrationError({
-    kind: "Failed",
-    message: `effect-auth phone migrations only support the "pg" and "sqlite" dialects`
-  })
-)
+/**
+ * What a number can be at its longest: E.164 caps one at fifteen digits and the
+ * `+` makes sixteen.
+ *
+ * It overrides the `identity` role's MySQL bound rather than taking it, because
+ * `E164.normalize` is the only thing that ever writes this column and it cannot
+ * produce a longer string — so the tighter bound is a fact about the data rather
+ * than a guess, and it keeps the key narrow.
+ */
+const e164Length = 16
 
 /**
  * `0001_create_phone_numbers`.
  *
  * One row per number and — through the unique constraint on `user_id` — at most
- * one number per person. The number itself is the primary key, so two people
- * can never hold the same handset: the second `INSERT` is refused by the
- * database rather than by a check somebody could forget to write.
+ * one number per person. The number itself is the key, so two people can never
+ * hold the same handset: the second `INSERT` is refused by the database rather
+ * than by a check somebody could forget to write.
  *
  * `verified_at` is nullable and is what every read filters on. A row with a
  * null there is a claim, not a proof.
  */
 const createPhoneNumbers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
+  const type = (role: ColumnRole, length?: number) => sql.literal(columnType(dialect, role, { length }))
 
-  yield* sql.onDialectOrElse({
-    pg: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_phone_numbers (
-        phone_e164 varchar(16) PRIMARY KEY,
-        user_id varchar(36) NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-        verified_at text,
-        created_at text NOT NULL
-      )`,
-    sqlite: () =>
-      // SQLite reports a conflict on a declared PRIMARY KEY as
-      // SQLITE_CONSTRAINT_PRIMARYKEY (1555) and only a conflict on a UNIQUE
-      // index as SQLITE_CONSTRAINT_UNIQUE (2067), which is the only one
-      // `persistenceFailureKind` classifies as a lost race — so the number is a
-      // NOT NULL UNIQUE column here rather than the primary key it is on the
-      // other dialects. The constraint is the same; the reported error is not.
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_phone_numbers (
-        phone_e164 text NOT NULL UNIQUE,
-        user_id text NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-        verified_at text,
-        created_at text NOT NULL
-      )`,
-    orElse: () => unsupportedDialect
-  })
+  // SQLite reports a conflict on a declared PRIMARY KEY as
+  // SQLITE_CONSTRAINT_PRIMARYKEY (1555) and only a conflict on a UNIQUE index
+  // as SQLITE_CONSTRAINT_UNIQUE (2067), which is the only one
+  // `persistenceFailureKind` classifies as a lost race — so the number is a
+  // NOT NULL UNIQUE column there rather than the primary key it is on the other
+  // two. The constraint is the same; the reported error is not. MySQL reports
+  // ER_DUP_ENTRY (1062) for either, so it keeps the primary key.
+  const numberKey = sql.literal(dialect === "sqlite" ? "NOT NULL UNIQUE" : "PRIMARY KEY")
+
+  // The foreign key is a table constraint rather than a column one because
+  // MySQL parses an inline `REFERENCES` clause and then ignores it — the
+  // cascade would silently not exist. PostgreSQL and SQLite read the two forms
+  // identically. `user_id` is unique, so InnoDB has an index for the foreign
+  // key already and adds none of its own.
+  yield* sql`CREATE TABLE IF NOT EXISTS ${identifier(sql, phoneNumbersTable)} (
+    phone_e164 ${type("identity", e164Length)} ${numberKey},
+    user_id ${type("id")} NOT NULL UNIQUE,
+    verified_at ${type("timestamp")},
+    created_at ${type("timestamp")} NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  )`
 })
 
 /**

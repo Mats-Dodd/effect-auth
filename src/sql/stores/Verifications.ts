@@ -3,20 +3,47 @@
  *
  * **Details**
  *
- * `consume` is a single `DELETE ... RETURNING` guarded by the expiry, which is
- * what makes password-reset tokens, e-mail verification links and OAuth state
- * genuinely single-use: two concurrent callers cannot both be handed the row.
+ * `consume` is the exactly-once claim — the statement behind every
+ * password-reset token, e-mail verification link and OAuth state — and it is
+ * written on `Mutations.consumeOne`: one guarded `DELETE … RETURNING` on
+ * PostgreSQL and SQLite, and on MySQL a plain read that picks the row followed
+ * by a locking read of it by primary key that decides the claim. Two concurrent
+ * callers cannot both be handed the row on any of the three; the reasoning for
+ * MySQL's shape, and the InnoDB gap lock it exists to avoid, is in that helper's
+ * own documentation.
+ *
+ * **Gotchas**
+ *
+ * `deleteByIdentifier` is a range delete, and on MySQL a range delete takes
+ * next-key locks over the index range it scans. Many of them racing inserts
+ * under one identifier can deadlock — measured at twelve concurrent retirements
+ * of one identifier, well past anything the domain does with it (it retires the
+ * siblings of a value that has just been claimed, once). A deadlock surfaces as
+ * a `PersistenceError` of kind `Unknown` and the retirement is simply not made,
+ * which is the same failure mode as the driver going away.
  *
  * Not exported from the package: `SqlStores.layerFor` is the public door.
  *
  * @internal
  */
 import { DateTime, Effect, Schema } from "effect"
+import type { Statement } from "effect/unstable/sql"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
-import type { VerificationStoreService } from "../../domain/Stores.js"
+import type { PersistenceError, VerificationStoreService } from "../../domain/Stores.js"
 import { VerificationStore } from "../../domain/Stores.js"
 import { Verification } from "../../domain/Schema.js"
+import { dialectOf } from "../Dialect.js"
+import { consumeOne, deleteAndCount, insertAndRead } from "../Mutations.js"
 import { persist } from "./internal.js"
+
+// -----------------------------------------------------------------------------
+// The table
+// -----------------------------------------------------------------------------
+
+const verificationsTable = "verifications"
+
+/** The primary key: how a mutation helper names a row again on MySQL. */
+const verificationKey: ReadonlyArray<string> = ["id"]
 
 // -----------------------------------------------------------------------------
 // Column projections
@@ -36,48 +63,55 @@ const ConsumeRequest = Schema.Struct({
   now: IsoString
 })
 
-const NowRequest = Schema.Struct({ now: IsoString })
-
 /** @internal */
 export const make: Effect.Effect<VerificationStoreService, never, SqlClient.SqlClient> = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
   const verificationCols = sql.literal(verificationColumns)
 
   const insertVerification = SqlSchema.findOne({
     Request: Verification.insert,
     Result: Verification,
     execute: (row) =>
-      sql`INSERT INTO verifications (id, identifier, value_hash, payload, expires_at, created_at, updated_at)
-        VALUES (${row.id}, ${row.identifier}, ${row.valueHash}, ${row.payload}, ${row.expiresAt}, ${row.createdAt}, ${row.updatedAt})
-        RETURNING ${verificationCols}`
+      insertAndRead({
+        sql,
+        dialect,
+        table: verificationsTable,
+        key: verificationKey,
+        columns: verificationCols,
+        record: {
+          id: row.id,
+          identifier: row.identifier,
+          value_hash: row.valueHash,
+          payload: row.payload,
+          expires_at: row.expiresAt,
+          created_at: row.createdAt,
+          updated_at: row.updatedAt
+        }
+      })
   })
 
   /**
-   * The whole race-safety story: one statement claims the row, guarded by the
-   * expiry, and hands it to exactly one caller.
+   * The whole race-safety story: the row is claimed under the expiry guard and
+   * handed to exactly one caller, whichever dialect arbitrates it.
    */
   const consumeVerification = SqlSchema.findOneOption({
     Request: ConsumeRequest,
     Result: Verification,
     execute: (row) =>
-      sql`DELETE FROM verifications
-        WHERE identifier = ${row.identifier}
-          AND value_hash = ${row.valueHash}
-          AND expires_at > ${row.now}
-        RETURNING ${verificationCols}`
+      consumeOne({
+        sql,
+        dialect,
+        table: verificationsTable,
+        key: verificationKey,
+        columns: verificationCols,
+        where: sql`identifier = ${row.identifier} AND value_hash = ${row.valueHash} AND expires_at > ${row.now}`
+      })
   })
 
-  const deleteVerificationsByIdentifier = SqlSchema.findAll({
-    Request: Schema.String,
-    Result: Schema.Struct({ id: Schema.String }),
-    execute: (identifier) => sql`DELETE FROM verifications WHERE identifier = ${identifier} RETURNING id`
-  })
-
-  const deleteExpiredVerifications = SqlSchema.findAll({
-    Request: NowRequest,
-    Result: Schema.Struct({ id: Schema.String }),
-    execute: (row) => sql`DELETE FROM verifications WHERE expires_at <= ${row.now} RETURNING id`
-  })
+  /** The two bulk deletes: the same statement under two predicates, counted. */
+  const deleteVerifications = (operation: string, where: Statement.Fragment): Effect.Effect<number, PersistenceError> =>
+    persist(operation)(deleteAndCount({ sql, dialect, table: verificationsTable, key: verificationKey, where }))
 
   return VerificationStore.of({
     create: (verification) => persist("VerificationStore.create")(insertVerification(verification)),
@@ -88,12 +122,10 @@ export const make: Effect.Effect<VerificationStoreService, never, SqlClient.SqlC
       ),
 
     deleteByIdentifier: (identifier) =>
-      persist("VerificationStore.deleteByIdentifier")(
-        Effect.map(deleteVerificationsByIdentifier(identifier), (rows) => rows.length)
-      ),
+      deleteVerifications("VerificationStore.deleteByIdentifier", sql`identifier = ${identifier}`),
 
-    deleteExpired: persist("VerificationStore.deleteExpired")(
-      Effect.flatMap(DateTime.now, (now) => Effect.map(deleteExpiredVerifications({ now }), (rows) => rows.length))
+    deleteExpired: Effect.flatMap(DateTime.now, (now) =>
+      deleteVerifications("VerificationStore.deleteExpired", sql`expires_at <= ${DateTime.formatIso(now)}`)
     )
   })
 })

@@ -14,6 +14,8 @@ import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { UserId } from "../domain/Schema.js"
 import type { PersistenceError as PersistenceErrorType } from "../domain/Stores.js"
 import { PersistenceError, persistenceFailureKind } from "../domain/Stores.js"
+import { dialectOf, identifier } from "../sql/Dialect.js"
+import * as Mutations from "../sql/Mutations.js"
 
 // -----------------------------------------------------------------------------
 // Model
@@ -91,6 +93,12 @@ export class AnonymousStore extends Context.Service<AnonymousStore, AnonymousSto
 
 const columns = `user_id AS "userId", created_at AS "createdAt", last_seen_at AS "lastSeenAt"`
 
+/** The marker table. Its schema is `./Migrations.ts`. */
+const anonymous = "effect_auth_anonymous"
+
+/** The holder is the primary key, so it is what every mutation re-addresses its row by. */
+const key: ReadonlyArray<string> = ["user_id"]
+
 const StampRequest = Schema.Struct({ userId: UserId, now: Schema.DateTimeUtcFromString })
 
 const IdleRequest = Schema.Struct({
@@ -108,7 +116,11 @@ const IdleRequest = Schema.Struct({
 export const makeAnonymousStore: Effect.Effect<AnonymousStoreService, never, SqlClient.SqlClient> = Effect.gen(
   function* () {
     const sql = yield* SqlClient.SqlClient
+    const dialect = yield* dialectOf(sql)
     const cols = sql.literal(columns)
+    const table = identifier(sql, anonymous)
+    /** The holder alone — what `touch` counts, rather than reading the row back. */
+    const holder = sql`${identifier(sql, "user_id")}`
 
     const mapErrors =
       (operation: string) =>
@@ -120,36 +132,53 @@ export const makeAnonymousStore: Effect.Effect<AnonymousStoreService, never, Sql
     const selectByUserId = SqlSchema.findOneOption({
       Request: UserId,
       Result: AnonymousRecord,
-      execute: (userId) => sql`SELECT ${cols} FROM effect_auth_anonymous WHERE user_id = ${userId}`
+      execute: (userId) => sql`SELECT ${cols} FROM ${table} WHERE user_id = ${userId}`
     })
 
     const insertMarker = SqlSchema.findOne({
       Request: StampRequest,
       Result: AnonymousRecord,
       execute: (row) =>
-        sql`INSERT INTO effect_auth_anonymous (user_id, created_at, last_seen_at)
-        VALUES (${row.userId}, ${row.now}, ${row.now})
-        RETURNING ${cols}`
+        Mutations.insertAndRead({
+          sql,
+          dialect,
+          table: anonymous,
+          key,
+          record: { user_id: row.userId, created_at: row.now, last_seen_at: row.now },
+          columns: cols
+        })
     })
 
+    /**
+     * Moves the clock, answering with the holder of every row it moved.
+     *
+     * The projection is the key rather than the row: `touch` only asks whether a
+     * marker was there, and reading the row back would be a second thing for
+     * MySQL's write-then-read to keep in step with.
+     */
     const stamp = SqlSchema.findAll({
       Request: StampRequest,
       Result: Schema.Struct({ user_id: Schema.String }),
       execute: (row) =>
-        sql`UPDATE effect_auth_anonymous SET last_seen_at = ${row.now} WHERE user_id = ${row.userId} RETURNING user_id`
+        Mutations.updateAndRead({
+          sql,
+          dialect,
+          table: anonymous,
+          key,
+          set: { last_seen_at: row.now },
+          where: sql`user_id = ${row.userId}`,
+          columns: holder
+        })
     })
 
-    const deleteMarker = SqlSchema.findAll({
-      Request: UserId,
-      Result: Schema.Struct({ user_id: Schema.String }),
-      execute: (userId) => sql`DELETE FROM effect_auth_anonymous WHERE user_id = ${userId} RETURNING user_id`
-    })
+    const deleteMarker = (userId: UserId) =>
+      Mutations.deleteAndCount({ sql, dialect, table: anonymous, key, where: sql`user_id = ${userId}` })
 
     const selectIdle = SqlSchema.findAll({
       Request: IdleRequest,
       Result: Schema.Struct({ userId: UserId }),
       execute: (row) =>
-        sql`SELECT a.user_id AS "userId" FROM effect_auth_anonymous a
+        sql`SELECT a.user_id AS "userId" FROM ${table} a
         WHERE a.last_seen_at <= ${row.before}
           AND NOT EXISTS (
             SELECT 1 FROM sessions s WHERE s.user_id = a.user_id AND s.expires_at > ${row.now}
@@ -166,7 +195,7 @@ export const makeAnonymousStore: Effect.Effect<AnonymousStoreService, never, Sql
         mapErrors("AnonymousStore.touch")(
           Effect.flatMap(DateTime.now, (now) => Effect.map(stamp({ userId, now }), (rows) => rows.length > 0))
         ),
-      clear: (userId) => mapErrors("AnonymousStore.clear")(Effect.map(deleteMarker(userId), (rows) => rows.length > 0)),
+      clear: (userId) => mapErrors("AnonymousStore.clear")(Effect.map(deleteMarker(userId), (count) => count > 0)),
       listIdle: (options) =>
         mapErrors("AnonymousStore.listIdle")(Effect.map(selectIdle(options), (rows) => rows.map((row) => row.userId)))
     })

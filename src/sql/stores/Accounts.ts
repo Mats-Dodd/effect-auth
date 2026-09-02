@@ -12,6 +12,7 @@
  * @internal
  */
 import { Array, DateTime, Effect, Option, Schema } from "effect"
+import type { Statement } from "effect/unstable/sql"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { AuthConfig } from "../../config/AuthConfig.js"
 import { omitUndefined } from "../../internal/records.js"
@@ -21,7 +22,18 @@ import type { AccountStoreService, AccountTokens } from "../../domain/Stores.js"
 import { AccountStore, PersistenceError } from "../../domain/Stores.js"
 import type { AccountId } from "../../domain/Schema.js"
 import { Account, CredentialIssuer } from "../../domain/Schema.js"
-import { persist, type RawCountRow, type RawIdRow } from "./internal.js"
+import { dialectOf, identifier, lockClause } from "../Dialect.js"
+import { deleteAndCount, insertAndRead, updateAndRead } from "../Mutations.js"
+import { persist, type RawCountRow } from "./internal.js"
+
+// -----------------------------------------------------------------------------
+// The table
+// -----------------------------------------------------------------------------
+
+const accountsTable = "accounts"
+
+/** The primary key: how a mutation helper names a row again on MySQL. */
+const accountKey: ReadonlyArray<string> = ["id"]
 
 // -----------------------------------------------------------------------------
 // Column projections
@@ -68,6 +80,7 @@ const encodeExpiry = (value: DateTime.Utc | null | undefined): string | null =>
 export const make: Effect.Effect<AccountStoreService, never, SqlClient.SqlClient | AuthConfig> = Effect.gen(
   function* () {
     const sql = yield* SqlClient.SqlClient
+    const dialect = yield* dialectOf(sql)
     const config = yield* AuthConfig
     const cipher = yield* makeProviderTokenCipher(config.secret)
     const accountCols = sql.literal(accountColumns)
@@ -137,17 +150,29 @@ export const make: Effect.Effect<AccountStoreService, never, SqlClient.SqlClient
       Request: Account.insert,
       Result: Account,
       execute: (row) =>
-        sql`INSERT INTO accounts (
-          id, issuer, account_id, provider_id, user_id,
-          access_token, refresh_token, id_token,
-          access_token_expires_at, refresh_token_expires_at,
-          scope, password_hash, created_at, updated_at
-        ) VALUES (
-          ${row.id}, ${row.issuer}, ${row.accountId}, ${row.providerId}, ${row.userId},
-          ${row.accessToken}, ${row.refreshToken}, ${row.idToken},
-          ${row.accessTokenExpiresAt}, ${row.refreshTokenExpiresAt},
-          ${row.scope}, ${row.passwordHash}, ${row.createdAt}, ${row.updatedAt}
-        ) RETURNING ${accountCols}`
+        insertAndRead({
+          sql,
+          dialect,
+          table: accountsTable,
+          key: accountKey,
+          columns: accountCols,
+          record: {
+            id: row.id,
+            issuer: row.issuer,
+            account_id: row.accountId,
+            provider_id: row.providerId,
+            user_id: row.userId,
+            access_token: row.accessToken,
+            refresh_token: row.refreshToken,
+            id_token: row.idToken,
+            access_token_expires_at: row.accessTokenExpiresAt,
+            refresh_token_expires_at: row.refreshTokenExpiresAt,
+            scope: row.scope,
+            password_hash: row.passwordHash,
+            created_at: row.createdAt,
+            updated_at: row.updatedAt
+          }
+        })
     })
 
     const selectAccountByIssuer = SqlSchema.findOneOption({
@@ -182,25 +207,38 @@ export const make: Effect.Effect<AccountStoreService, never, SqlClient.SqlClient
     })
 
     /**
-     * `FOR UPDATE` on the dialects that have it. SQLite serializes writers
-     * already, so the plain read is the same guarantee there.
+     * `FOR UPDATE` on the dialects that have it, empty on SQLite — which
+     * serialises its writers already, so the plain read is the same guarantee
+     * there. This is the reclaim lock: `Accounts.unlink`'s last-method guard is
+     * only sound while two transactions cannot both read the same user's
+     * accounts and both believe they were alone.
      */
-    const lockClause = sql.onDialectOrElse({
-      orElse: () => sql.literal(" FOR UPDATE"),
-      sqlite: () => sql.literal("")
-    })
+    const lock = lockClause(sql, dialect)
 
     const listAccountsForUpdate = SqlSchema.findAll({
       Request: Schema.String,
       Result: Account,
       execute: (userId) =>
-        sql`SELECT ${accountCols} FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC, id ASC${lockClause}`
+        sql`SELECT ${accountCols} FROM accounts WHERE user_id = ${userId} ORDER BY created_at ASC, id ASC${lock}`
     })
 
-    const updateAccountRow = (operation: string, id: AccountId, set: Record<string, unknown>) =>
+    /** The rows matching `where`, deleted, counted. */
+    const deleteAccounts = (operation: string, where: Statement.Fragment): Effect.Effect<number, PersistenceError> =>
+      persist(operation)(deleteAndCount({ sql, dialect, table: accountsTable, key: accountKey, where }))
+
+    /** One account, updated and read back — `None` when the predicate matched nothing. */
+    const updateAccountRow = (operation: string, where: Statement.Fragment, set: Record<string, unknown>) =>
       persist(operation)(
         Effect.gen(function* () {
-          const rows = yield* sql`UPDATE accounts SET ${sql.update(set)} WHERE id = ${id} RETURNING ${accountCols}`
+          const rows = yield* updateAndRead({
+            sql,
+            dialect,
+            table: accountsTable,
+            key: accountKey,
+            columns: accountCols,
+            set,
+            where
+          })
           return yield* firstAccount(rows)
         })
       )
@@ -246,7 +284,7 @@ export const make: Effect.Effect<AccountStoreService, never, SqlClient.SqlClient
           const encrypted = yield* encryptPatch(id, tokens)
           const updated = yield* updateAccountRow(
             "AccountStore.updateTokens",
-            id,
+            sql`id = ${id}`,
             omitUndefined({
               access_token: encrypted.accessToken,
               refresh_token: encrypted.refreshToken,
@@ -265,35 +303,30 @@ export const make: Effect.Effect<AccountStoreService, never, SqlClient.SqlClient
         }),
 
       updatePasswordHash: (userId, passwordHash) =>
-        persist("AccountStore.updatePasswordHash")(
-          Effect.gen(function* () {
-            const now = yield* DateTime.now
-            const rows = yield* sql`UPDATE accounts
-          SET password_hash = ${passwordHash}, updated_at = ${DateTime.formatIso(now)}
-          WHERE user_id = ${userId} AND issuer = ${CredentialIssuer}
-          RETURNING ${accountCols}`
-            return yield* Effect.flatMap(firstAccount(rows), (value) =>
-              decryptOption("AccountStore.updatePasswordHash", value)
-            )
-          })
-        ),
+        Effect.gen(function* () {
+          const now = yield* DateTime.now
+          const updated = yield* updateAccountRow(
+            "AccountStore.updatePasswordHash",
+            sql`user_id = ${userId} AND issuer = ${CredentialIssuer}`,
+            { password_hash: passwordHash, updated_at: DateTime.formatIso(now) }
+          )
+          return yield* decryptOption("AccountStore.updatePasswordHash", updated)
+        }),
 
       deleteById: (id, userId) =>
-        persist("AccountStore.deleteById")(
-          Effect.map(
-            sql<RawIdRow>`DELETE FROM accounts WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-            (rows) => rows.length > 0
-          )
+        Effect.map(
+          deleteAccounts("AccountStore.deleteById", sql`id = ${id} AND user_id = ${userId}`),
+          (count) => count > 0
         ),
 
-      deleteByUserId: (userId) =>
-        persist("AccountStore.deleteByUserId")(
-          Effect.map(sql<RawIdRow>`DELETE FROM accounts WHERE user_id = ${userId} RETURNING id`, (rows) => rows.length)
-        ),
+      deleteByUserId: (userId) => deleteAccounts("AccountStore.deleteByUserId", sql`user_id = ${userId}`),
 
       countByUserId: (userId) =>
         persist("AccountStore.countByUserId")(
-          Effect.map(sql<RawCountRow>`SELECT COUNT(*) AS "count" FROM accounts WHERE user_id = ${userId}`, countRows)
+          Effect.map(
+            sql<RawCountRow>`SELECT COUNT(*) AS ${identifier(sql, "count")} FROM accounts WHERE user_id = ${userId}`,
+            countRows
+          )
         )
     })
   }

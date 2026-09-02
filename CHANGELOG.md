@@ -11,6 +11,65 @@ and "breaking" below means what a consumer would have had to change had there be
 
 ## [Unreleased]
 
+### Databases: PostgreSQL, SQLite and MySQL (2026-09-02)
+
+The library now supports three databases rather than two, and its whole test suite — every file, not
+a contract subset — runs against each of them. `SqlClient.SqlClient` is still the only persistence
+requirement; what changed is that every statement, every migration and every error classification
+has a MySQL answer as well as a PostgreSQL and a SQLite one, and that the testing module carries the
+choice. README "Databases" is the user-facing half; SPEC.md Amendment 21 records the decisions.
+
+#### Added — databases
+
+- **MySQL 8.0.19 and later**, through `@effect/sql-mysql2`. PostgreSQL 12+ and SQLite (`node:sqlite`,
+  Node 22+) are unchanged in behaviour. MariaDB is not supported: the conditional upsert behind the
+  username claim and the TOTP enrolment uses the `INSERT … AS new ON DUPLICATE KEY UPDATE` row alias.
+- `effect-auth/testing` exports `Database`: `Database.Dialect`, `Database.TestDatabaseService`,
+  `Database.TestDatabase` (the service — `dialect`, `reset`, `tableNames`, `columnNames`,
+  `indexNames`), `Database.Provider`, `Database.pglite`, `Database.fromConfig` and
+  `Database.dialect`. `fromConfig` reads `EFFECT_AUTH_TEST_DATABASE` (`pglite`, the default,
+  `sqlite`, `pg`, `mysql`) and, for the two server dialects,
+  `EFFECT_AUTH_TEST_POSTGRES_URL` / `EFFECT_AUTH_TEST_MYSQL_URL`, falling back to a digest-pinned
+  Testcontainers container.
+- **Three new subpaths** behind optional peer dependencies, loaded on demand and never imported
+  statically by `effect-auth/testing`: `effect-auth/testing/sqlite` (`memory`),
+  `effect-auth/testing/postgres` (`container`, `fromUrl`), `effect-auth/testing/mysql`
+  (`container`, `fromUrl`).
+- `AuthTest.Settings.database?: Database.Provider` — the backend one suite runs on, whatever the
+  variable says. Absent means `Database.fromConfig`. `AuthTest.providerOf(settings)` is where that
+  default lives, for a third-party plugin harness that has to honour it.
+- `@effect/sql-pg`, `@effect/sql-sqlite-node`, `@effect/sql-mysql2`, `@testcontainers/postgresql`
+  and `@testcontainers/mysql` are optional peer dependencies beside `@effect/sql-pglite`.
+- Scripts: `pnpm test:sqlite`, `pnpm test:pg`, `pnpm test:mysql` beside `pnpm test`. CI is five
+  parallel jobs — `check` and one full suite per dialect.
+
+#### Breaking — the testing types
+
+- **`PgliteClient.PgliteClient` is gone from every exported layer type.** Everywhere a testing layer
+  read `SqlClient.SqlClient | PgliteClient.PgliteClient` it now reads
+  `SqlClient.SqlClient | Database.TestDatabase`, and `AuthTest.DeploymentServices` likewise. The
+  error channel is unchanged (`Migrator.MigrationError | SqlError.SqlError`). A test that named the
+  old type names the new one; a test that only composed the layers changes nothing.
+- **`PasskeysTest`'s `export type { PgliteClient }` is removed.** It re-exported another package's
+  type; import it from `@effect/sql-pglite` if you still want it.
+- **`AuthTest.layerDatabaseFor(model, provider?)` and `AuthTest.layerStoresFor(model, provider?)`
+  take a provider**, memoised on the pair. Both default to `Database.fromConfig`, so existing
+  one-argument calls compile.
+- **`PhoneTest.layerAuthenticators(options?, settings?)` and `PasskeysTest.layerPasskeys(options?,
+  settings?)` take the settings** as a second parameter, so a deployment on a non-default provider
+  composes its plugin tables over the same database.
+- **`engines.node` is `>=22`**, and CI has no Node 20 job. `node:sqlite` is the reason.
+- **`SqlStores.decodeSqliteBoolean` is removed.** The single boolean codec is
+  `Dialect.booleanCodec(dialect)` — `encode`, `decode`, `decodeNullable` — which is `@internal`; a
+  store reads a flag through it and hands your handler a `boolean`, which is what it always did.
+
+#### Changed — no API change
+
+- Vitest runs with `isolate: false` and `--maxWorkers=4`: the PGlite suite went from 32 s to 20 s,
+  and the module-level memos in `src/testing` became per worker rather than per file.
+- `src/sql/SqlStores.ts` is a facade over `src/sql/stores/{Users,Sessions,Accounts,Verifications,
+  Transaction,internal}.ts`. Its exports, their types and their documentation are unchanged.
+
 ### Tagged unions on Effect primitives (2026-09-02)
 
 Every hand-rolled `_tag` in `src/` — union types spelled member by member, `{ _tag: "X", ... }`

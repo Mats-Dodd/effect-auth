@@ -128,24 +128,30 @@ const legacySchema = Effect.gen(function* () {
       updated_at text NOT NULL
     )`
   } else if (dialect === "mysql") {
+    // Every column carries the charset and collation `Dialect.columnType`
+    // renders for its role, because on MySQL that is part of the type: a
+    // foreign key whose referencing and referenced columns disagree about
+    // either is refused outright (`ER_FK_INCOMPATIBLE_COLUMNS`), so a fixture
+    // that left them to the server default would not be a schema an older
+    // release of this library could have created.
     yield* sql`CREATE TABLE users (
-      id varchar(64) PRIMARY KEY,
+      id varchar(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
       name text NOT NULL,
-      email varchar(320) NOT NULL,
+      email varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
       email_verified boolean NOT NULL DEFAULT false,
       image text,
-      created_at varchar(32) NOT NULL,
-      updated_at varchar(32) NOT NULL
+      created_at varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      updated_at varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
     )`
     yield* sql`CREATE TABLE sessions (
-      id varchar(64) PRIMARY KEY,
-      token_hash varchar(64) NOT NULL,
-      user_id varchar(64) NOT NULL,
-      expires_at varchar(32) NOT NULL,
+      id varchar(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+      token_hash varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      user_id varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      expires_at varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
       ip_address text,
       user_agent text,
-      created_at varchar(32) NOT NULL,
-      updated_at varchar(32) NOT NULL,
+      created_at varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      updated_at varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
     )`
   } else {
@@ -233,9 +239,13 @@ layer(empty)("sql/Migrations", (it) => {
   )
 })
 
+// A key on a `text` column is refused on MySQL (`ER_BLOB_KEY_WITHOUT_LENGTH`),
+// so a plugin's own DDL spells its primary key as a bounded `varchar` — which
+// every dialect accepts, and which is what `Migrations.make`'s documented
+// example tells a plugin author to write.
 const createLinks = Effect.flatMap(
   SqlClient.SqlClient,
-  (sql) => sql`CREATE TABLE IF NOT EXISTS plugin_links (id text PRIMARY KEY)`
+  (sql) => sql`CREATE TABLE IF NOT EXISTS plugin_links (id varchar(64) NOT NULL PRIMARY KEY)`
 )
 
 const plugin = Migrations.make({

@@ -403,14 +403,24 @@ export interface DeleteAndRead extends Keyed {
 }
 
 /**
- * The shared engine of {@link deleteAndRead} and {@link consumeOne}: on MySQL,
- * lock the matching rows, read them, delete them by their own key.
+ * Deletes the rows matching `where` and answers with them as they were.
  *
- * `single` adds the `LIMIT 1` that separates the two — see {@link consumeOne}.
+ * On MySQL: lock the matching rows, read them, delete them by their own key.
+ *
+ * **Gotchas**
+ *
+ * The locking read is a range scan under the caller's predicate, so on MySQL it
+ * takes a next-key lock over whatever index serves that predicate. That is the
+ * gap lock InnoDB is famous for, and two of these racing an `INSERT` into the
+ * same range can deadlock. {@link consumeOne} — the one call site where that
+ * race is the normal case rather than the exception — is written differently
+ * for exactly that reason, and its documentation says how. A future caller of
+ * this helper on a hot, contended range should read that note before using it.
+ *
+ * @internal
  */
-const deleteReturning = <A extends object>(
-  options: DeleteAndRead,
-  single: boolean
+export const deleteAndRead = <A extends object = SqlConnection.Row>(
+  options: DeleteAndRead
 ): Effect.Effect<ReadonlyArray<A>, SqlError.SqlError> => {
   const { columns, dialect, key, sql, where } = options
   if (key.length === 0) return emptyKey
@@ -419,11 +429,10 @@ const deleteReturning = <A extends object>(
     return sql<A>`DELETE FROM ${table} WHERE ${where} RETURNING ${columns}`
   }
   const lock = lockClause(sql, dialect)
-  const limit = sql.literal(single ? " LIMIT 1" : "")
   const empty: ReadonlyArray<A> = []
   return sql.withTransaction(
     Effect.gen(function* () {
-      const locked = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where}${limit}${lock}`
+      const locked = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where}${lock}`
       if (locked.length === 0) return empty
       const by = keysOf(sql, key, locked)
       const rows = yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${by}`
@@ -432,15 +441,6 @@ const deleteReturning = <A extends object>(
     })
   )
 }
-
-/**
- * Deletes the rows matching `where` and answers with them as they were.
- *
- * @internal
- */
-export const deleteAndRead = <A extends object = SqlConnection.Row>(
-  options: DeleteAndRead
-): Effect.Effect<ReadonlyArray<A>, SqlError.SqlError> => deleteReturning<A>(options, false)
 
 /**
  * Claims one row: deletes it and answers with it, or answers with nothing and
@@ -454,14 +454,44 @@ export const deleteAndRead = <A extends object = SqlConnection.Row>(
  * both be handed the row.
  *
  * On PostgreSQL and SQLite that is one guarded `DELETE … RETURNING`: the winner
- * is decided by the storage engine and the loser sees nothing. On MySQL it is a
- * `SELECT … LIMIT 1 FOR UPDATE` and then a `DELETE` by the selected key, in one
- * transaction — the second caller blocks on the lock, and when it is released
- * the row is gone, so its own locking read returns nothing. The delete addresses
- * the row by its key rather than repeating the predicate, so it cannot widen
- * into a row that arrived while the first caller held the lock.
+ * is decided by the storage engine and the loser sees nothing.
+ *
+ * MySQL takes three statements in one transaction, and the order of them is the
+ * whole design:
+ *
+ * ```text
+ * SELECT <key> FROM <table> WHERE <predicate> LIMIT 1          -- which row, if any
+ * SELECT <columns> FROM <table> WHERE <key> AND <predicate> FOR UPDATE
+ * DELETE FROM <table> WHERE <key>
+ * ```
+ *
+ * The first read is *plain*: under `REPEATABLE READ` it is a consistent
+ * non-locking read, so it takes no record lock and — the point — no gap lock on
+ * the index range it scanned. The claim is decided by the second statement,
+ * which is a locking read of a single row by its primary key: an exact match on
+ * a unique index takes a record lock and never a gap, and being a locking read
+ * it sees the row as it is now rather than as the snapshot had it. The loser of
+ * a race blocks there, and when the winner commits it re-reads the guard and
+ * finds the row gone, so it answers with nothing and deletes nothing.
  *
  * **Gotchas**
+ *
+ * Why not the obvious `SELECT … WHERE <predicate> LIMIT 1 FOR UPDATE`: that is a
+ * *range* scan, and on MySQL a locking range scan takes a next-key lock over the
+ * gap it scanned — including when it matches nothing. Two consumers of one
+ * identifier racing an insert under the same identifier then deadlock, which is
+ * not theoretical: it reproduced within three runs of a twelve-way storm against
+ * MySQL 8 before this was written, as `ER_LOCK_DEADLOCK` on that very statement.
+ * The plain read cannot deadlock because it takes nothing, and the locking read
+ * that follows it holds exactly one primary-key record lock.
+ *
+ * The price is the snapshot the first read sees. A caller already inside a
+ * `WithAuthTransaction` that has *already read something* is on that outer
+ * transaction's snapshot, so a row another connection committed since then is
+ * invisible to the first statement and the claim answers `None`. Every real
+ * caller presents a value it was handed by an earlier, committed request, so the
+ * window needs a token consumed before it was issued; and the failure is closed
+ * — a claim that is not made — rather than a row handed out twice.
  *
  * `LIMIT 1` makes MySQL claim exactly one row where PostgreSQL and SQLite would
  * delete every row the predicate matched. The predicates this is used with carry
@@ -472,7 +502,31 @@ export const deleteAndRead = <A extends object = SqlConnection.Row>(
  */
 export const consumeOne = <A extends object = SqlConnection.Row>(
   options: DeleteAndRead
-): Effect.Effect<ReadonlyArray<A>, SqlError.SqlError> => deleteReturning<A>(options, true)
+): Effect.Effect<ReadonlyArray<A>, SqlError.SqlError> => {
+  const { columns, dialect, key, sql, where } = options
+  if (key.length === 0) return emptyKey
+  const table = identifier(sql, options.table)
+  if (dialect !== "mysql") {
+    return sql<A>`DELETE FROM ${table} WHERE ${where} RETURNING ${columns}`
+  }
+  const lock = lockClause(sql, dialect)
+  const empty: ReadonlyArray<A> = []
+  return sql.withTransaction(
+    Effect.gen(function* () {
+      const candidate = yield* sql`SELECT ${keyColumns(sql, key)} FROM ${table} WHERE ${where} LIMIT 1`
+      const first = candidate[0]
+      if (first === undefined) return empty
+      // The guard is re-stated under the lock, parenthesised because it is the
+      // caller's and may be a disjunction: the row this claims has to be one
+      // that still satisfies it now, not one the snapshot liked.
+      const by = sql.and([keyOf(sql, key, first), sql`(${where})`])
+      const rows = yield* sql<A>`SELECT ${columns} FROM ${table} WHERE ${by}${lock}`
+      if (rows.length === 0) return empty
+      yield* sql`DELETE FROM ${table} WHERE ${keyOf(sql, key, first)}`
+      return rows
+    })
+  )
+}
 
 // -----------------------------------------------------------------------------
 // Conditional upsert

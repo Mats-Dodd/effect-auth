@@ -225,6 +225,63 @@ migrations run once, so mysql branches use plain `ADD COLUMN`; `forUserFields` �
 every boot — checks `information_schema.columns WHERE table_schema = DATABASE()` first. Every
 bounded column has its bound stated in the README beside the domain constraint that guarantees it.
 
+#### Appended by B1 — what the core migrations decided beyond the table
+
+Recorded here rather than in a code comment because SPEC Amendment 21 draws its column table from
+this section. Every one of these is visible in `src/sql/Migrations.ts` and proved by
+`test/sql/Dialect.test.ts` on a real MySQL 8 (`mysql:lts`).
+
+**Roles the six core migrations assign.** The table above names roles by example; these are the
+assignments actually made, and they are the whole of `users`, `sessions`, `accounts` and
+`verifications`:
+
+| table | `id` | `hash` | `email` | `identity` | `identifier` | `timestamp` | `boolean` | `text` |
+|---|---|---|---|---|---|---|---|---|
+| `users` | `id` | — | `email` | — | — | `created_at`, `updated_at` | `email_verified` | `name`, `image` |
+| `sessions` | `id`, `user_id` | `token_hash` | — | `aal` | — | `expires_at`, `authenticated_at`, `created_at`, `updated_at` | `remember_me` | `ip_address`, `user_agent`, `methods` |
+| `accounts` | `id`, `user_id` | — | — | `issuer`, `account_id`, `provider_id` | — | `access_token_expires_at`, `refresh_token_expires_at`, `created_at`, `updated_at` | — | `access_token`, `refresh_token`, `id_token`, `scope`, `password_hash` |
+| `verifications` | `id` | `value_hash` | — | — | `identifier` | `expires_at`, `created_at`, `updated_at` | — | `payload` |
+
+`sessions.aal` is `identity` (`varchar(255) … utf8mb4_bin`) rather than `text`: it holds the
+literal `aal0`/`aal1`/`aal2` and a deployment may well want to index it. `sessions.methods` is
+`text`, because it is a JSON array whose length is not bounded by anything the domain enforces.
+
+**Lengths decided beyond the table.** One: custom string user fields are
+`columnType(dialect, "text", { length: 255 })` — the plan's `varchar(255) … utf8mb4_bin` — expressed
+as the `text` role with a length override rather than as a role of its own, so that there is one
+role for "a string whose contents this library does not constrain" and the override is the single
+place the 255 lives. No new role was needed; no built-in column needed a length the table did not
+already give it.
+
+**Four MySQL DDL facts the table does not state, each of which changes a statement.**
+
+1. **`TEXT` columns cannot take a literal `DEFAULT`** (error 1101). MySQL takes an *expression*
+   default instead, parenthesised — `DEFAULT ('[]')` — which it has accepted since 8.0.13. That is
+   what `sessions.methods` gets; PostgreSQL and SQLite keep the bare `DEFAULT '[]'`. This is a
+   second reason (after `upsertAndRead`'s `AS new` alias) that the supported MySQL floor is 8.0.x,
+   and B6's README should state 8.0.19 as the floor for both.
+2. **InnoDB parses an inline `REFERENCES` in a column definition and then ignores it.** A foreign
+   key has to be a table-level constraint on MySQL or the `ON DELETE CASCADE` never happens — and
+   it would fail silently, which is the worst shape a missing cascade can have. `sessions` and
+   `accounts` therefore carry `FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE` after
+   the last column on MySQL, and the inline clause on pg and sqlite exactly as before.
+3. **`CREATE INDEX` has no `IF NOT EXISTS` on MySQL.** pg and sqlite keep theirs, because
+   `CREATE TABLE IF NOT EXISTS` may have found a table an older release created and its indexes
+   with it. MySQL needs none: this library has never created a MySQL table, so no MySQL schema
+   predates these migrations.
+4. **`0006` tightens `sessions.authenticated_at` on MySQL as well as on PostgreSQL**, with
+   `ALTER TABLE sessions MODIFY COLUMN authenticated_at <type> NOT NULL` after the backfill. SQLite
+   still cannot, and there the `NOT NULL` stays the model's to enforce. This answers A3's open
+   question in `test/sql/Dialect.test.ts` § "not-null constraints": the assertion as written is
+   correct.
+
+**A foreign key's charset and collation must match the column it references**, which is a
+consequence of the `id` role rather than a decision: `users.id`, `sessions.user_id` and
+`accounts.user_id` are all `varchar(64) CHARACTER SET ascii COLLATE ascii_bin`, so they agree. Any
+hand-written DDL that stands in for a schema this library created — a test fixture, a deployment's
+own migration — has to use the same charset or MySQL refuses the constraint with
+`ER_FK_INCOMPATIBLE_COLUMNS`.
+
 ### Vitest and scripts (A2)
 
 - `vitest.config.ts`: `isolate: false`; `hookTimeout` 15 s on pglite and sqlite, 120 s when

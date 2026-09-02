@@ -13,8 +13,10 @@
  * a person holds at most one username, and changing it rewrites the row rather
  * than adding one.
  *
- * Ids and names are bounded `varchar` so the `db-expansion.md` MySQL port stays
- * mechanical: MySQL cannot index an unbounded `text` column.
+ * Every column is declared through `Dialect.columnType`, so the three supported
+ * databases each get the type their own indexes need: `text` on PostgreSQL and
+ * SQLite, and on MySQL a bounded `varchar` in a binary collation — `identity`
+ * for the two name forms, `id` for the holder, `timestamp` for `created_at`.
  *
  * **Gotchas**
  *
@@ -32,42 +34,47 @@
  * @since 0.2.0
  */
 import { Effect } from "effect"
-import { Migrator, SqlClient } from "effect/unstable/sql"
+import { SqlClient } from "effect/unstable/sql"
+import type { ColumnRole } from "../sql/Dialect.js"
+import { columnType, dialectOf, identifier } from "../sql/Dialect.js"
 import * as Migrations from "../sql/Migrations.js"
 
-const unsupportedDialect = Effect.fail(
-  new Migrator.MigrationError({
-    kind: "Failed",
-    message: `effect-auth username migrations only support the "pg" and "sqlite" dialects`
-  })
-)
+/** The table the plugin's rows live in. */
+const usernames = "effect_auth_usernames"
+
+/** One person, one name — the unique index, and the conflict target `claim` upserts on. */
+const holderIndex = "effect_auth_usernames_user_id_unique"
 
 const createUsernames = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
+  const type = (role: ColumnRole) => sql.literal(columnType(dialect, role))
+  const usernamesTable = identifier(sql, usernames)
 
-  // The statement is the same on both dialects, and the branch is still here:
-  // it is what turns an unsupported dialect into a stated refusal rather than
-  // into whatever that driver makes of `varchar`.
-  yield* sql.onDialectOrElse({
-    pg: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_usernames (
-        username_key varchar(64) PRIMARY KEY,
-        username varchar(64) NOT NULL,
-        user_id varchar(36) NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-        created_at text NOT NULL
-      )`,
-    sqlite: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_usernames (
-        username_key varchar(64) PRIMARY KEY,
-        username varchar(64) NOT NULL,
-        user_id varchar(36) NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-        created_at text NOT NULL
-      )`,
-    orElse: () => unsupportedDialect
-  })
+  // InnoDB gives a foreign key an index of its own whenever the `CREATE TABLE`
+  // that declares it leaves the column without one, so on MySQL the holder's
+  // unique index is declared inside the table: the standalone statement below
+  // would otherwise leave `user_id` carrying two indexes, the first of them
+  // named by the server. PostgreSQL and SQLite run the statement they always
+  // have, and keep the index name they always had.
+  const holderUnique =
+    dialect === "mysql" ? sql`, CONSTRAINT ${identifier(sql, holderIndex)} UNIQUE (user_id)` : sql.literal("")
 
-  // One username per person, and the conflict target `set` upserts on.
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS effect_auth_usernames_user_id_unique ON effect_auth_usernames (user_id)`
+  // The foreign key is a table constraint rather than a column one because
+  // MySQL parses an inline `REFERENCES` clause and then ignores it — the
+  // cascade would silently not exist. PostgreSQL and SQLite read the two forms
+  // identically, down to the constraint name PostgreSQL derives.
+  yield* sql`CREATE TABLE IF NOT EXISTS ${usernamesTable} (
+    username_key ${type("identity")} PRIMARY KEY,
+    username ${type("identity")} NOT NULL,
+    user_id ${type("id")} NOT NULL,
+    created_at ${type("timestamp")} NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE${holderUnique}
+  )`
+
+  if (dialect !== "mysql") {
+    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS ${identifier(sql, holderIndex)} ON ${usernamesTable} (user_id)`
+  }
 })
 
 /**

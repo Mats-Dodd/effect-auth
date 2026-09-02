@@ -1,17 +1,18 @@
 /**
  * The machinery the four SQL store implementations share: the user model's
- * column map and the projections derived from it, the dialect's boolean codec,
- * the raw row shapes a statement hands back, and the wrapper that turns any
- * failure into a `PersistenceError`.
+ * column map and the projections derived from it, the raw row shapes a
+ * statement hands back, and the wrapper that turns any failure into a
+ * `PersistenceError`.
  *
- * Not exported from the package: nothing here is part of the public API. The
- * one symbol that is — `decodeSqliteBoolean` — is re-exported by
- * `src/sql/SqlStores.ts`, which is where its documentation lives.
+ * How a flag is stored is *not* here any more: that is one of the four things
+ * `src/sql/Dialect.ts` decides, and every store reads it from
+ * `Dialect.booleanCodec`.
+ *
+ * Not exported from the package: nothing here is part of the public API.
  *
  * @internal
  */
 import { Effect, Predicate, type Schema, SchemaAST } from "effect"
-import type { SqlClient } from "effect/unstable/sql"
 import { camelToSnake } from "../../internal/records.js"
 import { PersistenceError, persistenceFailureKind } from "../../domain/Stores.js"
 import type { UserRow } from "../../domain/Schema.js"
@@ -102,43 +103,6 @@ export const persist =
   (operation: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, PersistenceError, R> =>
     Effect.mapError(effect, fail(operation))
-
-/**
- * Reads SQLite's integer flag back as a boolean, leaving an absent value
- * absent. Public as `SqlStores.decodeSqliteBoolean`, where the reasoning for
- * leaving `null` and `undefined` alone is written down.
- *
- * @internal
- */
-export const decodeSqliteBoolean = (value: unknown): unknown =>
-  value === null || value === undefined ? value : value === 1 || value === true
-
-/**
- * SQLite has no boolean type: `users.email_verified` is an integer flag there
- * and a real boolean on PostgreSQL. These two adapters are the only dialect
- * divergence in the store implementations.
- *
- * @internal
- */
-export const booleanCodec = (sql: SqlClient.SqlClient) => ({
-  encode: sql.onDialectOrElse({
-    orElse:
-      () =>
-      (value: boolean): boolean | number =>
-        value,
-    sqlite:
-      () =>
-      (value: boolean): boolean | number =>
-        value ? 1 : 0
-  }),
-  decode: sql.onDialectOrElse({
-    orElse:
-      () =>
-      (value: unknown): unknown =>
-        value,
-    sqlite: () => decodeSqliteBoolean
-  })
-})
 
 /**
  * Reads the user half out of a result row: the columns the model declares,

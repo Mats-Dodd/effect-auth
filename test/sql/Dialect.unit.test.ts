@@ -338,12 +338,17 @@ describe("sql/Mutations — rendered statements", () => {
       "COMMIT"
     ])
 
-    // `LIMIT 1`, then the delete by the selected primary key rather than by the
-    // predicate again: the exactly-once claim.
+    // The exactly-once claim, and the one place the first read is deliberately
+    // *not* a locking one: a `LIMIT 1 … FOR UPDATE` over the predicate would
+    // take an InnoDB next-key lock on the range it scanned and deadlock against
+    // a concurrent insert into the same range (reproduced on MySQL 8; see
+    // `consumeOne`'s documentation). So the plain read picks the row, the
+    // locking read by primary key re-states the guard and decides the claim,
+    // and the delete addresses the key rather than the predicate.
     assert.deepStrictEqual(await rendered("mysql", consume), [
       "BEGIN",
-      "SELECT `id` FROM `widgets` WHERE label = ? LIMIT 1 FOR UPDATE",
-      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE `id` = ?',
+      "SELECT `id` FROM `widgets` WHERE label = ? LIMIT 1",
+      'SELECT id, owner_id AS "ownerId", label FROM `widgets` WHERE (`id` = ? AND (label = ?)) FOR UPDATE',
       "DELETE FROM `widgets` WHERE `id` = ?",
       "COMMIT"
     ])

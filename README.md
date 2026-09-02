@@ -58,8 +58,10 @@ them without this library growing an authorization concept.
 pnpm add effect-auth effect@4.0.0-rc.112
 ```
 
-`jose` is the only runtime dependency, and only OIDC `id_token` verification reaches it.
-`@effect/sql-pglite` is an optional peer dependency, needed only by `effect-auth/testing`.
+`jose` is the only runtime dependency, and only OIDC `id_token` verification reaches it. Add the
+driver for your database — `@effect/sql-pg`, `@effect/sql-sqlite-node` or `@effect/sql-mysql2`, see
+[Databases](#databases) — and, for a test suite, `@effect/sql-pglite`. All four are optional peer
+dependencies; this library depends on `SqlClient` and never on a driver. Node 22 or later.
 
 ## Quickstart
 
@@ -200,9 +202,127 @@ bookkeeping table and its own ids from `0001`, sequenced with
 `Plugin.Migrations.layer.pipe(Layer.provide(Migrations.layer))` — because `Migrator` orders ids
 globally, so a lower id merged in later would silently never run.
 
-Every timestamp column is `text` holding an ISO-8601 UTC string. That is portable across Postgres
-and SQLite and lexicographically sortable, which is what makes the expiry predicates correct on both.
-SQLite deployments must enable `PRAGMA foreign_keys = ON` for the cascade deletes.
+PostgreSQL, SQLite and MySQL are all supported, and what each one stores — the column types, the
+MySQL lengths and collations, and the two caveats that make "run migrations as a deploy step" the
+rule rather than the advice on MySQL — is [Databases](#databases), below. SQLite deployments must
+enable `PRAGMA foreign_keys = ON` for the cascade deletes.
+
+## Databases
+
+This library talks to `SqlClient.SqlClient` and to nothing else, so the database is whichever driver
+layer you provide. Three are supported, and the whole suite — every test, not a contract subset —
+runs against each of them on every commit.
+
+| database | driver | version floor | what CI runs |
+|---|---|---|---|
+| PostgreSQL | `@effect/sql-pg` | 12 | `postgres:alpine` (18.6), pinned by digest |
+| SQLite | `@effect/sql-sqlite-node` | Node 22 (`node:sqlite`) | the Node the job runs on |
+| MySQL | `@effect/sql-mysql2` | 8.0.19 | `mysql:lts` (9.7), pinned by digest |
+
+PGlite (`@effect/sql-pglite`) is the in-process PostgreSQL that `effect-auth/testing` defaults to. It
+is PostgreSQL, not a fourth dialect. MariaDB is **not** supported: the conditional upsert behind the
+username claim and the TOTP enrolment uses MySQL's `INSERT … AS new ON DUPLICATE KEY UPDATE` row
+alias, which is 8.0.19 and later and which MariaDB does not have. MS SQL is out of scope.
+
+### Wiring one up
+
+Everything above `SqlClient` is identical; only this layer changes.
+
+```ts
+import { PgClient } from "@effect/sql-pg"
+import { Config, Layer, Redacted } from "effect"
+
+const PgLive = PgClient.layer({ url: Redacted.make("postgres://user:secret@localhost:5432/app") })
+```
+
+```ts
+import { MysqlClient } from "@effect/sql-mysql2"
+
+// mysql2 takes one URL. The database in the path must already exist — this
+// library's migrations create tables, never schemas.
+const MysqlLive = MysqlClient.layer({ url: Redacted.make("mysql://user:secret@localhost:3306/app") })
+```
+
+```ts
+import { SqliteClient } from "@effect/sql-sqlite-node"
+import { Effect, Layer } from "effect"
+import { Reactivity } from "effect/unstable/reactivity"
+import { SqlClient } from "effect/unstable/sql"
+
+// `PRAGMA foreign_keys = ON` is not optional. SQLite parses foreign keys either
+// way and enforces them only when asked, so without it deleting a user leaves
+// that person's sessions, accounts and plugin rows behind. It is per connection,
+// which is why it is a `tap` on the client rather than a migration.
+const SqliteLive = Layer.effect(
+  SqlClient.SqlClient,
+  Effect.tap(SqliteClient.make({ filename: "auth.db" }), (sql) => sql`PRAGMA foreign_keys = ON`)
+).pipe(Layer.provide(Reactivity.layer))
+```
+
+Read the credentials from `Config` in anything real — `PgClient.layerConfig` and
+`MysqlClient.layerConfig` take the same options wrapped, exactly as
+[`Auth.layerConfig`](#reading-the-settings-from-config) does.
+
+### What each dialect stores
+
+Every timestamp column is a `text`/`varchar` holding an ISO-8601 UTC string: portable, and
+lexicographically sortable, which is what makes the expiry predicates correct everywhere. Booleans
+are a real `boolean` on PostgreSQL and MySQL and `0`/`1` on SQLite; the stores read all three back
+through one codec, so a flag is a `boolean` by the time your handler sees it.
+
+PostgreSQL and SQLite use unbounded `text` throughout. MySQL cannot: an indexed column has to be
+bounded, and a unique index has to stay under InnoDB's 3072-byte limit. So every MySQL column has a
+length and an explicit collation, and every one of those lengths is guaranteed by a constraint the
+domain already enforces:
+
+| role | columns | MySQL type | what guarantees the bound |
+|---|---|---|---|
+| id | every primary and foreign key | `varchar(64) CHARACTER SET ascii COLLATE ascii_bin` | ids are UUIDv7, 36 characters |
+| hash | `token_hash`, `value_hash`, `code_hash` | `varchar(64) … ascii_bin` | base64url SHA-256, 43 characters |
+| credential | `credential_id`, passkey `handle` | `varchar(1024) … ascii_bin` | WebAuthn caps a credential id at 1023 bytes |
+| email | `users.email` | `varchar(320) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin` | RFC 5321: 64-character local part, 255-character domain |
+| identity | `issuer`, `account_id`, `provider_id`, `username`, `username_key`, `aaguid`, `aal` | `varchar(255) … utf8mb4_bin` | the username plugin's `maxLength` (30 by default), a UUID aaguid, `aal0`–`aal2` |
+| identity | `phone_e164` | `varchar(16) … utf8mb4_bin` | E.164: fifteen digits and a leading `+`, and `E164.normalize` is the only thing that writes the column |
+| identifier | `verifications.identifier` | `varchar(400) … utf8mb4_bin` | `<purpose>:<subject>`, where the longest subject is an e-mail address |
+| timestamp | every `*_at` column | `varchar(32) … ascii_bin` | ISO-8601 UTC with milliseconds is 24 characters |
+| boolean | every flag | `boolean` | |
+| bigint | `last_used_step` | `bigint` | |
+| text | names, images, user agents, IPs, JSON, ciphertexts, password hashes, public keys | `text` | never indexed |
+
+The collations are the load-bearing half. `ascii_bin` and `utf8mb4_bin` compare byte by byte, which
+is what makes uniqueness on MySQL mean what it means on PostgreSQL and SQLite: under the server
+default `utf8mb4_0900_ai_ci`, `Ada` and `ada` are the same row and so are `a` and `á`, and a token
+digest, an OAuth subject or a username key that collided case-insensitively would be one person's
+credential answering for another's. E-mail is lower-cased by the domain before it is stored, so
+`utf8mb4_bin` is exactly the rule the other two dialects apply.
+
+A deployment that raises the username plugin's `maxLength` above 255, or that stores an OAuth
+subject longer than 255 characters, is the one case where a bound has to move — and on MySQL it
+moves with an `ALTER TABLE`, in a migration of your own.
+
+### Migrating on MySQL
+
+The migrator is Effect SQL's, and it runs the whole set inside `sql.withTransaction`. On PostgreSQL
+that means DDL is transactional: a migration that fails rolls back its own statements *and* the
+bookkeeping rows, and the next run starts over. **MySQL commits implicitly at every DDL statement**,
+so neither is true there. A migration that fails halfway leaves the tables it had already created,
+and leaves itself recorded as applied — the bookkeeping rows are written before the statements run.
+Recovery is by hand: read `effect_auth_migrations`, finish or undo the half-applied statement, and
+correct the row.
+
+There is also no cross-process lock. PostgreSQL takes `LOCK TABLE … IN ACCESS EXCLUSIVE MODE` on the
+bookkeeping table, so a second process waits; on MySQL and SQLite the second process is turned away
+by the primary key on that table instead of being made to wait, and returns immediately — possibly
+to start serving against a schema the first process has not finished building.
+
+Both are reasons for the same thing, which is the right thing on every dialect: **run migrations as
+a deploy step, not on boot.** `Migrations.layer` is a quickstart convenience. In a fleet, merge
+`Migrations.migrations` into your own `Migrator` record or run the set once from a job, and give
+`Auth.layer` a bare `SqlClient`.
+
+MySQL has no `ADD COLUMN IF NOT EXISTS`, so the migrations use a plain `ADD COLUMN` — safe, because
+a migration runs once. `Migrations.forUserFields(model)`, which is idempotent by design and may run
+on every boot, asks `information_schema.columns` first instead.
 
 ## Endpoints
 
@@ -1295,10 +1415,56 @@ it.effect("signs a person up", () =>
   }).pipe(Effect.provide(AuthTest.layer())), AuthTest.testTimeout)
 ```
 
-`AuthTest.layer()` is a whole deployment: a fresh in-memory PGlite database with the migrations
-applied, a fixed secret, a capturing outbox, and scrypt at a cost a suite can afford. Give each test
-its own layer — a `TestClock` shared across a block lets one test move time under another — and pass
-`AuthTest.testTimeout`, because booting PGlite and migrating costs a few hundred milliseconds.
+`AuthTest.layer()` is a whole deployment: a private, empty database with the migrations applied, a
+fixed secret, a capturing outbox, and scrypt at a cost a suite can afford. Give each test its own
+layer — a `TestClock` shared across a block lets one test move time under another — and pass
+`AuthTest.testTimeout`, because building the database and migrating costs a few hundred milliseconds.
+
+### Which database a suite runs on
+
+The default is PGlite, in process, with nothing to install. `EFFECT_AUTH_TEST_DATABASE` moves the
+whole suite onto another backend without a line changing:
+
+| value | backend | needs |
+|---|---|---|
+| `pglite` (default) | `@effect/sql-pglite`, in process | nothing |
+| `sqlite` | `node:sqlite`, `:memory:` | `@effect/sql-sqlite-node` |
+| `pg` | a real PostgreSQL | `@effect/sql-pg`, and Docker or `EFFECT_AUTH_TEST_POSTGRES_URL` |
+| `mysql` | a real MySQL | `@effect/sql-mysql2`, and Docker or `EFFECT_AUTH_TEST_MYSQL_URL` |
+
+For `pg` and `mysql`, a URL in `EFFECT_AUTH_TEST_POSTGRES_URL` / `EFFECT_AUTH_TEST_MYSQL_URL` points
+at a server you already run — which is what CI does, with service containers. With no URL, a
+[Testcontainers](https://testcontainers.com) container is started from a digest-pinned image, one per
+worker; `TESTCONTAINERS_REUSE_ENABLE=true` keeps it alive between runs, so MySQL's initialisation is
+paid once per machine rather than once per run. Whichever it is, each `layer()` block still gets a
+database of its own on it and drops it when its scope closes.
+
+This repository's own scripts, which yours can copy:
+
+```sh
+pnpm test         # pglite
+pnpm test:sqlite
+pnpm test:pg
+pnpm test:mysql
+```
+
+A suite that must run on one backend whatever the variable says passes a provider instead. The
+providers live on subpaths — `effect-auth/testing/{sqlite,postgres,mysql}` — behind those optional
+peer dependencies, so `effect-auth/testing` itself pulls in none of them:
+
+```ts
+import { AuthTest } from "effect-auth/testing"
+import * as Mysql from "effect-auth/testing/mysql"
+
+// A reproduction of a bug only MySQL has.
+const layer = AuthTest.layer({ database: Mysql.container })
+```
+
+`Database.TestDatabase` comes with the deployment and is what a test asks about the database itself:
+`dialect`, `reset` (empties every table but the migration bookkeeping), and `tableNames` /
+`columnNames` / `indexNames`. Reaching for it rather than for `information_schema`, `pg_catalog` or
+`PRAGMA` is what lets one assertion be true on all four backends — and `reset` is what lets a test
+that needs an empty table stay inside the block it is in instead of building a second database.
 
 ## Security notes
 
@@ -1408,7 +1574,8 @@ generated `HttpApiClient`. It is the integration test bed and the source of the 
 
 ## Roadmap
 
-Shipped: the [plugin seams](#plugins), the account endpoints and OAuth token refresh, fourteen
+Shipped: [PostgreSQL, SQLite and MySQL](#databases) — the whole suite runs on each of them in CI —
+the [plugin seams](#plugins), the account endpoints and OAuth token refresh, fourteen
 providers plus [OIDC discovery](#the-providers), the [cookie cache](#cookie-cache),
 [custom user fields](#custom-user-fields), [assurance levels and step-up](#assurance), and the seven
 plugins below — [e-mail OTP](#e-mail-otp), [passkeys](#passkeys), [two-factor](#two-factor),
@@ -1431,8 +1598,14 @@ Working on this repo:
 ```sh
 pnpm fix     # oxlint --fix (twice), then oxfmt .
 pnpm check   # oxlint --type-aware --type-check, then tsc -b — must print zero lines
-pnpm test    # vitest run --maxWorkers=2
+pnpm test    # vitest run --maxWorkers=4, on PGlite
 ```
+
+`pnpm test:sqlite`, `pnpm test:pg` and `pnpm test:mysql` are the same suite on the other three
+backends; CI runs all four in parallel with `check`. Vitest runs with `isolate: false` — every file
+in a worker shares one module registry, which is what makes the container and engine memos in
+`src/testing` per worker rather than per file, and what took the PGlite suite from 32 s to 20 s at
+four workers. A change that needs isolation back has to say what state it leaks.
 
 Everything else — the ethos, the architecture map, the conventions, the pinned toolchain and why
 `check` builds — is in [`AGENTS.md`](./AGENTS.md).

@@ -10,6 +10,14 @@
  * one renumbering away from a migration that silently never runs. See
  * `Migrations.make`.
  *
+ * Every column is declared through {@link Dialect.columnType} from the role it
+ * plays rather than from a type written out per dialect, so PostgreSQL and
+ * SQLite keep unbounded `text` and MySQL gets the bounded, binary-collated
+ * `varchar` an index there requires. `credential_id` and `handle` are the
+ * `credential` role — `varchar(1024) … ascii_bin` on MySQL, which is what both
+ * of this plugin's unique indexes are built on and is well inside InnoDB's
+ * 3072-byte key limit.
+ *
  * **When to use**
  *
  * Nothing registers this globally — the consumer composes it, and must sequence
@@ -31,14 +39,68 @@
  * @since 0.2.0
  */
 import { Effect, type Layer } from "effect"
-import { Migrator, SqlClient, type SqlError } from "effect/unstable/sql"
+import type { Migrator, SqlError, Statement } from "effect/unstable/sql"
+import { SqlClient } from "effect/unstable/sql"
+import type { ColumnRole, Dialect } from "../sql/Dialect.js"
+import { booleanLiteral, columnType, dialectOf } from "../sql/Dialect.js"
 import { make, type MigrationSet } from "../sql/Migrations.js"
 
-const migrationError = (message: string) => new Migrator.MigrationError({ kind: "Failed", message })
+// -----------------------------------------------------------------------------
+// DDL vocabulary
+// -----------------------------------------------------------------------------
 
-const unsupportedDialect = Effect.fail(
-  migrationError(`the effect-auth passkeys migrations only support the "pg" and "sqlite" dialects`)
-)
+/**
+ * The four things this plugin's DDL has to spell per dialect.
+ *
+ * Everything else — the table and column names, the constraints, the foreign
+ * keys — is written once and is the same text on all three.
+ */
+interface Ddl {
+  /** The type a column role is declared as here. */
+  readonly type: (role: ColumnRole) => Statement.Fragment
+  /** A flag, as a `DEFAULT` clause takes it. */
+  readonly flag: (value: boolean) => Statement.Fragment
+  /**
+   * `IF NOT EXISTS `, on the dialects whose `CREATE INDEX` takes it.
+   *
+   * MySQL's does not, and needs none: a migration runs exactly once, and the
+   * clause is belt-and-braces on the other two rather than load-bearing.
+   */
+  readonly indexIfNotExists: Statement.Fragment
+  /**
+   * A JSON document as a `DEFAULT`.
+   *
+   * MySQL refuses a literal default on a `text` column (`ER_BLOB_CANT_HAVE_DEFAULT`)
+   * and takes a parenthesised expression instead, from 8.0.13.
+   */
+  readonly jsonDefault: (value: string) => Statement.Fragment
+  /**
+   * How a *natural* key — one whose value comes from the domain rather than
+   * from `Crypto` — is declared.
+   *
+   * SQLite reports a conflict on a declared `PRIMARY KEY` as
+   * `SQLITE_CONSTRAINT_PRIMARYKEY` (1555) and only a conflict on a UNIQUE index
+   * as `SQLITE_CONSTRAINT_UNIQUE` (2067), which is the only one
+   * `persistenceFailureKind` classifies as a lost race — and
+   * `PasskeyStore.createHandle` is documented to fail with a `UniqueViolation`
+   * so that `Passkeys` can resolve the race by reading again. So the column is
+   * `NOT NULL UNIQUE` there and the primary key on the other two. The
+   * constraint is the same; the reported error is not.
+   */
+  readonly naturalKey: Statement.Fragment
+}
+
+const ddlFor = (sql: SqlClient.SqlClient, dialect: Dialect): Ddl => ({
+  type: (role) => sql.literal(columnType(dialect, role)),
+  flag: (value) => sql.literal(booleanLiteral(dialect, value)),
+  indexIfNotExists: sql.literal(dialect === "mysql" ? "" : "IF NOT EXISTS "),
+  jsonDefault: (value) => sql.literal(dialect === "mysql" ? `('${value}')` : `'${value}'`),
+  naturalKey: sql.literal(dialect === "sqlite" ? "NOT NULL UNIQUE" : "PRIMARY KEY")
+})
+
+// -----------------------------------------------------------------------------
+// Migrations
+// -----------------------------------------------------------------------------
 
 /**
  * The credential table.
@@ -48,49 +110,45 @@ const unsupportedDialect = Effect.fail(
  * to two accounts would make a discoverable sign-in ambiguous — which of them
  * did the person mean? Better-auth indexes it without a unique constraint and
  * has that ambiguity.
+ *
+ * **Gotchas**
+ *
+ * The foreign key is a *table* constraint rather than a column one. MySQL's own
+ * documentation says an inline `REFERENCES` on a column definition is parsed and
+ * ignored — the server this wave tests against does honour it, which is exactly
+ * why the library must not depend on that, because the failure mode is a cascade
+ * that silently does not run and orphans a credential whose owner was deleted.
+ * The table form is honoured by every version and reads identically on
+ * PostgreSQL and SQLite. InnoDB creates an index of its own for it and then
+ * drops that one in favour of `effect_auth_passkeys_user_id_idx` below, so the
+ * column ends up indexed exactly once (verified against MySQL 9.7).
  */
 const createPasskeys = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
+  const ddl = ddlFor(sql, dialect)
 
-  yield* sql.onDialectOrElse({
-    pg: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_passkeys (
-        id varchar(36) PRIMARY KEY,
-        user_id varchar(36) NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-        credential_id varchar(1024) NOT NULL,
-        public_key text NOT NULL,
-        sign_count bigint NOT NULL DEFAULT 0,
-        transports text NOT NULL DEFAULT '[]',
-        aaguid varchar(36) NOT NULL,
-        backup_eligible boolean NOT NULL DEFAULT false,
-        backed_up boolean NOT NULL DEFAULT false,
-        uv_initialised boolean NOT NULL DEFAULT false,
-        name varchar(64),
-        created_at text NOT NULL,
-        last_used_at text
-      )`,
-    sqlite: () =>
-      sql`CREATE TABLE IF NOT EXISTS effect_auth_passkeys (
-        id varchar(36) PRIMARY KEY,
-        user_id varchar(36) NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-        credential_id varchar(1024) NOT NULL,
-        public_key text NOT NULL,
-        sign_count bigint NOT NULL DEFAULT 0,
-        transports text NOT NULL DEFAULT '[]',
-        aaguid varchar(36) NOT NULL,
-        backup_eligible integer NOT NULL DEFAULT 0,
-        backed_up integer NOT NULL DEFAULT 0,
-        uv_initialised integer NOT NULL DEFAULT 0,
-        name varchar(64),
-        created_at text NOT NULL,
-        last_used_at text
-      )`,
-    orElse: () => unsupportedDialect
-  })
+  yield* sql`CREATE TABLE IF NOT EXISTS effect_auth_passkeys (
+    id ${ddl.type("id")} PRIMARY KEY,
+    user_id ${ddl.type("id")} NOT NULL,
+    credential_id ${ddl.type("credential")} NOT NULL,
+    public_key ${ddl.type("text")} NOT NULL,
+    sign_count ${ddl.type("bigint")} NOT NULL DEFAULT 0,
+    transports ${ddl.type("text")} NOT NULL DEFAULT ${ddl.jsonDefault("[]")},
+    aaguid ${ddl.type("identity")} NOT NULL,
+    backup_eligible ${ddl.type("boolean")} NOT NULL DEFAULT ${ddl.flag(false)},
+    backed_up ${ddl.type("boolean")} NOT NULL DEFAULT ${ddl.flag(false)},
+    uv_initialised ${ddl.type("boolean")} NOT NULL DEFAULT ${ddl.flag(false)},
+    name ${ddl.type("text")},
+    created_at ${ddl.type("timestamp")} NOT NULL,
+    last_used_at ${ddl.type("timestamp")},
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  )`
 
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS effect_auth_passkeys_credential_id_unique
+  yield* sql`CREATE UNIQUE INDEX ${ddl.indexIfNotExists}effect_auth_passkeys_credential_id_unique
     ON effect_auth_passkeys (credential_id)`
-  yield* sql`CREATE INDEX IF NOT EXISTS effect_auth_passkeys_user_id_idx ON effect_auth_passkeys (user_id)`
+  yield* sql`CREATE INDEX ${ddl.indexIfNotExists}effect_auth_passkeys_user_id_idx
+    ON effect_auth_passkeys (user_id)`
 })
 
 /**
@@ -102,13 +160,16 @@ const createPasskeys = Effect.gen(function* () {
  */
 const createPasskeyUsers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
+  const ddl = ddlFor(sql, dialect)
 
   yield* sql`CREATE TABLE IF NOT EXISTS effect_auth_passkey_users (
-    user_id varchar(36) PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-    handle varchar(86) NOT NULL
+    user_id ${ddl.type("id")} ${ddl.naturalKey},
+    handle ${ddl.type("credential")} NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
   )`
 
-  yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS effect_auth_passkey_users_handle_unique
+  yield* sql`CREATE UNIQUE INDEX ${ddl.indexIfNotExists}effect_auth_passkey_users_handle_unique
     ON effect_auth_passkey_users (handle)`
 })
 

@@ -2317,3 +2317,168 @@ PersistenceError> = never` and erase an error the runtime can still raise.
 
 Test assertions of the form `assert.strictEqual(x._tag, "…")` were left as they are: they assert a
 wire value, which this amendment fixes as unchanged, and a guard would assert less.
+
+### 21. Databases: PostgreSQL, SQLite and MySQL (2026-09-02)
+
+`db-expansion.md` is the design and `db-expansion-plan.md` is the execution contract; this amendment
+records what the wave decided and what building it learned. The claim it establishes is narrow and
+testable: **the whole suite, every file, runs on PostgreSQL, SQLite and MySQL**, and a deployment on
+any of the three gets the same guarantees — exactly-once consumption of a verification, a reclaim
+lock that one writer wins, uniqueness that means byte equality, and a rollback that exposes no
+partial state.
+
+Two boundaries made this a portability project rather than a persistence redesign, and they hold:
+the domain depends on the `Stores` interfaces, and the stores depend on `SqlClient.SqlClient` rather
+than on a driver. Nothing in `src/domain/`, `src/http/` or `src/oauth/` learned a dialect.
+
+#### 21.1 Three dialects, and a refusal
+
+Supported: PostgreSQL, SQLite (`node:sqlite`, so Node 22 is the floor) and MySQL 8.0.19 or later.
+PGlite is PostgreSQL and is not a fourth dialect — it reports `"pg"`, which is what it is. MariaDB
+is not supported, because the conditional upsert uses MySQL's `INSERT … AS new ON DUPLICATE KEY
+UPDATE` row alias. MS SQL and non-relational stores stay out of scope; an application that needs one
+provides the five store interfaces itself, which is what that seam is for.
+
+Effect SQL's `Statement.Dialect` has five members. `Dialect.dialectOf(sql)` is the single place the
+ambient client's dialect is read, and it *dies* — naming the dialect the driver reported — on the
+two this library does not support. A silent inheritance of PostgreSQL behaviour is the failure mode
+that decision refuses.
+
+#### 21.2 One kernel for what the dialects disagree about
+
+`src/sql/Dialect.ts` holds the four things they genuinely disagree about, and each exists once:
+`booleanCodec` (encode per dialect; one total decode; `decodeNullable` preserving null and
+undefined), `lockClause` (` FOR UPDATE` on pg and mysql, empty on sqlite), `columnType` over a
+`ColumnRole` union, and `booleanLiteral`. `identifier(sql, name)` is the escaped-identifier fragment
+that replaces every `sql.literal(<name>)` and every `sql.unsafe` that interpolated one.
+
+That is the "one way to do each thing" rule applied to a place that had three: three copies of the
+lock clause and two of the boolean codec. `SqlStores.decodeSqliteBoolean` is deleted with them,
+which is the wave's only removal from the server package's public surface.
+
+**A behaviour change on impossible input, recorded because it is one.** The boolean decode is now
+total (`value === true || value === 1`) where PostgreSQL's was an identity pass-through. For every
+value PostgreSQL can produce the answer is identical; for a value it cannot, the old code failed
+schema decoding loudly and the new code answers `false`. One total reader was judged worth more than
+a per-dialect branch.
+
+#### 21.3 MySQL has no `RETURNING`, and what follows from it
+
+`src/sql/Mutations.ts` holds six helpers — `insertAndRead`, `updateAndRead`, `deleteAndCount`,
+`deleteAndRead`, `consumeOne`, `upsertAndRead`. On PostgreSQL and SQLite each renders the single
+statement the store wrote before. On MySQL each is a `sql.withTransaction` block — a savepoint when
+the caller is already inside `WithAuthTransaction`, which is the only transaction primitive any of
+them uses.
+
+The MySQL shape is **lock the row, then mutate, then read back by its key**, and not the "update
+then select" the design doc sketched. Two reasons, both load-bearing:
+
+- `ROW_COUNT()` after an `UPDATE` counts rows *changed*, not *matched*. `SessionStore.touch` under a
+  frozen clock writes the same expiry and the same `updated_at`, so a count-based answer would be
+  `None` on MySQL where PostgreSQL answers `Some`.
+- Selecting by the key *after* a guarded update returns a row the guard refused — `confirmTotp`'s
+  `WHERE verified_at IS NULL` is the case. The read has to be of the row the predicate actually
+  matched, which is the row the `SELECT … FOR UPDATE` took.
+
+`consumeOne` — the exactly-once claim — is `SELECT … FOR UPDATE` with `LIMIT 1`, then a delete by
+the selected primary key. That diverges from `DELETE … RETURNING` on the other two dialects if a
+predicate ever matched two rows: MySQL would claim one, they would claim both. Every predicate it is
+used with carries a high-entropy digest, so a second match is a hash collision, and the divergence is
+documented at the helper rather than hidden.
+
+`upsertAndRead` expresses the two conditional upserts this library has — the username claim and the
+TOTP enrolment (`WHERE verified_at IS NULL`). It carries two hazards MySQL's syntax cannot type
+away, and both are constraints on the call sites: `ON DUPLICATE KEY UPDATE` fires on *any* unique key
+the insert collides with and cannot be told to care about one, and its assignments are evaluated left
+to right with each seeing what the previous wrote — so a column the condition reads must be assigned
+**last**.
+
+#### 21.4 Column roles: what a bound is, and what a collation is for
+
+PostgreSQL and SQLite use unbounded `text` throughout, as before. MySQL cannot: an indexed column has
+to be bounded and a unique index has to stay under InnoDB's 3072 bytes. So every column has a *role*
+— `id`, `hash`, `credential`, `email`, `identity`, `identifier`, `timestamp`, `boolean`, `number`,
+`bigint`, `text` — and `columnType` is the only place a role becomes a type. The lengths and the
+constraints that guarantee them are the table in README "Databases"; the rules behind it are:
+
+- An indexed MySQL column is never `text`.
+- Every bound is guaranteed by something the domain already enforces — a UUIDv7 is 36 characters, a
+  base64url SHA-256 is 43, RFC 5321 caps an address at 320, E.164 at 16, a WebAuthn credential id at
+  1023 bytes — and both halves of the widest unique index (`issuer` + `account_id`) fit InnoDB's
+  limit with room.
+- **Opaque identity never inherits the server collation.** `ascii_bin` and `utf8mb4_bin` compare byte
+  by byte. Under MySQL's default `utf8mb4_0900_ai_ci`, `Ada` and `ada` are one row and so are `a` and
+  `á` — which would make a token digest, an OAuth subject or a username key collide across values
+  this library treats as distinct, and would make one person's credential answer for another's.
+  E-mail is lower-cased by the domain before storage, so `utf8mb4_bin` is exactly the rule the other
+  two dialects apply.
+
+Custom string user fields are `varchar(255)` on MySQL. Per-field storage metadata is roadmap work,
+not this wave.
+
+#### 21.5 The migrator on MySQL, and why migrations are a deploy step
+
+Effect SQL's migrator runs the whole set inside `sql.withTransaction` and takes
+`LOCK TABLE … IN ACCESS EXCLUSIVE MODE` on PostgreSQL only. Neither carries to MySQL:
+
+- **DDL commits implicitly.** A migration that fails halfway leaves the tables it had already created
+  *and* leaves itself recorded as applied, because the bookkeeping rows are inserted before the
+  statements run. Recovery is by hand.
+- **There is no cross-process lock.** The second process is turned away by the primary key on the
+  bookkeeping table rather than made to wait, and returns immediately — possibly to serve against a
+  schema the first has not finished building.
+
+Both are documented in README "Databases", and both are reasons for the rule that was already right
+everywhere: run migrations as a deploy step, not on boot. `Migrations.layer` remains a quickstart
+convenience and is described as one.
+
+MySQL has no `ADD COLUMN IF NOT EXISTS`. A migration runs once, so the mysql branches use a plain
+`ADD COLUMN`; `Migrations.forUserFields(model)`, which is idempotent by design and may run on every
+boot, asks `information_schema.columns WHERE table_schema = DATABASE()` first.
+
+**SQLite classifies a lost race by which constraint lost it.** A conflict on a *declared* `PRIMARY
+KEY` is reported as `SQLITE_CONSTRAINT_PRIMARYKEY` (1555) and only a conflict on a unique index as
+`SQLITE_CONSTRAINT_UNIQUE` (2067) — and only the second is classified as a `UniqueViolation`, which
+is what every caller that resolves a race branches on. So a **natural key whose lost race a caller
+must classify is `NOT NULL UNIQUE` on SQLite, never a declared `PRIMARY KEY`**; the same constraint,
+a different reported error. `effect_auth_phone_numbers.phone_e164` is the first table this was
+applied to, and the rule is stated here so the next table does not inherit the bug by accident.
+
+#### 21.6 The testing module carries the database
+
+`effect-auth/testing` gains a `Database` seam. A `Database.Provider` is a layer that hands each
+build a private, empty database and takes it away when the build's scope closes; `Database.fromConfig`
+resolves one from `EFFECT_AUTH_TEST_DATABASE`, so the backend is a variable rather than a code change,
+and `AuthTest.Settings.database` overrides it for a suite that must run on one backend whatever the
+variable says. `effect-auth/testing/{sqlite,postgres,mysql}` are subpaths behind optional peer
+dependencies, reached only by a dynamic `import()` — the same arrangement `effect-auth/passkeys` has,
+and the only dynamic imports in the tree.
+
+`Database.TestDatabase` is what a test may ask the database beyond SQL: `dialect`, `reset`, and
+`tableNames` / `columnNames` / `indexNames`. Keeping `information_schema`, `pg_catalog` and `PRAGMA`
+behind it is what lets one assertion be true on four backends; a test that reads a catalog directly
+is a test that only runs on one. `reset` preserves every table whose name ends in `_migrations`, so
+a migration test cannot be falsified by it.
+
+**Breaking, and recorded in `CHANGELOG.md`:** `PgliteClient.PgliteClient` is gone from every exported
+testing layer type, replaced by `Database.TestDatabase`. That leak made the harness's *type* name a
+driver the library does not depend on; a consumer on another backend could not have named it.
+
+#### 21.7 One suite, every dialect
+
+There is no separate contract-test runner. The store, migration, error, concurrency and dialect-fact
+contracts are ordinary files that read the dialect from `TestDatabase` and are therefore run four
+times by CI (`check`, plus one full suite per dialect, all parallel, no shards). A test that needs a
+dialect's own fact branches on `Database.dialect` inside itself, and there are few of them.
+
+Speed is a standing consideration and the rules are part of the definition of done: module isolation
+is off; one engine per worker and one schema or database per build; a test that needs an empty table
+calls `reset` rather than opening another top-level `layer()` block. `isolate: false` is what makes
+the per-worker memos in `src/testing` per worker rather than per file — the PGlite suite went from
+32 s to 20 s at four workers — and a change that needs isolation back has to say what state it leaks.
+
+**One plan decision did not survive the build.** Per-worker PGlite with a schema per build could not
+be made correct: `sequence.concurrent` overlaps two top-level `layer()` blocks in a file, PGlite has
+one connection, and a second build's `search_path` moves under the first block's running tests. So
+PGlite is one instance per build — today's behaviour, behind the new `Provider` — while `pg` and
+`mysql` do keep one server per worker, which concurrent connections make safe.

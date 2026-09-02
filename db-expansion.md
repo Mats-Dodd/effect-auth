@@ -2,9 +2,9 @@
 
 ## Status
 
-Design plan. This document describes the work required to make `effect-auth` fully and continuously tested against PostgreSQL, SQLite, and MySQL.
+Built. This document is the design; `db-expansion-plan.md` is the execution contract the wave of 2026-09-02 ran against, and SPEC.md Amendment 21 records what was decided and what the build learned. Where this document and the plan disagree, the plan wins — it is the later decision. The support definition below is the claim the wave delivers: PostgreSQL, SQLite and MySQL, with the whole suite running against each of them in CI. README "Databases" is the user-facing half.
 
-MS SQL and non-relational databases are explicitly out of scope.
+MS SQL and non-relational databases are explicitly out of scope. So is MariaDB, which lacks the `INSERT … AS new ON DUPLICATE KEY UPDATE` row alias the conditional upserts use.
 
 ## Goals
 

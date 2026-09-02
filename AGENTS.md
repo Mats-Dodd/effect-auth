@@ -9,7 +9,8 @@ tour. This file does not restate them; it tells you how to think and what to run
 An Effect-native authentication library for Effect v4: sessions with a recorded assurance level,
 email/password, OAuth/OIDC across fourteen providers, and seven plugins — e-mail codes, passkeys,
 TOTP, phone, username, anonymous visitors, One Tap. Policy hooks, step-up, a cookie cache, a typed
-client per plugin and a shipped test harness. Inspired by
+client per plugin and a shipped test harness. Runs on PostgreSQL, SQLite and MySQL, and the whole
+suite runs on each of them in CI (see SPEC Amendment 21). Inspired by
 better-auth's semantics; shares none of its code. Pinned to `effect@4.0.0-rc.112` and built on its
 `unstable/` namespace, so an `effect` bump is a deliberate event, never a drive-by.
 
@@ -40,13 +41,16 @@ after `--`; there are a handful in the tree and the reviewer reads the list.
 
 ## Architecture
 
-Three entry points: `effect-auth` (server), `effect-auth/client`, `effect-auth/testing`.
+Three entry points: `effect-auth` (server), `effect-auth/client`, `effect-auth/testing` — plus
+`effect-auth/passkeys` and `effect-auth/testing/{sqlite,postgres,mysql}`, each behind an optional
+peer dependency.
 
 | Directory | Owns |
 |---|---|
 | `src/config/` | `Auth.layer` / `Auth.layerWithOAuth` — the two static entry points; `AuthConfig`; e-mail composition |
 | `src/domain/` | `Users`, `Sessions`, `Passwords`, `Accounts`, `Verifications`, `Challenges`, `SignIn`; `Assurance` (aal, methods, policies); the `Hooks`, `Authenticators` and `SignInPipeline` seams; the `Stores` interfaces; `Events`; `Schema` (the typed-view kernel for custom user fields) |
-| `src/sql/` | The stores over `@effect/sql`; `Migrations` |
+| `src/sql/` | `Migrations`; `Dialect.ts` (the four things pg/sqlite/mysql disagree about — the boolean codec, the lock clause, `columnType` over the column roles, `identifier`) and `Mutations.ts` (the six helpers that give MySQL an answer for `RETURNING`) |
+| `src/sql/stores/` | One module per store — `Users`, `Sessions`, `Accounts`, `Verifications`, `Transaction`, and `internal.ts` for what two of them share. `SqlStores.ts` is the facade over them and the only public surface |
 | `src/http/` | The `HttpApi` group, `Handlers`, `Middleware` (+`Live`), `Cookies`, `OriginCheck`, `RateLimits`, `SessionCache` |
 | `src/oauth/` | `Flow`, `Provider`, `State`, `IdToken`, `Discovery`; `providers/` are plain values (fourteen of them) |
 | `src/email-otp/` | The reference plugin — copy its shape for the next one. A code and a link over one row |
@@ -59,7 +63,8 @@ Three entry points: `effect-auth` (server), `effect-auth/client`, `effect-auth/t
 | `src/crypto/` | `PasswordHasher`, `Token`, `Hmac`, `Totp`, `AuthCipher` |
 | `src/client/` | The `AtomHttpApi` clients — `AuthClient`, one per plugin, and the `AuthAtoms` wrappers they share |
 | `src/Plugin.ts` | `withDefaults`: the options-section resolver every plugin uses |
-| `src/testing/` | The shipped harness (`AuthTest`, `MockProvider`, `TestHttpClient`, one `*Test` per plugin) — public API, treat it as such |
+| `src/testing/` | The shipped harness (`AuthTest`, `MockProvider`, `TestHttpClient`, one `*Test` per plugin) and `Database.ts` — the `Provider` seam and `TestDatabase` — public API, treat it as such |
+| `src/testing/{sqlite,postgres,mysql}/` | The three database providers, on subpaths behind optional peer dependencies. `effect-auth/testing` reaches them with the tree's only dynamic `import()`s and never statically |
 | `src/internal/` | Not exported; helpers with no opinion |
 
 Layering: `domain` never imports `http`; `http` never touches SQL; `oauth` owns flow policy and
@@ -87,17 +92,23 @@ publishes `SignedIn`. `SessionsService.createUnchecked` is the raw mint and is n
   points and may.
 - **Two entry points, no conditional types** in any exported signature, exactly one `ReturnType`
   (`AuthApiGroupOf`). Value-dependent layer types were removed on purpose; do not reintroduce them.
-- **Tests** are `@effect/vitest` `layer()` blocks, one PGlite per file, `AuthTest.freshClock` for
-  anything that moves time, `uniqueEmail` fixtures. The OpenAPI snapshot is byte-compared.
+- **Tests** are `@effect/vitest` `layer()` blocks over a `Database.Provider`, `AuthTest.freshClock`
+  for anything that moves time, `uniqueEmail` fixtures. The OpenAPI snapshot is byte-compared. A test
+  asks `Database.TestDatabase` for table, column and index names — `information_schema`, `pg_catalog`
+  and `PRAGMA` live in `src/testing/internal/catalog.ts` and nowhere else, which is what lets one
+  assertion be true on all four backends.
 - `@since` / `@category` on every export. Behaviour changes go in SPEC's Amendments; API changes in
   `CHANGELOG.md`.
 
 ## Working here
 
 ```sh
-pnpm fix      # oxlint --fix twice, then oxfmt (one pass does not converge)
-pnpm check    # oxlint --type-aware --type-check && tsc -b   — must print zero lines
-pnpm test     # vitest --maxWorkers=2 (PGlite suites flake at full concurrency)
+pnpm fix         # oxlint --fix twice, then oxfmt (one pass does not converge)
+pnpm check       # oxlint --type-aware --type-check && tsc -b   — must print zero lines
+pnpm test        # vitest run --maxWorkers=4, on PGlite
+pnpm test:sqlite # the same suite on node:sqlite
+pnpm test:pg     # …on PostgreSQL      ┐ Testcontainers, or EFFECT_AUTH_TEST_{POSTGRES,MYSQL}_URL.
+pnpm test:mysql  # …on MySQL           ┘ `TESTCONTAINERS_REUSE_ENABLE=true` keeps the container.
 ```
 
 - `check` includes the build. `oxlint --type-check` alone misses declaration-emit errors
@@ -108,6 +119,19 @@ pnpm test     # vitest --maxWorkers=2 (PGlite suites flake at full concurrency)
   (see its README, "Supported Package Versions"). `pnpm run prepare` re-applies the patch and
   installs the lefthook pre-commit; it no-ops for consumers. `npx effect-tsgo unpatch` restores.
 - `oxfmt` must keep ignoring `**/__snapshots__/**`.
+- **Module isolation is off** (`isolate: false` in `vitest.config.ts`). Every file in a worker shares
+  one module registry: measured on this tree, 1482 tests on PGlite went 32.3 s isolated → 20.2 s, at
+  four workers. A change that needs isolation back has to say what state it leaks.
+- **A module-level memo in `src/testing/` is legitimate, and only there.** With isolation off it is
+  per worker rather than per file, which is exactly the lifetime a Testcontainers server and its
+  admin pool want — one engine per worker, one database per build. It is test infrastructure, it is
+  keyed by configuration, and its scope is deliberately never closed so a reused container survives
+  the run. Nothing in `src/` outside `src/testing/` may hold module-level state.
+- **Speed rules**, part of the definition of done for anything that touches tests: isolation stays
+  off; one engine per worker and one schema or database per build (a provider that boots per build is
+  unfinished); no new top-level `layer()` block where a nested `it.effect` would inherit the database
+  — a case that needs an empty table calls `TestDatabase.reset`; service containers in CI, reusable
+  containers locally. Every wave gate records wall time per dialect.
 - The lint config runs stricter than Effect's `recommended` preset on purpose. Before turning a
   rule off, show the ergonomic damage it does in this tree (SPEC Amendment 18 is the template);
   before turning one on, show what it catches.
@@ -123,5 +147,5 @@ unchanged or justified, no new cast, SPEC amended if behaviour moved, CHANGELOG 
   of the previous tree, snapshot byte-compare, and a reviewer told to refute the claim.
 - Reference checkouts for API truth: `~/Documents/code/effect` (v4 monorepo) and
   `~/Documents/code/better-auth` (semantics only — never copy code).
-- Design docs live beside this file: `hooks.md`, `roadmap.md`, `db-expansion.md`. Deferred work is
-  in `roadmap.md`, not in code comments.
+- Design docs live beside this file: `hooks.md`, `roadmap.md`, `db-expansion.md` and its execution
+  contract `db-expansion-plan.md`. Deferred work is in `roadmap.md`, not in code comments.

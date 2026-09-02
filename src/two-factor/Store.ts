@@ -5,9 +5,9 @@
  *
  * A seam of the plugin's own, on the terms the core stores are declared: an
  * interface, a key, and one SQL implementation. Every statement that spends
- * something is a single guarded `UPDATE ... RETURNING` — never a read, a check
- * and a write — so two requests racing over one code, one step or one device
- * cannot both win:
+ * something is a *guarded* write that answers with what it wrote — never a
+ * read, a check and a write — so two requests racing over one code, one step or
+ * one device cannot both win:
  *
  * - {@link TwoFactorStoreService.consumeTotpStep} refuses a step at or below
  *   the one already recorded, in the predicate.
@@ -19,6 +19,13 @@
  *
  * **Gotchas**
  *
+ * Those guarded writes reach the database through `Mutations`, which is where
+ * the fact that MySQL has no `RETURNING` is dealt with: PostgreSQL and SQLite
+ * run the single statement they always ran, and MySQL takes the row's key under
+ * `SELECT ... FOR UPDATE`, writes, and reads back by that key inside one
+ * transaction. The guard is therefore evaluated exactly once on every dialect,
+ * which is what keeps "exactly one of two racing callers wins" true.
+ *
  * `last_used_step` is the one numeric column in this library. `@effect/sql`
  * drivers disagree about `bigint`: PGlite hands back a `number`, others a
  * `string`. It is normalised on the way in, exactly as SQLite's integer
@@ -26,10 +33,13 @@
  *
  * @since 0.2.0
  */
-import { Array, Context, DateTime, Effect, Layer, Option, Schema } from "effect"
+import { Array, Context, DateTime, Effect, Layer, Option, Predicate, Schema } from "effect"
+import type { SqlError } from "effect/unstable/sql"
 import { SqlClient } from "effect/unstable/sql"
 import type { UserId } from "../domain/Schema.js"
 import { PersistenceError } from "../domain/Stores.js"
+import { dialectOf } from "../sql/Dialect.js"
+import * as Mutations from "../sql/Mutations.js"
 import { RecoveryCode, TotpEnrolment, TrustedDevice } from "./Schema.js"
 
 // -----------------------------------------------------------------------------
@@ -42,6 +52,17 @@ const deviceColumns = `id, user_id AS "userId", token_hash AS "tokenHash", expir
 
 /** A row as the driver hands it over, before it is decoded. */
 type Row = Record<string, unknown>
+
+/** The three tables this plugin owns, and what names a row in each again. */
+const totp = "effect_auth_totp"
+const recoveryCodes = "effect_auth_recovery_codes"
+const trustedDevices = "effect_auth_trusted_devices"
+
+/** An enrolment is one per person, so the person names it. */
+const totpKey = ["user_id"]
+
+/** Both of the other two carry a generated id of their own. */
+const rowKey = ["id"]
 
 // -----------------------------------------------------------------------------
 // Service
@@ -190,6 +211,32 @@ const persist =
     Effect.mapError(effect, fail(operation))
 
 /**
+ * The one MySQL failure this store recovers from rather than reporting.
+ *
+ * **Details**
+ *
+ * {@link TwoFactorStoreService.replaceRecoveryCodes} deletes a person's whole
+ * set and writes a new one in one transaction. Under InnoDB's default
+ * REPEATABLE READ the `DELETE ... WHERE user_id = ?` takes a *gap* lock on
+ * `effect_auth_recovery_codes_user_id_idx`, and when it matches nothing — which
+ * is exactly what generating a first set looks like — that gap is one two
+ * different people's ids can share. Both transactions then need an
+ * insert-intention lock inside a gap the other holds, and InnoDB reports
+ * `ER_LOCK_DEADLOCK`. Two accounts generating codes at the same moment
+ * reproduce it in seconds.
+ *
+ * No ordering of the two statements removes it without weakening what the
+ * operation promises — that the whole previous set goes — so the transaction is
+ * retried, which is what MySQL's own message asks for and what the operation
+ * makes safe: it *replaces* a set, so running it twice leaves what running it
+ * once would have. Three attempts, no delay (a delay would need a real clock,
+ * and these tests run on a `TestClock`), and only for this failure.
+ *
+ * PostgreSQL and SQLite do not take gap locks and never reach here.
+ */
+const isDeadlock = (error: SqlError.SqlError): boolean => Predicate.isTagged(error.reason, "DeadlockError")
+
+/**
  * `bigint` reaches this library as a `number` under PGlite and as a `string`
  * under drivers that refuse to narrow it. The column holds a TOTP step, which
  * is well inside `Number.MAX_SAFE_INTEGER` for the next hundred thousand years,
@@ -205,8 +252,11 @@ const readStep = (value: unknown): unknown => (typeof value === "string" ? Numbe
  */
 export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClient> = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient
+  const dialect = yield* dialectOf(sql)
   const totpCols = sql.literal(totpColumns)
   const deviceCols = sql.literal(deviceColumns)
+  const userIdCol = sql.literal("user_id")
+  const idCol = sql.literal("id")
 
   const decodeTotp = Schema.decodeUnknownEffect(TotpEnrolment)
   const decodeDevice = Schema.decodeUnknownEffect(TrustedDevice)
@@ -230,6 +280,12 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
 
   const iso = DateTime.formatIso
 
+  /** {@link isDeadlock}, applied where it is the only failure worth another go. */
+  const retryDeadlocks = <A, R>(
+    effect: Effect.Effect<A, SqlError.SqlError, R>
+  ): Effect.Effect<A, SqlError.SqlError, R> =>
+    dialect === "mysql" ? Effect.retry(effect, { times: 2, while: isDeadlock }) : effect
+
   return TwoFactorStore.of({
     findTotp: (userId) =>
       persist("TwoFactorStore.findTotp")(
@@ -242,35 +298,63 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
           // The row was built from the model, so an encoding failure here is
           // this library's bug rather than something a caller can act on.
           const row = yield* Effect.orDie(encodeTotpInsert(enrolment))
-          return yield* sql<Row>`INSERT INTO effect_auth_totp (user_id, secret_ciphertext, verified_at, last_used_step, created_at)
-            VALUES (${row.userId}, ${row.secretCiphertext}, NULL, NULL, ${row.createdAt})
-            ON CONFLICT (user_id) DO UPDATE
-              SET secret_ciphertext = excluded.secret_ciphertext,
-                  verified_at = NULL,
-                  last_used_step = NULL,
-                  created_at = excluded.created_at
-              WHERE effect_auth_totp.verified_at IS NULL
-            RETURNING ${totpCols}`
+          return yield* Mutations.upsertAndRead<Row>({
+            sql,
+            dialect,
+            table: totp,
+            record: {
+              user_id: row.userId,
+              secret_ciphertext: row.secretCiphertext,
+              created_at: row.createdAt,
+              last_used_step: null,
+              verified_at: null
+            },
+            conflict: totpKey,
+            // MySQL's `ON DUPLICATE KEY UPDATE` evaluates its assignments left
+            // to right and each one sees what the one before it wrote, so a
+            // column the condition reads goes last. Here the rule costs nothing
+            // — `verified_at` is assigned `NULL` when the guard holds and its
+            // own value when it does not, so it cannot move the guard either way
+            // — but the ordering is what keeps that true of the *next* column
+            // somebody adds, and it is the ordering `Mutations` documents.
+            update: ["secret_ciphertext", "created_at", "last_used_step", "verified_at"],
+            condition: (current) => sql`${current("verified_at")} IS NULL`,
+            columns: totpCols,
+            // What "the enrolment is now the one I just wrote" looks like: a
+            // pending row for this person. A confirmed row fails the predicate,
+            // which is the `None` PostgreSQL expresses as an empty `RETURNING`.
+            readBack: sql`user_id = ${row.userId} AND verified_at IS NULL`
+          })
         })
       ).pipe(Effect.flatMap(firstTotp("TwoFactorStore.upsertPendingTotp"))),
 
     confirmTotp: (userId, verifiedAt, step) =>
       persist("TwoFactorStore.confirmTotp")(
-        sql<Row>`UPDATE effect_auth_totp
-          SET verified_at = ${iso(verifiedAt)}, last_used_step = ${step}
-          WHERE user_id = ${userId} AND verified_at IS NULL
-          RETURNING ${totpCols}`
+        Mutations.updateAndRead<Row>({
+          sql,
+          dialect,
+          table: totp,
+          key: totpKey,
+          set: { verified_at: iso(verifiedAt), last_used_step: step },
+          where: sql`user_id = ${userId} AND verified_at IS NULL`,
+          columns: totpCols
+        })
       ).pipe(Effect.flatMap(firstTotp("TwoFactorStore.confirmTotp"))),
 
     consumeTotpStep: (userId, step) =>
       persist("TwoFactorStore.consumeTotpStep")(
         Effect.map(
-          sql<Row>`UPDATE effect_auth_totp
-            SET last_used_step = ${step}
-            WHERE user_id = ${userId}
+          Mutations.updateAndRead({
+            sql,
+            dialect,
+            table: totp,
+            key: totpKey,
+            set: { last_used_step: step },
+            where: sql`user_id = ${userId}
               AND verified_at IS NOT NULL
-              AND (last_used_step IS NULL OR last_used_step < ${step})
-            RETURNING user_id`,
+              AND (last_used_step IS NULL OR last_used_step < ${step})`,
+            columns: userIdCol
+          }),
           (rows) => rows.length > 0
         )
       ),
@@ -278,38 +362,45 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
     deleteTotp: (userId) =>
       persist("TwoFactorStore.deleteTotp")(
         Effect.map(
-          sql<Row>`DELETE FROM effect_auth_totp WHERE user_id = ${userId} RETURNING user_id`,
-          (rows) => rows.length > 0
+          Mutations.deleteAndCount({ sql, dialect, table: totp, key: totpKey, where: sql`user_id = ${userId}` }),
+          (count) => count > 0
         )
       ),
 
     replaceRecoveryCodes: (userId, codes) =>
       persist("TwoFactorStore.replaceRecoveryCodes")(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`DELETE FROM effect_auth_recovery_codes WHERE user_id = ${userId}`
-            if (codes.length === 0) return
-            const rows = yield* Effect.orDie(Effect.forEach(codes, (code) => encodeCodeInsert(code)))
-            yield* sql`INSERT INTO effect_auth_recovery_codes ${sql.insert(
-              rows.map((row) => ({
-                id: row.id,
-                user_id: row.userId,
-                code_hash: row.codeHash,
-                used_at: null,
-                created_at: row.createdAt
-              }))
-            )}`
-          })
-        )
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`DELETE FROM effect_auth_recovery_codes WHERE user_id = ${userId}`
+              if (codes.length === 0) return
+              const rows = yield* Effect.orDie(Effect.forEach(codes, (code) => encodeCodeInsert(code)))
+              yield* sql`INSERT INTO effect_auth_recovery_codes ${sql.insert(
+                rows.map((row) => ({
+                  id: row.id,
+                  user_id: row.userId,
+                  code_hash: row.codeHash,
+                  used_at: null,
+                  created_at: row.createdAt
+                }))
+              )}`
+            })
+          )
+          .pipe(retryDeadlocks)
       ),
 
     consumeRecoveryCode: (userId, codeHash, usedAt) =>
       persist("TwoFactorStore.consumeRecoveryCode")(
         Effect.map(
-          sql<Row>`UPDATE effect_auth_recovery_codes
-            SET used_at = ${iso(usedAt)}
-            WHERE user_id = ${userId} AND code_hash = ${codeHash} AND used_at IS NULL
-            RETURNING id`,
+          Mutations.updateAndRead({
+            sql,
+            dialect,
+            table: recoveryCodes,
+            key: rowKey,
+            set: { used_at: iso(usedAt) },
+            where: sql`user_id = ${userId} AND code_hash = ${codeHash} AND used_at IS NULL`,
+            columns: idCol
+          }),
           (rows) => rows.length > 0
         )
       ),
@@ -324,20 +415,37 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
 
     deleteRecoveryCodes: (userId) =>
       persist("TwoFactorStore.deleteRecoveryCodes")(
-        Effect.map(
-          sql<Row>`DELETE FROM effect_auth_recovery_codes WHERE user_id = ${userId} RETURNING id`,
-          (rows) => rows.length
-        )
+        Mutations.deleteAndCount({
+          sql,
+          dialect,
+          table: recoveryCodes,
+          key: rowKey,
+          where: sql`user_id = ${userId}`
+        })
       ),
 
     createDevice: (device) =>
       persist("TwoFactorStore.createDevice")(
         Effect.gen(function* () {
           const row = yield* Effect.orDie(encodeDeviceInsert(device))
-          const rows = yield* sql<Row>`INSERT INTO effect_auth_trusted_devices
-            (id, user_id, token_hash, expires_at, last_used_at, user_agent, ip_address, label, created_at)
-            VALUES (${row.id}, ${row.userId}, ${row.tokenHash}, ${row.expiresAt}, ${row.lastUsedAt}, ${row.userAgent}, ${row.ipAddress}, ${row.label}, ${row.createdAt})
-            RETURNING ${deviceCols}`
+          const rows = yield* Mutations.insertAndRead<Row>({
+            sql,
+            dialect,
+            table: trustedDevices,
+            key: rowKey,
+            record: {
+              id: row.id,
+              user_id: row.userId,
+              token_hash: row.tokenHash,
+              expires_at: row.expiresAt,
+              last_used_at: row.lastUsedAt,
+              user_agent: row.userAgent,
+              ip_address: row.ipAddress,
+              label: row.label,
+              created_at: row.createdAt
+            },
+            columns: deviceCols
+          })
           return yield* Option.match(Array.head(rows), {
             onNone: () =>
               Effect.fail(
@@ -353,10 +461,15 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
 
     useDevice: (tokenHash, nextTokenHash, now) =>
       persist("TwoFactorStore.useDevice")(
-        sql<Row>`UPDATE effect_auth_trusted_devices
-          SET token_hash = ${nextTokenHash}, last_used_at = ${iso(now)}
-          WHERE token_hash = ${tokenHash} AND expires_at > ${iso(now)}
-          RETURNING ${deviceCols}`
+        Mutations.updateAndRead<Row>({
+          sql,
+          dialect,
+          table: trustedDevices,
+          key: rowKey,
+          set: { token_hash: nextTokenHash, last_used_at: iso(now) },
+          where: sql`token_hash = ${tokenHash} AND expires_at > ${iso(now)}`,
+          columns: deviceCols
+        })
       ).pipe(
         Effect.flatMap((rows) =>
           Option.match(Array.head(rows), {
@@ -376,17 +489,26 @@ export const make: Effect.Effect<TwoFactorStoreService, never, SqlClient.SqlClie
     deleteDevice: (id, userId) =>
       persist("TwoFactorStore.deleteDevice")(
         Effect.map(
-          sql<Row>`DELETE FROM effect_auth_trusted_devices WHERE id = ${id} AND user_id = ${userId} RETURNING id`,
-          (rows) => rows.length > 0
+          Mutations.deleteAndCount({
+            sql,
+            dialect,
+            table: trustedDevices,
+            key: rowKey,
+            where: sql`id = ${id} AND user_id = ${userId}`
+          }),
+          (count) => count > 0
         )
       ),
 
     deleteDevices: (userId) =>
       persist("TwoFactorStore.deleteDevices")(
-        Effect.map(
-          sql<Row>`DELETE FROM effect_auth_trusted_devices WHERE user_id = ${userId} RETURNING id`,
-          (rows) => rows.length
-        )
+        Mutations.deleteAndCount({
+          sql,
+          dialect,
+          table: trustedDevices,
+          key: rowKey,
+          where: sql`user_id = ${userId}`
+        })
       )
   })
 })
